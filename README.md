@@ -5,24 +5,32 @@ Danube is designed for high-performance and scalable message queueing, suitable 
 
 Check-out [the Docs](https://dev-state.com/danube_docs/) for more details of the Danube Architecture and the supported concepts.
 
-## Key Capabilities of the Danube Platform
+## Danube Platform capabilities matrix
+
+| Dispatch       | Topics            | Subscription | Message Persistence | Ordering Guarantee | Delivery Guarantee |
+|----------------|-------------------|--------------|----------------------|--------------------|--------------------|
+| **Non-Reliable** |                   |              |                      |                    |                    |
+|                | *Non-partitioned Topic*         | *Exclusive*    | No                   | Yes                | At-Most-Once       |
+|                |                   | *Shared*       | No                   | No                 | At-Most-Once       |
+|                | *Partitioned Topic* | *Exclusive*    | No                   | Per partition      | At-Most-Once       |
+|                |                   | *Shared*       | No                   | No                 | At-Most-Once       |
+|----------------|-------------------|--------------|----------------------|--------------------|--------------------|
+| **Reliable**    |                   |              |                      |                    |                    |
+|                | *Non-partitioned Topic*         | *Exclusive*    | Yes                  | Yes                | At-Least-Once      |
+|                |                   | *Shared*       | Yes                  | No                 | At-Least-Once      |
+|                | *Partitioned Topic* | *Exclusive*    | Yes                  | Per partition      | At-Least-Once      |
+|                |                   | *Shared*       | Yes                  | No                 | At-Least-Once      |
 
 * **Topics**: A unit of storage that organizes messages into a stream.
   * **Non-partitioned topics**: Served by a single broker.
   * **Partitioned topics**: Divided into partitions, served by different brokers within the cluster, enhancing scalability and fault tolerance.
 * **Message Dispatch**:
-  * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial.
-  * **Reliable Message Dispatch**: Supports configurable storage options including in-memory, disk, and S3, ensuring message persistence and durability.
-* **Metadata Store**:
-  * **ETCD as Default**: Provides a reliable and consistent Metadata store for cluster synchronization.
-  * **Configurable Options**: Allows customization of metadata storage to fit specific requirements.
+  * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial. The acknowledgement mechanism is ignored.
+  * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options including in-memory, disk, and S3, ensuring message persistence and durability.
 * **Subscription Types:**:
   * Supports various subscription types (exclusive, shared, failover) enabling different messaging patterns such as message queueing and pub-sub.
 * **Flexible Message Schemas**
   * Supports multiple message schemas (bytes, string, int64, JSON) providing flexibility in message format and structure.
-* **Command-Line Interfaces (CLI)**
-  * **Danube CLI**: For handling message publishing and consumption.
-  * **Danube Admin CLI**: For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
 
 ## Clients
 
@@ -40,6 +48,12 @@ Currently, the Danube client libraries are written in:
 ### Community supported clients
 
 Contributions in other languages, such as Python, Java, etc., are also greatly appreciated. If there are any I'll add in this section.
+
+## Danube CLIs
+
+* **Command-Line Interfaces (CLI)**
+  * [**Danube CLI**](https://github.com/danrusei/danube/tree/main/danube-cli): For handling message publishing and consumption.
+  * [**Danube Admin CLI**](https://github.com/danrusei/danube/tree/main/danube-admin-cli): For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
 
 ## Development environment
 
