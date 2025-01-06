@@ -3,7 +3,7 @@
 Danube is an open-source distributed Pub/Sub messaging platform (inspired by Apache Pulsar).
 Danube is designed for high-performance and scalable message queueing, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
 
-Check-out [the Docs](https://dev-state.com/danube_docs/) for more details of the Danube Architecture and the supported concepts.
+Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the Danube Architecture and the supported concepts.
 
 ## Danube Platform capabilities matrix
 
@@ -36,9 +36,9 @@ Check-out [the Docs](https://dev-state.com/danube_docs/) for more details of the
 
 Allows single or multiple Producers to publish on the Topic and multiple Subscriptions to consume the messages from the Topic.
 
-![Producers  Consumers](https://dev-state.com/danube_docs/architecture/img/producers_consumers.png "Producers Consumers")
+![Producers  Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
 
-You can combine the [Subscription Type mechanisms](https://dev-state.com/danube_docs/architecture/Queuing_PubSub_messaging/) in order to obtain message queueing or fan-out pub-sub messaging systems.
+You can combine the [Subscription Type mechanisms](https://danube-docs.dev-state.com/architecture/Queuing_PubSub_messaging/) in order to obtain message queueing or fan-out pub-sub messaging systems.
 
 Currently, the Danube client libraries are written in:
 
@@ -52,14 +52,14 @@ Contributions in other languages, such as Python, Java, etc., are also greatly a
 ## Danube CLIs
 
 * **Command-Line Interfaces (CLI)**
-  * [**Danube CLI**](https://github.com/danrusei/danube/tree/main/danube-cli): For handling message publishing and consumption.
-  * [**Danube Admin CLI**](https://github.com/danrusei/danube/tree/main/danube-admin-cli): For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
+  * [**Danube CLI**](https://github.com/danube-messaging/danube/tree/main/danube-cli): For handling message publishing and consumption.
+  * [**Danube Admin CLI**](https://github.com/danube-messaging/danube/tree/main/danube-admin-cli): For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
 
 ## Development environment
 
 Continuously working on enhancing and adding new features.
 
-**Contributions are welcome**, check [the open issues](https://github.com/danrusei/danube/issues) or report a bug you encountered or a needed feature.
+**Contributions are welcome**, check [the open issues](https://github.com/danube-messaging/danube/issues) or report a bug you encountered or a needed feature.
 
 The crates part of the Danube workspace:
 
@@ -70,4 +70,4 @@ The crates part of the Danube workspace:
 * danube-cli - Client CLI to handle message publishing and consumption
 * danube-admin-cli - Admin CLI designed for interacting with and managing the Danube cluster
 
-[Follow the instructions](https://dev-state.com/danube_docs/development/dev_environment/) on how to setup the development environment.
+[Follow the instructions](https://danube-docs.dev-state.com/development/dev_environment/) on how to setup the development environment.

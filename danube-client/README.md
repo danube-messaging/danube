@@ -2,11 +2,11 @@
 
 An async Rust client library for interacting with Danube Pub/Sub messaging platform.
 
-[Danube](https://github.com/danrusei/danube) is an open-source **distributed** Pub/Sub messaging platform written in Rust. Consult [the documentation](https://dev-state.com/danube_docs/) for supported concepts and the platform architecture.
+[Danube](https://github.com/danube-messaging/danube) is an open-source **distributed** Pub/Sub messaging platform written in Rust. Consult [the documentation](https://danube-docs.dev-state.com/) for supported concepts and the platform architecture.
 
 ## Example usage
 
-Check out the [example files](https://github.com/danrusei/danube/tree/main/danube-client/examples).
+Check out the [example files](https://github.com/danube-messaging/danube/tree/main/danube-client/examples).
 
 ### Producer
 
@@ -77,4 +77,4 @@ let client = DanubeClient::builder()
 
 ## Contribution
 
-Check [the documentation](https://dev-state.com/danube_docs/) on how to setup a Danube Broker.
+Check [the documentation](https://danube-docs.dev-state.com/) on how to setup a Danube Broker.
