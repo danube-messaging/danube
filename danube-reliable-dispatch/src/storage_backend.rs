@@ -14,7 +14,7 @@ mod aws_s3;
 pub use aws_s3::S3Storage;
 
 #[async_trait]
-pub(crate) trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
+pub trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
     async fn get_segment(&self, id: usize) -> Result<Option<Arc<RwLock<Segment>>>>;
     async fn put_segment(&self, id: usize, segment: Arc<RwLock<Segment>>) -> Result<()>;
     async fn remove_segment(&self, id: usize) -> Result<()>;

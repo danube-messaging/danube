@@ -12,7 +12,7 @@ use crate::{errors::Result, storage_backend::StorageBackend};
 /// The segment is immutable after it's closed for writing
 /// The messages in the segment are in the order of arrival
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Segment {
+pub struct Segment {
     // Unique segment ID
     pub(crate) id: usize,
     // Segment close time, is the time when the segment is closed for writing

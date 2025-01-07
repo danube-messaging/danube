@@ -1,4 +1,5 @@
 mod topic_storage;
+pub use topic_storage::Segment;
 mod topic_storage_test;
 use storage_backend::create_backend;
 use topic_storage::TopicStore;
@@ -8,6 +9,7 @@ mod dispatch;
 mod dispatch_test;
 pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
+pub use storage_backend::StorageBackend;
 
 use danube_client::{ReliableOptions, StreamMessage};
 use dashmap::DashMap;
