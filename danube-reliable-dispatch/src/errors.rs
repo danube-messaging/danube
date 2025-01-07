@@ -22,6 +22,12 @@ pub enum ReliableDispatchError {
     #[error("Subscription error: {0}")]
     UnknownSubscription(String),
 
+    #[error("Disk Storage error: {0}")]
+    DiskStorageError(String),
+
+    #[error("AWS S3 Storage error: {0}")]
+    S3StorageError(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
