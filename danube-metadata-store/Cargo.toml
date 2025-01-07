@@ -1,6 +1,12 @@
 [package]
 name = "danube-metadata-store"
 version = "0.1.4"
+description = "The danube-metadata-store crate is responsible for storing and retrieving Metadata for Danube messaging broker"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+documentation = "https://docs.rs/danube-metadata-store"
+readme = "README.md"
+license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
