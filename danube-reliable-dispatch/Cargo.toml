@@ -10,7 +10,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
-danube-client = "0.2.1"
+danube-client = { path = "../danube-client" }
 dashmap = "5.5.3"
 serde = { workspace = true }
 tokio = { workspace = true }
