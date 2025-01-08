@@ -15,13 +15,15 @@ use crate::{
 pub struct S3Storage {
     client: Option<Client>,
     bucket_name: String,
+    region: String,
 }
 
 impl S3Storage {
-    pub fn new(bucket_name: impl Into<String>) -> Self {
+    pub fn new(bucket: &str, region: &str) -> Self {
         S3Storage {
             client: None,
-            bucket_name: bucket_name.into(),
+            bucket_name: bucket.into(),
+            region: region.into(),
         }
     }
 

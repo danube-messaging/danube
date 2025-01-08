@@ -1,7 +1,5 @@
 use anyhow::Result;
-use danube_client::{
-    ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy, StorageType,
-};
+use danube_client::{ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy};
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -23,10 +21,8 @@ async fn main() -> Result<()> {
     // Read the blob file into memory
     let blob_data = fs::read("./examples/test.blob")?;
 
-    let storage_type = StorageType::InMemory;
     let reliable_options = ReliableOptions::new(
         5, // segment size in MB
-        storage_type,
         RetentionPolicy::RetainUntilExpire,
         3600, // 1 hour
     );

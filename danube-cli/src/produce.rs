@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Args, Parser, ValueEnum};
 use danube_client::{
-    ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy, SchemaType, StorageType,
+    ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy, SchemaType,
 };
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
@@ -198,24 +198,6 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
     }
 
     if produce.reliable_args.reliable {
-        let storage_type = match produce
-            .reliable_args
-            .storage
-            .unwrap_or(StorageTypeArg::Memory)
-        {
-            StorageTypeArg::Memory => StorageType::InMemory,
-            StorageTypeArg::Disk => {
-                let storage_path = std::env::var("DANUBE_STORAGE_PATH")
-                    .unwrap_or_else(|_| "/tmp/danube".to_string());
-                StorageType::Disk(storage_path)
-            }
-            StorageTypeArg::S3 => {
-                let bucket = std::env::var("DANUBE_S3_BUCKET")
-                    .unwrap_or_else(|_| "danube-bucket".to_string());
-                StorageType::S3(bucket)
-            }
-        };
-
         let retention_policy = match produce
             .reliable_args
             .retention
@@ -227,7 +209,6 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
         let reliable_options = ReliableOptions::new(
             produce.reliable_args.segment_size,
-            storage_type,
             retention_policy,
             produce.reliable_args.retention_period,
         );

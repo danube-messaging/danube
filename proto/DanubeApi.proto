@@ -15,13 +15,6 @@ enum ProducerAccessMode {
     Exclusive = 1; // exclusive access for producer
 }
 
-// The persistent storage backend for the topic
-enum StorageBackend {
-    IN_MEMORY = 0;
-    DISK = 1;
-    S3 = 2;
-}
-
 enum DispatchStrategy {
     NonReliable = 0;
     Reliable = 1;
@@ -33,9 +26,7 @@ enum RetentionPolicy {
 }
 
 message ReliableOptions {
-    uint64 segment_size = 1; // in bytes
-    StorageBackend storage_backend = 2; // IN_MEMORY, DISK or S3
-    string storage_path = 3; // used for Disk or S3 storage backend
+    uint64 segment_size = 1; // in MB
     RetentionPolicy retention_policy = 4; // RetainUntilAck or RetainUntilExpire
     uint64 retention_period = 5; // in seconds
 }

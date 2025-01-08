@@ -23,6 +23,20 @@ meta_store_port: 2379
 bootstrap_namespaces:
   - "default"
 
+# Messsage Storage Configuration
+storage:
+  # Valid options: inmemory, disk, s3
+  type: "inmemory"
+
+  # Disk storage configuration
+  disk:
+    path: "./your_directory"
+
+  # S3 storage configuration
+  s3:
+    bucket: "your_s3_bucket"
+    region: "us-east-1"
+
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:
   # Limits the maximum number of producers that can simultaneously publish messages to a specific topic.

@@ -8,6 +8,9 @@ members = [
     # -- Danube pub/sub core services
     "danube-broker",
 
+    # -- Danube core types and traits
+    "danube-core", 
+
     # -- Danube Reliable Dispatch lib 
     "danube-reliable-dispatch",
 

@@ -1,4 +1,5 @@
 mod topic_storage;
+use danube_core::storage::StorageConfig;
 pub use topic_storage::Segment;
 mod topic_storage_test;
 use storage_backend::create_backend;
@@ -27,12 +28,12 @@ pub struct ReliableDispatch {
 }
 
 impl ReliableDispatch {
-    pub fn new(reliable_options: ReliableOptions) -> Self {
+    pub fn new(reliable_options: ReliableOptions, storage_config: StorageConfig) -> Self {
         let subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>> = Arc::new(DashMap::new());
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
-        let storage_backend = create_backend(&reliable_options.storage_type);
+        let storage_backend = create_backend(&storage_config);
         let retention_policy = reliable_options.retention_policy.clone();
         let topic_store = TopicStore::new(storage_backend, reliable_options);
         // Start the lifecycle management task
