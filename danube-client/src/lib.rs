@@ -31,3 +31,6 @@ mod connection_manager;
 mod rpc_connection;
 
 mod health_check;
+
+mod reliable_options;
+pub use reliable_options::{ConfigReliableOptions, ConfigRetentionPolicy};

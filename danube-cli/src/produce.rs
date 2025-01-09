@@ -1,8 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Parser, ValueEnum};
-use danube_client::{
-    ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy, SchemaType,
-};
+use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, DanubeClient, SchemaType};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
@@ -203,18 +201,17 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
             .retention
             .unwrap_or(RetentionPolicyArg::Expire)
         {
-            RetentionPolicyArg::Ack => RetentionPolicy::RetainUntilAck,
-            RetentionPolicyArg::Expire => RetentionPolicy::RetainUntilExpire,
+            RetentionPolicyArg::Ack => ConfigRetentionPolicy::RetainUntilAck,
+            RetentionPolicyArg::Expire => ConfigRetentionPolicy::RetainUntilExpire,
         };
 
-        let reliable_options = ReliableOptions::new(
-            produce.reliable_args.segment_size,
+        let reliable_options = ConfigReliableOptions::new(
+            produce.reliable_args.segment_size as u64,
             retention_policy,
             produce.reliable_args.retention_period,
         );
 
-        producer_builder = producer_builder
-            .with_dispatch_strategy(ConfigDispatchStrategy::Reliable(reliable_options));
+        producer_builder = producer_builder.with_reliable_dispatch(reliable_options);
     }
 
     let mut producer = producer_builder.build();
