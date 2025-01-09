@@ -1,5 +1,5 @@
-use crate::proto::{namespace_admin_client::NamespaceAdminClient, NamespaceRequest};
 use crate::shared::{display_policies, Policies};
+use danube_core::admin_proto::{namespace_admin_client::NamespaceAdminClient, NamespaceRequest};
 
 use clap::{Args, Subcommand};
 

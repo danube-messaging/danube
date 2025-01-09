@@ -1,5 +1,5 @@
 use crate::admin::DanubeAdminImpl;
-use crate::admin_proto::{
+use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, BrokerInfo, BrokerListResponse, BrokerResponse, Empty,
     NamespaceListResponse,
 };

@@ -1,5 +1,5 @@
-use crate::proto::{broker_admin_client::BrokerAdminClient, Empty};
 use clap::{Args, Subcommand};
+use danube_core::admin_proto::{broker_admin_client::BrokerAdminClient, Empty};
 
 use prettytable::{format, Cell, Row, Table};
 

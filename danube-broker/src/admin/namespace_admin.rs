@@ -1,5 +1,5 @@
 use crate::admin::DanubeAdminImpl;
-use crate::admin_proto::{
+use danube_core::admin_proto::{
     namespace_admin_server::NamespaceAdmin, NamespaceRequest, NamespaceResponse, PolicyResponse,
     TopicListResponse,
 };

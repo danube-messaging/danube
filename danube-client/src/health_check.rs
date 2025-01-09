@@ -1,10 +1,12 @@
 use crate::{
     connection_manager::ConnectionManager,
     errors::{DanubeError, Result},
-    proto::health_check_client::HealthCheckClient,
     rpc_connection::RpcConnection,
 };
 
+use danube_core::proto::{
+    health_check_client::HealthCheckClient, health_check_response::ClientStatus, HealthCheckRequest,
+};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
@@ -12,8 +14,6 @@ use std::sync::{
 use tokio::time::{sleep, Duration};
 use tonic::transport::Uri;
 use tracing::warn;
-
-use crate::proto::{health_check_response::ClientStatus, HealthCheckRequest};
 
 // HealthCheckService is used to validate that the producer/consumer are still served by the connected broker
 #[derive(Debug, Clone)]

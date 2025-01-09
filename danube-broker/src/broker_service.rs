@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 use tonic::{Code, Status};
 use tracing::{info, warn};
 
-use crate::proto::{ErrorType, Schema as ProtoSchema, TopicDispatchStrategy};
+use danube_core::proto::{ErrorType, Schema as ProtoSchema, TopicDispatchStrategy};
 
 use crate::{
     broker_metrics::{BROKER_TOPICS, TOPIC_CONSUMERS, TOPIC_PRODUCERS},

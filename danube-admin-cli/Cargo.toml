@@ -4,6 +4,7 @@ version = "0.1.6"
 edition = "2021"
 
 [dependencies]
+danube-core = {path = "../danube-core"}
 clap = {version = "4.5.8", features =["derive"]}
 tonic = { workspace = true }
 tonic-types = { workspace = true }

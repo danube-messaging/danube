@@ -3,7 +3,7 @@ use crate::{
     ConsumerOptions, DanubeClient, MessageID, SubType,
 };
 
-use crate::proto::{
+use danube_core::proto::{
     consumer_service_client::ConsumerServiceClient, AckRequest, AckResponse, ConsumerRequest,
     ConsumerResponse, ReceiveRequest, StreamMessage,
 };

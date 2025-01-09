@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
-use crate::proto::{schema::TypeSchema as ProtoTypeSchema, Schema as ProtoSchema};
+use danube_core::proto::{schema::TypeSchema as ProtoTypeSchema, Schema as ProtoSchema};
 
 /// Represents a schema for data, including its type and associated schema data.
 ///

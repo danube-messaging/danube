@@ -1,8 +1,8 @@
-use crate::proto::{
+use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
+use danube_core::proto::{
     producer_service_server::ProducerService, MessageResponse, ProducerRequest, ProducerResponse,
     StreamMessage as ProtoStreamMessage,
 };
-use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
 
 use danube_client::StreamMessage;
 use metrics::histogram;

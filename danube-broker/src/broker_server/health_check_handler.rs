@@ -1,6 +1,6 @@
 use crate::broker_server::DanubeServerImpl;
 use crate::error_message::create_error_status;
-use crate::proto::{
+use danube_core::proto::{
     health_check_request::ClientType, health_check_response::ClientStatus,
     health_check_server::HealthCheck, ErrorType, HealthCheckRequest, HealthCheckResponse,
 };

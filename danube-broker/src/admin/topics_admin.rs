@@ -1,10 +1,10 @@
 use crate::admin::DanubeAdminImpl;
-use crate::admin_proto::{
+use crate::schema::{Schema, SchemaType};
+use danube_core::admin_proto::{
     topic_admin_server::TopicAdmin, NamespaceRequest, NewTopicRequest, SubscriptionListResponse,
     SubscriptionRequest, SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
 };
-use crate::proto::TopicDispatchStrategy;
-use crate::schema::{Schema, SchemaType};
+use danube_core::proto::TopicDispatchStrategy;
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};

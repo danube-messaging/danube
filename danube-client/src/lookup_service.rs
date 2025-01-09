@@ -1,12 +1,11 @@
 use crate::{
     connection_manager::ConnectionManager,
     errors::{DanubeError, Result},
-    proto::TopicPartitionsResponse,
 };
 
-use crate::proto::{
+use danube_core::proto::{
     discovery_client::DiscoveryClient, topic_lookup_response::LookupType, TopicLookupRequest,
-    TopicLookupResponse,
+    TopicLookupResponse, TopicPartitionsResponse,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
