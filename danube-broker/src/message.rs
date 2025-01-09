@@ -1,4 +1,4 @@
-use danube_client::MessageID;
+use danube_core::message::MessageID;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AckMessage {

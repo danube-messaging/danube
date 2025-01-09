@@ -24,9 +24,6 @@ pub use schema::{Schema, SchemaType};
 
 mod schema_service;
 
-mod message;
-pub use message::{MessageID, StreamMessage};
-
 mod lookup_service;
 
 mod connection_manager;

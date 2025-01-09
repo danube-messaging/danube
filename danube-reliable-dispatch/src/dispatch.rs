@@ -1,4 +1,4 @@
-use danube_client::{MessageID, StreamMessage};
+use danube_core::message::{MessageID, StreamMessage};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;

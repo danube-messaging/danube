@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{MessageID, StreamMessage};
+use danube_core::message::{MessageID, StreamMessage};
 
 use crate::{consumer::Consumer, message::AckMessage};
 

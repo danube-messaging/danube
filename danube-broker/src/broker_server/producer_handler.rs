@@ -4,7 +4,7 @@ use danube_core::proto::{
     StreamMessage as ProtoStreamMessage,
 };
 
-use danube_client::StreamMessage;
+use danube_core::message::StreamMessage;
 use metrics::histogram;
 use std::collections::hash_map::Entry;
 use std::time::Instant;

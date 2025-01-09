@@ -1,4 +1,5 @@
-use danube_client::{ReliableOptions, RetentionPolicy, StreamMessage};
+use danube_client::{ReliableOptions, RetentionPolicy};
+use danube_core::message::StreamMessage;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::{atomic::AtomicUsize, Arc};

@@ -6,7 +6,9 @@ use crate::{
     topic_storage::{Segment, TopicStore},
 };
 #[cfg(test)]
-use danube_client::{MessageID, ReliableOptions, RetentionPolicy, StreamMessage};
+use danube_client::{ReliableOptions, RetentionPolicy};
+#[cfg(test)]
+use danube_core::message::{MessageID, StreamMessage};
 #[cfg(test)]
 use std::collections::HashMap;
 #[cfg(test)]
