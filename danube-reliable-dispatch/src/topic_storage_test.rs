@@ -3,10 +3,12 @@ use crate::{
     storage_backend::InMemoryStorage,
     topic_storage::{Segment, TopicStore},
 };
+
 #[cfg(test)]
-use danube_client::{ReliableOptions, RetentionPolicy};
-#[cfg(test)]
-use danube_core::message::{MessageID, StreamMessage};
+use danube_core::{
+    dispatch_strategy::{ReliableOptions, RetentionPolicy},
+    message::{MessageID, StreamMessage},
+};
 #[cfg(test)]
 use dashmap::DashMap;
 #[cfg(test)]

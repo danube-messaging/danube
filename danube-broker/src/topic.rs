@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
-use danube_client::ConfigDispatchStrategy;
-use danube_core::message::StreamMessage;
+use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
 use danube_reliable_dispatch::{ReliableDispatch, StorageBackend};
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};

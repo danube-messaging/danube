@@ -1,8 +1,9 @@
 use crate::{
-    dispatch_strategy::ConfigDispatchStrategy, errors::Result, message_router::MessageRouter,
-    topic_producer::TopicProducer, DanubeClient, Schema, SchemaType,
+    errors::Result, message_router::MessageRouter, topic_producer::TopicProducer, DanubeClient,
+    Schema, SchemaType,
 };
 
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
