@@ -29,7 +29,8 @@ use crate::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use danube_metadata_store::{EtcdStore, StorageBackend};
+use danube_metadata_store::{EtcdStore, MetadataStorage};
+use danube_reliable_dispatch::create_message_storage;
 use std::net::SocketAddr;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -123,8 +124,15 @@ async fn main() -> Result<()> {
 
     // initialize the metadata storage layer for Danube Broker
     info!("Use ETCD storage as metadata persistent store");
-    let metadata_store: StorageBackend =
-        StorageBackend::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
+    let metadata_store: MetadataStorage =
+        MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
+
+    // initialize the message storage layer for Danube Broker
+    info!(
+        "Use {} storage as message persistent store",
+        service_config.storage
+    );
+    let message_storage = create_message_storage(&service_config.storage);
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store
     let local_cache = LocalCache::new(metadata_store.clone());
@@ -138,7 +146,7 @@ async fn main() -> Result<()> {
     let syncroniser = Syncronizer::new();
 
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
-    let broker_service = BrokerService::new(resources.clone(), service_config.storage.clone());
+    let broker_service = BrokerService::new(resources.clone(), message_storage);
     let broker_id = broker_service.broker_id;
 
     // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.

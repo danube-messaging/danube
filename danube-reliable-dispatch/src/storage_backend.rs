@@ -20,7 +20,7 @@ pub trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
     async fn remove_segment(&self, id: usize) -> Result<()>;
 }
 
-pub(crate) fn create_backend(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
+pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
     match storage_config {
         StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
         StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),

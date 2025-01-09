@@ -2,7 +2,7 @@ mod trie;
 pub(crate) use trie::Trie;
 
 use anyhow::Result;
-use danube_metadata_store::{MetadataStore, StorageBackend, WatchEvent, WatchStream};
+use danube_metadata_store::{MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use dashmap::DashMap;
 use futures::StreamExt;
 use serde_json::Value;
@@ -40,11 +40,11 @@ pub(crate) struct LocalCache {
     // holds information about the topic subscriptions, including their consumers
     subscriptions: Arc<DashMap<String, (i64, Value)>>,
     // metadata store
-    metadata_store: StorageBackend,
+    metadata_store: MetadataStorage,
 }
 
 impl LocalCache {
-    pub(crate) fn new(metadata_store: StorageBackend) -> Self {
+    pub(crate) fn new(metadata_store: MetadataStorage) -> Self {
         LocalCache {
             keys: Arc::new(Mutex::new(Trie::new())),
             cluster: Arc::new(DashMap::new()),

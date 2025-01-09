@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use danube_client::{ConfigDispatchStrategy, StreamMessage};
-use danube_core::storage::StorageConfig;
-use danube_reliable_dispatch::ReliableDispatch;
+use danube_reliable_dispatch::{ReliableDispatch, StorageBackend};
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -46,12 +46,12 @@ impl Topic {
     pub(crate) fn new(
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
-        storage_config: StorageConfig,
+        storage_backend: Arc<dyn StorageBackend>,
     ) -> Self {
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
             ConfigDispatchStrategy::Reliable(reliable_options) => {
-                DispatchStrategy::Reliable(ReliableDispatch::new(reliable_options, storage_config))
+                DispatchStrategy::Reliable(ReliableDispatch::new(reliable_options, storage_backend))
             }
         };
 

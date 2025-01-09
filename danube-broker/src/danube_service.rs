@@ -13,7 +13,7 @@ pub(crate) use syncronizer::Syncronizer;
 
 use anyhow::Result;
 use danube_client::DanubeClient;
-use danube_metadata_store::{MetaOptions, MetadataStore, StorageBackend, WatchEvent};
+use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -72,7 +72,7 @@ pub(crate) struct DanubeService {
     broker_id: u64,
     broker: Arc<Mutex<BrokerService>>,
     service_config: ServiceConfiguration,
-    meta_store: StorageBackend,
+    meta_store: MetadataStorage,
     local_cache: LocalCache,
     resources: Resources,
     leader_election: LeaderElection,
@@ -86,7 +86,7 @@ impl DanubeService {
         broker_id: u64,
         broker: Arc<Mutex<BrokerService>>,
         service_config: ServiceConfiguration,
-        meta_store: StorageBackend,
+        meta_store: MetadataStorage,
         local_cache: LocalCache,
         resources: Resources,
         leader_election: LeaderElection,
@@ -296,7 +296,7 @@ impl DanubeService {
 
     async fn watch_events_for_broker(
         &self,
-        meta_store: StorageBackend,
+        meta_store: MetadataStorage,
         broker_service: Arc<Mutex<BrokerService>>,
     ) {
         // Create watch stream for broker-specific events
@@ -421,7 +421,7 @@ pub(crate) async fn create_namespace_if_absent(
 
 async fn post_broker_load_report(
     broker_service: Arc<Mutex<BrokerService>>,
-    meta_store: StorageBackend,
+    meta_store: MetadataStorage,
 ) {
     let mut topics: Vec<String>;
     let mut broker_id;

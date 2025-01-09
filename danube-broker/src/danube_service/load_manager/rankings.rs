@@ -59,7 +59,7 @@ mod tests {
     use crate::danube_service::load_manager::{
         load_report::SystemLoad, LoadManager, LoadReport, ResourceType,
     };
-    use danube_metadata_store::{MemoryStore, StorageBackend};
+    use danube_metadata_store::{MemoryStore, MetadataStorage};
     use std::sync::atomic::AtomicU64;
 
     fn create_load_report(cpu_usage: usize, memory_usage: usize, topics_len: usize) -> LoadReport {
@@ -85,7 +85,7 @@ mod tests {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(AtomicU64::new(0)),
-            meta_store: StorageBackend::InMemory(
+            meta_store: MetadataStorage::InMemory(
                 MemoryStore::new().await.expect("use for testing"),
             ),
         };
@@ -109,7 +109,7 @@ mod tests {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(AtomicU64::new(0)),
-            meta_store: StorageBackend::InMemory(
+            meta_store: MetadataStorage::InMemory(
                 MemoryStore::new().await.expect("use for testing"),
             ),
         };
@@ -145,7 +145,7 @@ mod tests {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(AtomicU64::new(0)),
-            meta_store: StorageBackend::InMemory(
+            meta_store: MetadataStorage::InMemory(
                 MemoryStore::new().await.expect("use for testing"),
             ),
         };
@@ -162,7 +162,7 @@ mod tests {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(AtomicU64::new(0)),
-            meta_store: StorageBackend::InMemory(
+            meta_store: MetadataStorage::InMemory(
                 MemoryStore::new().await.expect("use for testing"),
             ),
         };

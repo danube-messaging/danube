@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use danube_client::{ConfigDispatchStrategy, StreamMessage};
-use danube_core::storage::StorageConfig;
+use danube_reliable_dispatch::StorageBackend;
 use metrics::gauge;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub(crate) struct BrokerService {
     // maps topic_name to Topic
     pub(crate) topics: HashMap<String, Topic>,
     // message storage config
-    pub(crate) storage_config: StorageConfig,
+    pub(crate) storage_backend: Arc<dyn StorageBackend>,
     // maps producer_id to topic_name
     pub(crate) producer_index: HashMap<u64, String>,
     // maps consumer_id to (topic_name, subscription_name)
@@ -41,13 +41,13 @@ pub(crate) struct BrokerService {
 }
 
 impl BrokerService {
-    pub(crate) fn new(resources: Resources, storage_config: StorageConfig) -> Self {
+    pub(crate) fn new(resources: Resources, storage_backend: Arc<dyn StorageBackend>) -> Self {
         let broker_id = get_random_id();
         BrokerService {
             broker_id,
             resources: resources,
             topics: HashMap::new(),
-            storage_config,
+            storage_backend,
             producer_index: HashMap::new(),
             consumer_index: HashMap::new(),
         }
@@ -328,7 +328,7 @@ impl BrokerService {
         let mut new_topic = Topic::new(
             topic_name,
             dispatch_strategy.unwrap(),
-            self.storage_config.clone(),
+            self.storage_backend.clone(),
         );
 
         // get schema from local_cache

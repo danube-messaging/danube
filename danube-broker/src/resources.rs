@@ -1,4 +1,4 @@
-use danube_metadata_store::StorageBackend;
+use danube_metadata_store::MetadataStorage;
 
 use crate::LocalCache;
 
@@ -47,7 +47,7 @@ pub(crate) static SYSTEM_NAMESPACE: &str = "system";
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct Resources {
-    store: StorageBackend,
+    store: MetadataStorage,
     pub(crate) cluster: ClusterResources,
     pub(crate) namespace: NamespaceResources,
     pub(crate) topic: TopicResources,
@@ -57,7 +57,7 @@ pub(crate) struct Resources {
 
 // A wrapper for interacting with Metadata Storage
 impl Resources {
-    pub(crate) fn new(local_cache: LocalCache, store: StorageBackend) -> Self {
+    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
         Resources {
             store: store.clone(),
             cluster: ClusterResources::new(local_cache.clone(), store.clone()),

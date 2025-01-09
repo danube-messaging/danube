@@ -3,7 +3,7 @@ mod rankings;
 
 use anyhow::{anyhow, Result};
 use danube_metadata_store::EtcdGetOptions;
-use danube_metadata_store::{MetaOptions, MetadataStore, StorageBackend, WatchEvent, WatchStream};
+use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
 use load_report::{LoadReport, ResourceType};
 use rankings::{rankings_composite, rankings_simple};
@@ -35,11 +35,11 @@ pub(crate) struct LoadManager {
     rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     // the broker_id to be served to the caller on function get_next_broker
     next_broker: Arc<AtomicU64>,
-    meta_store: StorageBackend,
+    meta_store: MetadataStorage,
 }
 
 impl LoadManager {
-    pub fn new(broker_id: u64, meta_store: StorageBackend) -> Self {
+    pub fn new(broker_id: u64, meta_store: MetadataStorage) -> Self {
         LoadManager {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
