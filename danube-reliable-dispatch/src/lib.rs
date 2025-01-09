@@ -12,7 +12,7 @@ pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
 pub use storage_backend::StorageBackend;
 
-use danube_client::{ReliableOptions, StreamMessage};
+use danube_core::{dispatch_strategy::ReliableOptions, message::StreamMessage};
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 

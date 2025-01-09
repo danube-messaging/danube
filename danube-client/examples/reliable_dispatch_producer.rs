@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{ConfigDispatchStrategy, DanubeClient, ReliableOptions, RetentionPolicy};
+use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, DanubeClient};
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -21,18 +21,17 @@ async fn main() -> Result<()> {
     // Read the blob file into memory
     let blob_data = fs::read("./examples/test.blob")?;
 
-    let reliable_options = ReliableOptions::new(
+    let reliable_options = ConfigReliableOptions::new(
         5, // segment size in MB
-        RetentionPolicy::RetainUntilExpire,
+        ConfigRetentionPolicy::RetainUntilExpire,
         3600, // 1 hour
     );
-    let dispatch_strategy = ConfigDispatchStrategy::Reliable(reliable_options);
 
     let mut producer = client
         .new_producer()
         .with_topic(topic)
         .with_name(producer_name)
-        .with_dispatch_strategy(dispatch_strategy)
+        .with_reliable_dispatch(reliable_options)
         .build();
 
     producer.create().await?;

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Ok, Result};
-use danube_client::StreamMessage;
+use danube_core::message::StreamMessage;
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};

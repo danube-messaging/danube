@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
-use danube_core::proto::{MsgId, StreamMessage as ProtoStreamMessage};
+use crate::proto::{MsgId, StreamMessage as ProtoStreamMessage};
 
 // TODO! messageID is very important as it will be used to identify the message
 // it should be constructed by producer, amended maybe by the broker and sent back to the consumer

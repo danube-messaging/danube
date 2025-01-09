@@ -1,9 +1,10 @@
 use crate::{
     errors::{DanubeError, Result},
     topic_consumer::TopicConsumer,
-    DanubeClient, StreamMessage,
+    DanubeClient,
 };
 
+use danube_core::message::StreamMessage;
 use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;

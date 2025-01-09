@@ -1,13 +1,15 @@
 use crate::{
-    dispatch_strategy::ConfigDispatchStrategy,
     errors::{decode_error_details, DanubeError, Result},
-    message::{MessageID, StreamMessage},
     schema::Schema,
     DanubeClient, ProducerOptions,
 };
 use danube_core::proto::{
     producer_service_client::ProducerServiceClient, MessageResponse, ProducerAccessMode,
     ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
+};
+use danube_core::{
+    dispatch_strategy::ConfigDispatchStrategy,
+    message::{MessageID, StreamMessage},
 };
 
 use std::collections::HashMap;

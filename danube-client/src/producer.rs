@@ -1,8 +1,10 @@
+use crate::ConfigReliableOptions;
 use crate::{
-    dispatch_strategy::ConfigDispatchStrategy, errors::Result, message_router::MessageRouter,
-    topic_producer::TopicProducer, DanubeClient, Schema, SchemaType,
+    errors::Result, message_router::MessageRouter, topic_producer::TopicProducer, DanubeClient,
+    Schema, SchemaType,
 };
 
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -217,14 +219,15 @@ impl ProducerBuilder {
         self
     }
 
-    /// Sets the retention strategy for the producer.
-    /// This method configures the retention strategy for the producer, which determines how messages are stored and managed.
-    /// The retention strategy defines how long messages are retained and how they are managed in the message broker.
+    /// Sets the reliable dispatch options for the producer.
+    /// This method configures the dispatch strategy for the producer, which determines how messages are stored and managed.
+    /// The dispatch strategy defines how long messages are retained and how they are managed in the message broker.
     ///
     /// # Parameters
     ///
-    /// - `dispatch_strategy`: The delivery strategy to be used by the producer. This should be an instance of a `ConfigDeliveryStrategy` implementation.
-    pub fn with_dispatch_strategy(mut self, dispatch_strategy: ConfigDispatchStrategy) -> Self {
+    /// - `reliable_options`: The reliable dispatch options to be used for the producer.
+    pub fn with_reliable_dispatch(mut self, reliable_options: ConfigReliableOptions) -> Self {
+        let dispatch_strategy = ConfigDispatchStrategy::Reliable(reliable_options.into());
         self.dispatch_strategy = Some(dispatch_strategy);
         self
     }

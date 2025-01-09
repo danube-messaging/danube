@@ -1,4 +1,4 @@
-use danube_core::proto::{ReliableOptions as ProtoReliableOptions, TopicDispatchStrategy};
+use crate::proto::{ReliableOptions as ProtoReliableOptions, TopicDispatchStrategy};
 use serde::{Deserialize, Serialize};
 
 /// Dispatch strategy for a topic.

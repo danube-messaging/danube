@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::StreamMessage;
+use danube_core::message::StreamMessage;
 use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};

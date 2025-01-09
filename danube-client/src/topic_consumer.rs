@@ -1,8 +1,9 @@
 use crate::{
     errors::{decode_error_details, DanubeError, Result},
-    ConsumerOptions, DanubeClient, MessageID, SubType,
+    ConsumerOptions, DanubeClient, SubType,
 };
 
+use danube_core::message::MessageID;
 use danube_core::proto::{
     consumer_service_client::ConsumerServiceClient, AckRequest, AckResponse, ConsumerRequest,
     ConsumerResponse, ReceiveRequest, StreamMessage,
