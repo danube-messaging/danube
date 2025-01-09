@@ -9,10 +9,6 @@ use topics::Topics;
 
 use clap::{Parser, Subcommand};
 
-pub mod proto {
-    include!("proto/danube_admin.rs");
-}
-
 #[derive(Debug, Parser)]
 #[command(name = "danube-admin-cli")]
 #[command(about = "CLI for managing the Danube pub/sub platform", long_about = None)]

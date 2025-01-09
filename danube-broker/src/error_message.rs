@@ -1,7 +1,7 @@
 use prost::Message;
 use tonic::{metadata::MetadataValue, Code, Status};
 
-use crate::proto::{ErrorMessage, ErrorType};
+use danube_core::proto::{ErrorMessage, ErrorType};
 
 pub(crate) fn create_error_status(
     code: Code,

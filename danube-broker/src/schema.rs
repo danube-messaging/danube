@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
-use crate::proto::{schema::TypeSchema as ProtoTypeSchema, Schema as ProtoSchema};
+use danube_core::proto::{schema::TypeSchema as ProtoTypeSchema, Schema as ProtoSchema};
 
 // Define the enum with serde attributes for (de)serialization
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

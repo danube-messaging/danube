@@ -1,9 +1,10 @@
 use crate::broker_server::DanubeServerImpl;
 use crate::message::AckMessage;
-use crate::proto::{
-    AckRequest, AckResponse, ConsumerRequest, ConsumerResponse, ReceiveRequest, StreamMessage,
+use crate::subscription::SubscriptionOptions;
+use danube_core::proto::{
+    consumer_service_server::ConsumerService, AckRequest, AckResponse, ConsumerRequest,
+    ConsumerResponse, ReceiveRequest, StreamMessage,
 };
-use crate::{proto::consumer_service_server::ConsumerService, subscription::SubscriptionOptions};
 
 use std::sync::Arc;
 use tokio::sync::mpsc;

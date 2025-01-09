@@ -4,7 +4,7 @@ mod health_check_handler;
 mod producer_handler;
 
 use crate::broker_service::BrokerService;
-use crate::proto::{
+use danube_core::proto::{
     consumer_service_server::ConsumerServiceServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };

@@ -36,14 +36,6 @@ use tokio::sync::Mutex;
 use tracing::info;
 use tracing_subscriber;
 
-pub(crate) mod proto {
-    include!("proto/danube.rs");
-}
-
-pub(crate) mod admin_proto {
-    include!("proto/danube_admin.rs");
-}
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {

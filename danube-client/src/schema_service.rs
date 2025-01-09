@@ -4,9 +4,9 @@ use crate::{
     Schema,
 };
 
-use crate::proto::Schema as ProtoSchema;
-
-use crate::proto::{discovery_client::DiscoveryClient, SchemaRequest, SchemaResponse};
+use danube_core::proto::{
+    discovery_client::DiscoveryClient, Schema as ProtoSchema, SchemaRequest, SchemaResponse,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tonic::transport::Uri;

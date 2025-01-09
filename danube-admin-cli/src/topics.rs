@@ -1,8 +1,8 @@
-use crate::proto::{
+use clap::{Args, Subcommand};
+use danube_core::admin_proto::{
     topic_admin_client::TopicAdminClient, NamespaceRequest, NewTopicRequest, SubscriptionRequest,
     TopicRequest,
 };
-use clap::{Args, Subcommand};
 
 #[derive(Debug, Args)]
 pub(crate) struct Topics {

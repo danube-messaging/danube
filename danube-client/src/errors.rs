@@ -3,7 +3,7 @@ use prost::Message;
 use thiserror::Error;
 use tonic::{codegen::http::uri, Status};
 
-use crate::proto::{ErrorMessage, ErrorType};
+use danube_core::proto::{ErrorMessage, ErrorType};
 
 pub type Result<T> = std::result::Result<T, DanubeError>;
 

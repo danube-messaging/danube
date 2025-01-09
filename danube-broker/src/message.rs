@@ -1,5 +1,5 @@
-use crate::proto::{MsgId, StreamMessage as ProtoStreamMessage};
 use danube_client::{MessageID, StreamMessage};
+use danube_core::proto::{MsgId, StreamMessage as ProtoStreamMessage};
 
 impl From<MsgId> for MessageID {
     fn from(proto_msg_id: MsgId) -> Self {

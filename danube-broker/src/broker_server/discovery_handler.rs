@@ -1,7 +1,7 @@
 use crate::broker_server::DanubeServerImpl;
 use crate::{broker_service::validate_topic_format, error_message::create_error_status};
 
-use crate::proto::{
+use danube_core::proto::{
     discovery_server::Discovery, topic_lookup_response::LookupType, ErrorType, SchemaRequest,
     SchemaResponse, TopicLookupRequest, TopicLookupResponse, TopicPartitionsResponse,
 };

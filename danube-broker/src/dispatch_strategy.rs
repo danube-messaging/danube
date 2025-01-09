@@ -1,7 +1,7 @@
 use danube_client::{ConfigDispatchStrategy, ReliableOptions, RetentionPolicy};
 use danube_reliable_dispatch::ReliableDispatch;
 
-use crate::proto::TopicDispatchStrategy;
+use danube_core::proto::TopicDispatchStrategy;
 
 #[derive(Debug)]
 pub(crate) enum DispatchStrategy {

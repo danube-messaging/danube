@@ -2,13 +2,10 @@ mod brokers_admin;
 mod namespace_admin;
 mod topics_admin;
 
-use crate::{
-    admin_proto::{
-        broker_admin_server::BrokerAdminServer, namespace_admin_server::NamespaceAdminServer,
-        topic_admin_server::TopicAdminServer,
-    },
-    broker_service::BrokerService,
-    resources::Resources,
+use crate::{broker_service::BrokerService, resources::Resources};
+use danube_core::admin_proto::{
+    broker_admin_server::BrokerAdminServer, namespace_admin_server::NamespaceAdminServer,
+    topic_admin_server::TopicAdminServer,
 };
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{sync::Mutex, task::JoinHandle};
