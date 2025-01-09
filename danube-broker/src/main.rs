@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
     let syncroniser = Syncronizer::new();
 
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
-    let broker_service = BrokerService::new(resources.clone());
+    let broker_service = BrokerService::new(resources.clone(), service_config.storage.clone());
     let broker_id = broker_service.broker_id;
 
     // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.

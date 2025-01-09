@@ -11,6 +11,7 @@ use crate::{
     topic_storage::Segment,
 };
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct S3Storage {
     client: Option<Client>,
