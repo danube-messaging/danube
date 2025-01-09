@@ -1,4 +1,4 @@
-# ![D from Danube](D_from_Danube.jpg)  anube
+# ![D from Danube](D_from_Danube.png)  anube
 
 Danube is an open-source distributed Messaging Broker platform (inspired by Apache Pulsar).
 Danube is designed for high-performance and scalable message queueing, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
