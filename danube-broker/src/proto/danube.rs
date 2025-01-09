@@ -2,15 +2,9 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReliableOptions {
-    /// in bytes
+    /// in MB
     #[prost(uint64, tag = "1")]
     pub segment_size: u64,
-    /// IN_MEMORY, DISK or S3
-    #[prost(enumeration = "StorageBackend", tag = "2")]
-    pub storage_backend: i32,
-    /// used for Disk or S3 storage backend
-    #[prost(string, tag = "3")]
-    pub storage_path: ::prost::alloc::string::String,
     /// RetainUntilAck or RetainUntilExpire
     #[prost(enumeration = "RetentionPolicy", tag = "4")]
     pub retention_policy: i32,
@@ -478,36 +472,6 @@ impl ProducerAccessMode {
         match value {
             "Shared" => Some(Self::Shared),
             "Exclusive" => Some(Self::Exclusive),
-            _ => None,
-        }
-    }
-}
-/// The persistent storage backend for the topic
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum StorageBackend {
-    InMemory = 0,
-    Disk = 1,
-    S3 = 2,
-}
-impl StorageBackend {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            StorageBackend::InMemory => "IN_MEMORY",
-            StorageBackend::Disk => "DISK",
-            StorageBackend::S3 => "S3",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "IN_MEMORY" => Some(Self::InMemory),
-            "DISK" => Some(Self::Disk),
-            "S3" => Some(Self::S3),
             _ => None,
         }
     }

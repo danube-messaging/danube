@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
 danube-metadata-store = {path = "../danube-metadata-store"}
 danube-reliable-dispatch = {path = "../danube-reliable-dispatch"}

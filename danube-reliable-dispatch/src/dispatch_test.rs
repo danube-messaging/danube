@@ -6,7 +6,7 @@ use crate::{
     topic_storage::{Segment, TopicStore},
 };
 #[cfg(test)]
-use danube_client::{MessageID, ReliableOptions, RetentionPolicy, StorageType, StreamMessage};
+use danube_client::{MessageID, ReliableOptions, RetentionPolicy, StreamMessage};
 #[cfg(test)]
 use std::collections::HashMap;
 #[cfg(test)]
@@ -25,7 +25,6 @@ fn create_test_topic_store() -> TopicStore {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         60, // 60s retention period
     );
@@ -190,7 +189,6 @@ async fn test_validate_segment() {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         60, // 60s retention period
     );

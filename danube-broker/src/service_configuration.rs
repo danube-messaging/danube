@@ -1,6 +1,7 @@
 use crate::policies::Policies;
 
 use anyhow::{Context, Result};
+use danube_core::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -25,6 +26,8 @@ pub(crate) struct LoadConfiguration {
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
+    /// Storage message configuration
+    pub(crate) storage: StorageConfig,
 }
 
 /// configuration settings for the Danube broker service
@@ -47,6 +50,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
+    /// Storage message configuration
+    pub(crate) storage: StorageConfig,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -88,6 +93,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             meta_store_addr,
             bootstrap_namespaces: config.bootstrap_namespaces,
             policies: config.policies,
+            storage: config.storage,
         })
     }
 }

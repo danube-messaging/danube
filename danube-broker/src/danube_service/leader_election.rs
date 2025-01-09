@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_metadata_store::{MetaOptions, MetadataStore, StorageBackend};
+use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Interval};
@@ -19,12 +19,12 @@ pub(crate) enum LeaderElectionState {
 pub(crate) struct LeaderElection {
     path: String,
     broker_id: u64,
-    store: StorageBackend,
+    store: MetadataStorage,
     state: Arc<Mutex<LeaderElectionState>>,
 }
 
 impl LeaderElection {
-    pub fn new(store: StorageBackend, path: &str, broker_id: u64) -> Self {
+    pub fn new(store: MetadataStorage, path: &str, broker_id: u64) -> Self {
         Self {
             path: path.to_owned(),
             broker_id,
@@ -71,7 +71,7 @@ impl LeaderElection {
 
     async fn try_to_become_leader(&mut self) -> Result<bool> {
         match self.store {
-            StorageBackend::Etcd(_) => {
+            MetadataStorage::Etcd(_) => {
                 //TODO! make this user configurable, this should be half of the broker register TTL
                 // we want the broker to become the leader first,
                 // before another broker unregister in order for leader broker to alocate/ delete resources

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_metadata_store::StorageBackend;
+use danube_metadata_store::MetadataStorage;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info};
 
@@ -7,13 +7,13 @@ use crate::resources::BASE_REGISTER_PATH;
 use crate::utils::join_path;
 
 pub(crate) async fn register_broker(
-    store: StorageBackend,
+    store: MetadataStorage,
     broker_id: &str,
     broker_addr: &str,
     ttl: i64,
 ) -> Result<()> {
     match store {
-        StorageBackend::Etcd(_) => {
+        MetadataStorage::Etcd(_) => {
             // Create a lease with a TTL (time to live)
             let lease = store.create_lease(ttl).await?;
 

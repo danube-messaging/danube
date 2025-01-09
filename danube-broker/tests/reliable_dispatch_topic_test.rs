@@ -4,7 +4,7 @@ extern crate futures_util;
 use anyhow::Result;
 use danube_client::{
     ConfigDispatchStrategy, Consumer, DanubeClient, Producer, ReliableOptions, RetentionPolicy,
-    StorageType, SubType,
+    SubType,
 };
 use std::fs;
 use std::sync::Arc;
@@ -30,11 +30,9 @@ async fn setup_reliable_producer(
     topic: &str,
     producer_name: &str,
 ) -> Result<Producer> {
-    // Create a reliable delivery strategy with 1 hour retention and 1MB segment size
-    let storage_type = StorageType::InMemory;
+    // Create a reliable dispatch strategy with 1 hour retention and 1MB segment size
     let reliable_options = ReliableOptions::new(
         5, // segment size in MB
-        storage_type,
         RetentionPolicy::RetainUntilExpire,
         3600, // 1 hour
     );

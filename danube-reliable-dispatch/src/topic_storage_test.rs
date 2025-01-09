@@ -4,7 +4,7 @@ use crate::{
     topic_storage::{Segment, TopicStore},
 };
 #[cfg(test)]
-use danube_client::{MessageID, ReliableOptions, RetentionPolicy, StorageType, StreamMessage};
+use danube_client::{MessageID, ReliableOptions, RetentionPolicy, StreamMessage};
 #[cfg(test)]
 use dashmap::DashMap;
 #[cfg(test)]
@@ -92,7 +92,6 @@ async fn test_topic_store_message_storage() {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         3600, // 3600s retention period
     );
@@ -115,7 +114,6 @@ async fn test_topic_store_segment_transition() {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         3600, // 3600s retention period
     );
@@ -152,7 +150,6 @@ async fn test_topic_store_cleanup() {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         1, // 1s retention period
     );
@@ -201,7 +198,6 @@ async fn test_topic_store_acknowledged_cleanup() {
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
         1, // 1MB segment size
-        StorageType::InMemory,
         RetentionPolicy::RetainUntilAck,
         3600, // 3600s retention period
     );

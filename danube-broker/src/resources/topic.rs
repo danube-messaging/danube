@@ -1,6 +1,6 @@
 use anyhow::Result;
 use danube_client::ConfigDispatchStrategy;
-use danube_metadata_store::{MetaOptions, MetadataStore, StorageBackend};
+use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
 use serde_json::Value;
 
 use crate::{
@@ -10,11 +10,11 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct TopicResources {
     local_cache: LocalCache,
-    store: StorageBackend,
+    store: MetadataStorage,
 }
 
 impl TopicResources {
-    pub(crate) fn new(local_cache: LocalCache, store: StorageBackend) -> Self {
+    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
         TopicResources { local_cache, store }
     }
     pub(crate) async fn topic_exists(&mut self, topic_name: &str) -> Result<bool> {
