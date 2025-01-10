@@ -12,7 +12,7 @@ edition = "2021"
 [dependencies]
 serde = { workspace = true }
 prost = { workspace = true }
-tonic = { version = "0.11.0", default-features = false, features = ["codegen", "prost"] }
+tonic = { workspace = true }
 tokio = { version = "1.37.0", features = ["sync"] }
 async-trait = "0.1.83"
 
