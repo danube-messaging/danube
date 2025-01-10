@@ -36,10 +36,7 @@ impl StorageBackend for InMemoryStorage {
         &self,
         id: usize,
     ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
-        self.segments
-            .get(&id)
-            .map(|segment| Some(segment.clone()))
-            .ok_or_else(|| StorageBackendError::Memory(format!("Segment {} not found", id)))
+        Ok(self.segments.get(&id).map(|segment| segment.clone()))
     }
 
     async fn put_segment(
@@ -52,12 +49,7 @@ impl StorageBackend for InMemoryStorage {
     }
 
     async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError> {
-        match self.segments.remove(&id) {
-            Some(_) => Ok(()),
-            None => Err(StorageBackendError::Memory(format!(
-                "Cannot remove segment {}: not found",
-                id
-            ))),
-        }
+        self.segments.remove(&id);
+        Ok(())
     }
 }
