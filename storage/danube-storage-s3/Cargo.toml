@@ -1,0 +1,22 @@
+[package]
+name = "danube-storage-s3"
+version = "0.1.2"
+description = "Message storage backend extensions for Danube messaging"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube-storage"
+documentation = "https://docs.rs/danube-storage-disk"
+readme = "README.md"
+license = "Apache-2.0"
+edition = "2021"
+
+[dependencies]
+danube-core = { path = "../../danube-core" }
+tokio = { workspace = true }
+async-trait = {workspace = true}
+thiserror = { workspace = true }
+bincode = "1.3.3"
+aws-config = "1.5.11"
+aws-sdk-s3 = "1.66.0"
+
+[lints]
+workspace = true
