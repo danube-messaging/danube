@@ -22,6 +22,9 @@ pub enum ReliableDispatchError {
     #[error("Subscription error: {0}")]
     UnknownSubscription(String),
 
+    #[error("Storage error: {0}")]
+    StorageError(String),
+
     #[error("Disk Storage error: {0}")]
     DiskStorageError(String),
 

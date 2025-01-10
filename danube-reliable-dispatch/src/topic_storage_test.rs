@@ -1,13 +1,11 @@
 #[cfg(test)]
-use crate::{
-    storage_backend::InMemoryStorage,
-    topic_storage::{Segment, TopicStore},
-};
+use crate::{storage_backend::InMemoryStorage, topic_storage::TopicStore};
 
 #[cfg(test)]
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::{MessageID, StreamMessage},
+    storage::Segment,
 };
 #[cfg(test)]
 use dashmap::DashMap;

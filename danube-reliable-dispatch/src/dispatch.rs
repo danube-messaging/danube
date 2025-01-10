@@ -1,4 +1,5 @@
 use danube_core::message::{MessageID, StreamMessage};
+use danube_core::storage::Segment;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use tracing::trace;
 
 use crate::{
     errors::{ReliableDispatchError, Result},
-    topic_storage::{Segment, TopicStore},
+    topic_storage::TopicStore,
 };
 
 /// SubscriptionDispatch is holding information about consumers and the messages within a segment

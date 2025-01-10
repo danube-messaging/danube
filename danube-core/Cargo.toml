@@ -7,6 +7,8 @@ edition = "2021"
 serde = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1.83"
 
 [build-dependencies]
 tonic-build = "0.11"

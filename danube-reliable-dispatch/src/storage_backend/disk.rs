@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use bincode;
+use danube_core::storage::Segment;
 use std::{path::PathBuf, sync::Arc};
 use tokio::{fs, sync::RwLock};
 
-use crate::{errors::Result, storage_backend::StorageBackend, topic_storage::Segment};
+use crate::{errors::Result, storage_backend::StorageBackend};
 
 #[derive(Debug)]
 pub struct DiskStorage {

@@ -1,50 +1,14 @@
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::StreamMessage,
+    storage::{Segment, StorageBackend},
 };
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::{Mutex, RwLock};
 use tracing::trace;
 
-use crate::{errors::Result, storage_backend::StorageBackend};
-
-/// Segment is a collection of messages, the segment is closed for writing when it's capacity is reached
-/// The segment is closed for reading when all subscriptions have acknowledged the segment
-/// The segment is immutable after it's closed for writing
-/// The messages in the segment are in the order of arrival
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Segment {
-    // Unique segment ID
-    pub(crate) id: usize,
-    // Segment close time, is the time when the segment is closed for writing
-    pub(crate) close_time: u64,
-    // Messages in the segment
-    pub(crate) messages: Vec<StreamMessage>,
-    // Current size of the segment in bytes
-    pub(crate) current_size: usize,
-}
-
-impl Segment {
-    pub fn new(id: usize, capacity: usize) -> Self {
-        Self {
-            id,
-            close_time: 0,
-            messages: Vec::with_capacity(capacity),
-            current_size: 0,
-        }
-    }
-
-    pub fn is_full(&self, max_size: usize) -> bool {
-        self.current_size >= max_size
-    }
-
-    pub fn add_message(&mut self, message: StreamMessage) {
-        self.current_size += message.size();
-        self.messages.push(message);
-    }
-}
+use crate::errors::{ReliableDispatchError, Result};
 
 // TopicStore is used only for reliable messaging
 // It stores the segments in memory until are acknowledged by every subscription
@@ -116,14 +80,20 @@ impl TopicStore {
         match &*cached {
             Some(seg) => Ok(seg.clone()),
             None => {
-                let new_seg = match self.storage.get_segment(segment_id).await? {
+                let new_seg = match self
+                    .storage
+                    .get_segment(segment_id)
+                    .await
+                    .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?
+                {
                     Some(seg) => seg,
                     None => {
                         let new_segment =
                             Arc::new(RwLock::new(Segment::new(segment_id, self.segment_size)));
                         self.storage
                             .put_segment(segment_id, new_segment.clone())
-                            .await?;
+                            .await
+                            .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
                         let mut index = self.segments_index.write().await;
                         index.push((segment_id, 0));
                         new_segment
@@ -145,7 +115,10 @@ impl TopicStore {
     ) -> Result<()> {
         // First write the current full segment to storage
         if let Some(cached) = &*self.cached_segment.lock().await {
-            self.storage.put_segment(segment_id, cached.clone()).await?;
+            self.storage
+                .put_segment(segment_id, cached.clone())
+                .await
+                .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
         }
 
         // Update segment index with close time
@@ -195,7 +168,11 @@ impl TopicStore {
                 if first_segment_id == current_cached_id {
                     return Ok(cached.clone());
                 }
-                return self.storage.get_segment(first_segment_id).await;
+                return Ok(self
+                    .storage
+                    .get_segment(first_segment_id)
+                    .await
+                    .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?);
             }
             Some(segment_id) => {
                 if let Some(pos) = index.iter().position(|(id, _)| *id == segment_id) {
@@ -204,7 +181,11 @@ impl TopicStore {
                         if next_segment_id == current_cached_id {
                             return Ok(cached.clone());
                         }
-                        return self.storage.get_segment(next_segment_id).await;
+                        return Ok(self
+                            .storage
+                            .get_segment(next_segment_id)
+                            .await
+                            .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?);
                     }
                 }
                 Ok(None)

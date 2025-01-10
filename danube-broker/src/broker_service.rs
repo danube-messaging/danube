@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
+use danube_core::storage::StorageBackend;
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
-use danube_reliable_dispatch::StorageBackend;
 use metrics::gauge;
 use std::collections::HashMap;
 use std::sync::Arc;
