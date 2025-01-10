@@ -1,10 +1,11 @@
+mod errors;
+use errors::DiskError;
+
 use async_trait::async_trait;
 use bincode;
-use danube_core::storage::Segment;
+use danube_core::storage::{Segment, StorageBackend, StorageBackendError};
 use std::{path::PathBuf, sync::Arc};
 use tokio::{fs, sync::RwLock};
-
-use crate::{errors::Result, storage_backend::StorageBackend};
 
 #[derive(Debug)]
 pub struct DiskStorage {
@@ -21,38 +22,45 @@ impl DiskStorage {
         self.base_path.join(format!("segment_{}.bin", id))
     }
     #[allow(dead_code)]
-    async fn contains_segment(&self, id: usize) -> Result<bool> {
+    async fn contains_segment(&self, id: usize) -> bool {
         let path = self.segment_path(id);
-        Ok(path.exists())
+        path.exists()
     }
 }
 
 #[async_trait]
 impl StorageBackend for DiskStorage {
-    async fn get_segment(&self, id: usize) -> Result<Option<Arc<RwLock<Segment>>>> {
+    async fn get_segment(
+        &self,
+        id: usize,
+    ) -> std::result::Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
         let path = self.segment_path(id);
 
         if !path.exists() {
             return Ok(None);
         }
 
-        let bytes = fs::read(path).await?;
-        let segment: Segment = bincode::deserialize(&bytes)?;
+        let bytes = fs::read(path).await.map_err(DiskError::from)?;
+        let segment: Segment = bincode::deserialize(&bytes).map_err(DiskError::from)?;
         Ok(Some(Arc::new(RwLock::new(segment))))
     }
 
-    async fn put_segment(&self, id: usize, segment: Arc<RwLock<Segment>>) -> Result<()> {
+    async fn put_segment(
+        &self,
+        id: usize,
+        segment: Arc<RwLock<Segment>>,
+    ) -> std::result::Result<(), StorageBackendError> {
         let path = self.segment_path(id);
         let segment_data = segment.read().await;
-        let bytes = bincode::serialize(&*segment_data)?;
-        fs::write(path, bytes).await?;
+        let bytes = bincode::serialize(&*segment_data).map_err(DiskError::from)?;
+        fs::write(path, bytes).await.map_err(DiskError::from)?;
         Ok(())
     }
 
-    async fn remove_segment(&self, id: usize) -> Result<()> {
+    async fn remove_segment(&self, id: usize) -> std::result::Result<(), StorageBackendError> {
         let path = self.segment_path(id);
         if path.exists() {
-            fs::remove_file(path).await?;
+            fs::remove_file(path).await.map_err(DiskError::from)?;
         }
         Ok(())
     }
@@ -69,14 +77,14 @@ mod tests {
         let storage = DiskStorage::new(temp_dir.path().to_str().unwrap());
 
         // Test segment doesn't exist initially
-        assert!(!storage.contains_segment(1).await.unwrap());
+        assert!(!storage.contains_segment(1).await);
 
         // Create and store a segment
         let segment = Arc::new(RwLock::new(Segment::new(1, 1)));
         storage.put_segment(1, segment.clone()).await.unwrap();
 
         // Verify segment exists
-        assert!(storage.contains_segment(1).await.unwrap());
+        assert!(storage.contains_segment(1).await);
 
         // Retrieve and verify segment
         let retrieved = storage.get_segment(1).await.unwrap().unwrap();
@@ -84,6 +92,6 @@ mod tests {
 
         // Remove segment
         storage.remove_segment(1).await.unwrap();
-        assert!(!storage.contains_segment(1).await.unwrap());
+        assert!(!storage.contains_segment(1).await);
     }
 }

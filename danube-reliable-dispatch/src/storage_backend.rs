@@ -4,14 +4,15 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use danube_storage_disk::DiskStorage;
+use danube_storage_s3::S3Storage;
+
 pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
     match storage_config {
         StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
-        StorageConfig::Disk(_disk_config) => {
-            todo!()
-        }
-        StorageConfig::S3(_s3_config) => {
-            todo!()
+        StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),
+        StorageConfig::S3(s3_config) => {
+            Arc::new(S3Storage::new(&s3_config.bucket, &s3_config.region))
         }
     }
 }
@@ -35,10 +36,7 @@ impl StorageBackend for InMemoryStorage {
         &self,
         id: usize,
     ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
-        self.segments
-            .get(&id)
-            .map(|segment| Some(segment.clone()))
-            .ok_or_else(|| StorageBackendError::Memory(format!("Segment {} not found", id)))
+        Ok(self.segments.get(&id).map(|segment| segment.clone()))
     }
 
     async fn put_segment(
@@ -51,12 +49,7 @@ impl StorageBackend for InMemoryStorage {
     }
 
     async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError> {
-        match self.segments.remove(&id) {
-            Some(_) => Ok(()),
-            None => Err(StorageBackendError::Memory(format!(
-                "Cannot remove segment {}: not found",
-                id
-            ))),
-        }
+        self.segments.remove(&id);
+        Ok(())
     }
 }
