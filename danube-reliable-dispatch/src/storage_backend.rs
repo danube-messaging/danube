@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use danube_core::storage::{Segment, StorageBackend, StorageConfig};
+use danube_core::storage::{Segment, StorageBackend, StorageBackendError, StorageConfig};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -34,24 +34,29 @@ impl StorageBackend for InMemoryStorage {
     async fn get_segment(
         &self,
         id: usize,
-    ) -> Result<Option<Arc<RwLock<Segment>>>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self.segments.get(&id).map(|segment| segment.clone()))
+    ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
+        self.segments
+            .get(&id)
+            .map(|segment| Some(segment.clone()))
+            .ok_or_else(|| StorageBackendError::Memory(format!("Segment {} not found", id)))
     }
 
     async fn put_segment(
         &self,
         id: usize,
         segment: Arc<RwLock<Segment>>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), StorageBackendError> {
         self.segments.insert(id, segment);
         Ok(())
     }
 
-    async fn remove_segment(
-        &self,
-        id: usize,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.segments.remove(&id);
-        Ok(())
+    async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError> {
+        match self.segments.remove(&id) {
+            Some(_) => Ok(()),
+            None => Err(StorageBackendError::Memory(format!(
+                "Cannot remove segment {}: not found",
+                id
+            ))),
+        }
     }
 }

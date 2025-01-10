@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 #[async_trait]
@@ -10,16 +11,25 @@ pub trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
     async fn get_segment(
         &self,
         id: usize,
-    ) -> Result<Option<Arc<RwLock<Segment>>>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError>;
     async fn put_segment(
         &self,
         id: usize,
         segment: Arc<RwLock<Segment>>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn remove_segment(
-        &self,
-        id: usize,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<(), StorageBackendError>;
+    async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError>;
+}
+
+#[derive(Debug, Error)]
+pub enum StorageBackendError {
+    #[error("Memory storage error: {0}")]
+    Memory(String),
+
+    #[error("Disk storage error: {0}")]
+    Disk(String),
+
+    #[error("S3 storage error: {0}")]
+    S3(String),
 }
 
 /// Segment is a collection of messages, the segment is closed for writing when it's capacity is reached
