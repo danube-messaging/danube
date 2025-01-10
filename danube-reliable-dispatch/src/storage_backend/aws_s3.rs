@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
+use danube_core::storage::Segment;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::{
     errors::{ReliableDispatchError, Result},
     storage_backend::StorageBackend,
-    topic_storage::Segment,
 };
 
 #[allow(dead_code)]

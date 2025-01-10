@@ -5,10 +5,10 @@ unsafe_code = "forbid"
 [workspace]
 resolver = "2"
 members = [
-    # -- Danube pub/sub core services
+    # -- Danube messaging core services
     "danube-broker",
 
-    # -- Danube core types and traits
+    # -- Danube messaging core types and traits
     "danube-core", 
 
     # -- Danube Reliable Dispatch lib 

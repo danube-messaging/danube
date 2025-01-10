@@ -1,15 +1,14 @@
 #[cfg(test)]
 use crate::{
-    dispatch::SubscriptionDispatch,
-    errors::ReliableDispatchError,
-    storage_backend::{InMemoryStorage, StorageBackend},
-    topic_storage::{Segment, TopicStore},
+    dispatch::SubscriptionDispatch, errors::ReliableDispatchError,
+    storage_backend::InMemoryStorage, topic_storage::TopicStore,
 };
 
 #[cfg(test)]
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::{MessageID, StreamMessage},
+    storage::{Segment, StorageBackend},
 };
 #[cfg(test)]
 use std::collections::HashMap;

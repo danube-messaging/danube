@@ -1,31 +1,57 @@
 use async_trait::async_trait;
+use danube_core::storage::{Segment, StorageBackend, StorageConfig};
+use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-use danube_core::storage::StorageConfig;
-
-use crate::{errors::Result, topic_storage::Segment};
-
-mod in_memory;
-pub use in_memory::InMemoryStorage;
-mod disk;
-pub use disk::DiskStorage;
-mod aws_s3;
-pub use aws_s3::S3Storage;
-
-#[async_trait]
-pub trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
-    async fn get_segment(&self, id: usize) -> Result<Option<Arc<RwLock<Segment>>>>;
-    async fn put_segment(&self, id: usize, segment: Arc<RwLock<Segment>>) -> Result<()>;
-    async fn remove_segment(&self, id: usize) -> Result<()>;
-}
 
 pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
     match storage_config {
         StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
-        StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),
-        StorageConfig::S3(s3_config) => {
-            Arc::new(S3Storage::new(&s3_config.bucket, &s3_config.region))
+        StorageConfig::Disk(_disk_config) => {
+            todo!()
         }
+        StorageConfig::S3(_s3_config) => {
+            todo!()
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct InMemoryStorage {
+    segments: DashMap<usize, Arc<RwLock<Segment>>>,
+}
+
+impl InMemoryStorage {
+    pub fn new() -> Self {
+        Self {
+            segments: DashMap::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl StorageBackend for InMemoryStorage {
+    async fn get_segment(
+        &self,
+        id: usize,
+    ) -> Result<Option<Arc<RwLock<Segment>>>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.segments.get(&id).map(|segment| segment.clone()))
+    }
+
+    async fn put_segment(
+        &self,
+        id: usize,
+        segment: Arc<RwLock<Segment>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.segments.insert(id, segment);
+        Ok(())
+    }
+
+    async fn remove_segment(
+        &self,
+        id: usize,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.segments.remove(&id);
+        Ok(())
     }
 }

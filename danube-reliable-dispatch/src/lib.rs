@@ -1,5 +1,4 @@
 mod topic_storage;
-pub use topic_storage::Segment;
 mod topic_storage_test;
 pub use storage_backend::create_message_storage;
 use topic_storage::TopicStore;
@@ -10,9 +9,10 @@ mod dispatch;
 mod dispatch_test;
 pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
-pub use storage_backend::StorageBackend;
 
-use danube_core::{dispatch_strategy::ReliableOptions, message::StreamMessage};
+use danube_core::{
+    dispatch_strategy::ReliableOptions, message::StreamMessage, storage::StorageBackend,
+};
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 

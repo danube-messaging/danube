@@ -1,12 +1,20 @@
 [package]
 name = "danube-core"
 version = "0.1.4"
+description = "Danube messaging core types and traits"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+documentation = "https://docs.rs/danube-core"
+readme = "README.md"
+license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
 serde = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1.83"
 
 [build-dependencies]
 tonic-build = "0.11"
