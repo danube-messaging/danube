@@ -11,20 +11,20 @@ danube-client = {path = "../danube-client"}
 danube-metadata-store = {path = "../danube-metadata-store"}
 danube-reliable-dispatch = {path = "../danube-reliable-dispatch"}
 
-clap = { version = "4.5.4", features = ["derive"] }
-dashmap = "5.5.3"
+clap = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
+tonic-types = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = "1.0.83"
-tonic-types = { workspace = true }
+anyhow = "1.0.95"
 rand = "0.8.5"
-tokio-stream = "0.1.15"
-futures = "0.3.30"
 base64 = "0.22.1"
 metrics = "0.23.0"
 metrics-exporter-prometheus = "0.15.3"
@@ -36,5 +36,5 @@ serde_yaml = "0.9.34"
 workspace = true
 
 [dev-dependencies]
-futures-util = "0.3.30"
-once_cell = "1.19.0"
+futures-util = "0.3.31"
+once_cell = "1.20.2"

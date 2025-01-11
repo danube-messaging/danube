@@ -5,14 +5,14 @@ edition = "2021"
 
 [dependencies]
 danube-core = {path = "../danube-core"}
-clap = {version = "4.5.8", features =["derive"]}
+clap = { workspace = true }
 tonic = { workspace = true }
 tonic-types = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
-prettytable-rs = "0.10.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
+prettytable-rs = "0.10.0"
 
 [lints]
 workspace = true
