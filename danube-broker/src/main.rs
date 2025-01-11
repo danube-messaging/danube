@@ -1,4 +1,5 @@
 mod admin;
+mod args_parse;
 mod broker_metrics;
 mod broker_server;
 mod broker_service;
@@ -20,6 +21,7 @@ mod utils;
 use std::{fs::read_to_string, path::Path, sync::Arc};
 
 use crate::{
+    args_parse::Args,
     broker_metrics::init_metrics,
     broker_service::BrokerService,
     danube_service::{DanubeService, LeaderElection, LoadManager, LocalCache, Syncronizer},
@@ -28,7 +30,6 @@ use crate::{
 };
 
 use anyhow::{Context, Result};
-use clap::Parser;
 use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_reliable_dispatch::create_message_storage;
 use std::net::SocketAddr;
@@ -36,37 +37,13 @@ use tokio::sync::Mutex;
 use tracing::info;
 use tracing_subscriber;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// Path to config file (required)
-    #[arg(short = 'c', long)]
-    config_file: String,
-
-    /// Danube Broker advertised address (optional, overrides config file)
-    #[arg(short = 'b', long)]
-    broker_addr: Option<String>,
-
-    /// Danube Broker Admin address (optional, overrides config file)
-    #[arg(short = 'a', long)]
-    admin_addr: Option<String>,
-
-    /// Prometheus Exporter http address (optional, overrides config file)
-    #[arg(short = 'p', long)]
-    prom_exporter: Option<String>,
-
-    /// Advertised address - fqdn (optional, required for kubernetes deployment)
-    #[arg(short = 'd', long)]
-    advertised_addr: Option<String>,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
     // Parse command line arguments
-    let args = Args::parse();
+    let args = Args::parse()?;
 
     // Load the configuration from the specified YAML file
     let config_content = read_to_string(Path::new(&args.config_file))?;
