@@ -3,7 +3,6 @@ use clap::{Parser, ValueEnum};
 use danube_client::{DanubeClient, SchemaType, SubType};
 use serde_json::{from_slice, Value};
 use std::{collections::HashMap, str::from_utf8};
-use valico::json_schema::{self, schema::ScopedSchema};
 
 #[derive(Debug, Parser)]
 #[command(after_help = EXAMPLES_TEXT)]
@@ -82,7 +81,6 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
     // Retrieve schema type and schema definition
     let schema = client.get_schema(consume.topic).await?;
 
-    let mut scope = json_schema::Scope::new();
     let schema_validator = match schema.type_schema.clone() {
         SchemaType::Json(schema_str) => {
             if schema_str.is_empty() {
@@ -91,7 +89,10 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
             } else {
                 let schema_value: Value =
                     serde_json::from_str(&schema_str).context("Failed to parse JSON schema")?;
-                Some(scope.compile_and_return(schema_value, false)?)
+                Some(
+                    jsonschema::validator_for(&schema_value)
+                        .context("Failed to compile JSON schema")?,
+                )
             }
         }
         _ => None,
@@ -130,7 +131,7 @@ fn process_message(
     seq: u64,
     attr: HashMap<String, String>,
     schema_type: &SchemaType,
-    schema_validator: &Option<ScopedSchema>,
+    schema_validator: &Option<jsonschema::Validator>,
 ) -> Result<()> {
     match schema_type {
         SchemaType::Bytes => {
@@ -149,12 +150,10 @@ fn process_message(
             print_to_console(seq, &message.to_string(), attr);
         }
         SchemaType::Json(_) => {
-            // Check if payload is empty
             if payload.is_empty() {
                 return Err(anyhow::anyhow!("Received empty JSON payload").into());
             }
 
-            // First try to parse as generic JSON with better error context
             let json_value: Value = from_slice(payload).with_context(|| {
                 format!(
                     "Failed to parse JSON message: {}",
@@ -162,30 +161,17 @@ fn process_message(
                 )
             })?;
 
-            // If validator exists, validate the JSON
             if let Some(validator) = schema_validator {
-                process_json_message(payload, validator)
-                    .context("JSON schema validation failed")?;
+                if !validator.is_valid(&json_value) {
+                    let errors: Vec<_> = validator.iter_errors(&json_value).collect();
+                    return Err(anyhow::anyhow!("JSON validation failed: {:?}", errors));
+                }
             }
 
-            // Print the pretty-printed JSON
             let json_str =
                 serde_json::to_string_pretty(&json_value).context("Failed to format JSON")?;
             print_to_console(seq, &json_str, attr);
         }
-    }
-    Ok(())
-}
-
-fn process_json_message(payload: &[u8], schema_validator: &ScopedSchema) -> Result<()> {
-    let json_value: Value = from_slice(payload).context("Failed to parse JSON in validator")?;
-
-    let validation_result = schema_validator.validate(&json_value);
-    if !validation_result.is_valid() {
-        return Err(anyhow::anyhow!(
-            "JSON validation failed: {:?}",
-            validation_result.errors
-        ));
     }
     Ok(())
 }
