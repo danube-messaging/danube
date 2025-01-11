@@ -1,36 +1,23 @@
 # ![D from Danube](D_from_Danube.png)  anube
 
 Danube is an open-source distributed Messaging Broker platform (inspired by Apache Pulsar).
-Danube is designed for high-performance and scalable message queueing, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
+
+Danube aims to be a simple yet powerful, flexible and scalable messaging platform, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
 
 Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the Danube Architecture and the supported concepts.
 
-## Danube Platform capabilities matrix
+## Core Capabilities of the Danube messaging Platform
 
-| Dispatch       | Topics            | Subscription | Message Persistence | Ordering Guarantee | Delivery Guarantee |
-|----------------|-------------------|--------------|----------------------|--------------------|--------------------|
-| **Non-Reliable** |                   |              |                      |                    |                    |
-|                | *Non-partitioned Topic*         | *Exclusive*    | No                   | Yes                | At-Most-Once       |
-|                |                   | *Shared*       | No                   | No                 | At-Most-Once       |
-|                | *Partitioned Topic* | *Exclusive*    | No                   | Per partition      | At-Most-Once       |
-|                |                   | *Shared*       | No                   | No                 | At-Most-Once       |
-|----------------|-------------------|--------------|----------------------|--------------------|--------------------|
-| **Reliable**    |                   |              |                      |                    |                    |
-|                | *Non-partitioned Topic*         | *Exclusive*    | Yes                  | Yes                | At-Least-Once      |
-|                |                   | *Shared*       | Yes                  | No                 | At-Least-Once      |
-|                | *Partitioned Topic* | *Exclusive*    | Yes                  | Per partition      | At-Least-Once      |
-|                |                   | *Shared*       | Yes                  | No                 | At-Least-Once      |
-
-* **Topics**: A unit of storage that organizes messages into a stream.
+* [**Topics**](https://danube-docs.dev-state.com/architecture/topics/): A unit of storage that organizes messages into a stream.
   * **Non-partitioned topics**: Served by a single broker.
   * **Partitioned topics**: Divided into partitions, served by different brokers within the cluster, enhancing scalability and fault tolerance.
-* **Message Dispatch**:
+* [**Message Dispatch**](https://danube-docs.dev-state.com/architecture/dispatch_strategy/):
   * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial. The acknowledgement mechanism is ignored.
   * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options including in-memory, disk, and S3, ensuring message persistence and durability.
-* **Subscription Types:**:
-  * Supports various subscription types (exclusive, shared, failover) enabling different messaging patterns such as message queueing and pub-sub.
+* [**Subscription Types:**](https://danube-docs.dev-state.com/architecture/subscriptions/):
+  * Supports various subscription types (**Exclusive**, **Shared**, **Failover**) enabling different messaging patterns such as message queueing and pub-sub.
 * **Flexible Message Schemas**
-  * Supports multiple message schemas (bytes, string, int64, JSON) providing flexibility in message format and structure.
+  * Supports multiple message schemas (**Bytes**, **String**, **Int64**, **JSON**) providing flexibility in message format and structure.
 
 ## Clients
 
@@ -55,13 +42,29 @@ Contributions in other languages, such as Python, Java, etc., are also greatly a
   * [**Danube CLI**](https://github.com/danube-messaging/danube/tree/main/danube-cli): For handling message publishing and consumption.
   * [**Danube Admin CLI**](https://github.com/danube-messaging/danube/tree/main/danube-admin-cli): For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
 
+## Getting Started
+
+### Run Metadata Store (ETCD)
+
+todo
+
+### Run Danube Broker on the Local Machine
+
+todo
+
+### Use Danube CLI to Publish and Consume Messages
+
+todo
+
+For detailed instructions on how to run Danube Broker on different platforms, please refer to the [documentation](https://danube-docs.dev-state.com/).
+
 ## Development environment
 
 Continuously working on enhancing and adding new features.
 
 **Contributions are welcome**, check [the open issues](https://github.com/danube-messaging/danube/issues) or report a bug you encountered or a needed feature.
 
-The crates part of the Danube workspace:
+**The crates part of the Danube workspace**:
 
 * danube-broker - The main crate, danube pubsub platform
   * danube-reliable-dispatch - Part of danube-broker, responsible of reliable dispatching

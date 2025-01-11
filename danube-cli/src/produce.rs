@@ -100,14 +100,6 @@ pub struct ReliableArgs {
 
     #[arg(
         long,
-        value_enum,
-        default_value = "memory",
-        help = "Storage type for reliable delivery: memory, disk, or s3"
-    )]
-    pub storage: Option<StorageTypeArg>,
-
-    #[arg(
-        long,
         default_value = "20",
         help = "Segment size in MB for reliable delivery (default: 20)"
     )]
@@ -127,13 +119,6 @@ pub struct ReliableArgs {
         help = "Retention period in seconds for reliable delivery (default: 3600)"
     )]
     pub retention_period: u64,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
-pub enum StorageTypeArg {
-    Memory,
-    Disk,
-    S3,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
@@ -161,7 +146,6 @@ EXAMPLES:
     # Reliable message delivery
     danube-cli produce -s http://localhost:6650 -m "Hello Danube" -c 100 \
         --reliable \
-        --storage disk \
         --segment-size 10 \
         --retention expire \
         --retention-period 7200
