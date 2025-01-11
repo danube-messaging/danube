@@ -14,11 +14,13 @@ edition = "2021"
 
 [dependencies]
 danube-core = {path = "../danube-core"}
+
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-types = { workspace = true }
 tracing = { workspace = true }
@@ -26,8 +28,6 @@ futures = { workspace = true }
 futures-core = "0.3.31"
 futures-util = "0.3.31"
 base64 = "0.22.1"
-tokio-stream = "0.1.17"
-
 
 [lints]
 workspace = true

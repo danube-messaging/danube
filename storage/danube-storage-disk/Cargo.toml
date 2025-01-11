@@ -12,9 +12,9 @@ edition = "2021"
 [dependencies]
 danube-core = { path = "../../danube-core" }
 
+async-trait = {workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-async-trait = {workspace = true }
 bincode = "1.3.3"
 
 [dev-dependencies]

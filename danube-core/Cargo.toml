@@ -10,12 +10,13 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
+async-trait = { workspace = true }
 serde = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 thiserror = {workspace = true }
 tokio = { version = "1.42.0", features = ["sync"] }
-async-trait = "0.1.83"
+
 
 [build-dependencies]
 tonic-build = "0.12.3"
