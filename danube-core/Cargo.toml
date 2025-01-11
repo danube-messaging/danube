@@ -14,11 +14,11 @@ serde = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 thiserror = {workspace = true }
-tokio = { version = "1.37.0", features = ["sync"] }
+tokio = { version = "1.42.0", features = ["sync"] }
 async-trait = "0.1.83"
 
 [build-dependencies]
-tonic-build = "0.11"
+tonic-build = "0.12.3"
 
 [lints]
 workspace = true

@@ -4,13 +4,13 @@ version = "0.2.1"
 edition = "2021"
 
 [dependencies]
-clap = {version = "4.5.8", features =["derive"]}
-futures-util = "0.3.30"
-anyhow = "1.0.83"
+clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-valico = "3.6"
+futures-util = "0.3.31"
+anyhow = "1.0.95"
+valico = "3.6.1"
 
 danube-client = {path = "../danube-client"}
 

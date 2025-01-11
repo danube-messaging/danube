@@ -11,6 +11,7 @@ edition = "2021"
 
 [dependencies]
 danube-core = { path = "../../danube-core" }
+
 tokio = { workspace = true }
 async-trait = {workspace = true}
 thiserror = { workspace = true }

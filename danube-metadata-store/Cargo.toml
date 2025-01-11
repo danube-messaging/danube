@@ -10,13 +10,13 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
-etcd-client = "0.14.0"
 tracing = { workspace = true }
-futures = "0.3.31"
 tokio = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+futures = { workspace = true }
+etcd-client = "0.14.0"
 async-trait = "0.1.83"
 dashmap = "5.5.3"
 

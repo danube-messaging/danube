@@ -13,12 +13,13 @@ edition = "2021"
 danube-core = {path = "../danube-core"}
 danube-storage-disk = {path = "../storage/danube-storage-disk"}
 danube-storage-s3 = {path = "../storage/danube-storage-s3"}
-dashmap = "5.5.3"
+
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = {workspace = true}
 async-trait = {workspace = true}
+dashmap = "5.5.3"
 
 
 
