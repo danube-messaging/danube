@@ -10,7 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = "0.3.31"
 anyhow = "1.0.95"
-valico = "3.6.1"
+jsonschema = "0.28.1"
 
 danube-client = {path = "../danube-client"}
 
