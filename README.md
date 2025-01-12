@@ -74,6 +74,7 @@ Download the latest Danube Broker binary from the [releases](https://github.com/
 
 ```bash
 touch broker.log
+```
 
 ```bash
 RUST_LOG=info ./danube-broker-linux --config-file danube_broker.yml --broker-addr "0.0.0.0:6650" --admin-addr "0.0.0.0:50051" > broker.log 2>&1 &
