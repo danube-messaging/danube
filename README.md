@@ -9,8 +9,8 @@ Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the
 ## Core Capabilities of the Danube messaging Platform
 
 * [**Topics**](https://danube-docs.dev-state.com/architecture/topics/): A unit of storage that organizes messages into a stream.
-  * **Non-partitioned topics**: Served by a single broker.
-  * **Partitioned topics**: Divided into partitions, served by different brokers within the cluster, enhancing scalability and fault tolerance.
+  * **Non-partitioned topics**: One topic that is served by a single broker from the cluster.
+  * **Partitioned topics**: Divided into partitions, served by different brokers from the cluster, enhancing scalability and fault tolerance.
 * [**Message Dispatch**](https://danube-docs.dev-state.com/architecture/dispatch_strategy/):
   * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial. The acknowledgement mechanism is ignored.
   * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options including in-memory, disk, and S3, ensuring message persistence and durability.
@@ -44,19 +44,98 @@ Contributions in other languages, such as Python, Java, etc., are also greatly a
 
 ## Getting Started
 
+To run Danube Broker on your local machine, follow the steps below:
+
 ### Run Metadata Store (ETCD)
 
-todo
+Danube stores **Metadata** in an external database, in order to offer high availability and scalability, currently supported by [ETCD](https://etcd.io/).
+
+```bash
+$ docker run -d --name etcd-danube -p 2379:2379 quay.io/coreos/etcd:latest etcd --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379
+
+$ docker ps
+CONTAINER ID   IMAGE                        COMMAND                  CREATED          STATUS          PORTS                                                 NAMES
+27792bce6077   quay.io/coreos/etcd:latest   "etcd --advertise-cl…"   35 seconds ago   Up 34 seconds   0.0.0.0:2379->2379/tcp, :::2379->2379/tcp, 2380/tcp   etcd-danube
+```
 
 ### Run Danube Broker on the Local Machine
 
-todo
+Create a local config file with the contents from the [sample config file](https://github.com/danube-messaging/danube/blob/main/config/danube_broker.yml).
+
+```bash
+touch danube_broker.yml
+```
+
+and use your editor of choice to edit the file, by adding the sample  config file contents.
+
+Download the latest Danube Broker binary from the [releases](https://github.com/danube-messaging/danube/releases) page and run it:
+
+```bash
+touch broker.log
+
+RUST_LOG=info ./danube-broker-linux --config-file danube_broker.yml --broker-addr "0.0.0.0:6650" --admin-addr "0.0.0.0:50051" > broker.log 2>&1 &
+```
+
+Check the logs:
+
+```bash
+$ tail -n 100 -f broker.log
+
+2025-01-12T06:15:53.705416Z  INFO danube_broker: Use ETCD storage as metadata persistent store
+2025-01-12T06:15:53.705665Z  INFO danube_broker: Start the Danube Service
+2025-01-12T06:15:53.705679Z  INFO danube_broker::danube_service: Setting up the cluster MY_CLUSTER
+2025-01-12T06:15:53.707988Z  INFO danube_broker::danube_service::local_cache: Initial cache populated
+2025-01-12T06:15:53.709521Z  INFO danube_broker::danube_service: Started the Local Cache service.
+2025-01-12T06:15:53.713329Z  INFO danube_broker::danube_service::broker_register: Broker 15139934490483381581 registered in the cluster
+2025-01-12T06:15:53.714977Z  INFO danube_broker::danube_service: Namespace default already exists.
+2025-01-12T06:15:53.716405Z  INFO danube_broker::danube_service: Namespace system already exists.
+2025-01-12T06:15:53.717979Z  INFO danube_broker::danube_service: Namespace default already exists.
+2025-01-12T06:15:53.718012Z  INFO danube_broker::danube_service: cluster metadata setup completed
+2025-01-12T06:15:53.718092Z  INFO danube_broker::danube_service:  Started the Broker GRPC server
+2025-01-12T06:15:53.718116Z  INFO danube_broker::broker_server: Server is listening on address: 0.0.0.0:6650
+2025-01-12T06:15:53.718191Z  INFO danube_broker::danube_service: Started the Leader Election service
+2025-01-12T06:15:53.722454Z  INFO danube_broker::danube_service: Started the Load Manager service.
+2025-01-12T06:15:53.724727Z  INFO danube_broker::danube_service:  Started the Danube Admin GRPC server
+2025-01-12T06:15:53.724727Z  INFO danube_broker::admin: Admin is listening on address: 0.0.0.0:50051
+```
 
 ### Use Danube CLI to Publish and Consume Messages
 
-todo
+Download the latest Danube CLI binary from the [releases](https://github.com/danube-messaging/danube/releases) page and run it:
+
+```bash
+$ ./danube-cli-linux produce -s http://127.0.0.1:6650 -t /default/demo_topic -c 1000 -m "Hello, Danube!"
+Message sent successfully with ID: 9
+Message sent successfully with ID: 10
+Message sent successfully with ID: 11
+Message sent successfully with ID: 12
+```
+
+Open a new terminal and run the following command to consume the messages:
+
+```bash
+./danube-cli-linux consume -s http://127.0.0.1:6650 -t /default/demo_topic -m my_subscription
+Received bytes message: 9, with payload: Hello, Danube!
+Received bytes message: 10, with payload: Hello, Danube!
+Received bytes message: 11, with payload: Hello, Danube!
+Received bytes message: 12, with payload: Hello, Danube!
+```
 
 For detailed instructions on how to run Danube Broker on different platforms, please refer to the [documentation](https://danube-docs.dev-state.com/).
+
+### Tear Down
+
+Stop the Danube Broker and the ETCD container:
+
+```bash
+pkill danube-broker
+
+docker stop etcd-danube
+docker rm -f etcd-danube
+
+ps aux | grep danube-broker
+docker ps | grep etcd-danube
+```
 
 ## Development environment
 
