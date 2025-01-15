@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Ok, Result};
-use danube_core::message::StreamMessage;
+use danube_core::message::{MessageID, StreamMessage};
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::trace;
 
 use crate::{
@@ -79,7 +79,7 @@ impl Subscription {
         &mut self,
         topic_name: &str,
         options: SubscriptionOptions,
-        dispatch_strategy: &DispatchStrategy,
+        //  dispatch_strategy: &DispatchStrategy,
     ) -> Result<u64> {
         //for communication with client consumer
         let (tx_cons, rx_cons) = mpsc::channel(4);
@@ -97,13 +97,13 @@ impl Subscription {
 
         // checks if there'a a dispatcher (responsible for distributing messages to consumers)
         // if not initialize a new dispatcher based on the subscription type: Exclusive, Shared, Failover
-        if self.dispatcher.is_none() {
-            let new_dispatcher = self
-                .create_new_dispatcher(options.clone(), dispatch_strategy)
-                .await?;
+        // if self.dispatcher.is_none() {
+        //     let new_dispatcher = self
+        //         .create_new_dispatcher(options.clone(), dispatch_strategy)
+        //         .await?;
 
-            self.dispatcher = Some(new_dispatcher);
-        };
+        //     self.dispatcher = Some(new_dispatcher);
+        // };
 
         let dispatcher = self.dispatcher.as_mut().unwrap();
         // Add the consumer to the dispatcher
@@ -129,10 +129,10 @@ impl Subscription {
     }
 
     pub(crate) async fn create_new_dispatcher(
-        &self,
+        &mut self,
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
-    ) -> Result<Dispatcher> {
+    ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
@@ -176,7 +176,15 @@ impl Subscription {
             }
         };
 
-        Ok(new_dispatcher)
+        self.dispatcher = Some(new_dispatcher);
+
+        Ok(())
+    }
+
+    pub(crate) fn set_notificationn_channel(&mut self, channel: broadcast::Receiver<MessageID>) {
+        if let Some(dispatcher) = self.dispatcher.as_mut() {
+            dispatcher.set_notification_channel(channel);
+        }
     }
 
     pub(crate) async fn send_message_to_dispatcher(&self, message: StreamMessage) -> Result<()> {

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use danube_core::message::MessageID;
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage, storage::StorageBackend,
 };
@@ -6,7 +7,7 @@ use danube_reliable_dispatch::ReliableDispatch;
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
 use crate::{
@@ -42,6 +43,8 @@ pub(crate) struct Topic {
     pub(crate) producers: HashMap<u64, Producer>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
+    // for realible dispatch, notify the SubscriptionDispatch that a new message from producer has arrived
+    pub(crate) notify_msg: Option<broadcast::Sender<MessageID>>,
 }
 
 impl Topic {
@@ -50,9 +53,13 @@ impl Topic {
         dispatch_strategy: ConfigDispatchStrategy,
         storage_backend: Arc<dyn StorageBackend>,
     ) -> Self {
+        let mut notify_msg: Option<broadcast::Sender<MessageID>> = None;
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
             ConfigDispatchStrategy::Reliable(reliable_options) => {
+                let (tx, _) = broadcast::channel::<MessageID>(10);
+
+                notify_msg = Some(tx);
                 DispatchStrategy::Reliable(ReliableDispatch::new(reliable_options, storage_backend))
             }
         };
@@ -64,6 +71,7 @@ impl Topic {
             subscriptions: Mutex::new(HashMap::new()),
             producers: HashMap::new(),
             dispatch_strategy,
+            notify_msg,
         }
     }
 
@@ -175,7 +183,11 @@ impl Topic {
                 }
             }
             DispatchStrategy::Reliable(reliable_dispatch) => {
+                let msg_id = stream_message.msg_id.clone();
+                // store the message in the TopicStore
                 reliable_dispatch.store_message(stream_message).await?;
+                // notify the SubscriptionDispatch that a new message has been published
+                self.notify_msg.as_ref().as_mut().unwrap().send(msg_id)?;
             }
         };
 
@@ -215,14 +227,22 @@ impl Topic {
         let subscription = if let std::collections::hash_map::Entry::Vacant(entry) =
             subscriptions_lock.entry(options.subscription_name.clone())
         {
-            let new_subscription =
+            let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
+
+            // !!! here create new dispatcher for the subscription
+            // !!! and should add the notifier (channell) to the dispatcher if reliable
+            new_subscription
+                .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
+                .await?;
 
             // Handle additional logic for reliable storage
             if let DispatchStrategy::Reliable(reliable_dispatch) = &self.dispatch_strategy {
                 reliable_dispatch
                     .add_subscription(&new_subscription.subscription_name)
                     .await?;
+                new_subscription
+                    .set_notificationn_channel(self.notify_msg.as_ref().unwrap().subscribe());
             }
 
             entry.insert(new_subscription)
@@ -239,9 +259,7 @@ impl Topic {
 
         //Todo! Check the topic policies with max_consumers per topic
 
-        let consumer_id = subscription
-            .add_consumer(topic_name, options, &self.dispatch_strategy)
-            .await?;
+        let consumer_id = subscription.add_consumer(topic_name, options).await?;
 
         Ok(consumer_id)
     }
