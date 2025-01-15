@@ -233,7 +233,11 @@ impl Topic {
             // !!! here create new dispatcher for the subscription
             // !!! and should add the notifier (channell) to the dispatcher if reliable
             new_subscription
-                .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
+                .create_new_dispatcher(
+                    options.clone(),
+                    &self.dispatch_strategy,
+                    self.notify_msg.as_ref().as_mut().unwrap().subscribe(),
+                )
                 .await?;
 
             // Handle additional logic for reliable storage
@@ -241,8 +245,6 @@ impl Topic {
                 reliable_dispatch
                     .add_subscription(&new_subscription.subscription_name)
                     .await?;
-                new_subscription
-                    .set_notificationn_channel(self.notify_msg.as_ref().unwrap().subscribe());
             }
 
             entry.insert(new_subscription)

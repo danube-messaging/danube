@@ -11,10 +11,13 @@ pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
 
 use danube_core::{
-    dispatch_strategy::ReliableOptions, message::StreamMessage, storage::StorageBackend,
+    dispatch_strategy::ReliableOptions,
+    message::{MessageID, StreamMessage},
+    storage::StorageBackend,
 };
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug)]
 pub struct ReliableDispatch {
@@ -54,17 +57,18 @@ impl ReliableDispatch {
     pub async fn new_subscription_dispatch(
         &self,
         subscription_name: &str,
-    ) -> Result<SubscriptionDispatch> {
+        notify_rx: broadcast::Receiver<MessageID>,
+    ) -> Result<(SubscriptionDispatch, mpsc::Receiver<StreamMessage>)> {
         let sub_last_acked_segment = self
             .get_last_acknowledged_segment(subscription_name)
             .await?;
 
-        let subscription_dispatch =
-            SubscriptionDispatch::new(self.topic_store.clone(), sub_last_acked_segment);
+        let (subscription_dispatch, message_rx) =
+            SubscriptionDispatch::new(self.topic_store.clone(), sub_last_acked_segment, notify_rx);
 
         //self.subscription_dispatch.insert(subscription_name.to_string(), subscription_name.to_string());
 
-        Ok(subscription_dispatch)
+        Ok((subscription_dispatch, message_rx))
     }
 
     pub async fn store_message(&self, message: StreamMessage) -> Result<()> {

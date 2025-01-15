@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
+use danube_core::message::StreamMessage;
 use danube_reliable_dispatch::SubscriptionDispatch;
-use tokio::{
-    sync::mpsc,
-    time::{self, Duration},
-};
+use tokio::sync::mpsc;
 use tracing::{trace, warn};
 
 use crate::{consumer::Consumer, dispatcher::DispatcherCommand, message::AckMessage};
@@ -15,14 +13,20 @@ pub(crate) struct DispatcherReliableSingleConsumer {
 }
 
 impl DispatcherReliableSingleConsumer {
-    pub(crate) fn new(mut subscription_dispatch: SubscriptionDispatch) -> Self {
+    pub(crate) fn new(
+        mut subscription_dispatch: SubscriptionDispatch,
+        mut message_rx: mpsc::Receiver<StreamMessage>,
+    ) -> Self {
         let (control_tx, mut control_rx) = mpsc::channel(16);
+
+        tokio::spawn(async move {
+            subscription_dispatch.run().await;
+        });
 
         // Spawn dispatcher task
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut active_consumer: Option<Consumer> = None;
-            let mut interval = time::interval(Duration::from_millis(100));
 
             loop {
                 tokio::select! {
@@ -57,23 +61,11 @@ impl DispatcherReliableSingleConsumer {
                             }
                         }
                     }
-                    _ = interval.tick() => {
-                        // Send ordered messages from the segment to the consumers
-                        // Go to the next segment if all messages are acknowledged by consumers
-                        // Go to the next segment if it passed the TTL since closed
-
-                        // Only process segments if we have an active consumer that's healthy
-                        if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
-                            match subscription_dispatch.process_current_segment().await {
-                                Ok(msg) => {
-                                    if let Err(e) = consumer.send_message(msg).await {
-                                        warn!("Failed to dispatch message: {}", e);
-                                    }
-                                },
-                                Err(_) => {
-                                    // As this loops, the error is due to waiting for a new message
-                                }
-                            };
+                    Some(message) = message_rx.recv() => {
+                    if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
+                            if let Err(e) = consumer.send_message(message).await {
+                                warn!("Failed to dispatch message: {}", e);
+                            }
                         }
                     }
                 }

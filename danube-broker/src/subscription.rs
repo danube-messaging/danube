@@ -132,6 +132,7 @@ impl Subscription {
         &mut self,
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
+        notify_msg: broadcast::Receiver<MessageID>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
@@ -149,14 +150,15 @@ impl Subscription {
                 }
             },
             DispatchStrategy::Reliable(reliable_dispatcher) => {
-                let subscription_dispatch = reliable_dispatcher
-                    .new_subscription_dispatch(&options.subscription_name)
+                let (subscription_dispatch, message_rx) = reliable_dispatcher
+                    .new_subscription_dispatch(&options.subscription_name, notify_msg)
                     .await?;
 
                 match options.subscription_type {
                     // Exclusive
                     0 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
                         subscription_dispatch,
+                        message_rx,
                     )),
 
                     // Shared
@@ -167,6 +169,7 @@ impl Subscription {
                     // Failover
                     2 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
                         subscription_dispatch,
+                        message_rx,
                     )),
 
                     _ => {
@@ -179,12 +182,6 @@ impl Subscription {
         self.dispatcher = Some(new_dispatcher);
 
         Ok(())
-    }
-
-    pub(crate) fn set_notificationn_channel(&mut self, channel: broadcast::Receiver<MessageID>) {
-        if let Some(dispatcher) = self.dispatcher.as_mut() {
-            dispatcher.set_notification_channel(channel);
-        }
     }
 
     pub(crate) async fn send_message_to_dispatcher(&self, message: StreamMessage) -> Result<()> {

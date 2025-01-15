@@ -1,6 +1,5 @@
 use anyhow::Result;
 use danube_core::message::{MessageID, StreamMessage};
-use tokio::sync::broadcast;
 
 use crate::{consumer::Consumer, message::AckMessage};
 
@@ -110,26 +109,6 @@ impl Dispatcher {
             }
             Dispatcher::ReliableMultipleConsumers(dispatcher) => {
                 Ok(dispatcher.disconnect_all_consumers().await?)
-            }
-        }
-    }
-
-    pub(crate) fn set_notification_channel(
-        &mut self,
-        notification_channel: broadcast::Receiver<MessageID>,
-    ) {
-        match self {
-            Dispatcher::OneConsumer(dispatcher) => {
-                unreachable!("Non Reliable dispatchers do not need to set notification channel")
-            }
-            Dispatcher::MultipleConsumers(dispatcher) => {
-                unreachable!("Non Reliable dispatchers do not need to set notification channel")
-            }
-            Dispatcher::ReliableOneConsumer(dispatcher) => {
-                dispatcher.set_notification_channel(notification_channel)
-            }
-            Dispatcher::ReliableMultipleConsumers(dispatcher) => {
-                dispatcher.set_notification_channel(notification_channel)
             }
         }
     }
