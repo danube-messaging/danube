@@ -150,7 +150,7 @@ impl Subscription {
                 }
             },
             DispatchStrategy::Reliable(reliable_dispatcher) => {
-                let (subscription_dispatch, message_rx) = reliable_dispatcher
+                let subscription_dispatch = reliable_dispatcher
                     .new_subscription_dispatch(&options.subscription_name, notify_msg)
                     .await?;
 
@@ -158,7 +158,6 @@ impl Subscription {
                     // Exclusive
                     0 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
                         subscription_dispatch,
-                        message_rx,
                     )),
 
                     // Shared
@@ -169,7 +168,6 @@ impl Subscription {
                     // Failover
                     2 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
                         subscription_dispatch,
-                        message_rx,
                     )),
 
                     _ => {

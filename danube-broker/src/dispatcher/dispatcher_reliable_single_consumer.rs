@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use danube_core::message::StreamMessage;
 use danube_reliable_dispatch::SubscriptionDispatch;
 use tokio::sync::mpsc;
 use tracing::{trace, warn};
@@ -13,15 +12,8 @@ pub(crate) struct DispatcherReliableSingleConsumer {
 }
 
 impl DispatcherReliableSingleConsumer {
-    pub(crate) fn new(
-        mut subscription_dispatch: SubscriptionDispatch,
-        mut message_rx: mpsc::Receiver<StreamMessage>,
-    ) -> Self {
+    pub(crate) fn new(mut subscription_dispatch: SubscriptionDispatch) -> Self {
         let (control_tx, mut control_rx) = mpsc::channel(16);
-
-        tokio::spawn(async move {
-            subscription_dispatch.run().await;
-        });
 
         // Spawn dispatcher task
         tokio::spawn(async move {
@@ -49,20 +41,29 @@ impl DispatcherReliableSingleConsumer {
                                 ).await;
                             }
                             DispatcherCommand::DisconnectAllConsumers => {
-                                Self::handle_disconnect_all(&mut consumers, &mut active_consumer).await;
+                                Self::handle_disconnect_all(
+                                    &mut consumers,
+                                    &mut active_consumer,
+                                ).await;
                             }
                             DispatcherCommand::DispatchMessage(_) => {
                                 unreachable!("Reliable Dispatcher should not receive messages, just segments");
                             }
                             DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                if let Err(e) = subscription_dispatch.handle_message_acked(request_id, msg_id).await {
-                                    warn!("Failed to handle message acked: {}", e);
-                                }
+                                if let Ok(Some(next_message)) = subscription_dispatch
+                                    .handle_message_acked(request_id, msg_id)
+                                    .await {
+                                        if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
+                                            if let Err(e) = consumer.send_message(next_message).await {
+                                                warn!("Failed to dispatch message: {}", e);
+                                            }
+                                        }
+                                    }
                             }
                         }
                     }
-                    Some(message) = message_rx.recv() => {
-                    if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
+                    Some(message) = subscription_dispatch.next_message() => {
+                        if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
                             if let Err(e) = consumer.send_message(message).await {
                                 warn!("Failed to dispatch message: {}", e);
                             }

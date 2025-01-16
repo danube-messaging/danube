@@ -3,7 +3,7 @@ use danube_core::storage::Segment;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time;
 use tracing::trace;
 
@@ -33,10 +33,9 @@ pub struct SubscriptionDispatch {
     pub(crate) acked_messages: HashMap<MessageID, u64>,
     // retry count for the pending ack message
     retry_count: u8,
+    // retry interval for the pending ack message
     retry_interval: time::Duration,
-    message_tx: mpsc::Sender<StreamMessage>,
-    //message_rx: mpsc::Receiver<StreamMessage>,
-    // notify_rx is used to notify the SubscriptionDispatch that a new message from producer has arrived
+    // notify_rx is the channel to receive notification from the topic
     notify_rx: broadcast::Receiver<MessageID>,
 }
 
@@ -45,54 +44,36 @@ impl SubscriptionDispatch {
         topic_store: TopicStore,
         last_acked_segment: Arc<AtomicUsize>,
         notify_rx: broadcast::Receiver<MessageID>,
-    ) -> (Self, mpsc::Receiver<StreamMessage>) {
-        let (message_tx, message_rx) = mpsc::channel(100);
-        (
-            Self {
-                topic_store,
-                last_acked_segment,
-                segment: None,
-                current_segment_id: None,
-                pending_ack_message: None,
-                acked_messages: HashMap::new(),
-                retry_count: 0,
-                retry_interval: time::Duration::from_secs(1),
-                message_tx,
-                notify_rx,
-            },
-            message_rx,
-        )
+    ) -> Self {
+        Self {
+            topic_store,
+            last_acked_segment,
+            segment: None,
+            current_segment_id: None,
+            pending_ack_message: None,
+            acked_messages: HashMap::new(),
+            retry_count: 0,
+            retry_interval: time::Duration::from_secs(1),
+            notify_rx,
+        }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn next_message(&mut self) -> Option<StreamMessage> {
         let mut retry_interval = time::interval(self.retry_interval);
 
-        loop {
-            tokio::select! {
-                // Handle new message notification
-                // Ignore it if we are still waiting for customer to ack an older message
-                // Or send the next message to dispatcher
-                Ok(_) = self.notify_rx.recv() => {
-                    // Only process if no pending ack or within retry count
-                    if self.pending_ack_message.is_none() {
-                        if let Ok(msg) = self.process_current_segment().await {
-                            let _ = self.message_tx.send(msg).await;
-                        }
-                    }
+        tokio::select! {
+            Ok(_) = self.notify_rx.recv() => {
+                if self.pending_ack_message.is_none() {
+                    return self.process_current_segment().await.ok();
                 }
-
-                // Retrying unacked message on interval
-                _ = retry_interval.tick() => {
-                    if let Some(_) = &self.pending_ack_message {
-                        if self.retry_count < 3 {
-                            if let Ok(msg) = self.send_message().await {
-                                let _ = self.message_tx.send(msg).await;
-                            }
-                        }
-                    }
+            }
+            _ = retry_interval.tick() => {
+                if self.pending_ack_message.is_some() && self.retry_count < 3 {
+                    return self.send_message().await.ok();
                 }
             }
         }
+        None
     }
 
     /// Process the current segment and send the messages to the consumer
@@ -238,7 +219,11 @@ impl SubscriptionDispatch {
     }
 
     /// Handle the consumer message acknowledgement
-    pub async fn handle_message_acked(&mut self, request_id: u64, msg_id: MessageID) -> Result<()> {
+    pub async fn handle_message_acked(
+        &mut self,
+        request_id: u64,
+        msg_id: MessageID,
+    ) -> Result<Option<StreamMessage>> {
         // Validate that the message belongs to current segment
         // Not sure if needed
         // if !self.segment.as_ref().map_or(false, |seg| {
@@ -261,12 +246,8 @@ impl SubscriptionDispatch {
                 );
                 self.retry_count = 0;
 
-                // Process and send next message immediately after successful ack
-                if let Ok(msg) = self.process_current_segment().await {
-                    let _ = self.message_tx.send(msg).await;
-                }
-
-                return Ok(());
+                // Return next message immediately after successful ack
+                return Ok(self.process_current_segment().await.ok());
             }
         }
         Err(ReliableDispatchError::AcknowledgmentError(

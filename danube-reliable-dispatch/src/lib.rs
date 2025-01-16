@@ -17,7 +17,7 @@ use danube_core::{
 };
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 #[derive(Debug)]
 pub struct ReliableDispatch {
@@ -58,17 +58,17 @@ impl ReliableDispatch {
         &self,
         subscription_name: &str,
         notify_rx: broadcast::Receiver<MessageID>,
-    ) -> Result<(SubscriptionDispatch, mpsc::Receiver<StreamMessage>)> {
+    ) -> Result<SubscriptionDispatch> {
         let sub_last_acked_segment = self
             .get_last_acknowledged_segment(subscription_name)
             .await?;
 
-        let (subscription_dispatch, message_rx) =
+        let subscription_dispatch =
             SubscriptionDispatch::new(self.topic_store.clone(), sub_last_acked_segment, notify_rx);
 
         //self.subscription_dispatch.insert(subscription_name.to_string(), subscription_name.to_string());
 
-        Ok((subscription_dispatch, message_rx))
+        Ok(subscription_dispatch)
     }
 
     pub async fn store_message(&self, message: StreamMessage) -> Result<()> {
