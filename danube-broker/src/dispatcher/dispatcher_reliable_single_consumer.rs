@@ -50,6 +50,7 @@ impl DispatcherReliableSingleConsumer {
                                 unreachable!("Reliable Dispatcher should not receive messages, just segments");
                             }
                             DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                dbg!("received acked message");
                                 if let Ok(Some(next_message)) = subscription_dispatch
                                     .handle_message_acked(request_id, msg_id)
                                     .await {

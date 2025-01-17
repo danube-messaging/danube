@@ -53,24 +53,31 @@ impl SubscriptionDispatch {
             pending_ack_message: None,
             acked_messages: HashMap::new(),
             retry_count: 0,
-            retry_interval: time::Duration::from_secs(1),
+            retry_interval: time::Duration::from_secs(5),
             notify_rx,
         }
     }
 
     pub async fn next_message(&mut self) -> Option<StreamMessage> {
-        let mut retry_interval = time::interval(self.retry_interval);
+        // First try to process any available messages without waiting
+        if self.pending_ack_message.is_none() {
+            if let Ok(message) = self.process_current_segment().await {
+                return Some(message);
+            }
+        }
 
         tokio::select! {
             Ok(_) = self.notify_rx.recv() => {
+                dbg!("Received notification from producer");
                 if self.pending_ack_message.is_none() {
                     return self.process_current_segment().await.ok();
                 }
             }
-            _ = retry_interval.tick() => {
-                if self.pending_ack_message.is_some() && self.retry_count < 3 {
-                    return self.send_message().await.ok();
-                }
+            _ = time::sleep(self.retry_interval), if self.pending_ack_message.is_some() && self.retry_count < 3 => {
+                dbg!("Retrying to send message");
+
+                    return self.process_current_segment().await.ok();
+
             }
         }
         None
