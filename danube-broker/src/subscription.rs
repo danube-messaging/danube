@@ -95,16 +95,6 @@ impl Subscription {
             consumer_status.clone(),
         );
 
-        // checks if there'a a dispatcher (responsible for distributing messages to consumers)
-        // if not initialize a new dispatcher based on the subscription type: Exclusive, Shared, Failover
-        // if self.dispatcher.is_none() {
-        //     let new_dispatcher = self
-        //         .create_new_dispatcher(options.clone(), dispatch_strategy)
-        //         .await?;
-
-        //     self.dispatcher = Some(new_dispatcher);
-        // };
-
         let dispatcher = self.dispatcher.as_mut().unwrap();
         // Add the consumer to the dispatcher
         dispatcher.add_consumer(consumer).await?;

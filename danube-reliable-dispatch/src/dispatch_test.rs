@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 /// Test helper to create a TopicStore with default settings
 #[cfg(test)]
@@ -65,6 +65,12 @@ fn create_test_message(payload: Vec<u8>) -> StreamMessage {
     }
 }
 
+#[cfg(test)]
+fn create_test_notification_channel() -> broadcast::Receiver<MessageID> {
+    let (_tx, rx) = broadcast::channel(100);
+    rx
+}
+
 /// Tests the creation of a new SubscriptionDispatch instance
 /// Verifies that all initial values are properly set to their default states:
 /// - No active segment
@@ -75,7 +81,8 @@ fn create_test_message(payload: Vec<u8>) -> StreamMessage {
 async fn test_new_subscription_dispatch() {
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     assert!(dispatch.segment.is_none());
     assert!(dispatch.current_segment_id.is_none());
@@ -89,7 +96,8 @@ async fn test_new_subscription_dispatch() {
 async fn test_process_empty_segment() {
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     let result = dispatch.process_current_segment().await;
     assert!(matches!(
@@ -105,21 +113,45 @@ async fn test_process_empty_segment() {
 /// - Addition to acknowledged messages map
 #[tokio::test]
 async fn test_message_acknowledgment() {
+    let storage = Arc::new(InMemoryStorage::new());
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
-    let request_id = 1;
-    let msg_id = create_test_message_id(1);
+    // Create test message with matching IDs
+    let test_message = create_test_message(vec![1]);
+    let request_id = test_message.request_id;
+    let msg_id = test_message.msg_id.clone();
 
+    // Create and add segment with the test message
+    let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
+    {
+        let mut segment_write = segment.write().await;
+        segment_write.messages.push(test_message);
+    }
+
+    // Store segment in topic store
+    storage.put_segment(1, segment.clone()).await.unwrap();
+    dispatch
+        .topic_store
+        .segments_index
+        .write()
+        .await
+        .push((1, 0));
+
+    dispatch.segment = Some(segment);
+    dispatch.current_segment_id = Some(1);
     dispatch.pending_ack_message = Some((request_id, msg_id.clone()));
 
     let result = dispatch
         .handle_message_acked(request_id, msg_id.clone())
         .await;
+
     assert!(result.is_ok());
     assert!(dispatch.pending_ack_message.is_none());
     assert!(dispatch.acked_messages.contains_key(&msg_id));
+    assert_eq!(dispatch.retry_count, 0);
 }
 
 /// Tests handling of invalid message acknowledgments
@@ -129,7 +161,8 @@ async fn test_message_acknowledgment() {
 async fn test_invalid_acknowledgment() {
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     let msg_id = create_test_message_id(1);
     let result = dispatch.handle_message_acked(1, msg_id).await;
@@ -148,7 +181,8 @@ async fn test_invalid_acknowledgment() {
 async fn test_segment_transition() {
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
     dispatch.segment = Some(segment);
@@ -168,7 +202,8 @@ async fn test_segment_transition() {
 async fn test_clear_current_segment() {
     let topic_store = create_test_topic_store();
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
     dispatch.segment = Some(segment);
@@ -197,7 +232,8 @@ async fn test_validate_segment() {
     );
     let topic_store = TopicStore::new(storage.clone(), reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
-    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
+    let notify_rx = create_test_notification_channel();
+    let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked, notify_rx);
 
     // Create a test segment and add it to topic_store
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
@@ -223,12 +259,10 @@ async fn test_validate_segment() {
         let msg_id = message.msg_id.clone();
         let request_id = message.request_id;
         segment_write.messages.push(message);
+        drop(segment_write);
 
         dispatch.pending_ack_message = Some((request_id, msg_id.clone()));
-        dispatch
-            .handle_message_acked(request_id, msg_id)
-            .await
-            .unwrap();
+        dispatch.acked_messages.insert(msg_id, request_id);
     }
 
     let result = dispatch.validate_segment(1, &segment).await;

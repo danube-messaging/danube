@@ -1,10 +1,7 @@
 use anyhow::{anyhow, Result};
 use danube_reliable_dispatch::SubscriptionDispatch;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::{
-    sync::mpsc,
-    time::{self, Duration},
-};
+use tokio::sync::mpsc;
 use tracing::{trace, warn};
 
 use crate::{consumer::Consumer, dispatcher::DispatcherCommand, message::AckMessage};
@@ -23,7 +20,6 @@ impl DispatcherReliableMultipleConsumers {
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
             let index_consumer = AtomicUsize::new(0);
-            let mut interval = time::interval(Duration::from_millis(100));
 
             loop {
                 tokio::select! {
@@ -45,29 +41,23 @@ impl DispatcherReliableMultipleConsumers {
                                 unreachable!("Reliable Dispatcher should not receive messages, just segments");
                             }
                             DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                if let Err(e) = subscription_dispatch.handle_message_acked(request_id, msg_id).await {
-                                    warn!("Failed to handle message acked: {}", e);
-                                }
+                                if let Ok(Some(next_message)) = subscription_dispatch
+                                    .handle_message_acked(request_id, msg_id)
+                                    .await {
+                                        if let Some(active_idx) = Self::get_next_active_consumer(&consumers, &index_consumer).await {
+                                            if let Err(e) = consumers[active_idx].send_message(next_message).await {
+                                                warn!("Failed to dispatch message: {}", e);
+                                            }
+                                        }
+                                    }
                             }
                         }
                     }
-                    _ = interval.tick() => {
-                        // Send ordered messages from the segment to the consumers
-                        // Go to the next segment if all messages are acknowledged by consumers
-                        // Go to the next segment if it passed the TTL since closed
-
-                        // First check if we have an active consumer
+                    Some(message) = subscription_dispatch.next_message() => {
                         if let Some(active_idx) = Self::get_next_active_consumer(&consumers, &index_consumer).await {
-                            match subscription_dispatch.process_current_segment().await {
-                                Ok(msg) => {
-                                    if let Err(e) = consumers[active_idx].send_message(msg).await {
-                                        warn!("Failed to dispatch message: {}", e);
-                                    }
-                                },
-                                Err(_) => {
-                                    // As this loops, the error is due to waiting for a new message, so we just ignore it
-                                }
-                            };
+                            if let Err(e) = consumers[active_idx].send_message(message).await {
+                                warn!("Failed to dispatch message: {}", e);
+                            }
                         }
                     }
                 }

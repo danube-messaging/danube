@@ -32,7 +32,7 @@ pub struct SubscriptionDispatch {
     // maps MessageID to request_id of segment acknowledged messages
     pub(crate) acked_messages: HashMap<MessageID, u64>,
     // retry count for the pending ack message
-    retry_count: u8,
+    pub(crate) retry_count: u8,
     // retry interval for the pending ack message
     retry_interval: time::Duration,
     // notify_rx is the channel to receive notification from the topic

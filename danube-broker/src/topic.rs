@@ -219,7 +219,7 @@ impl Topic {
         options: SubscriptionOptions,
     ) -> Result<u64> {
         //Todo! sub_metadata is user-defined information to the subscription,
-        //maybe for user internal business, management and montoring
+        // maybe for user internal business, management and montoring
         let sub_metadata = HashMap::new();
 
         let mut subscriptions_lock = self.subscriptions.lock().await;
@@ -230,8 +230,7 @@ impl Topic {
             let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
 
-            // !!! here create new dispatcher for the subscription
-            // !!! and should add the notifier (channell) to the dispatcher if reliable
+            // create new dispatcher for the subscription and add the notifier (channell) for reliable dispatcher
             new_subscription
                 .create_new_dispatcher(
                     options.clone(),
