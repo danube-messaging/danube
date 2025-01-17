@@ -187,7 +187,9 @@ impl Topic {
                 // store the message in the TopicStore
                 reliable_dispatch.store_message(stream_message).await?;
                 // notify the SubscriptionDispatch that a new message has been published
-                self.notify_msg.as_ref().as_mut().unwrap().send(msg_id)?;
+                if self.notify_msg.as_ref().unwrap().receiver_count() > 0 {
+                    self.notify_msg.as_ref().as_mut().unwrap().send(msg_id)?;
+                }
             }
         };
 
@@ -230,19 +232,24 @@ impl Topic {
             let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
 
-            // create new dispatcher for the subscription and add the notifier (channell) for reliable dispatcher
-            new_subscription
-                .create_new_dispatcher(
-                    options.clone(),
-                    &self.dispatch_strategy,
-                    self.notify_msg.as_ref().as_mut().unwrap().subscribe(),
-                )
-                .await?;
-
             // Handle additional logic for reliable storage
             if let DispatchStrategy::Reliable(reliable_dispatch) = &self.dispatch_strategy {
                 reliable_dispatch
                     .add_subscription(&new_subscription.subscription_name)
+                    .await?;
+
+                // create new dispatcher for the subscription and add the notifier (channell) for reliable dispatcher
+                new_subscription
+                    .create_new_dispatcher(
+                        options.clone(),
+                        &self.dispatch_strategy,
+                        Some(self.notify_msg.as_ref().as_mut().unwrap().subscribe()),
+                    )
+                    .await?;
+            } else {
+                // create new dispatcher for the subscription
+                new_subscription
+                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy, None)
                     .await?;
             }
 

@@ -122,7 +122,7 @@ impl Subscription {
         &mut self,
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
-        notify_msg: broadcast::Receiver<MessageID>,
+        notify_msg: Option<broadcast::Receiver<MessageID>>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
@@ -141,7 +141,7 @@ impl Subscription {
             },
             DispatchStrategy::Reliable(reliable_dispatcher) => {
                 let subscription_dispatch = reliable_dispatcher
-                    .new_subscription_dispatch(&options.subscription_name, notify_msg)
+                    .new_subscription_dispatch(&options.subscription_name, notify_msg.unwrap())
                     .await?;
 
                 match options.subscription_type {
