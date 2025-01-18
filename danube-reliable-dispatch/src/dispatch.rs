@@ -66,6 +66,7 @@ impl SubscriptionDispatch {
         // First try to process any available messages without waiting
         if self.pending_ack_message.is_none() && !self.locked {
             if let Ok(message) = self.process_current_segment().await {
+                dbg!("send message without waiting");
                 self.locked = false;
                 return Some(message);
             }
@@ -74,7 +75,11 @@ impl SubscriptionDispatch {
         tokio::select! {
             Ok(_) = self.notify_rx.recv() => {
                 dbg!("Received notification from producer");
+                dbg!(&self.pending_ack_message);
+                dbg!(self.locked);
+
                 if self.pending_ack_message.is_none() && !self.locked {
+                    dbg!("getting inside");
                     if let Ok(message) = self.process_current_segment().await {
                         self.locked = false;
                         return Some(message);
@@ -107,17 +112,21 @@ impl SubscriptionDispatch {
             // Validate current segment state
             if self.validate_segment_state(segment_id, segment).await? {
                 self.move_to_next_segment().await?;
-                return Err(ReliableDispatchError::SegmentError(
-                    "Move to next segment".to_string(),
-                ));
             }
         } else {
             // No current segment, move to next
             self.move_to_next_segment().await?;
         }
 
-        // Process the next message
-        self.process_next_message().await
+        // Process the next message - continue even if no messages available
+        match self.process_next_message().await {
+            Ok(msg) => Ok(msg),
+            Err(ReliableDispatchError::NoMessagesAvailable) => {
+                self.locked = false;
+                Err(ReliableDispatchError::NoMessagesAvailable)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Validates the current segment. Returns `true` if the segment was invalidated or closed.
@@ -205,22 +214,19 @@ impl SubscriptionDispatch {
         self.acked_messages.clear();
     }
 
-    /// Processes the next unacknowledged message in the current segment.
     async fn process_next_message(&mut self) -> Result<StreamMessage> {
-        // Only process next message if there's no pending acknowledgment
         match self.pending_ack_message {
-            None => return self.send_message().await,
+            None => self.send_message().await,
             Some(_) => {
                 if self.retry_count < 3 {
                     self.retry_count += 1;
-                    return self.send_message().await;
+                    trace!("Retrying message delivery, attempt {}", self.retry_count);
+                    self.send_message().await
+                } else {
+                    Err(ReliableDispatchError::MaxRetriesExceeded)
                 }
             }
         }
-
-        Err(ReliableDispatchError::InvalidState(
-            "Pending ack message".to_string(),
-        ))
     }
 
     async fn send_message(&mut self) -> Result<StreamMessage> {
@@ -234,14 +240,17 @@ impl SubscriptionDispatch {
                     .cloned()
             };
 
-            if let Some(msg) = next_message {
-                self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
-                return Ok(msg);
+            match next_message {
+                Some(msg) => {
+                    trace!("Sending message with id {:?}", msg.msg_id);
+                    self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
+                    Ok(msg)
+                }
+                None => Err(ReliableDispatchError::NoMessagesAvailable),
             }
+        } else {
+            Err(ReliableDispatchError::NoActiveSegment)
         }
-        Err(ReliableDispatchError::InvalidState(
-            "Pending ack message".to_string(),
-        ))
     }
 
     /// Handle the consumer message acknowledgement
@@ -272,11 +281,23 @@ impl SubscriptionDispatch {
                 );
                 self.retry_count = 0;
 
-                // Return next message immediately after successful ack
-                if let Ok(message) = self.process_current_segment().await {
-                    self.locked = false;
-                    return Ok(Some(message));
+                // Try to get next message
+                match self.process_current_segment().await {
+                    Ok(message) => {
+                        trace!("Sending next message after acknowledgment");
+                        return Ok(Some(message));
+                    }
+                    Err(e) => {
+                        self.locked = false;
+                        trace!("No more messages available after acknowledgment {}", e);
+                        return Ok(None);
+                    }
                 }
+            } else {
+                self.locked = false;
+                return Err(ReliableDispatchError::AcknowledgmentError(
+                    "Invalid acknowledgment".to_string(),
+                ));
             }
         }
         Err(ReliableDispatchError::AcknowledgmentError(
