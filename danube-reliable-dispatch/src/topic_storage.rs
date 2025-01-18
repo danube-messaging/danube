@@ -66,6 +66,7 @@ impl TopicStore {
         };
 
         if should_create_new_segment {
+            dbg!("Segment is full, creating new segment");
             self.handle_segment_full(segment_id, close_time, message)
                 .await?;
         }
