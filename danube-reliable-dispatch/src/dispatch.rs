@@ -49,38 +49,35 @@ impl SubscriptionDispatch {
 
     /// Process the current segment and send the messages to the consumer
     pub async fn process_current_segment(&mut self) -> Result<StreamMessage> {
+        // If we have a current segment, validate it
         if let Some(segment) = self.segment.as_ref() {
-            let current_segment_id = self.current_segment_id;
+            let segment_id = self.current_segment_id.ok_or_else(|| {
+                ReliableDispatchError::InvalidState(
+                    "Segment ID not cached while processing segment".to_string(),
+                )
+            })?;
 
-            // Validate the current segment
-            let move_to_next_segment = {
-                let segment_id = current_segment_id.ok_or_else(|| {
-                    ReliableDispatchError::InvalidState(
-                        "Segment ID not cached while processing segment".to_string(),
-                    )
-                })?;
-
-                self.validate_segment(segment_id, segment).await?
-            };
-
-            // If validation indicates we should move to the next segment
-            if move_to_next_segment {
+            // Validate current segment state
+            if self.validate_segment_state(segment_id, segment).await? {
                 self.move_to_next_segment().await?;
-                return Err(ReliableDispatchError::SegmentError(
-                    "Move to next segment".to_string(),
-                ));
             }
         } else {
-            // No current segment; attempt to move to the next segment
+            // No current segment, move to next
             self.move_to_next_segment().await?;
         }
 
-        // Process the next message using the stored segment
-        self.process_next_message().await
+        // Process the next message - continue even if no messages available
+        match self.process_next_message().await {
+            Ok(msg) => Ok(msg),
+            Err(ReliableDispatchError::NoMessagesAvailable) => {
+                Err(ReliableDispatchError::NoMessagesAvailable)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Validates the current segment. Returns `true` if the segment was invalidated or closed.
-    pub(crate) async fn validate_segment(
+    pub(crate) async fn validate_segment_state(
         &self,
         segment_id: usize,
         segment: &Arc<RwLock<Segment>>,
@@ -95,16 +92,16 @@ impl SubscriptionDispatch {
         }
 
         // Check if the segment is closed and all messages are acknowledged
-        // Attempt to acquire a read lock on the segment
         let segment_data = segment.read().await;
 
-        // When processing the last message of a segment, there's a brief window where:
-        // 1. The message is sent to the consumer
-        // 2. The segment is marked as closed
-        // 3. We're still waiting for the final acknowledgment
-        // During this window, acked_messages.len() will naturally be one less than segment_data.messages.len(),
-        // but this is a valid state rather than an error condition.
-        if segment_data.close_time > 0 && self.acked_messages.len() == segment_data.messages.len() {
+        // The conditions to move to the next segment are:
+        // 1. The segment is closed
+        // 2. All messages in the segment are acknowledged
+        // 3. There is no pending ack message
+        if segment_data.close_time > 0
+            && self.acked_messages.len() == segment_data.messages.len()
+            && self.pending_ack_message.is_none()
+        {
             trace!("The subscription dispatcher id moving to the next segment, the current segment is closed and all messages consumed");
             return Ok(true);
         }
@@ -114,6 +111,17 @@ impl SubscriptionDispatch {
 
     /// Moves to the next segment in the `TopicStore`.
     pub(crate) async fn move_to_next_segment(&mut self) -> Result<()> {
+        dbg!(
+            "Attempting to move from segment {} to next segment",
+            self.current_segment_id.unwrap_or(1000)
+        );
+
+        // Update the last acknowledged segment
+        if let Some(current_segment_id) = self.current_segment_id {
+            self.last_acked_segment
+                .store(current_segment_id, std::sync::atomic::Ordering::Release);
+        }
+
         let next_segment = self
             .topic_store
             .get_next_segment(self.current_segment_id)
@@ -122,14 +130,13 @@ impl SubscriptionDispatch {
         if let Some(next_segment) = next_segment {
             let next_segment_id = {
                 let segment_data = next_segment.read().await;
+                dbg!(
+                    "Found next segment {} with {} messages",
+                    segment_data.id,
+                    segment_data.messages.len()
+                );
                 segment_data.id
             };
-
-            // Update the last acknowledged segment
-            if let Some(current_segment_id) = self.current_segment_id {
-                self.last_acked_segment
-                    .store(current_segment_id, std::sync::atomic::Ordering::Release);
-            }
 
             // Clear acknowledgments before switching to a new segment
             self.acked_messages.clear();
@@ -159,13 +166,11 @@ impl SubscriptionDispatch {
                 if self.retry_count < 3 {
                     self.retry_count += 1;
                     return self.send_message().await;
+                } else {
+                    Err(ReliableDispatchError::MaxRetriesExceeded)
                 }
             }
         }
-
-        Err(ReliableDispatchError::InvalidState(
-            "Pending ack message".to_string(),
-        ))
     }
 
     async fn send_message(&mut self) -> Result<StreamMessage> {
@@ -179,18 +184,27 @@ impl SubscriptionDispatch {
                     .cloned()
             };
 
-            if let Some(msg) = next_message {
-                self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
-                return Ok(msg);
+            match next_message {
+                Some(msg) => {
+                    trace!("Sending message with id {:?}", msg.msg_id);
+                    self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
+                    Ok(msg)
+                }
+                None => Err(ReliableDispatchError::NoMessagesAvailable),
             }
+        } else {
+            Err(ReliableDispatchError::SegmentError(
+                "No segment available".to_string(),
+            ))
         }
-        Err(ReliableDispatchError::InvalidState(
-            "Pending ack message".to_string(),
-        ))
     }
 
     /// Handle the consumer message acknowledgement
-    pub async fn handle_message_acked(&mut self, request_id: u64, msg_id: MessageID) -> Result<()> {
+    pub async fn handle_message_acked(
+        &mut self,
+        request_id: u64,
+        msg_id: MessageID,
+    ) -> Result<Option<StreamMessage>> {
         // Validate that the message belongs to current segment
         // Not sure if needed
         // if !self.segment.as_ref().map_or(false, |seg| {
@@ -212,11 +226,51 @@ impl SubscriptionDispatch {
                     msg_id
                 );
                 self.retry_count = 0;
-                return Ok(());
+
+                // Try to fetch the next message after acknowledgment
+                match self.process_current_segment().await {
+                    Ok(message) => {
+                        dbg!("with message {}", &self.pending_ack_message);
+                        return Ok(Some(message));
+                    }
+                    Err(ReliableDispatchError::NoMessagesAvailable) => {
+                        dbg!("no more message {}", &self.pending_ack_message);
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        trace!(
+                            "Error processing current segment after acknowledgment: {}",
+                            e
+                        );
+                        dbg!(
+                            "other errors while processing segment {}",
+                            &self.pending_ack_message
+                        );
+                        return Ok(None);
+                    }
+                }
+            } else {
+                dbg!("Invalid acknowledgment: expected (request_id: {}, msg_id: {:?}), got (request_id: {}, msg_id: {:?})",
+                    pending_request_id, pending_msg_id, request_id, &msg_id);
+                // Received acknowledgment doesn't match the pending message
+                return Err(ReliableDispatchError::AcknowledgmentError(
+                format!(
+                    "Invalid acknowledgment: expected (request_id: {}, msg_id: {:?}), got (request_id: {}, msg_id: {:?})",
+                    pending_request_id, pending_msg_id, request_id, msg_id
+                ),
+            ));
             }
+        } else {
+            // Handle stray acknowledgments (when there is no pending message)
+            trace!(
+                "Stray acknowledgment received for request_id {} and msg_id {:?}",
+                request_id,
+                msg_id
+            );
+            // self.acked_messages.insert(msg_id.clone(), request_id);
+
+            // No pending message to process; return None
+            return Ok(None);
         }
-        Err(ReliableDispatchError::AcknowledgmentError(
-            "Invalid or unexpected acknowledgment".to_string(),
-        ))
     }
 }
