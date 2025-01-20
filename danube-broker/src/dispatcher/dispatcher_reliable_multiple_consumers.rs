@@ -53,13 +53,12 @@ impl DispatcherReliableMultipleConsumers {
                             }
                         }
                     }
-                    Some(message) = subscription_dispatch.next_message() => {
-                        if let Some(active_idx) = Self::get_next_active_consumer(&consumers, &index_consumer).await {
-                            if let Err(e) = consumers[active_idx].send_message(message).await {
-                                warn!("Failed to dispatch message: {}", e);
-                            }
-                        }
+                    Ok(message) = subscription_dispatch.new_message() => {
+                    if let Some(msg) = message {
+                        dbg!("sending message from next segment");
+                       // Self::send_message(msg, &mut active_consumer).await;
                     }
+                }
                 }
             }
         });

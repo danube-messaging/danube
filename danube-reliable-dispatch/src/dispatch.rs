@@ -38,8 +38,6 @@ pub struct SubscriptionDispatch {
     retry_interval: time::Duration,
     // notify_rx is the channel to receive notification from the topic
     notify_rx: broadcast::Receiver<MessageID>,
-    // A lock to prevent concurrent access to the subscription dispatch
-    locked: bool,
 }
 
 impl SubscriptionDispatch {
@@ -58,49 +56,32 @@ impl SubscriptionDispatch {
             retry_count: 0,
             retry_interval: time::Duration::from_secs(5),
             notify_rx,
-            locked: false,
         }
     }
 
-    pub async fn next_message(&mut self) -> Option<StreamMessage> {
-        // First try to process any available messages without waiting
-        if self.pending_ack_message.is_none() && !self.locked {
-            if let Ok(message) = self.process_current_segment().await {
-                dbg!("send message without waiting");
-                self.locked = false;
-                return Some(message);
-            }
+    pub async fn new_message(&mut self) -> Result<Option<StreamMessage>> {
+        dbg!("select got in the new message");
+        // If there's a pending ack, don't send new messages
+        if self.pending_ack_message.is_some() {
+            return Ok(None);
         }
 
-        tokio::select! {
-            Ok(_) = self.notify_rx.recv() => {
-                dbg!("Received notification from producer");
-                dbg!(&self.pending_ack_message);
-                dbg!(self.locked);
-
-                if self.pending_ack_message.is_none() && !self.locked {
-                    dbg!("getting inside");
-                    if let Ok(message) = self.process_current_segment().await {
-                        self.locked = false;
-                        return Some(message);
-                    }
+        // Wait for new message notifications
+        match self.notify_rx.recv().await {
+            Ok(_message_id) => {
+                // Process the current segment and return the message
+                match self.process_current_segment().await {
+                    Ok(message) => Ok(Some(message)),
+                    Err(ReliableDispatchError::NoMessagesAvailable) => Ok(None),
+                    Err(e) => Err(e),
                 }
             }
-            _ = time::sleep(self.retry_interval), if self.pending_ack_message.is_some() && self.retry_count < 3 => {
-                dbg!("Retrying to send message");
-                if let Ok(message) = self.process_next_message().await {
-                    return Some(message);
-                }
-            }
+            Err(e) => Err(ReliableDispatchError::NotificationError(e.to_string())),
         }
-
-        None
     }
 
     /// Process the current segment and send the messages to the consumer
     pub async fn process_current_segment(&mut self) -> Result<StreamMessage> {
-        self.locked = true;
-
         // If we have a current segment, validate it
         if let Some(segment) = self.segment.as_ref() {
             let segment_id = self.current_segment_id.ok_or_else(|| {
@@ -122,7 +103,6 @@ impl SubscriptionDispatch {
         match self.process_next_message().await {
             Ok(msg) => Ok(msg),
             Err(ReliableDispatchError::NoMessagesAvailable) => {
-                self.locked = false;
                 Err(ReliableDispatchError::NoMessagesAvailable)
             }
             Err(e) => Err(e),
@@ -148,12 +128,10 @@ impl SubscriptionDispatch {
         // Attempt to acquire a read lock on the segment
         let segment_data = segment.read().await;
 
-        // When processing the last message of a segment, there's a brief window where:
-        // 1. The message is sent to the consumer
-        // 2. The segment is marked as closed
-        // 3. We're still waiting for the final acknowledgment
-        // During this window, acked_messages.len() will naturally be one less than segment_data.messages.len(),
-        // but this is a valid state rather than an error condition.
+        // The conditions to move to the next segment are:
+        // 1. The segment is closed
+        // 2. All messages in the segment are acknowledged
+        // 3. There is no pending ack message
         if segment_data.close_time > 0
             && self.acked_messages.len() == segment_data.messages.len()
             && self.pending_ack_message.is_none()
@@ -259,19 +237,10 @@ impl SubscriptionDispatch {
         request_id: u64,
         msg_id: MessageID,
     ) -> Result<Option<StreamMessage>> {
-        // Validate that the message belongs to current segment
-        // Not sure if needed
-        // if !self.segment.as_ref().map_or(false, |seg| {
-        //     seg.read()
-        //         .map_or(false, |s| s.messages.iter().any(|m| m.msg_id == msg_id))
-        // }) {
-        //     return Err(ReliableDispatchError::AcknowledgmentError(
-        //         "Acked message does not belong to current segment".to_string(),
-        //     ));
-        // }
-
+        // Check if there is a pending acknowledgment
         if let Some((pending_request_id, pending_msg_id)) = &self.pending_ack_message {
             if *pending_request_id == request_id && *pending_msg_id == msg_id {
+                // Valid acknowledgment; clear the pending message
                 self.pending_ack_message = None;
                 self.acked_messages.insert(msg_id.clone(), request_id);
                 trace!(
@@ -281,27 +250,52 @@ impl SubscriptionDispatch {
                 );
                 self.retry_count = 0;
 
-                // Try to get next message
+                // Try to fetch the next message after acknowledgment
                 match self.process_current_segment().await {
                     Ok(message) => {
                         trace!("Sending next message after acknowledgment");
+                        dbg!("with message {}", &self.pending_ack_message);
                         return Ok(Some(message));
                     }
+                    Err(ReliableDispatchError::NoMessagesAvailable) => {
+                        trace!("No more messages available after acknowledgment");
+                        dbg!("no more message {}", &self.pending_ack_message);
+                        return Ok(None);
+                    }
                     Err(e) => {
-                        self.locked = false;
-                        trace!("No more messages available after acknowledgment {}", e);
+                        trace!(
+                            "Error processing current segment after acknowledgment: {}",
+                            e
+                        );
+                        dbg!(
+                            "other errors while processing segment {}",
+                            &self.pending_ack_message
+                        );
                         return Ok(None);
                     }
                 }
             } else {
-                self.locked = false;
+                dbg!("Invalid acknowledgment: expected (request_id: {}, msg_id: {:?}), got (request_id: {}, msg_id: {:?})",
+                    pending_request_id, pending_msg_id, request_id, &msg_id);
+                // Received acknowledgment doesn't match the pending message
                 return Err(ReliableDispatchError::AcknowledgmentError(
-                    "Invalid acknowledgment".to_string(),
-                ));
+                format!(
+                    "Invalid acknowledgment: expected (request_id: {}, msg_id: {:?}), got (request_id: {}, msg_id: {:?})",
+                    pending_request_id, pending_msg_id, request_id, msg_id
+                ),
+            ));
             }
+        } else {
+            // Handle stray acknowledgments (when there is no pending message)
+            trace!(
+                "Stray acknowledgment received for request_id {} and msg_id {:?}",
+                request_id,
+                msg_id
+            );
+            self.acked_messages.insert(msg_id.clone(), request_id);
+
+            // No pending message to process; return None
+            return Ok(None);
         }
-        Err(ReliableDispatchError::AcknowledgmentError(
-            "Invalid or unexpected acknowledgment".to_string(),
-        ))
     }
 }

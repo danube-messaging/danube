@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
                 );
 
                 consumer.ack(&message).await?;
+                println!("Message acknowledged");
             }
             Err(e) => println!("Failed to convert Payload to String: {}", e),
         }

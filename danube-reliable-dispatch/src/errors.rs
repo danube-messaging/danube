@@ -27,4 +27,7 @@ pub enum ReliableDispatchError {
 
     #[error("No messages available")]
     NoMessagesAvailable,
+
+    #[error("Notification error: {0}")]
+    NotificationError(String),
 }

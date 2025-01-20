@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use danube_core::message::StreamMessage;
 use danube_reliable_dispatch::SubscriptionDispatch;
 use tokio::sync::mpsc;
 use tracing::{trace, warn};
@@ -20,57 +21,59 @@ impl DispatcherReliableSingleConsumer {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut active_consumer: Option<Consumer> = None;
 
+            if let Ok(message) = subscription_dispatch.process_current_segment().await {
+                dbg!("sending message from current segment");
+                Self::send_message(message, &mut active_consumer).await;
+            }
+
             loop {
                 tokio::select! {
-                    Some(command) = control_rx.recv() => {
-                        match command {
-                            DispatcherCommand::AddConsumer(consumer) => {
-                                if let Err(e) = Self::handle_add_consumer(
-                                    &mut consumers,
-                                    &mut active_consumer,
-                                    consumer,
-                                ).await {
-                                    warn!("Failed to add consumer: {}", e);
-                                }
-                            }
-                            DispatcherCommand::RemoveConsumer(consumer_id) => {
-                                Self::handle_remove_consumer(
-                                    &mut consumers,
-                                    &mut active_consumer,
-                                    consumer_id,
-                                ).await;
-                            }
-                            DispatcherCommand::DisconnectAllConsumers => {
-                                Self::handle_disconnect_all(
-                                    &mut consumers,
-                                    &mut active_consumer,
-                                ).await;
-                            }
-                            DispatcherCommand::DispatchMessage(_) => {
-                                unreachable!("Reliable Dispatcher should not receive messages, just segments");
-                            }
-                            DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                dbg!("received acked message");
-                                if let Ok(Some(next_message)) = subscription_dispatch
-                                    .handle_message_acked(request_id, msg_id)
-                                    .await {
-                                        if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
-                                            if let Err(e) = consumer.send_message(next_message).await {
-                                                warn!("Failed to dispatch message: {}", e);
+                                            Some(command) = control_rx.recv() => {
+                                                match command {
+                                                    DispatcherCommand::AddConsumer(consumer) => {
+                                                        if let Err(e) = Self::handle_add_consumer(
+                                                            &mut consumers,
+                                                            &mut active_consumer,
+                                                            consumer,
+                                                        ).await {
+                                                            warn!("Failed to add consumer: {}", e);
+                                                        }
+                                                    }
+                                                    DispatcherCommand::RemoveConsumer(consumer_id) => {
+                                                        Self::handle_remove_consumer(
+                                                            &mut consumers,
+                                                            &mut active_consumer,
+                                                            consumer_id,
+                                                        ).await;
+                                                    }
+                                                    DispatcherCommand::DisconnectAllConsumers => {
+                                                        Self::handle_disconnect_all(
+                                                            &mut consumers,
+                                                            &mut active_consumer,
+                                                        ).await;
+                                                    }
+                                                    DispatcherCommand::DispatchMessage(_) => {
+                                                        unreachable!("Reliable Dispatcher should not receive messages, just segments");
+                                                    }
+                                                    DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                                        dbg!("received acked message");
+                                                        if let Ok(Some(next_message)) = subscription_dispatch
+                                                            .handle_message_acked(request_id, msg_id)
+                                                            .await {
+                                                               Self::send_message(next_message, &mut active_consumer).await;
+                                                            }
+                                                    }
+                                                }
                                             }
+                                            Ok(message) = subscription_dispatch.new_message() => {
+                            if let Some(msg) = message {
+                                dbg!("sending message from next segment");
+                                Self::send_message(msg, &mut active_consumer).await;
+                            }
+                            // Add a small delay to prevent tight loops
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
                                         }
-                                    }
-                            }
-                        }
-                    }
-                    Some(message) = subscription_dispatch.next_message() => {
-                        if let Some(consumer) = Self::get_active_consumer(&mut active_consumer).await {
-                            if let Err(e) = consumer.send_message(message).await {
-                                warn!("Failed to dispatch message: {}", e);
-                            }
-                        }
-                    }
-                }
             }
         });
 
@@ -79,6 +82,7 @@ impl DispatcherReliableSingleConsumer {
 
     /// Acknowledge a message, which means that the message has been successfully processed by the consumer
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
+        dbg!("received ack message");
         self.control_tx
             .send(DispatcherCommand::MessageAcked(
                 ack_msg.request_id,
@@ -86,6 +90,17 @@ impl DispatcherReliableSingleConsumer {
             ))
             .await
             .map_err(|_| anyhow!("Failed to send message acked command"))
+    }
+
+    pub(crate) async fn send_message(
+        message: StreamMessage,
+        active_consumer: &mut Option<Consumer>,
+    ) {
+        if let Some(consumer) = Self::get_active_consumer(active_consumer).await {
+            if let Err(e) = consumer.send_message(message).await {
+                warn!("Failed to dispatch message: {}", e);
+            }
+        }
     }
 
     /// Add a consumer
