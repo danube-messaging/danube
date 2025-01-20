@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use danube_reliable_dispatch::SubscriptionDispatch;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, Notify},
     time::{self, Duration},
 };
 use tracing::{trace, warn};
@@ -75,6 +76,10 @@ impl DispatcherReliableMultipleConsumers {
         });
 
         DispatcherReliableMultipleConsumers { control_tx }
+    }
+
+    pub(crate) fn get_notifier(&self) -> Arc<Notify> {
+        todo!()
     }
 
     /// Acknowledge a message, which means that the message has been successfully processed by the consumer

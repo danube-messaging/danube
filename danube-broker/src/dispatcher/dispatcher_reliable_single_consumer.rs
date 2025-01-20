@@ -108,6 +108,10 @@ impl DispatcherReliableSingleConsumer {
         self.notify_dispatch.notify_one();
     }
 
+    pub(crate) fn get_notifier(&self) -> Arc<Notify> {
+        self.notify_dispatch.clone()
+    }
+
     /// Acknowledge a message, which means that the message has been successfully processed by the consumer
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         self.control_tx
