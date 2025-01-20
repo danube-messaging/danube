@@ -32,6 +32,7 @@ pub struct SubscriptionDispatch {
     pub(crate) acked_messages: HashMap<MessageID, u64>,
     // retry count for the pending ack message
     retry_count: u8,
+    last_retry_timestamp: Option<tokio::time::Instant>,
 }
 
 impl SubscriptionDispatch {
@@ -44,6 +45,7 @@ impl SubscriptionDispatch {
             pending_ack_message: None,
             acked_messages: HashMap::new(),
             retry_count: 0,
+            last_retry_timestamp: None,
         }
     }
 
@@ -164,8 +166,23 @@ impl SubscriptionDispatch {
             None => return self.send_message().await,
             Some(_) => {
                 if self.retry_count < 3 {
+                    let delay = match self.retry_count {
+                        0 => tokio::time::Duration::from_secs(10),
+                        1 => tokio::time::Duration::from_secs(20),
+                        2 => tokio::time::Duration::from_secs(30),
+                        _ => unreachable!(),
+                    };
+
+                    let now = tokio::time::Instant::now();
+                    if let Some(last_retry) = self.last_retry_timestamp {
+                        if now.duration_since(last_retry) < delay {
+                            return Err(ReliableDispatchError::NoMessagesAvailable);
+                        }
+                    }
+
                     self.retry_count += 1;
-                    return self.send_message().await;
+                    self.last_retry_timestamp = Some(now);
+                    self.send_message().await
                 } else {
                     Err(ReliableDispatchError::MaxRetriesExceeded)
                 }
@@ -261,16 +278,18 @@ impl SubscriptionDispatch {
             ));
             }
         } else {
-            // Handle stray acknowledgments (when there is no pending message)
             trace!(
                 "Stray acknowledgment received for request_id {} and msg_id {:?}",
                 request_id,
                 msg_id
             );
+            return Err(ReliableDispatchError::AcknowledgmentError(
+                "No pending message to acknowledge".to_string(),
+            ));
+            // Handle stray acknowledgments (when there is no pending message) ?
             // self.acked_messages.insert(msg_id.clone(), request_id);
-
             // No pending message to process; return None
-            return Ok(None);
+            //return Ok(None);
         }
     }
 }

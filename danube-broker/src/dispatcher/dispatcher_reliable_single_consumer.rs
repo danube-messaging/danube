@@ -28,6 +28,8 @@ impl DispatcherReliableSingleConsumer {
                 // Wait for a notification or a control command
                 notify_dispatch_clone.notified().await;
 
+                dbg!("going through loop");
+
                 // Process control commands first
                 while let Ok(command) = control_rx.try_recv() {
                     match command {

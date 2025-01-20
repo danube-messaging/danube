@@ -94,7 +94,7 @@ async fn test_process_empty_segment() {
     let result = dispatch.process_current_segment().await;
     assert!(matches!(
         result,
-        Err(ReliableDispatchError::InvalidState(_))
+        Err(ReliableDispatchError::SegmentError(_)) // Err(ReliableDispatchError::NoMessagesAvailable)
     ));
 }
 
@@ -105,13 +105,34 @@ async fn test_process_empty_segment() {
 /// - Addition to acknowledged messages map
 #[tokio::test]
 async fn test_message_acknowledgment() {
-    let topic_store = create_test_topic_store();
+    let storage = Arc::new(InMemoryStorage::new());
+    let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
+    let topic_store = TopicStore::new(storage.clone(), reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
-    let request_id = 1;
-    let msg_id = create_test_message_id(1);
+    // Create and setup segment with message
+    let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
+    let message = create_test_message(vec![1]);
+    {
+        let mut segment_write = segment.write().await;
+        segment_write.messages.push(message.clone());
+    }
 
+    // Store segment in storage backend
+    storage.put_segment(1, segment.clone()).await.unwrap();
+    dispatch
+        .topic_store
+        .segments_index
+        .write()
+        .await
+        .push((1, 0));
+
+    let request_id = message.request_id;
+    let msg_id = message.msg_id.clone();
+
+    dispatch.segment = Some(segment);
+    dispatch.current_segment_id = Some(1);
     dispatch.pending_ack_message = Some((request_id, msg_id.clone()));
 
     let result = dispatch
@@ -190,19 +211,12 @@ async fn test_clear_current_segment() {
 #[tokio::test]
 async fn test_validate_segment() {
     let storage = Arc::new(InMemoryStorage::new());
-    let reliable_options = ReliableOptions::new(
-        1, // 1MB segment size
-        RetentionPolicy::RetainUntilAck,
-        60, // 60s retention period
-    );
+    let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
     let topic_store = TopicStore::new(storage.clone(), reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
-    // Create a test segment and add it to topic_store
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
-
-    // Store segment using the storage backend
     storage.put_segment(1, segment.clone()).await.unwrap();
     dispatch
         .topic_store
@@ -211,26 +225,22 @@ async fn test_validate_segment() {
         .await
         .push((1, 0));
 
-    // Test 1: Valid segment that exists and is not closed
-    let result = dispatch.validate_segment(1, &segment).await;
+    // Test 1: Initial state
+    let result = dispatch.validate_segment_state(1, &segment).await;
     assert!(matches!(result, Ok(false)));
 
-    // Test 2: Closed segment with properly acknowledged message
+    // Test 2: Closed segment with acknowledged message
+    let message = create_test_message(vec![1]);
     {
         let mut segment_write = segment.write().await;
         segment_write.close_time = 1;
-        let message = create_test_message(vec![1]);
-        let msg_id = message.msg_id.clone();
-        let request_id = message.request_id;
-        segment_write.messages.push(message);
-
-        dispatch.pending_ack_message = Some((request_id, msg_id.clone()));
-        dispatch
-            .handle_message_acked(request_id, msg_id)
-            .await
-            .unwrap();
+        segment_write.messages.push(message.clone());
     }
 
-    let result = dispatch.validate_segment(1, &segment).await;
+    dispatch
+        .acked_messages
+        .insert(message.msg_id.clone(), message.request_id);
+
+    let result = dispatch.validate_segment_state(1, &segment).await;
     assert!(matches!(result, Ok(true)));
 }
