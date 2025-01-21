@@ -113,11 +113,6 @@ impl SubscriptionDispatch {
 
     /// Moves to the next segment in the `TopicStore`.
     pub(crate) async fn move_to_next_segment(&mut self) -> Result<()> {
-        dbg!(
-            "Attempting to move from segment {} to next segment",
-            self.current_segment_id.unwrap_or(1000)
-        );
-
         // Update the last acknowledged segment
         if let Some(current_segment_id) = self.current_segment_id {
             self.last_acked_segment
@@ -132,11 +127,6 @@ impl SubscriptionDispatch {
         if let Some(next_segment) = next_segment {
             let next_segment_id = {
                 let segment_data = next_segment.read().await;
-                dbg!(
-                    "Found next segment {} with {} messages",
-                    segment_data.id,
-                    segment_data.messages.len()
-                );
                 segment_data.id
             };
 
@@ -247,11 +237,9 @@ impl SubscriptionDispatch {
                 // Try to fetch the next message after acknowledgment
                 match self.process_current_segment().await {
                     Ok(message) => {
-                        dbg!("with message {}", &self.pending_ack_message);
                         return Ok(Some(message));
                     }
                     Err(ReliableDispatchError::NoMessagesAvailable) => {
-                        dbg!("no more message {}", &self.pending_ack_message);
                         return Ok(None);
                     }
                     Err(e) => {
@@ -259,16 +247,11 @@ impl SubscriptionDispatch {
                             "Error processing current segment after acknowledgment: {}",
                             e
                         );
-                        dbg!(
-                            "other errors while processing segment {}",
-                            &self.pending_ack_message
-                        );
+
                         return Ok(None);
                     }
                 }
             } else {
-                dbg!("Invalid acknowledgment: expected (request_id: {}, msg_id: {:?}), got (request_id: {}, msg_id: {:?})",
-                    pending_request_id, pending_msg_id, request_id, &msg_id);
                 // Received acknowledgment doesn't match the pending message
                 return Err(ReliableDispatchError::AcknowledgmentError(
                 format!(

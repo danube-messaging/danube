@@ -28,8 +28,6 @@ impl DispatcherReliableSingleConsumer {
                 // Wait for a notification or a control command
                 notify_dispatch_clone.notified().await;
 
-                dbg!("going through loop");
-
                 // Process control commands first
                 while let Ok(command) = control_rx.try_recv() {
                     match command {
@@ -61,7 +59,6 @@ impl DispatcherReliableSingleConsumer {
                             );
                         }
                         DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                            dbg!("received acked message");
                             if let Some(consumer) =
                                 Self::get_active_consumer(&mut active_consumer).await
                             {
