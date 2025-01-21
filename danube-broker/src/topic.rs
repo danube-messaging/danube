@@ -6,7 +6,7 @@ use danube_reliable_dispatch::ReliableDispatch;
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
 use crate::{
@@ -42,6 +42,7 @@ pub(crate) struct Topic {
     pub(crate) producers: HashMap<u64, Producer>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
+    notifiers: Mutex<Vec<Arc<Notify>>>,
 }
 
 impl Topic {
@@ -64,6 +65,7 @@ impl Topic {
             subscriptions: Mutex::new(HashMap::new()),
             producers: HashMap::new(),
             dispatch_strategy,
+            notifiers: Mutex::new(Vec::new()),
         }
     }
 
@@ -176,6 +178,10 @@ impl Topic {
             }
             DispatchStrategy::Reliable(reliable_dispatch) => {
                 reliable_dispatch.store_message(stream_message).await?;
+                let mut notifier_guard = self.notifiers.lock().await;
+                for notifier in notifier_guard.iter_mut() {
+                    notifier.notify_one();
+                }
             }
         };
 
@@ -215,13 +221,25 @@ impl Topic {
         let subscription = if let std::collections::hash_map::Entry::Vacant(entry) =
             subscriptions_lock.entry(options.subscription_name.clone())
         {
-            let new_subscription =
+            let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
 
             // Handle additional logic for reliable storage
             if let DispatchStrategy::Reliable(reliable_dispatch) = &self.dispatch_strategy {
                 reliable_dispatch
                     .add_subscription(&new_subscription.subscription_name)
+                    .await?;
+
+                let notifier = new_subscription
+                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
+                    .await?;
+
+                if let Some(notifier) = notifier {
+                    self.notifiers.lock().await.push(notifier);
+                }
+            } else {
+                let _ = new_subscription
+                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
                     .await?;
             }
 
@@ -239,9 +257,7 @@ impl Topic {
 
         //Todo! Check the topic policies with max_consumers per topic
 
-        let consumer_id = subscription
-            .add_consumer(topic_name, options, &self.dispatch_strategy)
-            .await?;
+        let consumer_id = subscription.add_consumer(topic_name, options).await?;
 
         Ok(consumer_id)
     }

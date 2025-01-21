@@ -16,6 +16,7 @@ use danube_core::{
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
+/// ReliableDispatch is Topic bounded message queue for reliable delivery
 #[derive(Debug)]
 pub struct ReliableDispatch {
     // Topic store is used to store messages in a queue for reliable delivery

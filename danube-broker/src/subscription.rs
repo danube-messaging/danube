@@ -3,7 +3,7 @@ use danube_core::message::StreamMessage;
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::trace;
 
 use crate::{
@@ -79,7 +79,6 @@ impl Subscription {
         &mut self,
         topic_name: &str,
         options: SubscriptionOptions,
-        dispatch_strategy: &DispatchStrategy,
     ) -> Result<u64> {
         //for communication with client consumer
         let (tx_cons, rx_cons) = mpsc::channel(4);
@@ -94,16 +93,6 @@ impl Subscription {
             tx_cons,
             consumer_status.clone(),
         );
-
-        // checks if there'a a dispatcher (responsible for distributing messages to consumers)
-        // if not initialize a new dispatcher based on the subscription type: Exclusive, Shared, Failover
-        if self.dispatcher.is_none() {
-            let new_dispatcher = self
-                .create_new_dispatcher(options.clone(), dispatch_strategy)
-                .await?;
-
-            self.dispatcher = Some(new_dispatcher);
-        };
 
         let dispatcher = self.dispatcher.as_mut().unwrap();
         // Add the consumer to the dispatcher
@@ -129,20 +118,29 @@ impl Subscription {
     }
 
     pub(crate) async fn create_new_dispatcher(
-        &self,
+        &mut self,
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
-    ) -> Result<Dispatcher> {
-        let new_dispatcher = match dispatch_strategy {
+    ) -> Result<Option<Arc<Notify>>> {
+        let (new_dispatcher, notifier) = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
-                0 => Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                0 => (
+                    Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                    None,
+                ),
 
                 // Shared
-                1 => Dispatcher::MultipleConsumers(DispatcherMultipleConsumers::new()),
+                1 => (
+                    Dispatcher::MultipleConsumers(DispatcherMultipleConsumers::new()),
+                    None,
+                ),
 
                 // Failover
-                2 => Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                2 => (
+                    Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                    None,
+                ),
 
                 _ => {
                     return Err(anyhow!("Should not get here"));
@@ -155,19 +153,37 @@ impl Subscription {
 
                 match options.subscription_type {
                     // Exclusive
-                    0 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
-                        subscription_dispatch,
-                    )),
+                    0 => {
+                        let new_dispatcher =
+                            DispatcherReliableSingleConsumer::new(subscription_dispatch);
+                        let notifier = new_dispatcher.get_notifier();
+                        (
+                            Dispatcher::ReliableOneConsumer(new_dispatcher),
+                            Some(notifier),
+                        )
+                    }
 
                     // Shared
-                    1 => Dispatcher::ReliableMultipleConsumers(
-                        DispatcherReliableMultipleConsumers::new(subscription_dispatch),
-                    ),
+                    1 => {
+                        let new_dispatcher =
+                            DispatcherReliableMultipleConsumers::new(subscription_dispatch);
+                        let notifier = new_dispatcher.get_notifier();
+                        (
+                            Dispatcher::ReliableMultipleConsumers(new_dispatcher),
+                            Some(notifier),
+                        )
+                    }
 
                     // Failover
-                    2 => Dispatcher::ReliableOneConsumer(DispatcherReliableSingleConsumer::new(
-                        subscription_dispatch,
-                    )),
+                    2 => {
+                        let new_dispatcher =
+                            DispatcherReliableSingleConsumer::new(subscription_dispatch);
+                        let notifier = new_dispatcher.get_notifier();
+                        (
+                            Dispatcher::ReliableOneConsumer(new_dispatcher),
+                            Some(notifier),
+                        )
+                    }
 
                     _ => {
                         return Err(anyhow!("Should not get here"));
@@ -176,7 +192,9 @@ impl Subscription {
             }
         };
 
-        Ok(new_dispatcher)
+        self.dispatcher = Some(new_dispatcher);
+
+        Ok(notifier)
     }
 
     pub(crate) async fn send_message_to_dispatcher(&self, message: StreamMessage) -> Result<()> {
