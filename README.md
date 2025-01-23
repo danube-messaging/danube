@@ -1,4 +1,4 @@
-# ![D from Danube](D_from_Danube.png)  anube
+# ![D from Danube](D_Danube_mini.jpeg) Danube
 
 Danube is an open-source distributed Messaging Broker platform (inspired by Apache Pulsar).
 
