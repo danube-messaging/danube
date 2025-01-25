@@ -13,7 +13,6 @@ mod providers;
 pub use providers::{
     etcd::{EtcdStore, KeyValueVersion},
     in_memory::MemoryStore,
-    redis::RedisStore,
 };
 
 use async_trait::async_trait;
@@ -24,9 +23,8 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub enum MetadataStorage {
     Etcd(EtcdStore),
-    Redis(RedisStore),
     InMemory(MemoryStore), // InMemory is used for testing purposes
-                           // Future backends: Consul, Zookeeper, PostgreSQL, MongoDB etc.
+                           // Is there a need to add other backends, like Redis,  Consul, Zookeeper ?
 }
 
 #[async_trait]
@@ -34,7 +32,6 @@ impl MetadataStore for MetadataStorage {
     async fn get(&self, key: &str, get_options: MetaOptions) -> Result<Option<Value>> {
         match self {
             MetadataStorage::Etcd(store) => store.get(key, get_options).await,
-            MetadataStorage::Redis(store) => store.get(key, get_options).await,
             MetadataStorage::InMemory(store) => store.get(key, get_options).await,
         }
     }
@@ -42,7 +39,6 @@ impl MetadataStore for MetadataStorage {
     async fn get_childrens(&self, path: &str) -> Result<Vec<String>> {
         match self {
             MetadataStorage::Etcd(store) => store.get_childrens(path).await,
-            MetadataStorage::Redis(store) => store.get_childrens(path).await,
             MetadataStorage::InMemory(store) => store.get_childrens(path).await,
         }
     }
@@ -50,7 +46,6 @@ impl MetadataStore for MetadataStorage {
     async fn put(&self, key: &str, value: Value, put_options: MetaOptions) -> Result<()> {
         match self {
             MetadataStorage::Etcd(store) => store.put(key, value, put_options).await,
-            MetadataStorage::Redis(store) => store.put(key, value, put_options).await,
             MetadataStorage::InMemory(store) => store.put(key, value, put_options).await,
         }
     }
@@ -58,7 +53,6 @@ impl MetadataStore for MetadataStorage {
     async fn delete(&self, key: &str) -> Result<()> {
         match self {
             MetadataStorage::Etcd(store) => store.delete(key).await,
-            MetadataStorage::Redis(store) => store.delete(key).await,
             MetadataStorage::InMemory(store) => store.delete(key).await,
         }
     }
@@ -66,7 +60,6 @@ impl MetadataStore for MetadataStorage {
     async fn watch(&self, prefix: &str) -> Result<WatchStream> {
         match self {
             MetadataStorage::Etcd(store) => store.watch(prefix).await,
-            MetadataStorage::Redis(store) => store.watch(prefix).await,
             MetadataStorage::InMemory(store) => store.watch(prefix).await,
         }
     }

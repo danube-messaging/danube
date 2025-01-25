@@ -26,8 +26,14 @@ members = [
     # -- Danube client cli
     "danube-cli", 
 
+    # -- Danube storage disk
     "storage/danube-storage-disk",
-    "storage/danube-storage-s3",
+
+    # -- Danube storage s3
+    "storage/danube-storage-s3", 
+    
+    # -- Danube storage tikv
+    "storage/danube-storage-tikv",
 ]
 
 [workspace.dependencies]
