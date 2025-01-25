@@ -1,3 +1,7 @@
 # danube-metadata-store
 
-This danube-metadata-store aims to reduce the hard dependency on ETCD for metadata storage by providing an abstraction layer that allows different storage systems to be used interchangeably for managing metadata. It offers a unified interface for operations such as get, put, and watch across various backend implementations.
+This crate is responsible for storing and retrieving metadata for the Danube messaging broker.
+
+ETCD is used as a coordination service within the Danube distributed system. It uses the built-in Watch mechanism to monitor specific keys or directories for changes and react to those changes.
+
+The danube-metadata-store also provides an abstraction layer that offers a unified interface for operations such as get, put, and watch. This allows to use different storage system implementations for managing metadata, if needed.
