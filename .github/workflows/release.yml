@@ -156,21 +156,24 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## Release Notes
+            ## Release Notes - Binaries
 
-            Binaries:
+            ## Danube Broker:
             - **Danube Broker (Linux)**: [Download danube-broker](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-linux)
-            - **Danube Admin Cli (Linux)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-linux)
-            - **Danube Cli (Linux)**: [Download danube-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux)
             - **Danube Broker (MacOS Intel)**: [Download danube-broker](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-macos-intel)
-            - **Danube Admin Cli (MacOS Intel)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos-intel)
-            - **Danube Cli (MacOS Intel)**: [Download danube-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos-intel)
             - **Danube Broker (Apple Silicon)**: [Download danube-broker](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-macos-silicon)
-            - **Danube Admin Cli (Apple Silicon)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos-silicon)
+
+            ## Client CLI:
+            - **Danube Cli (Linux)**: [Download danube-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux)
+            - **Danube Cli (MacOS Intel)**: [Download danube-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos-intel)
             - **Danube Cli (Apple Silicon)**: [Download danube-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos-silicon)
-            
+
+            ## Admin CLI  
+            - **Danube Admin Cli (Linux)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-linux)
+            - **Danube Admin Cli (MacOS Intel)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos-intel)
+            - **Danube Admin Cli (Apple Silicon)**: [Download danube-admin-cli](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos-silicon)
  
-            Docker Image:
+            ## Docker Image:
             - **Docker Image**: ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}
 
       - name: Upload danube-broker (Linux)
