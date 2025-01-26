@@ -36,8 +36,6 @@ pub(crate) struct TopicProducer {
     producer_id: Option<u64>,
     // unique identifier for every request sent by the producer
     request_id: AtomicU64,
-    // it represents the sequence ID of the message within the topic
-    message_sequence_id: AtomicU64,
     // the schema represent the message payload schema
     schema: Schema,
     // the retention strategy for the topic
@@ -65,7 +63,6 @@ impl TopicProducer {
             producer_name,
             producer_id: None,
             request_id: AtomicU64::new(0),
-            message_sequence_id: AtomicU64::new(0),
             schema,
             dispatch_strategy,
             producer_options,
@@ -196,12 +193,17 @@ impl TopicProducer {
         };
 
         let msg_id = MessageID {
-            sequence_id: self.message_sequence_id.fetch_add(1, Ordering::SeqCst),
             producer_id: self
                 .producer_id
                 .expect("Producer ID should be set before sending messages"),
             topic_name: self.topic.clone(),
             broker_addr: self.client.uri.to_string(),
+            // this is default as the producer ignores this while sending messages
+            // it is set on the broker side
+            segment_id: 0,
+            // this is default as the producer ignores this while sending messages
+            // it is set on the broker side
+            segment_offset: 0,
         };
 
         let send_message = StreamMessage {
@@ -223,7 +225,7 @@ impl TopicProducer {
         match response {
             Ok(resp) => {
                 let response = resp.into_inner();
-                return Ok(response.sequence_id);
+                return Ok(response.request_id);
             }
             // maybe some checks on the status, if anything can be handled by server
             Err(status) => {

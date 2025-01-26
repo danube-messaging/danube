@@ -46,9 +46,10 @@ async fn main() -> Result<()> {
         match String::from_utf8(payload) {
             Ok(message_str) => {
                 println!(
-                    "Received message: {:?} , with id: {}, total received bytes: {}",
+                    "Received message: {:?} , from segment: {}, with offset: {}, total received bytes: {}",
                     message_str.split_once("!").unwrap().0,
-                    &message.msg_id.sequence_id,
+                    &message.msg_id.segment_id,
+                    &message.msg_id.segment_offset,
                     total_received_size
                 );
 

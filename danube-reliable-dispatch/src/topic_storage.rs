@@ -60,7 +60,12 @@ impl TopicStore {
                 writable_segment.close_time = close_time;
                 true
             } else {
-                writable_segment.add_message(message.clone());
+                // set the correct segment id and offset for the message
+                // the producer sets both to 0 as this is assigned by the broker once stored
+                let mut message = message.clone();
+                message.msg_id.segment_id = segment_id as u64;
+                message.msg_id.segment_offset = writable_segment.next_offset;
+                writable_segment.add_message(message);
                 false
             }
         };
@@ -111,7 +116,7 @@ impl TopicStore {
         &self,
         segment_id: usize,
         close_time: u64,
-        message: StreamMessage,
+        mut message: StreamMessage,
     ) -> Result<()> {
         // First write the current full segment to storage
         if let Some(cached) = &*self.cached_segment.lock().await {
@@ -140,6 +145,10 @@ impl TopicStore {
 
         // Add initial message to new segment
         let mut new_writable_segment = new_segment.write().await;
+        // set the correct segment id and offset for the message
+        // the producer sets both to 0 as this is assigned by the broker once stored
+        message.msg_id.segment_id = new_segment_id as u64;
+        message.msg_id.segment_offset = new_writable_segment.next_offset;
         new_writable_segment.add_message(message);
 
         Ok(())

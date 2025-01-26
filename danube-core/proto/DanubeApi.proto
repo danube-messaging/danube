@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package danube;
+package danube.v23;
 
 service ProducerService {
     // Creates a new Producer on a topic
@@ -57,7 +57,6 @@ message ProducerResponse {
 // Producer receive acknowledge for the sent message
 message MessageResponse {
     uint64 request_id = 1;
-    uint64 sequence_id = 2;
 }
 
 // ============================================================================================
@@ -120,14 +119,16 @@ message StreamMessage {
 
 // Unique ID of the message
 message MsgID {
-    //  Unique sequnce ID for tracking the order of the message
-    uint64 sequence_id = 1;
     // Identifies the producer, associated with a unique topic
-    uint64 producer_id = 2;
+    uint64 producer_id = 1;
     // Topic name the message is published to
-    string topic_name = 3;
+    string topic_name = 2;
     // Broker address
-    string broker_addr = 4;
+    string broker_addr = 3;
+    // Segment is the unit of storage in Danube.
+    uint64 segment_id = 4;
+    // Offset within the segment
+    uint64 segment_offset = 5;
 }
 
 message AckRequest {

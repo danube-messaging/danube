@@ -103,17 +103,10 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
 
     while let Some(stream_message) = message_stream.recv().await {
         let payload = stream_message.payload.clone();
-        let seq_id = stream_message.msg_id.sequence_id;
         let attr = stream_message.attributes.clone();
 
         // Process message based on the schema type
-        if let Err(e) = process_message(
-            &payload,
-            seq_id,
-            attr,
-            &schema.type_schema,
-            &schema_validator,
-        ) {
+        if let Err(e) = process_message(&payload, attr, &schema.type_schema, &schema_validator) {
             eprintln!("Error processing message: {:?}", e);
             continue;
         }
@@ -128,7 +121,6 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
 
 fn process_message(
     payload: &[u8],
-    seq: u64,
     attr: HashMap<String, String>,
     schema_type: &SchemaType,
     schema_validator: &Option<jsonschema::Validator>,
@@ -136,18 +128,18 @@ fn process_message(
     match schema_type {
         SchemaType::Bytes => {
             let decoded_message = from_utf8(payload)?;
-            print_to_console(seq, decoded_message, attr);
+            print_to_console(decoded_message, attr);
         }
         SchemaType::String => {
             let decoded_message = from_utf8(payload)?;
-            print_to_console(seq, decoded_message, attr);
+            print_to_console(decoded_message, attr);
         }
         SchemaType::Int64 => {
             let message = std::str::from_utf8(payload)
                 .context("Invalid UTF-8 sequence")?
                 .parse::<i64>()
                 .context("Failed to parse Int64")?;
-            print_to_console(seq, &message.to_string(), attr);
+            print_to_console(&message.to_string(), attr);
         }
         SchemaType::Json(_) => {
             if payload.is_empty() {
@@ -170,7 +162,7 @@ fn process_message(
 
             let json_str =
                 serde_json::to_string_pretty(&json_value).context("Failed to format JSON")?;
-            print_to_console(seq, &json_str, attr);
+            print_to_console(&json_str, attr);
         }
     }
     Ok(())
@@ -215,13 +207,12 @@ fn print_attr(attributes: &HashMap<String, String>) -> String {
     result
 }
 
-fn print_to_console(seq: u64, message: &str, attributes: HashMap<String, String>) {
+fn print_to_console(message: &str, attributes: HashMap<String, String>) {
     if attributes.is_empty() {
-        println!("Received bytes message: {}, with payload: {}", seq, message);
+        println!("Received bytes message with payload: {}", message);
     } else {
         println!(
-            "Received bytes message: {}, with payload: {}, with attributes: {}",
-            seq,
+            "Received bytes message with payload: {}, with attributes: {}",
             message,
             print_attr(&attributes)
         );

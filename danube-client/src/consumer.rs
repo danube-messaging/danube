@@ -188,7 +188,8 @@ impl Consumer {
     }
 
     pub async fn ack(&mut self, message: &StreamMessage) -> Result<()> {
-        let topic_consumer = self.consumers.get_mut(&self.topic_name);
+        let topic_name = message.msg_id.topic_name.clone();
+        let topic_consumer = self.consumers.get_mut(&topic_name);
         if let Some(topic_consumer) = topic_consumer {
             let mut topic_consumer = topic_consumer.lock().await;
             let _ = topic_consumer

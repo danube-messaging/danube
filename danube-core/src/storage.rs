@@ -46,6 +46,8 @@ pub struct Segment {
     pub messages: Vec<StreamMessage>,
     // Current size of the segment in bytes
     pub current_size: usize,
+    // Next entry ID, used to generate unique entry IDs
+    pub next_offset: u64,
 }
 
 impl Segment {
@@ -55,6 +57,7 @@ impl Segment {
             close_time: 0,
             messages: Vec::with_capacity(capacity),
             current_size: 0,
+            next_offset: 0,
         }
     }
 
@@ -65,6 +68,7 @@ impl Segment {
     pub fn add_message(&mut self, message: StreamMessage) {
         self.current_size += message.size();
         self.messages.push(message);
+        self.next_offset += 1;
     }
 }
 

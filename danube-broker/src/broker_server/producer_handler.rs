@@ -94,10 +94,9 @@ impl ProducerService for DanubeServerImpl {
         let stream_message: StreamMessage = req.into();
 
         trace!(
-            "New message {} from producer {} with sequence id {:?} was received",
+            "New message {} from producer {} was received",
             stream_message.request_id,
             stream_message.msg_id.producer_id,
-            stream_message.msg_id.sequence_id,
         );
 
         // Get the start time before sending the message
@@ -130,7 +129,6 @@ impl ProducerService for DanubeServerImpl {
                 ))
             })?;
 
-        let seq_id = stream_message.msg_id.sequence_id;
         let req_id = stream_message.request_id;
         let producer_id = stream_message.msg_id.producer_id;
 
@@ -145,10 +143,7 @@ impl ProducerService for DanubeServerImpl {
         histogram!(PRODUCER_MSG_OUT_RATE.name, "producer" => producer_id.to_string())
             .record(elapsed_time);
 
-        let response = MessageResponse {
-            request_id: req_id,
-            sequence_id: seq_id,
-        };
+        let response = MessageResponse { request_id: req_id };
 
         Ok(tonic::Response::new(response))
     }
