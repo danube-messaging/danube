@@ -1,6 +1,6 @@
 [package]
 name = "danube-core"
-version = "0.2.3"
+version = "0.2.3" # update the danube-client version too
 description = "Danube messaging core types and traits"
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
 repository = "https://github.com/danube-messaging/danube"
