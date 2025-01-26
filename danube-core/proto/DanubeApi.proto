@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package danube.v23;
+package danube;
 
 service ProducerService {
     // Creates a new Producer on a topic

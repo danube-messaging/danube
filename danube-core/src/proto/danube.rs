@@ -662,11 +662,11 @@ pub mod producer_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.ProducerService/CreateProducer",
+                "/danube.ProducerService/CreateProducer",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.ProducerService", "CreateProducer"));
+                .insert(GrpcMethod::new("danube.ProducerService", "CreateProducer"));
             self.inner.unary(req, path, codec).await
         }
         /// Sends a message from the Producer
@@ -687,11 +687,11 @@ pub mod producer_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.ProducerService/SendMessage",
+                "/danube.ProducerService/SendMessage",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.ProducerService", "SendMessage"));
+                .insert(GrpcMethod::new("danube.ProducerService", "SendMessage"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -805,11 +805,11 @@ pub mod consumer_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.ConsumerService/Subscribe",
+                "/danube.ConsumerService/Subscribe",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.ConsumerService", "Subscribe"));
+                .insert(GrpcMethod::new("danube.ConsumerService", "Subscribe"));
             self.inner.unary(req, path, codec).await
         }
         /// Streaming messages to the Subscriber
@@ -830,13 +830,11 @@ pub mod consumer_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.ConsumerService/ReceiveMessages",
+                "/danube.ConsumerService/ReceiveMessages",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("danube.v23.ConsumerService", "ReceiveMessages"),
-                );
+                .insert(GrpcMethod::new("danube.ConsumerService", "ReceiveMessages"));
             self.inner.server_streaming(req, path, codec).await
         }
         /// Acknowledges receipt of a message from the Consumer
@@ -854,11 +852,11 @@ pub mod consumer_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.ConsumerService/Ack",
+                "/danube.ConsumerService/Ack",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.ConsumerService", "Ack"));
+                .insert(GrpcMethod::new("danube.ConsumerService", "Ack"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -973,11 +971,11 @@ pub mod discovery_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.Discovery/TopicLookup",
+                "/danube.Discovery/TopicLookup",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.Discovery", "TopicLookup"));
+                .insert(GrpcMethod::new("danube.Discovery", "TopicLookup"));
             self.inner.unary(req, path, codec).await
         }
         /// Query the Danube broker for information about topic partitions.
@@ -999,11 +997,11 @@ pub mod discovery_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.Discovery/TopicPartitions",
+                "/danube.Discovery/TopicPartitions",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.Discovery", "TopicPartitions"));
+                .insert(GrpcMethod::new("danube.Discovery", "TopicPartitions"));
             self.inner.unary(req, path, codec).await
         }
         /// Get the schema associated with the topic
@@ -1021,11 +1019,11 @@ pub mod discovery_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.Discovery/GetSchema",
+                "/danube.Discovery/GetSchema",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.Discovery", "GetSchema"));
+                .insert(GrpcMethod::new("danube.Discovery", "GetSchema"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -1138,11 +1136,11 @@ pub mod health_check_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube.v23.HealthCheck/HealthCheck",
+                "/danube.HealthCheck/HealthCheck",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube.v23.HealthCheck", "HealthCheck"));
+                .insert(GrpcMethod::new("danube.HealthCheck", "HealthCheck"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -1250,7 +1248,7 @@ pub mod producer_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube.v23.ProducerService/CreateProducer" => {
+                "/danube.ProducerService/CreateProducer" => {
                     #[allow(non_camel_case_types)]
                     struct CreateProducerSvc<T: ProducerService>(pub Arc<T>);
                     impl<
@@ -1296,7 +1294,7 @@ pub mod producer_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/danube.v23.ProducerService/SendMessage" => {
+                "/danube.ProducerService/SendMessage" => {
                     #[allow(non_camel_case_types)]
                     struct SendMessageSvc<T: ProducerService>(pub Arc<T>);
                     impl<
@@ -1374,7 +1372,7 @@ pub mod producer_service_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "danube.v23.ProducerService";
+    pub const SERVICE_NAME: &str = "danube.ProducerService";
     impl<T> tonic::server::NamedService for ProducerServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
@@ -1496,7 +1494,7 @@ pub mod consumer_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube.v23.ConsumerService/Subscribe" => {
+                "/danube.ConsumerService/Subscribe" => {
                     #[allow(non_camel_case_types)]
                     struct SubscribeSvc<T: ConsumerService>(pub Arc<T>);
                     impl<
@@ -1541,7 +1539,7 @@ pub mod consumer_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/danube.v23.ConsumerService/ReceiveMessages" => {
+                "/danube.ConsumerService/ReceiveMessages" => {
                     #[allow(non_camel_case_types)]
                     struct ReceiveMessagesSvc<T: ConsumerService>(pub Arc<T>);
                     impl<
@@ -1588,7 +1586,7 @@ pub mod consumer_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/danube.v23.ConsumerService/Ack" => {
+                "/danube.ConsumerService/Ack" => {
                     #[allow(non_camel_case_types)]
                     struct AckSvc<T: ConsumerService>(pub Arc<T>);
                     impl<
@@ -1665,7 +1663,7 @@ pub mod consumer_service_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "danube.v23.ConsumerService";
+    pub const SERVICE_NAME: &str = "danube.ConsumerService";
     impl<T> tonic::server::NamedService for ConsumerServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
@@ -1783,7 +1781,7 @@ pub mod discovery_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube.v23.Discovery/TopicLookup" => {
+                "/danube.Discovery/TopicLookup" => {
                     #[allow(non_camel_case_types)]
                     struct TopicLookupSvc<T: Discovery>(pub Arc<T>);
                     impl<
@@ -1828,7 +1826,7 @@ pub mod discovery_server {
                     };
                     Box::pin(fut)
                 }
-                "/danube.v23.Discovery/TopicPartitions" => {
+                "/danube.Discovery/TopicPartitions" => {
                     #[allow(non_camel_case_types)]
                     struct TopicPartitionsSvc<T: Discovery>(pub Arc<T>);
                     impl<
@@ -1873,7 +1871,7 @@ pub mod discovery_server {
                     };
                     Box::pin(fut)
                 }
-                "/danube.v23.Discovery/GetSchema" => {
+                "/danube.Discovery/GetSchema" => {
                     #[allow(non_camel_case_types)]
                     struct GetSchemaSvc<T: Discovery>(pub Arc<T>);
                     impl<T: Discovery> tonic::server::UnaryService<super::SchemaRequest>
@@ -1949,7 +1947,7 @@ pub mod discovery_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "danube.v23.Discovery";
+    pub const SERVICE_NAME: &str = "danube.Discovery";
     impl<T> tonic::server::NamedService for DiscoveryServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
@@ -2051,7 +2049,7 @@ pub mod health_check_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube.v23.HealthCheck/HealthCheck" => {
+                "/danube.HealthCheck/HealthCheck" => {
                     #[allow(non_camel_case_types)]
                     struct HealthCheckSvc<T: HealthCheck>(pub Arc<T>);
                     impl<
@@ -2129,7 +2127,7 @@ pub mod health_check_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "danube.v23.HealthCheck";
+    pub const SERVICE_NAME: &str = "danube.HealthCheck";
     impl<T> tonic::server::NamedService for HealthCheckServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }

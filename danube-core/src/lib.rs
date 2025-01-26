@@ -3,7 +3,7 @@ pub mod message;
 pub mod storage;
 
 pub mod proto {
-    include!("proto/danube.v23.rs");
+    include!("proto/danube.rs");
 }
 
 pub mod admin_proto {
