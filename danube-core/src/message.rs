@@ -11,8 +11,6 @@ use crate::proto::{MsgId, StreamMessage as ProtoStreamMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageID {
-    // the messsage sequence id, this is the sequence id of the message within the topic
-    pub sequence_id: u64,
     // Identifies the producer, associated with a unique topic
     pub producer_id: u64,
     // topic_name is the name of the topic the message belongs to
@@ -21,14 +19,18 @@ pub struct MessageID {
     // broker_addr is the address of the broker that sent the message to the consumer
     // this is required by the consumer to send the ack to the correct broker
     pub broker_addr: String,
+    // Segment ID is a unique identifier for a segment of a topic
+    pub segment_id: u64,
+    // Segment offset is the offset of the message within the segment
+    pub segment_offset: u64,
 }
 
 impl Display for MessageID {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "seq:{}_topic:_{}_producer:_{}",
-            self.sequence_id, self.topic_name, self.producer_id
+            "topic:_{}_producer:_{}_segment_id:_{}_segment_offset:_{}",
+            self.topic_name, self.producer_id, self.segment_id, self.segment_offset,
         )
     }
 }
@@ -64,10 +66,11 @@ impl StreamMessage {
 impl From<MsgId> for MessageID {
     fn from(proto_msg_id: MsgId) -> Self {
         MessageID {
-            sequence_id: proto_msg_id.sequence_id,
             producer_id: proto_msg_id.producer_id,
             topic_name: proto_msg_id.topic_name,
             broker_addr: proto_msg_id.broker_addr,
+            segment_id: proto_msg_id.segment_id,
+            segment_offset: proto_msg_id.segment_offset,
         }
     }
 }
@@ -92,10 +95,11 @@ impl From<ProtoStreamMessage> for StreamMessage {
 impl From<MessageID> for MsgId {
     fn from(msg_id: MessageID) -> Self {
         MsgId {
-            sequence_id: msg_id.sequence_id,
             producer_id: msg_id.producer_id,
             topic_name: msg_id.topic_name,
             broker_addr: msg_id.broker_addr,
+            segment_id: msg_id.segment_id,
+            segment_offset: msg_id.segment_offset,
         }
     }
 }

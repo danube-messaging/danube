@@ -35,24 +35,26 @@ fn create_test_topic_store() -> TopicStore {
 }
 
 #[cfg(test)]
-fn create_test_message_id(sequence_id: u64) -> MessageID {
+fn create_test_message_id(segment_id: u64, segment_offset: u64) -> MessageID {
     MessageID {
-        sequence_id,
         producer_id: 1,
         topic_name: "test-topic".to_string(),
         broker_addr: "localhost:6650".to_string(),
+        segment_id,
+        segment_offset,
     }
 }
 
 #[cfg(test)]
-fn create_test_message(payload: Vec<u8>) -> StreamMessage {
+fn create_test_message(segment_id: u64, segment_offset: u64, payload: Vec<u8>) -> StreamMessage {
     StreamMessage {
         request_id: 1,
         msg_id: MessageID {
-            sequence_id: 1,
             producer_id: 1,
             topic_name: "/default/test-topic".to_string(),
             broker_addr: "localhost:6650".to_string(),
+            segment_id,
+            segment_offset,
         },
         payload,
         publish_time: SystemTime::now()
@@ -113,7 +115,7 @@ async fn test_message_acknowledgment() {
 
     // Create and setup segment with message
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
-    let message = create_test_message(vec![1]);
+    let message = create_test_message(0, 0, vec![1]);
     {
         let mut segment_write = segment.write().await;
         segment_write.messages.push(message.clone());
@@ -152,7 +154,7 @@ async fn test_invalid_acknowledgment() {
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
-    let msg_id = create_test_message_id(1);
+    let msg_id = create_test_message_id(0, 1);
     let result = dispatch.handle_message_acked(1, msg_id).await;
 
     assert!(matches!(
@@ -194,7 +196,7 @@ async fn test_clear_current_segment() {
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
     dispatch.segment = Some(segment);
     dispatch.current_segment_id = Some(1);
-    let msg_id = create_test_message_id(1);
+    let msg_id = create_test_message_id(0, 1);
     dispatch.acked_messages.insert(msg_id, 1);
 
     dispatch.clear_current_segment();
@@ -230,7 +232,7 @@ async fn test_validate_segment() {
     assert!(matches!(result, Ok(false)));
 
     // Test 2: Closed segment with acknowledged message
-    let message = create_test_message(vec![1]);
+    let message = create_test_message(0, 1, vec![1]);
     {
         let mut segment_write = segment.write().await;
         segment_write.close_time = 1;

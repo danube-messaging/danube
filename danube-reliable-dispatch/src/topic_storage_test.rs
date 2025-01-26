@@ -17,14 +17,15 @@ use std::sync::{atomic::AtomicUsize, Arc};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-fn create_test_message(payload: Vec<u8>) -> StreamMessage {
+fn create_test_message(segment_id: u64, segment_offset: u64, payload: Vec<u8>) -> StreamMessage {
     StreamMessage {
         request_id: 1,
         msg_id: MessageID {
-            sequence_id: 1,
             producer_id: 1,
             topic_name: "/default/test-topic".to_string(),
             broker_addr: "localhost:6650".to_string(),
+            segment_id,
+            segment_offset,
         },
         payload,
         publish_time: SystemTime::now()
@@ -60,7 +61,7 @@ fn test_segment_creation() {
 #[test]
 fn test_segment_message_handling() {
     let mut segment = Segment::new(1, 1024);
-    let message = create_test_message(vec![1, 2, 3]);
+    let message = create_test_message(segment.id as u64, segment.next_offset, vec![1, 2, 3]);
 
     segment.add_message(message.clone());
     assert_eq!(segment.messages.len(), 1);
@@ -75,7 +76,7 @@ fn test_segment_message_handling() {
 #[test]
 fn test_segment_size_limit() {
     let mut segment = Segment::new(1, 1024);
-    let message = create_test_message(vec![0; 512]);
+    let message = create_test_message(segment.id as u64, segment.next_offset, vec![0; 512]);
 
     assert!(!segment.is_full(1024));
     segment.add_message(message.clone());
@@ -98,7 +99,7 @@ async fn test_topic_store_message_storage() {
         3600, // 3600s retention period
     );
     let topic_store = TopicStore::new(storage.clone(), reliable_options);
-    let message = create_test_message(vec![1, 2, 3]);
+    let message = create_test_message(0, 0, vec![1, 2, 3]);
 
     topic_store.store_message(message.clone()).await.unwrap();
     let segment = topic_store.get_next_segment(None).await.unwrap().unwrap();
@@ -120,13 +121,13 @@ async fn test_topic_store_segment_transition() {
         3600, // 3600s retention period
     );
     let topic_store = TopicStore::new(storage.clone(), reliable_options);
-    let large_message = create_test_message(vec![0; 1024 * 1024]); // 1MB message
+    let large_message = create_test_message(0, 0, vec![0; 1024 * 1024]); // 1MB message
 
     topic_store
         .store_message(large_message.clone())
         .await
         .unwrap();
-    let message = create_test_message(vec![1]);
+    let message = create_test_message(0, 1, vec![1]);
     topic_store.store_message(message).await.unwrap(); // Should create new segment
 
     let first_segment = topic_store.get_next_segment(None).await.unwrap().unwrap();
@@ -160,7 +161,7 @@ async fn test_topic_store_cleanup() {
     let subscription_id = "test_sub".to_string();
     subscriptions.insert(subscription_id.clone(), Arc::new(AtomicUsize::new(0)));
 
-    let message = create_test_message(vec![1, 2, 3]);
+    let message = create_test_message(0, 0, vec![1, 2, 3]);
     topic_store.store_message(message).await.unwrap();
 
     let close_time = SystemTime::now()
@@ -208,7 +209,7 @@ async fn test_topic_store_acknowledged_cleanup() {
     let subscription_id = "test_sub".to_string();
     subscriptions.insert(subscription_id.clone(), Arc::new(AtomicUsize::new(1)));
 
-    let message = create_test_message(vec![1, 2, 3]);
+    let message = create_test_message(0, 0, vec![1, 2, 3]);
     topic_store.store_message(message).await.unwrap();
 
     let segment = topic_store.get_next_segment(None).await.unwrap().unwrap();
