@@ -1,4 +1,4 @@
-use crate::policies::Policies;
+use crate::{auth::AuthConfig, policies::Policies};
 
 use anyhow::{Context, Result};
 use danube_core::storage::StorageConfig;
@@ -28,6 +28,8 @@ pub(crate) struct LoadConfiguration {
     pub(crate) policies: Policies,
     /// Storage message configuration
     pub(crate) storage: StorageConfig,
+    /// Authentication configuration
+    pub(crate) auth: AuthConfig,
 }
 
 /// configuration settings for the Danube broker service
@@ -52,6 +54,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) policies: Policies,
     /// Storage message configuration
     pub(crate) storage: StorageConfig,
+    /// Authentication configuration
+    pub(crate) auth: AuthConfig,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -94,6 +98,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             bootstrap_namespaces: config.bootstrap_namespaces,
             policies: config.policies,
             storage: config.storage,
+            auth: config.auth,
         })
     }
 }

@@ -187,6 +187,7 @@ impl DanubeService {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
             self.service_config.broker_addr.clone(),
+            self.service_config.auth.clone(),
         );
 
         // Create a oneshot channel for readiness signaling

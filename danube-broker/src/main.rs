@@ -1,5 +1,6 @@
 mod admin;
 mod args_parse;
+mod auth;
 mod broker_metrics;
 mod broker_server;
 mod broker_service;
