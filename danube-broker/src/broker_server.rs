@@ -27,6 +27,7 @@ pub(crate) struct DanubeServerImpl {
     service: Arc<Mutex<BrokerService>>,
     broker_addr: SocketAddr,
     auth: AuthConfig,
+    // the api key is used to authenticate the user for JWT auth
     valid_api_keys: Vec<String>,
 }
 
@@ -93,6 +94,9 @@ impl DanubeServerImpl {
     }
 
     async fn configure_tls(&self, server: Server) -> Server {
+        // Install crypto provider only when TLS is being configured
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let tls_config = self.auth.tls.as_ref().expect("TLS config required");
         let cert = tokio::fs::read(&tls_config.cert_file).await.unwrap();
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();

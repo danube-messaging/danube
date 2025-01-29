@@ -27,9 +27,9 @@ bootstrap_namespaces:
 auth:
   mode: tls # Options: none, tls, tlswithjwt
   tls:
-    cert_file: "/path/to/cert.pem"
-    key_file: "/path/to/key.pem"
-    ca_file: "/path/to/ca.pem"
+    cert_file: "./cert/server-cert.pem"
+    key_file: "./cert/server-key.pem"
+    ca_file: "./cert/ca-cert.pem"
     verify_client: true
   jwt:
     secret_key: "your-secret-key"
