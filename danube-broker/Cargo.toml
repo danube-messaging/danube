@@ -28,7 +28,6 @@ base64 = "0.22.1"
 metrics = "0.23.0"
 metrics-exporter-prometheus = "0.15.3"
 serde_yaml = "0.9.34"
-tower = "0.5.2"
 jsonwebtoken = "9.3.0"
 
 [build-dependencies]

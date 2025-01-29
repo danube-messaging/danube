@@ -1,3 +1,4 @@
+mod auth_handler;
 mod consumer_handler;
 mod discovery_handler;
 mod health_check_handler;
@@ -7,8 +8,9 @@ use crate::auth::{AuthConfig, AuthMode};
 use crate::auth_jwt::jwt_auth_interceptor;
 use crate::broker_service::BrokerService;
 use danube_core::proto::{
-    consumer_service_server::ConsumerServiceServer, discovery_server::DiscoveryServer,
-    health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
+    auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
+    discovery_server::DiscoveryServer, health_check_server::HealthCheckServer,
+    producer_service_server::ProducerServiceServer,
 };
 
 use std::net::SocketAddr;
@@ -25,6 +27,7 @@ pub(crate) struct DanubeServerImpl {
     service: Arc<Mutex<BrokerService>>,
     broker_addr: SocketAddr,
     auth: AuthConfig,
+    valid_api_keys: Vec<String>,
 }
 
 impl DanubeServerImpl {
@@ -37,6 +40,7 @@ impl DanubeServerImpl {
             service,
             broker_addr,
             auth,
+            valid_api_keys: Vec::new(),
         }
     }
 
@@ -52,6 +56,7 @@ impl DanubeServerImpl {
         let consumer_service = ConsumerServiceServer::new(self.clone());
         let discovery_service = DiscoveryServer::new(self.clone());
         let health_check_service = HealthCheckServer::new(self.clone());
+        let auth_service = AuthServiceServer::new(self.clone());
 
         let server_builder = if let AuthMode::TlsWithJwt = self.auth.mode {
             let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
@@ -72,12 +77,14 @@ impl DanubeServerImpl {
                     interceptor.clone(),
                 ))
                 .add_service(InterceptedService::new(health_check_service, interceptor))
+                .add_service(auth_service)
         } else {
             server_builder
                 .add_service(producer_service)
                 .add_service(consumer_service)
                 .add_service(discovery_service)
                 .add_service(health_check_service)
+                .add_service(auth_service)
         };
 
         let server = server_builder.serve(socket_addr);
