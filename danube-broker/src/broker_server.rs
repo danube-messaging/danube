@@ -4,26 +4,21 @@ mod health_check_handler;
 mod producer_handler;
 
 use crate::auth::{AuthConfig, AuthMode};
+use crate::auth_jwt::jwt_auth_interceptor;
 use crate::broker_service::BrokerService;
 use danube_core::proto::{
     consumer_service_server::ConsumerServiceServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
 
-use jsonwebtoken::{decode, DecodingKey, Validation};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::transport::{server::ServerTlsConfig, Identity};
 use tracing::{info, warn};
-
-#[derive(Debug, serde::Deserialize)]
-struct Claims {
-    iss: String,
-    exp: u64,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeServerImpl {
@@ -45,49 +40,47 @@ impl DanubeServerImpl {
         }
     }
 
-    pub(crate) async fn start_no_secure(&self, ready_tx: oneshot::Sender<()>) -> JoinHandle<()> {
+    pub(crate) async fn start(&self, ready_tx: oneshot::Sender<()>) -> JoinHandle<()> {
         let socket_addr = self.broker_addr.clone();
+        let mut server_builder = Server::builder();
 
-        let server = Server::builder()
-            .add_service(ProducerServiceServer::new(self.clone()))
-            .add_service(ConsumerServiceServer::new(self.clone()))
-            .add_service(DiscoveryServer::new(self.clone()))
-            .add_service(HealthCheckServer::new(self))
-            .serve(socket_addr);
+        if let AuthMode::Tls | AuthMode::TlsWithJwt = self.auth.mode {
+            server_builder = self.configure_tls(server_builder).await;
+        }
 
-        self.spawn_server(server, socket_addr, ready_tx)
-    }
+        let producer_service = ProducerServiceServer::new(self.clone());
+        let consumer_service = ConsumerServiceServer::new(self.clone());
+        let discovery_service = DiscoveryServer::new(self.clone());
+        let health_check_service = HealthCheckServer::new(self.clone());
 
-    pub(crate) async fn start_tls(&self, ready_tx: oneshot::Sender<()>) -> JoinHandle<()> {
-        let socket_addr = self.broker_addr.clone();
+        let server_builder = if let AuthMode::TlsWithJwt = self.auth.mode {
+            let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
+            let jwt_secret = jwt_config.secret_key.clone();
+            let interceptor = move |request| jwt_auth_interceptor(request, &jwt_secret);
 
-        let server = self
-            .configure_tls(Server::builder())
-            .await
-            .add_service(ProducerServiceServer::new(self.clone()))
-            .add_service(ConsumerServiceServer::new(self.clone()))
-            .add_service(DiscoveryServer::new(self.clone()))
-            .add_service(HealthCheckServer::new(self))
-            .serve(socket_addr);
+            server_builder
+                .add_service(InterceptedService::new(
+                    producer_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    consumer_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    discovery_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(health_check_service, interceptor))
+        } else {
+            server_builder
+                .add_service(producer_service)
+                .add_service(consumer_service)
+                .add_service(discovery_service)
+                .add_service(health_check_service)
+        };
 
-        self.spawn_server(server, socket_addr, ready_tx)
-    }
-    pub(crate) async fn start_tls_jwt(&self, ready_tx: oneshot::Sender<()>) -> JoinHandle<()> {
-        let socket_addr = self.broker_addr.clone();
-        let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
-        let jwt_secret = jwt_config.secret_key.clone();
-
-        let server = self
-            .configure_tls(Server::builder())
-            .await
-            .layer(tonic::service::interceptor(move |request| {
-                Self::jwt_auth_interceptor(request, &jwt_secret)
-            }))
-            .add_service(ProducerServiceServer::new(self.clone()))
-            .add_service(ConsumerServiceServer::new(self.clone()))
-            .add_service(DiscoveryServer::new(self.clone()))
-            .add_service(HealthCheckServer::new(self))
-            .serve(socket_addr);
+        let server = server_builder.serve(socket_addr);
 
         self.spawn_server(server, socket_addr, ready_tx)
     }
@@ -116,31 +109,5 @@ impl DanubeServerImpl {
                 warn!("Server error: {:?}", e);
             }
         })
-    }
-
-    fn jwt_auth_interceptor(
-        request: tonic::Request<()>,
-        jwt_secret: &str,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
-        if let Some(token) = request.metadata().get("authorization") {
-            let token_str = token.to_str().map_err(|_| {
-                tonic::Status::unauthenticated("Authorization token is not valid UTF-8")
-            })?;
-            let token = token_str.replace("Bearer ", "");
-
-            let validation = Validation::new(jsonwebtoken::Algorithm::HS256); // Consider making the algorithm configurable
-            match decode::<Claims>(
-                &token,
-                &DecodingKey::from_secret(jwt_secret.as_bytes()),
-                &validation,
-            ) {
-                Ok(_claims) => Ok(request),
-                Err(_) => Err(tonic::Status::unauthenticated("Invalid JWT token")),
-            }
-        } else {
-            Err(tonic::Status::unauthenticated(
-                "Missing authorization token",
-            ))
-        }
     }
 }
