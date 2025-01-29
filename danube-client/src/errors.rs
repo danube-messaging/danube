@@ -23,6 +23,9 @@ pub enum DanubeError {
 
     #[error("unable to perform operation: {0}")]
     Unrecoverable(String),
+
+    #[error("invalid token")]
+    InvalidToken,
 }
 
 impl DanubeError {

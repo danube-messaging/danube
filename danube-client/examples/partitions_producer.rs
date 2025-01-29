@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     let client = DanubeClient::builder()
         .service_url("http://127.0.0.1:6650")
         .build()
-        .unwrap();
+        .await?;
 
     let topic = "/default/partitioned_topic";
     let producer_name = "prod_part";

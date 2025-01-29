@@ -206,7 +206,8 @@ impl DanubeService {
         // it is needed by syncronizer in order to publish messages on meta_topic
         let danube_client = DanubeClient::builder()
             .service_url("http://127.0.0.1:6650")
-            .build()?;
+            .build()
+            .await?;
 
         let _ = self.syncronizer.with_client(danube_client);
 

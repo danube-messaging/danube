@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tonic::transport::Uri;
 
 use crate::{
+    auth_service::AuthService,
     connection_manager::{ConnectionManager, ConnectionOptions},
     consumer::ConsumerBuilder,
     errors::Result,
@@ -115,6 +116,7 @@ impl DanubeClient {
 pub struct DanubeClientBuilder {
     uri: String,
     connection_options: ConnectionOptions,
+    api_key: Option<String>,
 }
 
 impl DanubeClientBuilder {
@@ -144,6 +146,12 @@ impl DanubeClientBuilder {
         self
     }
 
+    /// Sets the API key for the client in the builder.
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
     /// Constructs and returns a `DanubeClient` instance based on the configuration specified in the builder.
     ///
     /// This method finalizes the configuration and creates a new `DanubeClient` instance. It uses the settings and options that were configured using the `DanubeClientBuilder` methods.
@@ -152,8 +160,16 @@ impl DanubeClientBuilder {
     ///
     /// - `Ok(DanubeClient)`: A new instance of `DanubeClient` configured with the specified options.
     /// - `Err(e)`: An error if the configuration is invalid or incomplete.
-    pub fn build(self) -> Result<DanubeClient> {
+    pub async fn build(mut self) -> Result<DanubeClient> {
         let uri = self.uri.parse::<Uri>()?;
+        let cnx_manager = Arc::new(ConnectionManager::new(self.connection_options.clone()));
+        let auth_service = AuthService::new(cnx_manager.clone());
+
+        if let Some(api_key) = self.api_key.clone() {
+            let token = auth_service.authenticate_client(&uri, &api_key).await?;
+            self.connection_options.jwt_token = Some(token);
+        }
+
         Ok(DanubeClient::new_client(self, uri))
     }
 }

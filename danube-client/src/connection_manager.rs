@@ -1,7 +1,4 @@
-use crate::{
-    errors::Result,
-    rpc_connection::{new_rpc_connection, RpcConnection},
-};
+use crate::errors::Result;
 
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -9,7 +6,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
-use tonic::transport::Uri;
+use tonic::transport::{Channel, ClientTlsConfig, Uri};
+use tracing::info;
 
 /// holds connection information for a broker
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -33,12 +31,14 @@ enum ConnectionStatus {
 pub struct ConnectionOptions {
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) connection_timeout: Option<Duration>,
+    pub(crate) tls_config: Option<ClientTlsConfig>,
+    pub(crate) jwt_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<BrokerAddress, ConnectionStatus>>>,
-    connection_options: ConnectionOptions,
+    pub(crate) connection_options: ConnectionOptions,
 }
 
 impl ConnectionManager {
@@ -87,4 +87,31 @@ impl ConnectionManager {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RpcConnection {
+    pub(crate) grpc_cnx: Channel,
+}
+
+pub(crate) async fn new_rpc_connection(
+    cnx_options: &ConnectionOptions,
+    connect_url: &Uri,
+) -> Result<RpcConnection> {
+    info!(
+        "Attempting to establish a new RPC connection to {}",
+        connect_url
+    );
+    let channel = if let Some(tls_config) = &cnx_options.tls_config {
+        Channel::from_shared(connect_url.to_string())?
+            .tls_config(tls_config.clone())?
+            .connect()
+            .await?
+    } else {
+        Channel::from_shared(connect_url.to_string())?
+            .connect()
+            .await?
+    };
+
+    Ok(RpcConnection { grpc_cnx: channel })
 }

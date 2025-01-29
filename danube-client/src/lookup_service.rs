@@ -7,8 +7,12 @@ use danube_core::proto::{
     discovery_client::DiscoveryClient, topic_lookup_response::LookupType, TopicLookupRequest,
     TopicLookupResponse, TopicPartitionsResponse,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::{
+    str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
+use tonic::metadata::MetadataValue;
 use tonic::transport::Uri;
 use tonic::{Response, Status};
 use tracing::warn;
@@ -47,7 +51,13 @@ impl LookupService {
             topic: topic.into(),
         };
 
-        let request = tonic::Request::new(lookup_request);
+        let mut request = tonic::Request::new(lookup_request);
+
+        if let Some(jwt_token) = &self.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
 
         let response: std::result::Result<Response<TopicLookupResponse>, Status> =
             client.topic_lookup(request).await;
@@ -85,7 +95,13 @@ impl LookupService {
             topic: topic.into(),
         };
 
-        let request = tonic::Request::new(lookup_request);
+        let mut request = tonic::Request::new(lookup_request);
+
+        if let Some(jwt_token) = &self.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
 
         let response: std::result::Result<Response<TopicPartitionsResponse>, Status> =
             client.topic_partitions(request).await;

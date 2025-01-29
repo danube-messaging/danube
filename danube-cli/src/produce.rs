@@ -162,7 +162,8 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     let client = DanubeClient::builder()
         .service_url(&produce.basic_args.service_addr)
-        .build()?;
+        .build()
+        .await?;
 
     let schema_type = validate_schema(
         produce.extended_args.schema,

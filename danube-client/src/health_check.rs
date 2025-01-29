@@ -1,7 +1,6 @@
 use crate::{
-    connection_manager::ConnectionManager,
+    connection_manager::{ConnectionManager, RpcConnection},
     errors::{DanubeError, Result},
-    rpc_connection::RpcConnection,
 };
 
 use danube_core::proto::{

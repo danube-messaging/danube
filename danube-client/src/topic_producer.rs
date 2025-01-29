@@ -13,12 +13,14 @@ use danube_core::{
 };
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
+use tonic::metadata::MetadataValue;
 use tonic::{transport::Uri, Code, Response, Status};
 use tracing::warn;
 
@@ -74,7 +76,7 @@ impl TopicProducer {
         // Initialize the gRPC client connection
         self.connect(&self.client.uri.clone()).await?;
 
-        let req = ProducerRequest {
+        let producer_request = ProducerRequest {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
             producer_name: self.producer_name.clone(),
             topic_name: self.topic.clone(),
@@ -82,6 +84,14 @@ impl TopicProducer {
             producer_access_mode: ProducerAccessMode::Shared.into(),
             dispatch_strategy: Some(self.dispatch_strategy.clone().into()),
         };
+
+        let mut request = tonic::Request::new(producer_request);
+
+        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
 
         let max_retries = 4;
         let mut attempts = 0;
@@ -91,7 +101,7 @@ impl TopicProducer {
         // The loop construct continues to try the create_producer call
         // until it either succeeds in less max retries or fails with a different error.
         loop {
-            let request = tonic::Request::new(req.clone());
+            let request = tonic::Request::new(request.get_ref().clone());
 
             let mut client = self.stream_client.as_mut().unwrap().clone();
             let response: std::result::Result<Response<ProducerResponse>, Status> =
@@ -218,9 +228,17 @@ impl TopicProducer {
 
         let req: ProtoStreamMessage = send_message.into();
 
+        let mut request = tonic::Request::new(req);
+
+        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
+
         let mut client = self.stream_client.as_ref().unwrap().clone();
         let response: std::result::Result<Response<MessageResponse>, Status> =
-            client.send_message(tonic::Request::new(req)).await;
+            client.send_message(request).await;
 
         match response {
             Ok(resp) => {

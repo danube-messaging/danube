@@ -15,7 +15,7 @@ async fn setup() -> Result<TestSetup> {
         DanubeClient::builder()
             .service_url("http://127.0.0.1:6650")
             .build()
-            .unwrap(),
+            .await?,
     );
 
     Ok(TestSetup { client })

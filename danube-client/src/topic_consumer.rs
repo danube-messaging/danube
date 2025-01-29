@@ -10,10 +10,12 @@ use danube_core::proto::{
 };
 
 use futures_core::Stream;
+use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
+use tonic::metadata::MetadataValue;
 use tonic::{transport::Uri, Code, Response, Status};
 use tracing::warn;
 
@@ -125,7 +127,13 @@ impl TopicConsumer {
             subscription_type: self.subscription_type.clone() as i32,
         };
 
-        let request = tonic::Request::new(req);
+        let mut request = tonic::Request::new(req);
+
+        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
 
         let response: std::result::Result<Response<ConsumerResponse>, Status> =
             stream_client.subscribe(request).await;
@@ -175,7 +183,15 @@ impl TopicConsumer {
             consumer_id: self.consumer_id.unwrap(),
         };
 
-        let response = match stream_client.receive_messages(receive_request).await {
+        let mut request = tonic::Request::new(receive_request);
+
+        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
+
+        let response = match stream_client.receive_messages(request).await {
             Ok(response) => response,
             Err(status) => {
                 let decoded_message = decode_error_details(&status);
@@ -200,7 +216,16 @@ impl TopicConsumer {
             msg_id: Some(msg_id.into()),
             subscription_name: subscription_name.to_string(),
         };
-        let response = match stream_client.ack(ack_request).await {
+
+        let mut request = tonic::Request::new(ack_request);
+
+        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
+            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request.metadata_mut().insert("authorization", token);
+        }
+
+        let response = match stream_client.ack(request).await {
             Ok(response) => response,
             Err(status) => {
                 let decoded_message = decode_error_details(&status);

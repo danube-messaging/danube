@@ -5,6 +5,8 @@
 mod client;
 pub use client::{DanubeClient, DanubeClientBuilder};
 
+mod auth_service;
+
 pub mod errors;
 
 mod producer;
@@ -27,8 +29,6 @@ mod schema_service;
 mod lookup_service;
 
 mod connection_manager;
-
-mod rpc_connection;
 
 mod health_check;
 
