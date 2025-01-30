@@ -67,15 +67,17 @@ jobs:
 
       - name: Create certificate files
         run: |
-          echo "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          echo "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          echo "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
       - name: Run Broker 1
         env:
           RUST_LOG: danube_broker=trace
         run: |
             docker run --network host -d --name broker1 \
+              -v $PWD/cert:/cert \
               danube_broker_image:latest \
               --config-file "/etc/danube_broker.yml" \
               --broker-addr "0.0.0.0:6650" \
@@ -87,6 +89,7 @@ jobs:
           RUST_LOG: danube_broker=trace  
         run: |
             docker run --network host -d --name broker2 \
+              -v $PWD/cert:/cert \
               danube_broker_image:latest \
               --config-file "/etc/danube_broker.yml" \
               --broker-addr "0.0.0.0:6651" \
