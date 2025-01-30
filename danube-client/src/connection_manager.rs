@@ -3,7 +3,6 @@ use crate::errors::Result;
 use std::{
     collections::{hash_map::Entry, HashMap},
     sync::Arc,
-    time::Duration,
 };
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, ClientTlsConfig, Uri};
@@ -29,10 +28,11 @@ enum ConnectionStatus {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionOptions {
-    pub(crate) keep_alive_interval: Option<Duration>,
-    pub(crate) connection_timeout: Option<Duration>,
     pub(crate) tls_config: Option<ClientTlsConfig>,
+    pub(crate) api_key: Option<String>,
     pub(crate) jwt_token: Option<String>,
+    // indicate the the connection doesn't use TLS
+    pub(crate) insecure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ impl ConnectionManager {
         }
     }
 
-    pub async fn get_connection(
+    pub(crate) async fn get_connection(
         &self,
         broker_url: &Uri,
         connect_url: &Uri,
@@ -65,8 +65,6 @@ impl ConnectionManager {
         };
 
         let mut cnx = self.connections.lock().await;
-
-        // let entry = cnx.entry(broker);
 
         match cnx.entry(broker) {
             Entry::Occupied(mut occupied_entry) => match occupied_entry.get() {
@@ -102,13 +100,21 @@ pub(crate) async fn new_rpc_connection(
         "Attempting to establish a new RPC connection to {}",
         connect_url
     );
-    let channel = if let Some(tls_config) = &cnx_options.tls_config {
+    let channel = if cnx_options.insecure {
+        Channel::from_shared(connect_url.to_string())?
+            .connect()
+            .await?
+    } else if let Some(tls_config) = &cnx_options.tls_config {
+        // mTLS configuration
         Channel::from_shared(connect_url.to_string())?
             .tls_config(tls_config.clone())?
             .connect()
             .await?
     } else {
+        // Normal TLS configuration
+        let default_tls_config = ClientTlsConfig::new();
         Channel::from_shared(connect_url.to_string())?
+            .tls_config(default_tls_config)?
             .connect()
             .await?
     };
