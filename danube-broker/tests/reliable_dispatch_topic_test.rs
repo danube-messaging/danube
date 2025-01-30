@@ -5,6 +5,7 @@ use anyhow::Result;
 use danube_client::{
     ConfigReliableOptions, ConfigRetentionPolicy, Consumer, DanubeClient, Producer, SubType,
 };
+use rustls::crypto;
 use std::fs;
 use std::sync::Arc;
 use tokio::time::{sleep, timeout, Duration};
@@ -14,6 +15,12 @@ struct TestSetup {
 }
 
 async fn setup() -> Result<TestSetup> {
+    // Install the default CryptoProvider
+    let crypto_provider = crypto::ring::default_provider();
+    crypto_provider
+        .install_default()
+        .expect("Failed to install default CryptoProvider");
+
     let client = Arc::new(
         DanubeClient::builder()
             .service_url("http://127.0.0.1:6650")
