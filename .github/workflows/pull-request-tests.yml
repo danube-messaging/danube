@@ -65,10 +65,11 @@ jobs:
             sleep 5
           done
 
-      - name: Copy certificates
+      - name: Create certificate files
         run: |
-          docker cp ./cert/ broker1:/cert/
-          docker cp ./cert/ broker2:/cert/          
+          echo "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          echo "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          echo "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
       - name: Run Broker 1
         env:
