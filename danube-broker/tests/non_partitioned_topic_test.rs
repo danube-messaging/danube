@@ -2,25 +2,40 @@ extern crate danube_client;
 extern crate futures_util;
 
 use anyhow::Result;
-use danube_client::{Consumer, DanubeClient, Producer, SchemaType, SubType};
+use danube_client::{ConnectionOptions, Consumer, DanubeClient, Producer, SchemaType, SubType};
 use rustls::crypto;
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
+use tonic::transport::{Certificate, ClientTlsConfig};
 
 struct TestSetup {
     client: Arc<DanubeClient>,
 }
 
+static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
+
 async fn setup() -> Result<TestSetup> {
     // Install the default CryptoProvider
-    let crypto_provider = crypto::ring::default_provider();
-    crypto_provider
-        .install_default()
-        .expect("Failed to install default CryptoProvider");
+    CRYPTO_PROVIDER
+        .get_or_init(|| async {
+            let crypto_provider = crypto::ring::default_provider();
+            crypto_provider
+                .install_default()
+                .expect("Failed to install default CryptoProvider");
+        })
+        .await;
+
+    let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
+        std::fs::read("../cert/ca-cert.pem").unwrap(),
+    ));
+
+    let connection_options = ConnectionOptions::new().tls_config(tls_config);
 
     let client = Arc::new(
         DanubeClient::builder()
             .service_url("http://127.0.0.1:6650")
+            .with_connection_options(connection_options)
             .build()
             .await?,
     );

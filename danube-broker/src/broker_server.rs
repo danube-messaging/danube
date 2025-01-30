@@ -95,7 +95,10 @@ impl DanubeServerImpl {
 
     async fn configure_tls(&self, server: Server) -> Server {
         // Install crypto provider only when TLS is being configured
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
+            warn!("Failed to install crypto provider: {:?}", e);
+            return server;
+        }
 
         let tls_config = self.auth.tls.as_ref().expect("TLS config required");
         let cert = tokio::fs::read(&tls_config.cert_file).await.unwrap();

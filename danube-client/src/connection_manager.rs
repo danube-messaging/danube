@@ -35,6 +35,25 @@ pub struct ConnectionOptions {
     pub(crate) insecure: bool,
 }
 
+impl ConnectionOptions {
+    pub fn new() -> Self {
+        ConnectionOptions {
+            tls_config: None,
+            api_key: None,
+            jwt_token: None,
+            insecure: false,
+        }
+    }
+    pub fn tls_config(mut self, tls_config: ClientTlsConfig) -> Self {
+        self.tls_config = Some(tls_config);
+        self
+    }
+    pub fn api_key(mut self, api_key: String) -> Self {
+        self.api_key = Some(api_key);
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<BrokerAddress, ConnectionStatus>>>,

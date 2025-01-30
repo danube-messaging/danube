@@ -30,7 +30,7 @@ auth:
     cert_file: "./cert/server-cert.pem"
     key_file: "./cert/server-key.pem"
     ca_file: "./cert/ca-cert.pem"
-    verify_client: true
+    verify_client: false
   jwt:
     secret_key: "your-secret-key"
     issuer: "danube-auth"
