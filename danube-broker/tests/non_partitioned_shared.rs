@@ -9,14 +9,13 @@ use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
 use tonic::transport::{Certificate, ClientTlsConfig};
 
+static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
+
 struct TestSetup {
     client: Arc<DanubeClient>,
 }
 
-static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
-
 async fn setup() -> Result<TestSetup> {
-    // Install the default CryptoProvider
     CRYPTO_PROVIDER
         .get_or_init(|| async {
             let crypto_provider = crypto::ring::default_provider();
@@ -34,7 +33,7 @@ async fn setup() -> Result<TestSetup> {
 
     let client = Arc::new(
         DanubeClient::builder()
-            .service_url("http://127.0.0.1:6650")
+            .service_url("https://127.0.0.1:6650")
             .with_connection_options(connection_options)
             .build()
             .await?,
@@ -56,7 +55,6 @@ async fn setup_producer(
         .build();
 
     producer.create().await?;
-
     Ok(producer)
 }
 
@@ -74,56 +72,8 @@ async fn setup_consumer(
         .with_subscription_type(sub_type)
         .build();
 
-    // Ensure the consumer is connected and subscribed
     consumer.subscribe().await?;
     Ok(consumer)
-}
-
-#[tokio::test]
-async fn test_exclusive_subscription() -> Result<()> {
-    let setup = setup().await?;
-    let topic = "/default/topic_test_exclusive_subscription";
-
-    let producer = setup_producer(setup.client.clone(), topic, "test_producer_exclusive").await?;
-
-    let mut consumer = setup_consumer(
-        setup.client.clone(),
-        topic,
-        "test_consumer_exclusive",
-        SubType::Exclusive,
-    )
-    .await?;
-
-    // Start receiving messages
-    let mut message_stream = consumer.receive().await?;
-
-    sleep(Duration::from_millis(500)).await;
-
-    // Produce a message after the consumer has subscribed
-    let _message_id = producer
-        .send("Hello Danube".as_bytes().into(), None)
-        .await?;
-    println!("Message sent");
-
-    // Add a timeout to avoid blocking indefinitely
-    let receive_future = async {
-        if let Some(stream_message) = message_stream.recv().await {
-            let payload = String::from_utf8(stream_message.payload).unwrap();
-            assert_eq!(payload, "Hello Danube");
-            println!("Message received: {}", payload);
-            // consumer.ack(&msg).await.unwrap();
-        } else {
-            println!("No message received");
-        }
-    };
-
-    let result = timeout(Duration::from_secs(10), receive_future).await;
-    assert!(
-        result.is_ok(),
-        "Test timed out while waiting for the message"
-    );
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -141,24 +91,20 @@ async fn test_shared_subscription() -> Result<()> {
     )
     .await?;
 
-    // Start receiving messages
     let mut message_stream = consumer.receive().await?;
 
     sleep(Duration::from_millis(500)).await;
 
-    // Produce a message after the consumer has subscribed
     let _message_id = producer
         .send("Hello Danube".as_bytes().into(), None)
         .await?;
     println!("Message sent");
 
-    // Add a timeout to avoid blocking indefinitely
     let receive_future = async {
         if let Some(stream_message) = message_stream.recv().await {
             let payload = String::from_utf8(stream_message.payload).unwrap();
             assert_eq!(payload, "Hello Danube");
             println!("Message received: {}", payload);
-            // consumer.ack(&msg).await.unwrap();
         } else {
             println!("No message received");
         }

@@ -2,25 +2,39 @@ extern crate danube_client;
 extern crate futures_util;
 
 use anyhow::Result;
-use danube_client::{Consumer, DanubeClient, Producer, SchemaType, SubType};
+use danube_client::{ConnectionOptions, Consumer, DanubeClient, Producer, SchemaType, SubType};
 use rustls::crypto;
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
+use tonic::transport::{Certificate, ClientTlsConfig};
+
+static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
 
 struct TestSetup {
     client: Arc<DanubeClient>,
 }
 
 async fn setup() -> Result<TestSetup> {
-    // Install the default CryptoProvider
-    let crypto_provider = crypto::ring::default_provider();
-    crypto_provider
-        .install_default()
-        .expect("Failed to install default CryptoProvider");
+    CRYPTO_PROVIDER
+        .get_or_init(|| async {
+            let crypto_provider = crypto::ring::default_provider();
+            crypto_provider
+                .install_default()
+                .expect("Failed to install default CryptoProvider");
+        })
+        .await;
+
+    let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
+        std::fs::read("../cert/ca-cert.pem").unwrap(),
+    ));
+
+    let connection_options = ConnectionOptions::new().tls_config(tls_config);
 
     let client = Arc::new(
         DanubeClient::builder()
-            .service_url("http://127.0.0.1:6650")
+            .service_url("https://127.0.0.1:6650")
+            .with_connection_options(connection_options)
             .build()
             .await?,
     );
@@ -43,7 +57,6 @@ async fn setup_producer(
         .build();
 
     producer.create().await?;
-
     Ok(producer)
 }
 
@@ -61,83 +74,8 @@ async fn setup_consumer(
         .with_subscription_type(sub_type)
         .build();
 
-    // Ensure the consumer is connected and subscribed
     consumer.subscribe().await?;
     Ok(consumer)
-}
-
-#[tokio::test]
-async fn test_exclusive_subscription() -> Result<()> {
-    let setup = setup().await?;
-    let topic = "/default/topic_exclusive_subsc";
-    let partitions = 3;
-
-    let producer = setup_producer(
-        setup.client.clone(),
-        topic,
-        "producer_exclusive",
-        partitions,
-    )
-    .await?;
-
-    let mut consumer = setup_consumer(
-        setup.client.clone(),
-        topic,
-        "consumer_exclusive",
-        SubType::Exclusive,
-    )
-    .await?;
-
-    // Start receiving messages
-    let mut message_stream = consumer.receive().await?;
-
-    sleep(Duration::from_millis(500)).await;
-
-    // Define messages to send
-    let messages = vec!["Hello Danube 1", "Hello Danube 2", "Hello Danube 3"];
-
-    // Produce messages
-    for msg in &messages {
-        producer.send(msg.as_bytes().into(), None).await?;
-        println!("Message sent: {}", msg);
-    }
-
-    // Add a timeout to avoid blocking indefinitely
-    let receive_future = async {
-        let mut received_messages = vec![];
-
-        while let Some(stream_message) = message_stream.recv().await {
-            let payload = String::from_utf8(stream_message.payload).unwrap();
-            println!("Message received: {}", payload);
-            received_messages.push(payload);
-
-            // Break early if we've received all messages
-            if received_messages.len() == messages.len() {
-                break;
-            }
-        }
-
-        received_messages
-    };
-
-    let result = timeout(Duration::from_secs(10), receive_future).await?;
-    let received_messages = result;
-
-    // Check if all expected messages were received
-    assert_eq!(
-        received_messages.len(),
-        messages.len(),
-        "Not all messages were received"
-    );
-    for expected in &messages {
-        assert!(
-            received_messages.contains(&expected.to_string()),
-            "Expected message '{}' not found",
-            expected
-        );
-    }
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -157,21 +95,17 @@ async fn test_shared_subscription() -> Result<()> {
     )
     .await?;
 
-    // Start receiving messages
     let mut message_stream = consumer.receive().await?;
 
     sleep(Duration::from_millis(500)).await;
 
-    // Define messages to send
     let messages = vec!["Hello Danube 1", "Hello Danube 2", "Hello Danube 3"];
 
-    // Produce messages
     for msg in &messages {
         producer.send(msg.as_bytes().into(), None).await?;
         println!("Message sent: {}", msg);
     }
 
-    // Add a timeout to avoid blocking indefinitely
     let receive_future = async {
         let mut received_messages = vec![];
 
@@ -180,7 +114,6 @@ async fn test_shared_subscription() -> Result<()> {
             println!("Message received: {}", payload);
             received_messages.push(payload);
 
-            // Break early if we've received all messages
             if received_messages.len() == messages.len() {
                 break;
             }
@@ -192,7 +125,6 @@ async fn test_shared_subscription() -> Result<()> {
     let result = timeout(Duration::from_secs(10), receive_future).await?;
     let received_messages = result;
 
-    // Check if all expected messages were received
     assert_eq!(
         received_messages.len(),
         messages.len(),
