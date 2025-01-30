@@ -65,6 +65,11 @@ jobs:
             sleep 5
           done
 
+      - name: Copy certificates
+        run: |
+          docker cp ./cert/ broker1:/cert/
+          docker cp ./cert/ broker2:/cert/          
+
       - name: Run Broker 1
         env:
           RUST_LOG: danube_broker=trace
