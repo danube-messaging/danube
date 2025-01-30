@@ -87,10 +87,9 @@ impl TopicProducer {
 
         let mut request = tonic::Request::new(producer_request);
 
-        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
-            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
-                .map_err(|_| DanubeError::InvalidToken)?;
-            request.metadata_mut().insert("authorization", token);
+        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, &self.client.uri, api_key)
+                .await?;
         }
 
         let max_retries = 4;
@@ -230,10 +229,9 @@ impl TopicProducer {
 
         let mut request = tonic::Request::new(req);
 
-        if let Some(jwt_token) = &self.client.cnx_manager.connection_options.jwt_token {
-            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
-                .map_err(|_| DanubeError::InvalidToken)?;
-            request.metadata_mut().insert("authorization", token);
+        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, &self.client.uri, api_key)
+                .await?;
         }
 
         let mut client = self.stream_client.as_ref().unwrap().clone();
@@ -252,6 +250,26 @@ impl TopicProducer {
             }
         }
     }
+
+    async fn insert_auth_token<T>(
+        &self,
+        request: &mut tonic::Request<T>,
+        addr: &Uri,
+        api_key: &str,
+    ) -> Result<()> {
+        let token = self
+            .client
+            .auth_service
+            .get_valid_token(addr, api_key)
+            .await?;
+        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
+            .map_err(|_| DanubeError::InvalidToken)?;
+        request
+            .metadata_mut()
+            .insert("authorization", token_metadata);
+        Ok(())
+    }
+
     async fn connect(&mut self, addr: &Uri) -> Result<()> {
         let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
         let client = ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone());

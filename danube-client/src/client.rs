@@ -34,7 +34,7 @@ impl DanubeClient {
 
         let auth_service = AuthService::new(cnx_manager.clone());
 
-        let lookup_service = LookupService::new(cnx_manager.clone());
+        let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
 
         let schema_service = SchemaService::new(cnx_manager.clone(), auth_service.clone());
 

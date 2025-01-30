@@ -1,4 +1,5 @@
 use crate::{
+    auth_service::AuthService,
     connection_manager::ConnectionManager,
     errors::{DanubeError, Result},
 };
@@ -26,14 +27,16 @@ pub struct LookupResult {
 #[derive(Debug, Clone)]
 pub(crate) struct LookupService {
     cnx_manager: Arc<ConnectionManager>,
+    auth_service: AuthService,
     // unique identifier for every request sent by LookupService
     request_id: Arc<AtomicU64>,
 }
 
 impl LookupService {
-    pub fn new(cnx_manager: Arc<ConnectionManager>) -> Self {
+    pub fn new(cnx_manager: Arc<ConnectionManager>, auth_service: AuthService) -> Self {
         LookupService {
             cnx_manager,
+            auth_service,
             request_id: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -53,10 +56,8 @@ impl LookupService {
 
         let mut request = tonic::Request::new(lookup_request);
 
-        if let Some(jwt_token) = &self.cnx_manager.connection_options.jwt_token {
-            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
-                .map_err(|_| DanubeError::InvalidToken)?;
-            request.metadata_mut().insert("authorization", token);
+        if let Some(api_key) = &self.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, addr, api_key).await?;
         }
 
         let response: std::result::Result<Response<TopicLookupResponse>, Status> =
@@ -97,10 +98,8 @@ impl LookupService {
 
         let mut request = tonic::Request::new(lookup_request);
 
-        if let Some(jwt_token) = &self.cnx_manager.connection_options.jwt_token {
-            let token = MetadataValue::from_str(&format!("Bearer {}", jwt_token))
-                .map_err(|_| DanubeError::InvalidToken)?;
-            request.metadata_mut().insert("authorization", token);
+        if let Some(api_key) = &self.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, addr, api_key).await?;
         }
 
         let response: std::result::Result<Response<TopicPartitionsResponse>, Status> =
@@ -139,6 +138,21 @@ impl LookupService {
             },
             Err(err) => Err(err),
         }
+    }
+
+    async fn insert_auth_token(
+        &self,
+        request: &mut tonic::Request<TopicLookupRequest>,
+        addr: &Uri,
+        api_key: &str,
+    ) -> Result<()> {
+        let token = self.auth_service.get_valid_token(addr, api_key).await?;
+        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
+            .map_err(|_| DanubeError::InvalidToken)?;
+        request
+            .metadata_mut()
+            .insert("authorization", token_metadata);
+        Ok(())
     }
 }
 
