@@ -21,7 +21,7 @@ async fn setup() -> Result<DanubeClient> {
         .await;
 
     let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
-        std::fs::read("./cert/ca-cert.pem").unwrap(),
+        std::fs::read("../cert/ca-cert.pem").unwrap(),
     ));
 
     let connection_options = ConnectionOptions::new().tls_config(tls_config);
@@ -36,11 +36,11 @@ async fn setup() -> Result<DanubeClient> {
 }
 
 #[tokio::test]
-async fn test_exclusive_subscription() -> Result<()> {
+async fn exclusive_subscription() -> Result<()> {
     let danube_client = setup().await?;
-    let topic = "/default/topic_test_exclusive_subscription";
-    let producer_name = "test_producer_exclusive";
-    let consumer_name = "test_consumer_exclusive";
+    let topic = "/default/exclusive_subscription";
+    let producer_name = "producer_exclusive";
+    let consumer_name = "consumer_exclusive";
 
     // Create the producer
     let mut producer = danube_client

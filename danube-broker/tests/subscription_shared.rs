@@ -2,20 +2,15 @@ extern crate danube_client;
 extern crate futures_util;
 
 use anyhow::Result;
-use danube_client::{ConnectionOptions, Consumer, DanubeClient, Producer, SchemaType, SubType};
+use danube_client::{ConnectionOptions, DanubeClient, SchemaType, SubType};
 use rustls::crypto;
-use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
 use tonic::transport::{Certificate, ClientTlsConfig};
 
 static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
 
-struct TestSetup {
-    client: Arc<DanubeClient>,
-}
-
-async fn setup() -> Result<TestSetup> {
+async fn setup() -> Result<DanubeClient> {
     CRYPTO_PROVIDER
         .get_or_init(|| async {
             let crypto_provider = crypto::ring::default_provider();
@@ -26,28 +21,29 @@ async fn setup() -> Result<TestSetup> {
         .await;
 
     let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
-        std::fs::read("./cert/ca-cert.pem").unwrap(),
+        std::fs::read("../cert/ca-cert.pem").unwrap(),
     ));
 
     let connection_options = ConnectionOptions::new().tls_config(tls_config);
 
-    let client = Arc::new(
-        DanubeClient::builder()
-            .service_url("https://127.0.0.1:6650")
-            .with_connection_options(connection_options)
-            .build()
-            .await?,
-    );
+    let client = DanubeClient::builder()
+        .service_url("https://127.0.0.1:6650")
+        .with_connection_options(connection_options)
+        .build()
+        .await?;
 
-    Ok(TestSetup { client })
+    Ok(client)
 }
 
-async fn setup_producer(
-    client: Arc<DanubeClient>,
-    topic: &str,
-    producer_name: &str,
-) -> Result<Producer> {
-    let mut producer = client
+#[tokio::test]
+async fn shared_subscription() -> Result<()> {
+    let danube_client = setup().await?;
+    let topic = "/default/shared_subscription";
+    let producer_name = "producer_shared";
+    let consumer_name = "consumer_shared";
+
+    // Create the producer
+    let mut producer = danube_client
         .new_producer()
         .with_topic(topic)
         .with_name(producer_name)
@@ -55,41 +51,17 @@ async fn setup_producer(
         .build();
 
     producer.create().await?;
-    Ok(producer)
-}
 
-async fn setup_consumer(
-    client: Arc<DanubeClient>,
-    topic: &str,
-    consumer_name: &str,
-    sub_type: SubType,
-) -> Result<Consumer> {
-    let mut consumer = client
+    // Create the Shared consumer
+    let mut consumer = danube_client
         .new_consumer()
         .with_topic(topic.to_string())
         .with_consumer_name(consumer_name.to_string())
         .with_subscription(format!("test_subscription_{}", consumer_name))
-        .with_subscription_type(sub_type)
+        .with_subscription_type(SubType::Shared)
         .build();
 
     consumer.subscribe().await?;
-    Ok(consumer)
-}
-
-#[tokio::test]
-async fn test_shared_subscription() -> Result<()> {
-    let setup = setup().await?;
-    let topic = "/default/topic_test_shared_subscription";
-
-    let producer = setup_producer(setup.client.clone(), topic, "test_producer_shared").await?;
-
-    let mut consumer = setup_consumer(
-        setup.client.clone(),
-        topic,
-        "test_consumer_shared",
-        SubType::Shared,
-    )
-    .await?;
 
     let mut message_stream = consumer.receive().await?;
 
@@ -102,9 +74,15 @@ async fn test_shared_subscription() -> Result<()> {
 
     let receive_future = async {
         if let Some(stream_message) = message_stream.recv().await {
-            let payload = String::from_utf8(stream_message.payload).unwrap();
+            let payload = String::from_utf8(stream_message.payload.clone()).unwrap();
             assert_eq!(payload, "Hello Danube");
             println!("Message received: {}", payload);
+
+            // Acknowledge the message
+            match consumer.ack(&stream_message).await {
+                Ok(_) => println!("Message acknowledged"),
+                Err(e) => println!("Error acknowledging message: {}", e),
+            }
         } else {
             println!("No message received");
         }
