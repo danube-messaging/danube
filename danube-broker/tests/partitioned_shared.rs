@@ -26,7 +26,7 @@ async fn setup() -> Result<TestSetup> {
         .await;
 
     let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
-        std::fs::read("../cert/ca-cert.pem").unwrap(),
+        std::fs::read("./cert/ca-cert.pem").unwrap(),
     ));
 
     let connection_options = ConnectionOptions::new().tls_config(tls_config);

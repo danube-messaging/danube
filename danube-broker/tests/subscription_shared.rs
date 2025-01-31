@@ -26,7 +26,7 @@ async fn setup() -> Result<TestSetup> {
         .await;
 
     let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
-        std::fs::read("../cert/ca-cert.pem").unwrap(),
+        std::fs::read("./cert/ca-cert.pem").unwrap(),
     ));
 
     let connection_options = ConnectionOptions::new().tls_config(tls_config);
@@ -77,17 +77,17 @@ async fn setup_consumer(
 }
 
 #[tokio::test]
-async fn test_exclusive_subscription() -> Result<()> {
+async fn test_shared_subscription() -> Result<()> {
     let setup = setup().await?;
-    let topic = "/default/topic_test_exclusive_subscription";
+    let topic = "/default/topic_test_shared_subscription";
 
-    let producer = setup_producer(setup.client.clone(), topic, "test_producer_exclusive").await?;
+    let producer = setup_producer(setup.client.clone(), topic, "test_producer_shared").await?;
 
     let mut consumer = setup_consumer(
         setup.client.clone(),
         topic,
-        "test_consumer_exclusive",
-        SubType::Exclusive,
+        "test_consumer_shared",
+        SubType::Shared,
     )
     .await?;
 
