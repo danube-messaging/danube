@@ -2,11 +2,10 @@ extern crate danube_client;
 extern crate futures_util;
 
 use anyhow::Result;
-use danube_client::{ConnectionOptions, DanubeClient, SchemaType, SubType};
+use danube_client::{DanubeClient, SchemaType, SubType};
 use rustls::crypto;
 use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
-use tonic::transport::{Certificate, ClientTlsConfig};
 
 static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
 
@@ -20,15 +19,9 @@ async fn setup() -> Result<DanubeClient> {
         })
         .await;
 
-    let tls_config = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
-        std::fs::read("../cert/ca-cert.pem").unwrap(),
-    ));
-
-    let connection_options = ConnectionOptions::new().tls_config(tls_config);
-
     let client = DanubeClient::builder()
         .service_url("https://127.0.0.1:6650")
-        .with_connection_options(connection_options)
+        .with_tls("../cert/ca-cert.pem")?
         .build()
         .await?;
 

@@ -27,31 +27,11 @@ enum ConnectionStatus {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ConnectionOptions {
+pub(crate) struct ConnectionOptions {
     pub(crate) tls_config: Option<ClientTlsConfig>,
     pub(crate) api_key: Option<String>,
     pub(crate) jwt_token: Option<String>,
-    // indicate the the connection doesn't use TLS
-    pub(crate) insecure: bool,
-}
-
-impl ConnectionOptions {
-    pub fn new() -> Self {
-        ConnectionOptions {
-            tls_config: None,
-            api_key: None,
-            jwt_token: None,
-            insecure: false,
-        }
-    }
-    pub fn tls_config(mut self, tls_config: ClientTlsConfig) -> Self {
-        self.tls_config = Some(tls_config);
-        self
-    }
-    pub fn api_key(mut self, api_key: String) -> Self {
-        self.api_key = Some(api_key);
-        self
-    }
+    pub(crate) use_tls: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +41,7 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    pub fn new(connection_options: ConnectionOptions) -> Self {
+    pub(crate) fn new(connection_options: ConnectionOptions) -> Self {
         ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_options,
@@ -115,27 +95,27 @@ pub(crate) async fn new_rpc_connection(
     cnx_options: &ConnectionOptions,
     connect_url: &Uri,
 ) -> Result<RpcConnection> {
-    info!(
-        "Attempting to establish a new RPC connection to {}",
-        connect_url
-    );
-    let channel = if cnx_options.insecure {
-        Channel::from_shared(connect_url.to_string())?
-            .connect()
-            .await?
-    } else if let Some(tls_config) = &cnx_options.tls_config {
-        // mTLS configuration
-        Channel::from_shared(connect_url.to_string())?
-            .tls_config(tls_config.clone())?
-            .connect()
-            .await?
-    } else {
-        // Normal TLS configuration
-        let default_tls_config = ClientTlsConfig::new();
-        Channel::from_shared(connect_url.to_string())?
-            .tls_config(default_tls_config)?
-            .connect()
-            .await?
+    info!("Establishing new RPC connection to {}", connect_url);
+
+    let channel = match cnx_options.use_tls {
+        false => {
+            // Plain TCP connection
+            Channel::from_shared(connect_url.to_string())?
+                .connect()
+                .await?
+        }
+        true => {
+            // TLS is enabled, tls_config must be present
+            let tls_config = cnx_options
+                .tls_config
+                .as_ref()
+                .expect("TLS config must be present when TLS is enabled");
+
+            Channel::from_shared(connect_url.to_string())?
+                .tls_config(tls_config.clone())?
+                .connect()
+                .await?
+        }
     };
 
     Ok(RpcConnection { grpc_cnx: channel })

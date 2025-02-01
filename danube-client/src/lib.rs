@@ -29,7 +29,6 @@ mod schema_service;
 mod lookup_service;
 
 mod connection_manager;
-pub use connection_manager::ConnectionOptions;
 
 mod health_check;
 

@@ -1,5 +1,6 @@
+use std::path::Path;
 use std::sync::Arc;
-use tonic::transport::Uri;
+use tonic::transport::{Certificate, ClientTlsConfig, Identity, Uri};
 
 use crate::{
     auth_service::AuthService,
@@ -144,27 +145,39 @@ impl DanubeClientBuilder {
         self
     }
 
-    /// Sets optional connection settings for the client in the builder.
-    ///
-    /// This method allows you to configure various connection settings for the `DanubeClient` through the builder. These settings determine how the client connects to the grpc Danube service and can be tailored to meet specific requirements.
-    ///
-    /// # Parameters
-    ///
-    /// - `connection_options`: A `ConnectionOptions` instance that includes various settings for configuring the client's connection. This may include parameters such as connection timeouts, keep alive interval.
-    pub fn with_connection_options(mut self, connection_options: ConnectionOptions) -> Self {
-        self.connection_options = connection_options;
-        self
+    /// Sets the TLS configuration for the client in the builder.
+    pub fn with_tls(mut self, ca_cert: impl AsRef<Path>) -> Result<Self> {
+        let tls_config =
+            ClientTlsConfig::new().ca_certificate(Certificate::from_pem(std::fs::read(ca_cert)?));
+        self.connection_options.tls_config = Some(tls_config);
+        self.connection_options.use_tls = true;
+        Ok(self)
+    }
+
+    /// Sets the mutual TLS configuration for the client in the builder.
+    pub fn with_mtls(
+        mut self,
+        ca_cert: impl AsRef<Path>,
+        client_cert: impl AsRef<Path>,
+        client_key: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let ca_data = std::fs::read(ca_cert)?;
+        let cert_data = std::fs::read(client_cert)?;
+        let key_data = std::fs::read(client_key)?;
+
+        let tls_config = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(ca_data))
+            .identity(Identity::from_pem(cert_data, key_data));
+
+        self.connection_options.tls_config = Some(tls_config);
+        self.connection_options.use_tls = true;
+        Ok(self)
     }
 
     /// Sets the API key for the client in the builder.
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = Some(api_key.into());
-        self
-    }
-
-    /// Sets the connection to be insecure (without TLS).
-    pub fn insecure_connection(mut self) -> Self {
-        self.connection_options.insecure = true;
+        self.connection_options.use_tls = true; // API key automatically enables TLS
         self
     }
 

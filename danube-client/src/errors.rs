@@ -21,6 +21,9 @@ pub enum DanubeError {
     #[error("unable to parse the address")]
     ParseError,
 
+    #[error("unable to load the certificate: {0}")]
+    IoError(#[from] std::io::Error),
+
     #[error("unable to perform operation: {0}")]
     Unrecoverable(String),
 
