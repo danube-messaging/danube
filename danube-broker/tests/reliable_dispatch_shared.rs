@@ -2,7 +2,9 @@ extern crate danube_client;
 extern crate futures_util;
 
 use anyhow::Result;
-use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, DanubeClient, SubType};
+use danube_client::{
+    ConfigReliableOptions, ConfigRetentionPolicy, DanubeClient, SchemaType, SubType,
+};
 use rustls::crypto;
 use std::fs;
 use tokio::sync::OnceCell;
@@ -40,15 +42,18 @@ async fn reliable_shared_dispatch() -> Result<()> {
     let reliable_options =
         ConfigReliableOptions::new(5, ConfigRetentionPolicy::RetainUntilExpire, 3600);
 
+    // Create the producer with reliable dispatch
     let mut producer = danube_client
         .new_producer()
         .with_topic(topic)
         .with_name(producer_name)
+        .with_schema("my_schema".into(), SchemaType::String)
         .with_reliable_dispatch(reliable_options)
         .build();
 
     producer.create().await?;
 
+    // Create the consumer with shared dispatch
     let mut consumer = danube_client
         .new_consumer()
         .with_topic(topic.to_string())
@@ -81,7 +86,10 @@ async fn reliable_shared_dispatch() -> Result<()> {
     };
 
     let result = timeout(Duration::from_secs(10), receive_future).await;
-    assert!(result.is_ok(), "Test timed out while waiting for messages");
+    assert!(
+        result.is_ok(),
+        "Test timed out while waiting for the message"
+    );
 
     Ok(())
 }

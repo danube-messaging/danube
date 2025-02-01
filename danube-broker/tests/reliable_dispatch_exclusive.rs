@@ -58,7 +58,7 @@ async fn reliable_exclusive_dispatch() -> Result<()> {
         .new_consumer()
         .with_topic(topic.to_string())
         .with_consumer_name(consumer_name.to_string())
-        .with_subscription(format!("test_subscription_{}", consumer_name))
+        .with_subscription(format!("reliable_subscription_{}", consumer_name))
         .with_subscription_type(SubType::Exclusive)
         .build();
 
