@@ -10,14 +10,16 @@ use tokio::sync::RwLock;
 pub trait StorageBackend: Send + Sync + std::fmt::Debug + 'static {
     async fn get_segment(
         &self,
+        topic_name: &str,
         id: usize,
     ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError>;
     async fn put_segment(
         &self,
+        topic_name: &str,
         id: usize,
         segment: Arc<RwLock<Segment>>,
     ) -> Result<(), StorageBackendError>;
-    async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError>;
+    async fn remove_segment(&self, topic_name: &str, id: usize) -> Result<(), StorageBackendError>;
 }
 
 #[derive(Debug, Error)]

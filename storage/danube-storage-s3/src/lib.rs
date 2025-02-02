@@ -8,6 +8,16 @@ use danube_core::storage::{Segment, StorageBackend, StorageBackendError};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// S3Storage is a storage backend that stores segments on S3.
+// This creates a bucket structure like:
+// bucket/
+//     topic1/
+//         segment_0.bin
+//         segment_1.bin
+//     topic2/
+//         segment_0.bin
+//         segment_1.bin
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct S3Storage {
@@ -37,8 +47,8 @@ impl S3Storage {
         Ok(())
     }
 
-    fn segment_key(&self, id: usize) -> String {
-        format!("segment_{}.bin", id)
+    fn segment_key(&self, topic_name: &str, id: usize) -> String {
+        format!("{}/segment_{}.bin", topic_name, id)
     }
 
     fn get_client(&self) -> Result<&Client> {
@@ -52,10 +62,11 @@ impl S3Storage {
 impl StorageBackend for S3Storage {
     async fn get_segment(
         &self,
+        topic_name: &str,
         id: usize,
     ) -> std::result::Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
         let client = self.get_client().map_err(S3Error::from)?;
-        let key = self.segment_key(id);
+        let key = self.segment_key(topic_name, id);
 
         match client
             .get_object()
@@ -86,11 +97,12 @@ impl StorageBackend for S3Storage {
 
     async fn put_segment(
         &self,
+        topic_name: &str,
         id: usize,
         segment: Arc<RwLock<Segment>>,
     ) -> std::result::Result<(), StorageBackendError> {
         let client = self.get_client().map_err(S3Error::from)?;
-        let key = self.segment_key(id);
+        let key = self.segment_key(topic_name, id);
         let segment_data = segment.read().await;
         let bytes = bincode::serialize(&*segment_data).map_err(S3Error::from)?;
 
@@ -106,9 +118,13 @@ impl StorageBackend for S3Storage {
         Ok(())
     }
 
-    async fn remove_segment(&self, id: usize) -> std::result::Result<(), StorageBackendError> {
+    async fn remove_segment(
+        &self,
+        topic_name: &str,
+        id: usize,
+    ) -> std::result::Result<(), StorageBackendError> {
         let client = self.get_client().map_err(S3Error::from)?;
-        let key = self.segment_key(id);
+        let key = self.segment_key(topic_name, id);
 
         client
             .delete_object()

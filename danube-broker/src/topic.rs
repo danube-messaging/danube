@@ -53,9 +53,9 @@ impl Topic {
     ) -> Self {
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
-            ConfigDispatchStrategy::Reliable(reliable_options) => {
-                DispatchStrategy::Reliable(ReliableDispatch::new(reliable_options, storage_backend))
-            }
+            ConfigDispatchStrategy::Reliable(reliable_options) => DispatchStrategy::Reliable(
+                ReliableDispatch::new(topic_name, reliable_options, storage_backend),
+            ),
         };
 
         Topic {

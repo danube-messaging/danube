@@ -14,8 +14,7 @@ use crate::errors::{ReliableDispatchError, Result};
 // It stores the segments in memory until are acknowledged by every subscription
 #[derive(Debug, Clone)]
 pub(crate) struct TopicStore {
-    // Concurrent map of segment ID to segments
-    //pub(crate) segments: Arc<DashMap<usize, Arc<RwLock<Segment>>>>,
+    topic_name: String,
     // Storage backend for segments
     pub(crate) storage: Arc<dyn StorageBackend>,
     // Index of segments store (segment_id, close_time) pairs
@@ -31,10 +30,15 @@ pub(crate) struct TopicStore {
 }
 
 impl TopicStore {
-    pub(crate) fn new(storage: Arc<dyn StorageBackend>, reliable_options: ReliableOptions) -> Self {
+    pub(crate) fn new(
+        topic_name: &str,
+        storage: Arc<dyn StorageBackend>,
+        reliable_options: ReliableOptions,
+    ) -> Self {
         // Convert segment size from MB to Bytes
         let segment_size_bytes = reliable_options.segment_size * 1024 * 1024;
         Self {
+            topic_name: topic_name.to_string(),
             storage,
             segments_index: Arc::new(RwLock::new(Vec::new())),
             segment_size: segment_size_bytes,
@@ -87,7 +91,7 @@ impl TopicStore {
             None => {
                 let new_seg = match self
                     .storage
-                    .get_segment(segment_id)
+                    .get_segment(&self.topic_name, segment_id)
                     .await
                     .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?
                 {
@@ -96,7 +100,7 @@ impl TopicStore {
                         let new_segment =
                             Arc::new(RwLock::new(Segment::new(segment_id, self.segment_size)));
                         self.storage
-                            .put_segment(segment_id, new_segment.clone())
+                            .put_segment(&self.topic_name, segment_id, new_segment.clone())
                             .await
                             .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
                         let mut index = self.segments_index.write().await;
@@ -121,7 +125,7 @@ impl TopicStore {
         // First write the current full segment to storage
         if let Some(cached) = &*self.cached_segment.lock().await {
             self.storage
-                .put_segment(segment_id, cached.clone())
+                .put_segment(&self.topic_name, segment_id, cached.clone())
                 .await
                 .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
         }
@@ -160,13 +164,13 @@ impl TopicStore {
     // If the next segment is the cached one (writtable segment), it will return the cached segment
     pub(crate) async fn get_next_segment(
         &self,
-        current_segment_id: Option<usize>,
+        requested_segment_id: Option<usize>,
     ) -> Result<Option<Arc<RwLock<Segment>>>> {
         let index = self.segments_index.read().await;
         let cached = self.cached_segment.lock().await;
         let current_cached_id = *self.current_segment_id.read().await;
 
-        match current_segment_id {
+        match requested_segment_id {
             None => {
                 // If index is empty, topic has no segments
                 if index.is_empty() {
@@ -179,7 +183,7 @@ impl TopicStore {
                 }
                 return Ok(self
                     .storage
-                    .get_segment(first_segment_id)
+                    .get_segment(&self.topic_name, first_segment_id)
                     .await
                     .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?);
             }
@@ -192,7 +196,7 @@ impl TopicStore {
                         }
                         return Ok(self
                             .storage
-                            .get_segment(next_segment_id)
+                            .get_segment(&self.topic_name, next_segment_id)
                             .await
                             .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?);
                     }
@@ -216,6 +220,7 @@ impl TopicStore {
         subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>>,
         retention_policy: RetentionPolicy,
     ) {
+        let topic_name = self.topic_name.clone();
         let storage = self.storage.clone();
         let segments_index = self.segments_index.clone();
         let retention_period = self.retention_period;
@@ -228,10 +233,10 @@ impl TopicStore {
                     _ = interval.tick() => {
                         match retention_policy {
                             RetentionPolicy::RetainUntilAck => {
-                                Self::cleanup_acknowledged_segments(&storage, &segments_index, &subscriptions).await;
+                                Self::cleanup_acknowledged_segments(&topic_name ,&storage, &segments_index, &subscriptions).await;
                             }
                             RetentionPolicy::RetainUntilExpire => {
-                                Self::cleanup_expired_segments(&storage, &segments_index, retention_period).await;
+                                Self::cleanup_expired_segments(&topic_name, &storage, &segments_index, retention_period).await;
                             }
                         }
                     }
@@ -242,6 +247,7 @@ impl TopicStore {
     }
 
     pub(crate) async fn cleanup_acknowledged_segments(
+        topic_name: &str,
         storage: &Arc<dyn StorageBackend>,
         segments_index: &Arc<RwLock<Vec<(usize, u64)>>>,
         subscriptions: &Arc<DashMap<String, Arc<AtomicUsize>>>,
@@ -260,7 +266,7 @@ impl TopicStore {
             .collect();
 
         for segment_id in &segments_to_remove {
-            if let Err(e) = storage.remove_segment(*segment_id).await {
+            if let Err(e) = storage.remove_segment(topic_name, *segment_id).await {
                 trace!("Failed to remove segment {}: {:?}", segment_id, e);
                 continue;
             }
@@ -275,6 +281,7 @@ impl TopicStore {
     }
 
     pub(crate) async fn cleanup_expired_segments(
+        topic_name: &str,
         storage: &Arc<dyn StorageBackend>,
         segments_index: &Arc<RwLock<Vec<(usize, u64)>>>,
         retention_period: u64,
@@ -295,7 +302,7 @@ impl TopicStore {
             .collect();
 
         for segment_id in &expired_segments {
-            if let Err(e) = storage.remove_segment(*segment_id).await {
+            if let Err(e) = storage.remove_segment(topic_name, *segment_id).await {
                 trace!("Failed to remove expired segment {}: {:?}", segment_id, e);
                 continue;
             }

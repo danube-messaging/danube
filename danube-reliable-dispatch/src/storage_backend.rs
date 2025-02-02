@@ -19,7 +19,8 @@ pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn Storage
 
 #[derive(Debug)]
 pub struct InMemoryStorage {
-    segments: DashMap<usize, Arc<RwLock<Segment>>>,
+    // topic_name -> (segment_id -> segment)
+    segments: DashMap<String, DashMap<usize, Arc<RwLock<Segment>>>>,
 }
 
 impl InMemoryStorage {
@@ -34,22 +35,33 @@ impl InMemoryStorage {
 impl StorageBackend for InMemoryStorage {
     async fn get_segment(
         &self,
+        topic_name: &str,
         id: usize,
     ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
-        Ok(self.segments.get(&id).map(|segment| segment.clone()))
+        Ok(self
+            .segments
+            .get(topic_name)
+            .and_then(|topic_segments| topic_segments.value().get(&id).map(|seg| seg.clone())))
     }
 
     async fn put_segment(
         &self,
+        topic_name: &str,
         id: usize,
         segment: Arc<RwLock<Segment>>,
     ) -> Result<(), StorageBackendError> {
-        self.segments.insert(id, segment);
+        let topic_segments = self
+            .segments
+            .entry(topic_name.to_string())
+            .or_insert_with(|| DashMap::new());
+        topic_segments.insert(id, segment);
         Ok(())
     }
 
-    async fn remove_segment(&self, id: usize) -> Result<(), StorageBackendError> {
-        self.segments.remove(&id);
+    async fn remove_segment(&self, topic_name: &str, id: usize) -> Result<(), StorageBackendError> {
+        if let Some(topic_segments) = self.segments.get(topic_name) {
+            topic_segments.remove(&id);
+        }
         Ok(())
     }
 }
