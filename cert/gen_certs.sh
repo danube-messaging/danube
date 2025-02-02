@@ -10,7 +10,7 @@ openssl req -newkey rsa:4096 -nodes -keyout server-key.pem -out server-req.pem \
   -subj "/CN=localhost"
 
 # Sign with proper SANs
-echo "subjectAltName=DNS:localhost,IP:127.0.0.1" > server-ext.cnf
+echo "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:0.0.0.0" > server-ext.cnf
 openssl x509 -req -in server-req.pem -days 365 -CA ca-cert.pem -CAkey ca-key.pem \
   -CAcreateserial -out server-cert.pem -extfile server-ext.cnf
 

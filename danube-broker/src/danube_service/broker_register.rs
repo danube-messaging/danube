@@ -11,6 +11,7 @@ pub(crate) async fn register_broker(
     broker_id: &str,
     broker_addr: &str,
     ttl: i64,
+    is_secure: bool,
 ) -> Result<()> {
     match store {
         MetadataStorage::Etcd(_) => {
@@ -19,7 +20,11 @@ pub(crate) async fn register_broker(
 
             let lease_id = lease.id();
             let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
-            let broker_uri = format!("http://{}", broker_addr);
+            let broker_uri = if is_secure {
+                format!("https://{}", broker_addr)
+            } else {
+                format!("http://{}", broker_addr)
+            };
             let payload = serde_json::Value::String(broker_uri);
 
             store.put_with_lease(&path, payload, lease_id).await?;

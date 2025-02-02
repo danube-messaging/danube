@@ -1,5 +1,5 @@
 use anyhow::{Ok, Result};
-use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
+use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use serde_json::Value;
 
 use crate::{

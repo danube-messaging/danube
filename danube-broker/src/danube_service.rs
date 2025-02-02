@@ -22,6 +22,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::{
     admin::DanubeAdminImpl,
+    auth::AuthMode,
     broker_server,
     broker_service::BrokerService,
     policies::Policies,
@@ -139,12 +140,17 @@ impl DanubeService {
             self.service_config.broker_addr.clone().to_string()
         };
 
+        //check it is a secure connection
+        let is_secure = self.service_config.auth.mode == AuthMode::Tls
+            || self.service_config.auth.mode == AuthMode::TlsWithJwt;
+
         let ttl = 32; // Time to live for the lease in seconds
         register_broker(
             self.meta_store.clone(),
             &self.broker_id.to_string(),
             &advertised_addr,
             ttl,
+            is_secure,
         )
         .await?;
 
