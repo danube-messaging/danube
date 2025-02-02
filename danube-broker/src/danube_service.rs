@@ -276,6 +276,7 @@ impl DanubeService {
             self.service_config.admin_addr.clone(),
             broker_service_cloned,
             self.resources.clone(),
+            self.service_config.auth.clone(),
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
