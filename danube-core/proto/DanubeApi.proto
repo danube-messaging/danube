@@ -226,6 +226,20 @@ message HealthCheckResponse {
 }
 
 // ============================================================================================
+
+service AuthService {
+    rpc Authenticate (AuthRequest) returns (AuthResponse);
+}
+
+message AuthRequest {
+    string api_key = 1;
+}
+
+message AuthResponse {
+    string token = 1;
+}
+
+// ============================================================================================
 // Define the possible error types
 
 enum ErrorType {

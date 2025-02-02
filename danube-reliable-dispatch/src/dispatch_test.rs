@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 /// Test helper to create a TopicStore with default settings
 #[cfg(test)]
-fn create_test_topic_store() -> TopicStore {
+fn create_test_topic_store(topic_name: &str) -> TopicStore {
     // Using 1MB segment size and 60s TTL for testing
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(
@@ -31,14 +31,14 @@ fn create_test_topic_store() -> TopicStore {
         RetentionPolicy::RetainUntilAck,
         60, // 60s retention period
     );
-    TopicStore::new(storage, reliable_options)
+    TopicStore::new(topic_name, storage, reliable_options)
 }
 
 #[cfg(test)]
-fn create_test_message_id(segment_id: u64, segment_offset: u64) -> MessageID {
+fn create_test_message_id(topic_name: &str, segment_id: u64, segment_offset: u64) -> MessageID {
     MessageID {
         producer_id: 1,
-        topic_name: "test-topic".to_string(),
+        topic_name: topic_name.to_string(),
         broker_addr: "localhost:6650".to_string(),
         segment_id,
         segment_offset,
@@ -46,12 +46,17 @@ fn create_test_message_id(segment_id: u64, segment_offset: u64) -> MessageID {
 }
 
 #[cfg(test)]
-fn create_test_message(segment_id: u64, segment_offset: u64, payload: Vec<u8>) -> StreamMessage {
+fn create_test_message(
+    topic_name: &str,
+    segment_id: u64,
+    segment_offset: u64,
+    payload: Vec<u8>,
+) -> StreamMessage {
     StreamMessage {
         request_id: 1,
         msg_id: MessageID {
             producer_id: 1,
-            topic_name: "/default/test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             broker_addr: "localhost:6650".to_string(),
             segment_id,
             segment_offset,
@@ -75,7 +80,8 @@ fn create_test_message(segment_id: u64, segment_offset: u64, payload: Vec<u8>) -
 /// - Empty acknowledged messages map
 #[tokio::test]
 async fn test_new_subscription_dispatch() {
-    let topic_store = create_test_topic_store();
+    let topic_name = "/default/test-topic";
+    let topic_store = create_test_topic_store(topic_name);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
@@ -89,7 +95,8 @@ async fn test_new_subscription_dispatch() {
 /// Expects an InvalidState error when attempting to process an empty segment
 #[tokio::test]
 async fn test_process_empty_segment() {
-    let topic_store = create_test_topic_store();
+    let topic_name = "/default/test-topic";
+    let topic_store = create_test_topic_store(topic_name);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
@@ -107,22 +114,26 @@ async fn test_process_empty_segment() {
 /// - Addition to acknowledged messages map
 #[tokio::test]
 async fn test_message_acknowledgment() {
+    let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_store = TopicStore::new(storage.clone(), reliable_options);
+    let topic_store = TopicStore::new(topic_name, storage.clone(), reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
     // Create and setup segment with message
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
-    let message = create_test_message(0, 0, vec![1]);
+    let message = create_test_message(topic_name, 0, 0, vec![1]);
     {
         let mut segment_write = segment.write().await;
         segment_write.messages.push(message.clone());
     }
 
     // Store segment in storage backend
-    storage.put_segment(1, segment.clone()).await.unwrap();
+    storage
+        .put_segment(topic_name, 1, segment.clone())
+        .await
+        .unwrap();
     dispatch
         .topic_store
         .segments_index
@@ -150,11 +161,12 @@ async fn test_message_acknowledgment() {
 /// results in an AcknowledgmentError
 #[tokio::test]
 async fn test_invalid_acknowledgment() {
-    let topic_store = create_test_topic_store();
+    let topic_name = "/default/test-topic";
+    let topic_store = create_test_topic_store(topic_name);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
-    let msg_id = create_test_message_id(0, 1);
+    let msg_id = create_test_message_id(topic_name, 0, 1);
     let result = dispatch.handle_message_acked(1, msg_id).await;
 
     assert!(matches!(
@@ -169,7 +181,8 @@ async fn test_invalid_acknowledgment() {
 /// - Clearing of acknowledged messages during transition
 #[tokio::test]
 async fn test_segment_transition() {
-    let topic_store = create_test_topic_store();
+    let topic_name = "/default/test-topic";
+    let topic_store = create_test_topic_store(topic_name);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
@@ -189,14 +202,15 @@ async fn test_segment_transition() {
 /// - Acknowledged messages
 #[tokio::test]
 async fn test_clear_current_segment() {
-    let topic_store = create_test_topic_store();
+    let topic_name = "/default/test-topic";
+    let topic_store = create_test_topic_store(topic_name);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
     dispatch.segment = Some(segment);
     dispatch.current_segment_id = Some(1);
-    let msg_id = create_test_message_id(0, 1);
+    let msg_id = create_test_message_id(topic_name, 0, 1);
     dispatch.acked_messages.insert(msg_id, 1);
 
     dispatch.clear_current_segment();
@@ -212,14 +226,18 @@ async fn test_clear_current_segment() {
 /// 4. Segment transition signals
 #[tokio::test]
 async fn test_validate_segment() {
+    let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_store = TopicStore::new(storage.clone(), reliable_options);
+    let topic_store = TopicStore::new(topic_name, storage.clone(), reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
     let segment = Arc::new(RwLock::new(Segment::new(1, 1024 * 1024)));
-    storage.put_segment(1, segment.clone()).await.unwrap();
+    storage
+        .put_segment(topic_name, 1, segment.clone())
+        .await
+        .unwrap();
     dispatch
         .topic_store
         .segments_index
@@ -232,7 +250,7 @@ async fn test_validate_segment() {
     assert!(matches!(result, Ok(false)));
 
     // Test 2: Closed segment with acknowledged message
-    let message = create_test_message(0, 1, vec![1]);
+    let message = create_test_message(topic_name, 0, 1, vec![1]);
     {
         let mut segment_write = segment.write().await;
         segment_write.close_time = 1;

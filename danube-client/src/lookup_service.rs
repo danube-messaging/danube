@@ -1,4 +1,5 @@
 use crate::{
+    auth_service::AuthService,
     connection_manager::ConnectionManager,
     errors::{DanubeError, Result},
 };
@@ -7,8 +8,12 @@ use danube_core::proto::{
     discovery_client::DiscoveryClient, topic_lookup_response::LookupType, TopicLookupRequest,
     TopicLookupResponse, TopicPartitionsResponse,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::{
+    str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
+use tonic::metadata::MetadataValue;
 use tonic::transport::Uri;
 use tonic::{Response, Status};
 use tracing::warn;
@@ -22,14 +27,16 @@ pub struct LookupResult {
 #[derive(Debug, Clone)]
 pub(crate) struct LookupService {
     cnx_manager: Arc<ConnectionManager>,
+    auth_service: AuthService,
     // unique identifier for every request sent by LookupService
     request_id: Arc<AtomicU64>,
 }
 
 impl LookupService {
-    pub fn new(cnx_manager: Arc<ConnectionManager>) -> Self {
+    pub fn new(cnx_manager: Arc<ConnectionManager>, auth_service: AuthService) -> Self {
         LookupService {
             cnx_manager,
+            auth_service,
             request_id: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -47,7 +54,11 @@ impl LookupService {
             topic: topic.into(),
         };
 
-        let request = tonic::Request::new(lookup_request);
+        let mut request = tonic::Request::new(lookup_request);
+
+        if let Some(api_key) = &self.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, addr, api_key).await?;
+        }
 
         let response: std::result::Result<Response<TopicLookupResponse>, Status> =
             client.topic_lookup(request).await;
@@ -85,7 +96,11 @@ impl LookupService {
             topic: topic.into(),
         };
 
-        let request = tonic::Request::new(lookup_request);
+        let mut request = tonic::Request::new(lookup_request);
+
+        if let Some(api_key) = &self.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, addr, api_key).await?;
+        }
 
         let response: std::result::Result<Response<TopicPartitionsResponse>, Status> =
             client.topic_partitions(request).await;
@@ -123,6 +138,21 @@ impl LookupService {
             },
             Err(err) => Err(err),
         }
+    }
+
+    async fn insert_auth_token(
+        &self,
+        request: &mut tonic::Request<TopicLookupRequest>,
+        addr: &Uri,
+        api_key: &str,
+    ) -> Result<()> {
+        let token = self.auth_service.get_valid_token(addr, api_key).await?;
+        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
+            .map_err(|_| DanubeError::InvalidToken)?;
+        request
+            .metadata_mut()
+            .insert("authorization", token_metadata);
+        Ok(())
     }
 }
 

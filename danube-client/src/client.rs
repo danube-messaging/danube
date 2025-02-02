@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
-use tonic::transport::Uri;
+use tonic::transport::{Certificate, ClientTlsConfig, Identity, Uri};
 
 use crate::{
+    auth_service::AuthService,
     connection_manager::{ConnectionManager, ConnectionOptions},
     consumer::ConsumerBuilder,
     errors::Result,
@@ -23,6 +25,7 @@ pub struct DanubeClient {
     pub(crate) lookup_service: LookupService,
     pub(crate) schema_service: SchemaService,
     pub(crate) health_check_service: HealthCheckService,
+    pub(crate) auth_service: AuthService,
 }
 
 impl DanubeClient {
@@ -30,11 +33,14 @@ impl DanubeClient {
         let cnx_manager = ConnectionManager::new(builder.connection_options);
         let cnx_manager = Arc::new(cnx_manager);
 
-        let lookup_service = LookupService::new(cnx_manager.clone());
+        let auth_service = AuthService::new(cnx_manager.clone());
 
-        let schema_service = SchemaService::new(cnx_manager.clone());
+        let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
 
-        let health_check_service = HealthCheckService::new(cnx_manager.clone());
+        let schema_service = SchemaService::new(cnx_manager.clone(), auth_service.clone());
+
+        let health_check_service =
+            HealthCheckService::new(cnx_manager.clone(), auth_service.clone());
 
         DanubeClient {
             uri: uri,
@@ -42,6 +48,7 @@ impl DanubeClient {
             lookup_service,
             schema_service,
             health_check_service,
+            auth_service,
         }
     }
 
@@ -67,6 +74,13 @@ impl DanubeClient {
     /// The builder pattern allows you to specify details such as the topic, consumer name, subscription, subscription type, and other configurations before creating the final `Consumer` instance.
     pub fn new_consumer(&self) -> ConsumerBuilder {
         ConsumerBuilder::new(self)
+    }
+
+    /// Returns a reference to the `AuthService`.
+    ///
+    /// This method provides access to the `AuthService` instance used by the `DanubeClient`.
+    pub fn auth_service(&self) -> &AuthService {
+        &self.auth_service
     }
 
     /// Retrieves the address of the broker responsible for a specified topic.
@@ -115,6 +129,7 @@ impl DanubeClient {
 pub struct DanubeClientBuilder {
     uri: String,
     connection_options: ConnectionOptions,
+    api_key: Option<String>,
 }
 
 impl DanubeClientBuilder {
@@ -127,20 +142,42 @@ impl DanubeClientBuilder {
     /// - `url`: The base URI to use for connecting to the Danube service. The URI should include the protocol and address of the Danube service.
     pub fn service_url(mut self, url: impl Into<String>) -> Self {
         self.uri = url.into();
-
         self
     }
 
-    /// Sets optional connection settings for the client in the builder.
-    ///
-    /// This method allows you to configure various connection settings for the `DanubeClient` through the builder. These settings determine how the client connects to the grpc Danube service and can be tailored to meet specific requirements.
-    ///
-    /// # Parameters
-    ///
-    /// - `connection_options`: A `ConnectionOptions` instance that includes various settings for configuring the client's connection. This may include parameters such as connection timeouts, keep alive interval.
-    pub fn with_connection_options(mut self, connection_options: ConnectionOptions) -> Self {
-        self.connection_options = connection_options;
+    /// Sets the TLS configuration for the client in the builder.
+    pub fn with_tls(mut self, ca_cert: impl AsRef<Path>) -> Result<Self> {
+        let tls_config =
+            ClientTlsConfig::new().ca_certificate(Certificate::from_pem(std::fs::read(ca_cert)?));
+        self.connection_options.tls_config = Some(tls_config);
+        self.connection_options.use_tls = true;
+        Ok(self)
+    }
 
+    /// Sets the mutual TLS configuration for the client in the builder.
+    pub fn with_mtls(
+        mut self,
+        ca_cert: impl AsRef<Path>,
+        client_cert: impl AsRef<Path>,
+        client_key: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let ca_data = std::fs::read(ca_cert)?;
+        let cert_data = std::fs::read(client_cert)?;
+        let key_data = std::fs::read(client_key)?;
+
+        let tls_config = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(ca_data))
+            .identity(Identity::from_pem(cert_data, key_data));
+
+        self.connection_options.tls_config = Some(tls_config);
+        self.connection_options.use_tls = true;
+        Ok(self)
+    }
+
+    /// Sets the API key for the client in the builder.
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self.connection_options.use_tls = true; // API key automatically enables TLS
         self
     }
 
@@ -152,8 +189,17 @@ impl DanubeClientBuilder {
     ///
     /// - `Ok(DanubeClient)`: A new instance of `DanubeClient` configured with the specified options.
     /// - `Err(e)`: An error if the configuration is invalid or incomplete.
-    pub fn build(self) -> Result<DanubeClient> {
+    pub async fn build(mut self) -> Result<DanubeClient> {
         let uri = self.uri.parse::<Uri>()?;
+        let cnx_manager = Arc::new(ConnectionManager::new(self.connection_options.clone()));
+        let auth_service = AuthService::new(cnx_manager.clone());
+
+        if let Some(api_key) = self.api_key.clone() {
+            self.connection_options.api_key = Some(api_key.clone());
+            let token = auth_service.authenticate_client(&uri, &api_key).await?;
+            self.connection_options.jwt_token = Some(token);
+        }
+
         Ok(DanubeClient::new_client(self, uri))
     }
 }

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use danube_reliable_dispatch::SubscriptionDispatch;
+use danube_reliable_dispatch::{ReliableDispatchError, SubscriptionDispatch};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace, warn};
@@ -88,9 +88,10 @@ impl DispatcherReliableSingleConsumer {
                                 warn!("Failed to dispatch message: {}", e);
                             }
                         }
-                        Err(_) => {
-                            // As this loops, the error is due to waiting for a new message
-                        }
+                        Err(e) => match e {
+                            ReliableDispatchError::NoMessagesAvailable => continue,
+                            err => warn!("Error processing current segment: {}", err),
+                        },
                     };
                 }
             }

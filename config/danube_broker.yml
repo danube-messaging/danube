@@ -23,6 +23,19 @@ meta_store_port: 2379
 bootstrap_namespaces:
   - "default"
 
+# Security Configuration
+auth:
+  mode: tls # Options: none, tls, tlswithjwt
+  tls:
+    cert_file: "./cert/server-cert.pem"
+    key_file: "./cert/server-key.pem"
+    ca_file: "./cert/ca-cert.pem"
+    verify_client: false
+  jwt:
+    secret_key: "your-secret-key"
+    issuer: "danube-auth"
+    expiration_time: 3600 # in seconds
+
 # Messsage Storage Configuration
 storage:
   # Valid options: inmemory, disk, s3

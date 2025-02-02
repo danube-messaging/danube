@@ -10,10 +10,12 @@ use danube_core::proto::{
 };
 
 use futures_core::Stream;
+use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
+use tonic::metadata::MetadataValue;
 use tonic::{transport::Uri, Code, Response, Status};
 use tracing::warn;
 
@@ -113,10 +115,6 @@ impl TopicConsumer {
             }
         }
 
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("Subscribe: Stream client is not initialized".to_string())
-        })?;
-
         let req = ConsumerRequest {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
             topic_name: self.topic_name.clone(),
@@ -125,7 +123,16 @@ impl TopicConsumer {
             subscription_type: self.subscription_type.clone() as i32,
         };
 
-        let request = tonic::Request::new(req);
+        let mut request = tonic::Request::new(req);
+
+        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, &self.client.uri, api_key)
+                .await?;
+        }
+
+        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
+            DanubeError::Unrecoverable("Subscribe: Stream client is not initialized".to_string())
+        })?;
 
         let response: std::result::Result<Response<ConsumerResponse>, Status> =
             stream_client.subscribe(request).await;
@@ -166,16 +173,23 @@ impl TopicConsumer {
     pub(crate) async fn receive(
         &mut self,
     ) -> Result<impl Stream<Item = std::result::Result<StreamMessage, Status>>> {
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("Receive: Stream client is not initialized".to_string())
-        })?;
-
         let receive_request = ReceiveRequest {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
             consumer_id: self.consumer_id.unwrap(),
         };
 
-        let response = match stream_client.receive_messages(receive_request).await {
+        let mut request = tonic::Request::new(receive_request);
+
+        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, &self.client.uri, api_key)
+                .await?;
+        }
+
+        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
+            DanubeError::Unrecoverable("Receive: Stream client is not initialized".to_string())
+        })?;
+
+        let response = match stream_client.receive_messages(request).await {
             Ok(response) => response,
             Err(status) => {
                 let decoded_message = decode_error_details(&status);
@@ -191,16 +205,24 @@ impl TopicConsumer {
         msg_id: MessageID,
         subscription_name: &str,
     ) -> Result<AckResponse> {
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("SendAck: Stream client is not initialized".to_string())
-        })?;
-
         let ack_request = AckRequest {
             request_id: req_id,
             msg_id: Some(msg_id.into()),
             subscription_name: subscription_name.to_string(),
         };
-        let response = match stream_client.ack(ack_request).await {
+
+        let mut request = tonic::Request::new(ack_request);
+
+        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+            self.insert_auth_token(&mut request, &self.client.uri, api_key)
+                .await?;
+        }
+
+        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
+            DanubeError::Unrecoverable("SendAck: Stream client is not initialized".to_string())
+        })?;
+
+        let response = match stream_client.ack(request).await {
             Ok(response) => response,
             Err(status) => {
                 let decoded_message = decode_error_details(&status);
@@ -212,6 +234,25 @@ impl TopicConsumer {
 
     pub(crate) fn get_topic_name(&self) -> &str {
         &self.topic_name
+    }
+
+    async fn insert_auth_token<T>(
+        &self,
+        request: &mut tonic::Request<T>,
+        addr: &Uri,
+        api_key: &str,
+    ) -> Result<()> {
+        let token = self
+            .client
+            .auth_service
+            .get_valid_token(addr, api_key)
+            .await?;
+        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
+            .map_err(|_| DanubeError::InvalidToken)?;
+        request
+            .metadata_mut()
+            .insert("authorization", token_metadata);
+        Ok(())
     }
 
     async fn connect(&mut self, addr: &Uri) -> Result<()> {

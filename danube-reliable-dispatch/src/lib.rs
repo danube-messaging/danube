@@ -29,6 +29,7 @@ pub struct ReliableDispatch {
 
 impl ReliableDispatch {
     pub fn new(
+        topic_name: &str,
         reliable_options: ReliableOptions,
         storage_backend: Arc<dyn StorageBackend>,
     ) -> Self {
@@ -37,7 +38,7 @@ impl ReliableDispatch {
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
         let retention_policy = reliable_options.retention_policy.clone();
-        let topic_store = TopicStore::new(storage_backend, reliable_options);
+        let topic_store = TopicStore::new(&topic_name, storage_backend, reliable_options);
         // Start the lifecycle management task
         topic_store.start_lifecycle_management_task(
             shutdown_rx,

@@ -1,15 +1,12 @@
-use crate::{
-    errors::Result,
-    rpc_connection::{new_rpc_connection, RpcConnection},
-};
+use crate::errors::Result;
 
 use std::{
     collections::{hash_map::Entry, HashMap},
     sync::Arc,
-    time::Duration,
 };
 use tokio::sync::Mutex;
-use tonic::transport::Uri;
+use tonic::transport::{Channel, ClientTlsConfig, Uri};
+use tracing::info;
 
 /// holds connection information for a broker
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -30,26 +27,28 @@ enum ConnectionStatus {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ConnectionOptions {
-    pub(crate) keep_alive_interval: Option<Duration>,
-    pub(crate) connection_timeout: Option<Duration>,
+pub(crate) struct ConnectionOptions {
+    pub(crate) tls_config: Option<ClientTlsConfig>,
+    pub(crate) api_key: Option<String>,
+    pub(crate) jwt_token: Option<String>,
+    pub(crate) use_tls: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<BrokerAddress, ConnectionStatus>>>,
-    connection_options: ConnectionOptions,
+    pub(crate) connection_options: ConnectionOptions,
 }
 
 impl ConnectionManager {
-    pub fn new(connection_options: ConnectionOptions) -> Self {
+    pub(crate) fn new(connection_options: ConnectionOptions) -> Self {
         ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_options,
         }
     }
 
-    pub async fn get_connection(
+    pub(crate) async fn get_connection(
         &self,
         broker_url: &Uri,
         connect_url: &Uri,
@@ -65,8 +64,6 @@ impl ConnectionManager {
         };
 
         let mut cnx = self.connections.lock().await;
-
-        // let entry = cnx.entry(broker);
 
         match cnx.entry(broker) {
             Entry::Occupied(mut occupied_entry) => match occupied_entry.get() {
@@ -87,4 +84,39 @@ impl ConnectionManager {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RpcConnection {
+    pub(crate) grpc_cnx: Channel,
+}
+
+pub(crate) async fn new_rpc_connection(
+    cnx_options: &ConnectionOptions,
+    connect_url: &Uri,
+) -> Result<RpcConnection> {
+    info!("Establishing new RPC connection to {}", connect_url);
+
+    let channel = match cnx_options.use_tls {
+        false => {
+            // Plain TCP connection
+            Channel::from_shared(connect_url.to_string())?
+                .connect()
+                .await?
+        }
+        true => {
+            // TLS is enabled, tls_config must be present
+            let tls_config = cnx_options
+                .tls_config
+                .as_ref()
+                .expect("TLS config must be present when TLS is enabled");
+
+            Channel::from_shared(connect_url.to_string())?
+                .tls_config(tls_config.clone())?
+                .connect()
+                .await?
+        }
+    };
+
+    Ok(RpcConnection { grpc_cnx: channel })
 }

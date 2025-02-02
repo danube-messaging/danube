@@ -68,7 +68,8 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
 
     let client = DanubeClient::builder()
         .service_url(&consume.service_addr)
-        .build()?;
+        .build()
+        .await?;
 
     let mut consumer = client
         .new_consumer()
