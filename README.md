@@ -2,7 +2,7 @@
 
 Danube is an open-source distributed Messaging Broker platform (inspired by Apache Pulsar).
 
-Danube aims to be a simple yet powerful, flexible and scalable messaging platform, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
+Danube aims to be a simple yet powerful, secure, flexible and scalable messaging platform, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
 
 Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the Danube Architecture and the supported concepts.
 
