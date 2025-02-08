@@ -33,7 +33,7 @@ members = [
     "storage/danube-storage-s3", 
     
     # -- Danube storage tikv
-    "storage/danube-storage-tikv",
+    "storage/danube-storage-tikv", "danube-persistent-storage",
 ]
 
 [workspace.dependencies]
