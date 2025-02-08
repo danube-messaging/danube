@@ -91,7 +91,7 @@ impl Display for DiskConfig {
 pub struct ManagedConfig {
     pub endpoint: String,
     pub use_tls: bool,
-    pub ca_cert_path: String,
+    pub ca_file: String,
     pub connection_timeout: usize,
 }
 

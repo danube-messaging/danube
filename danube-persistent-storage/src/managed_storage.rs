@@ -23,7 +23,7 @@ pub struct ManagedStorage {
 impl ManagedStorage {
     pub async fn new(config: &ManagedConfig) -> Result<Self, PersistentStorageError> {
         let tls_config = if config.use_tls {
-            let ca_cert = std::fs::read(&config.ca_cert_path)?;
+            let ca_cert = std::fs::read(&config.ca_file)?;
             Some(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_cert)))
         } else {
             None
