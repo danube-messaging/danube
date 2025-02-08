@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
         "Use {} storage as message persistent store",
         service_config.storage
     );
-    let message_storage = create_message_storage(&service_config.storage);
+    let message_storage = create_message_storage(&service_config.storage).await;
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store
     let local_cache = LocalCache::new(metadata_store.clone());

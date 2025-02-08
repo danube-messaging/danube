@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package managed_storage;
+
+service ManagedStorage {
+    rpc GetSegment(GetSegmentRequest) returns (GetSegmentResponse);
+    rpc PutSegment(PutSegmentRequest) returns (PutSegmentResponse);
+    rpc RemoveSegment(RemoveSegmentRequest) returns (RemoveSegmentResponse);
+}
+
+message GetSegmentRequest {
+    string topic_name = 1;
+    uint64 segment_id = 2;
+}
+
+message GetSegmentResponse {
+    bytes segment_data = 1;
+}
+
+message PutSegmentRequest {
+    string topic_name = 1;
+    uint64 segment_id = 2;
+    bytes segment_data = 3;
+}
+
+message PutSegmentResponse {}
+
+message RemoveSegmentRequest {
+    string topic_name = 1;
+    uint64 segment_id = 2;
+}
+
+message RemoveSegmentResponse {}

@@ -30,8 +30,8 @@ pub enum StorageBackendError {
     #[error("Disk storage error: {0}")]
     Disk(String),
 
-    #[error("S3 storage error: {0}")]
-    S3(String),
+    #[error("Managed storage error: {0}")]
+    Managed(String),
 }
 
 /// Segment is a collection of messages, the segment is closed for writing when it's capacity is reached
@@ -88,17 +88,19 @@ impl Display for DiskConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct S3Config {
-    pub bucket: String,
-    pub region: String,
+pub struct ManagedConfig {
+    pub endpoint: String,
+    pub use_tls: bool,
+    pub ca_file: String,
+    pub connection_timeout: usize,
 }
 
-impl Display for S3Config {
+impl Display for ManagedConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "S3Config(bucket: {}, region: {})",
-            self.bucket, self.region
+            "ManagedConfig(endpoint: {}, connection_timeout: {})",
+            self.endpoint, self.connection_timeout
         )
     }
 }
@@ -110,8 +112,8 @@ pub enum StorageConfig {
     InMemory,
     #[serde(rename = "disk")]
     Disk(DiskConfig),
-    #[serde(rename = "s3")]
-    S3(S3Config),
+    #[serde(rename = "managed")]
+    Managed(ManagedConfig),
 }
 
 impl Display for StorageConfig {
@@ -119,7 +121,7 @@ impl Display for StorageConfig {
         match self {
             StorageConfig::InMemory => write!(f, "InMemory"),
             StorageConfig::Disk(config) => write!(f, "{}", config),
-            StorageConfig::S3(config) => write!(f, "{}", config),
+            StorageConfig::Managed(config) => write!(f, "{}", config),
         }
     }
 }

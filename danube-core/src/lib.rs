@@ -9,3 +9,7 @@ pub mod proto {
 pub mod admin_proto {
     include!("proto/danube_admin.rs");
 }
+
+pub mod managed_storage_proto {
+    include!("proto/managed_storage.rs");
+}
