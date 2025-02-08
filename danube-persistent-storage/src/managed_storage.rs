@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use danube_core::storage::{ManagedConfig, Segment, StorageBackend, StorageBackendError};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Uri};
 
 use crate::{
@@ -17,7 +17,7 @@ use danube_core::managed_storage_proto::{
 
 #[derive(Debug, Clone)]
 pub struct ManagedStorage {
-    client: ManagedStorageClient<Channel>,
+    client: Arc<Mutex<ManagedStorageClient<Channel>>>,
 }
 
 impl ManagedStorage {
@@ -49,7 +49,9 @@ impl ManagedStorage {
         // Create client with the established connection
         let client = ManagedStorageClient::new(grpc_cnx);
 
-        Ok(Self { client })
+        Ok(Self {
+            client: Arc::new(Mutex::new(client)),
+        })
     }
 }
 
@@ -60,12 +62,13 @@ impl StorageBackend for ManagedStorage {
         topic_name: &str,
         id: usize,
     ) -> Result<Option<Arc<RwLock<Segment>>>, StorageBackendError> {
+        let mut client = self.client.lock().await;
         let request = GetSegmentRequest {
             topic_name: topic_name.to_string(),
             segment_id: id as u64,
         };
 
-        match self.client.get_segment(request).await {
+        match client.get_segment(request).await {
             Ok(response) => {
                 let segment_data = response.into_inner().segment_data;
                 let segment: Segment = bincode::deserialize(&segment_data)
@@ -82,6 +85,7 @@ impl StorageBackend for ManagedStorage {
         id: usize,
         segment: Arc<RwLock<Segment>>,
     ) -> Result<(), StorageBackendError> {
+        let mut client = self.client.lock().await;
         let segment_data = segment.read().await;
         let serialized = bincode::serialize(&*segment_data)
             .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
@@ -92,19 +96,20 @@ impl StorageBackend for ManagedStorage {
             segment_data: serialized,
         };
 
-        match self.client.put_segment(request).await {
+        match client.put_segment(request).await {
             Ok(_) => Ok(()),
             Err(e) => Err(StorageBackendError::Managed(e.to_string())),
         }
     }
 
     async fn remove_segment(&self, topic_name: &str, id: usize) -> Result<(), StorageBackendError> {
+        let mut client = self.client.lock().await;
         let request = RemoveSegmentRequest {
             topic_name: topic_name.to_string(),
             segment_id: id as u64,
         };
 
-        match self.client.remove_segment(request).await {
+        match client.remove_segment(request).await {
             Ok(_) => Ok(()),
             Err(e) => Err(StorageBackendError::Managed(e.to_string())),
         }

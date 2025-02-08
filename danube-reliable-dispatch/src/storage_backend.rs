@@ -4,13 +4,17 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use danube_persistent_storage::DiskStorage;
+use danube_persistent_storage::{DiskStorage, ManagedStorage};
 
-pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
+pub async fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
     match storage_config {
         StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
         StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),
-        StorageConfig::Managed(managed_config) => Arc::new(ManagedStorage::new(managed_config)),
+        StorageConfig::Managed(managed_config) => Arc::new(
+            ManagedStorage::new(managed_config)
+                .await
+                .expect("Failed to create managed storage"),
+        ),
     }
 }
 
