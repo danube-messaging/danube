@@ -11,8 +11,7 @@ edition = "2021"
 
 [dependencies]
 danube-core = {path = "../danube-core"}
-danube-storage-disk = {path = "../storage/danube-storage-disk"}
-danube-storage-s3 = {path = "../storage/danube-storage-s3"}
+danube-persistent-storage = {path = "../danube-persistent-storage"}
 
 async-trait = { workspace = true }
 dashmap = { workspace = true }

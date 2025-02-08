@@ -14,6 +14,8 @@ danube-core = { path = "../danube-core" }
 
 async-trait = {workspace = true }
 tokio = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
 thiserror = { workspace = true }
 bincode = "1.3.3"
 

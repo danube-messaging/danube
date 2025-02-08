@@ -4,16 +4,13 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use danube_storage_disk::DiskStorage;
-use danube_storage_s3::S3Storage;
+use danube_persistent_storage::DiskStorage;
 
 pub fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
     match storage_config {
         StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
         StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),
-        StorageConfig::S3(s3_config) => {
-            Arc::new(S3Storage::new(&s3_config.bucket, &s3_config.region))
-        }
+        StorageConfig::Managed(managed_config) => Arc::new(ManagedStorage::new(managed_config)),
     }
 }
 

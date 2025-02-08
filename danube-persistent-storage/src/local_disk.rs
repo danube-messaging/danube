@@ -4,7 +4,7 @@ use danube_core::storage::{Segment, StorageBackend, StorageBackendError};
 use std::{path::PathBuf, sync::Arc};
 use tokio::{fs, sync::RwLock};
 
-use crate::errors::DiskError;
+use crate::errors::PersistentStorageError;
 
 // DiskStorage is a storage backend that stores segments on disk.
 // This creates a directory structure like:
@@ -53,8 +53,9 @@ impl StorageBackend for DiskStorage {
             return Ok(None);
         }
 
-        let bytes = fs::read(path).await.map_err(DiskError::from)?;
-        let segment: Segment = bincode::deserialize(&bytes).map_err(DiskError::from)?;
+        let bytes = fs::read(path).await.map_err(PersistentStorageError::from)?;
+        let segment: Segment =
+            bincode::deserialize(&bytes).map_err(PersistentStorageError::from)?;
         Ok(Some(Arc::new(RwLock::new(segment))))
     }
 
@@ -66,8 +67,10 @@ impl StorageBackend for DiskStorage {
     ) -> std::result::Result<(), StorageBackendError> {
         let path = self.segment_path(topic_name, id);
         let segment_data = segment.read().await;
-        let bytes = bincode::serialize(&*segment_data).map_err(DiskError::from)?;
-        fs::write(path, bytes).await.map_err(DiskError::from)?;
+        let bytes = bincode::serialize(&*segment_data).map_err(PersistentStorageError::from)?;
+        fs::write(path, bytes)
+            .await
+            .map_err(PersistentStorageError::from)?;
         Ok(())
     }
 
@@ -78,7 +81,9 @@ impl StorageBackend for DiskStorage {
     ) -> std::result::Result<(), StorageBackendError> {
         let path = self.segment_path(topic_name, id);
         if path.exists() {
-            fs::remove_file(path).await.map_err(DiskError::from)?;
+            fs::remove_file(path)
+                .await
+                .map_err(PersistentStorageError::from)?;
         }
         Ok(())
     }

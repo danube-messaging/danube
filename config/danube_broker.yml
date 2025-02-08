@@ -45,10 +45,11 @@ storage:
   disk:
     path: "./your_directory"
 
-  # S3 storage configuration
-  s3:
-    bucket: "your_s3_bucket"
-    region: "us-east-1"
+  # Managed storage configuration, connect to external grpc storage layer
+  managed:
+    endpoint: "grpc://storage.example.com:5353"
+    use_tls: false
+    connection_timeout: 5000
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

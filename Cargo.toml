@@ -28,15 +28,6 @@ members = [
 
     # -- Danube persistent storage
     "danube-persistent-storage",
-
-    # -- Danube storage disk
-    "storage/danube-storage-disk",
-
-    # -- Danube storage s3
-    "storage/danube-storage-s3", 
-    
-    # -- Danube storage tikv
-    "storage/danube-storage-tikv", 
 ]
 
 [workspace.dependencies]
