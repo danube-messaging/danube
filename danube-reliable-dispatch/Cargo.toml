@@ -1,6 +1,6 @@
 [package]
 name = "danube-reliable-dispatch"
-version = "0.2.3"
+version = "0.2.4"
 description = "The danube-reliable-dispatch crate is responsible for ensuring reliable message delivery in Danube messaging broker"
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
 repository = "https://github.com/danube-messaging/danube"
