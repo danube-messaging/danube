@@ -5,6 +5,9 @@ use crate::{
 };
 
 #[cfg(test)]
+use crate::topic_cache::TopicCache;
+
+#[cfg(test)]
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::{MessageID, StreamMessage},
@@ -31,7 +34,8 @@ fn create_test_topic_store(topic_name: &str) -> TopicStore {
         RetentionPolicy::RetainUntilAck,
         60, // 60s retention period
     );
-    TopicStore::new(topic_name, storage, reliable_options)
+    let topic_cache = TopicCache::new(storage);
+    TopicStore::new(topic_name, topic_cache, reliable_options)
 }
 
 #[cfg(test)]
@@ -117,7 +121,8 @@ async fn test_message_acknowledgment() {
     let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_store = TopicStore::new(topic_name, storage.clone(), reliable_options);
+    let topic_cache = TopicCache::new(storage.clone());
+    let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 
@@ -229,7 +234,8 @@ async fn test_validate_segment() {
     let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_store = TopicStore::new(topic_name, storage.clone(), reliable_options);
+    let topic_cache = TopicCache::new(storage.clone());
+    let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
 

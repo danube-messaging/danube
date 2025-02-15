@@ -1,14 +1,17 @@
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::StreamMessage,
-    storage::{Segment, StorageBackend},
+    storage::Segment,
 };
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::{Mutex, RwLock};
 use tracing::trace;
 
-use crate::errors::{ReliableDispatchError, Result};
+use crate::{
+    errors::{ReliableDispatchError, Result},
+    topic_cache::TopicCache,
+};
 
 // TopicStore is used only for reliable messaging
 // It stores the segments in memory until are acknowledged by every subscription
@@ -16,7 +19,7 @@ use crate::errors::{ReliableDispatchError, Result};
 pub(crate) struct TopicStore {
     topic_name: String,
     // Storage backend for segments
-    pub(crate) storage: Arc<dyn StorageBackend>,
+    pub(crate) storage: TopicCache,
     // Index of segments store (segment_id, close_time) pairs
     pub(crate) segments_index: Arc<RwLock<Vec<(usize, u64)>>>,
     // Maximum size per segment in bytes
@@ -32,7 +35,7 @@ pub(crate) struct TopicStore {
 impl TopicStore {
     pub(crate) fn new(
         topic_name: &str,
-        storage: Arc<dyn StorageBackend>,
+        storage: TopicCache,
         reliable_options: ReliableOptions,
     ) -> Self {
         // Convert segment size from MB to Bytes
@@ -248,7 +251,7 @@ impl TopicStore {
 
     pub(crate) async fn cleanup_acknowledged_segments(
         topic_name: &str,
-        storage: &Arc<dyn StorageBackend>,
+        storage: &TopicCache,
         segments_index: &Arc<RwLock<Vec<(usize, u64)>>>,
         subscriptions: &Arc<DashMap<String, Arc<AtomicUsize>>>,
     ) {
@@ -282,7 +285,7 @@ impl TopicStore {
 
     pub(crate) async fn cleanup_expired_segments(
         topic_name: &str,
-        storage: &Arc<dyn StorageBackend>,
+        storage: &TopicCache,
         segments_index: &Arc<RwLock<Vec<(usize, u64)>>>,
         retention_period: u64,
     ) {
