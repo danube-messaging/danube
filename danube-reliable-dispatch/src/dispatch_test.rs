@@ -34,7 +34,7 @@ fn create_test_topic_store(topic_name: &str) -> TopicStore {
         RetentionPolicy::RetainUntilAck,
         60, // 60s retention period
     );
-    let topic_cache = TopicCache::new(storage);
+    let topic_cache = TopicCache::new(storage, 10, 10);
     TopicStore::new(topic_name, topic_cache, reliable_options)
 }
 
@@ -121,7 +121,7 @@ async fn test_message_acknowledgment() {
     let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_cache = TopicCache::new(storage.clone());
+    let topic_cache = TopicCache::new(storage.clone(), 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);
@@ -234,7 +234,7 @@ async fn test_validate_segment() {
     let topic_name = "/default/test-topic";
     let storage = Arc::new(InMemoryStorage::new());
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
-    let topic_cache = TopicCache::new(storage.clone());
+    let topic_cache = TopicCache::new(storage.clone(), 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let last_acked = Arc::new(AtomicUsize::new(0));
     let mut dispatch = SubscriptionDispatch::new(topic_store, last_acked);

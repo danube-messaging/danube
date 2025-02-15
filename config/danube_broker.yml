@@ -38,15 +38,23 @@ auth:
 
 # Messsage Storage Configuration
 storage:
-  # Valid options: inmemory, disk, s3
+  # Valid options: local, remote
+  # the "inmemory" should be used only for local testing !
   type: "inmemory"
 
+  # Cache configuration
+  # if the segment is not found in the cache, it will be loaded from the storage
+  cache:
+    max_capacity: 100 # number of segment entries in the cache
+    # A cached entry will be expired after the specified duration past from get or insert.
+    time_to_idle: 10 # in minutes
+
   # Disk storage configuration
-  disk:
+  local:
     path: "./your_directory"
 
   # Managed storage configuration, connect to external grpc storage layer
-  managed:
+  remote:
     endpoint: "grpc://storage.example.com:5353"
     use_tls: false
     ca_file: "ca-cert.pem"
