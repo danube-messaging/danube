@@ -4,18 +4,28 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::topic_cache::TopicCache;
 use danube_persistent_storage::{DiskStorage, ManagedStorage};
 
-pub async fn create_message_storage(storage_config: &StorageConfig) -> Arc<dyn StorageBackend> {
+pub async fn create_message_storage(storage_config: &StorageConfig) -> TopicCache {
     match storage_config {
-        StorageConfig::InMemory => Arc::new(InMemoryStorage::new()),
-        StorageConfig::Disk(disk_config) => Arc::new(DiskStorage::new(&disk_config.path)),
-        StorageConfig::Managed(managed_config) => Arc::new(
-            ManagedStorage::new(managed_config)
-                .await
-                .expect("Failed to create managed storage"),
-        ),
-    }
+        StorageConfig::InMemory { cache } => {
+            let storage = Arc::new(InMemoryStorage::new());
+            return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
+        }
+        StorageConfig::Disk { config, cache } => {
+            let storage = Arc::new(DiskStorage::new(&config.path));
+            return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
+        }
+        StorageConfig::Managed { config, cache } => {
+            let storage = Arc::new(
+                ManagedStorage::new(config)
+                    .await
+                    .expect("Failed to create managed storage"),
+            );
+            return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
+        }
+    };
 }
 
 #[derive(Debug)]

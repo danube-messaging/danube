@@ -106,22 +106,50 @@ impl Display for ManagedConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CacheConfig {
+    pub max_capacity: u64,
+    pub time_to_idle: u64,
+}
+
+impl Display for CacheConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CacheConfig(max_capacity: {}, time_to_idle: {})",
+            self.max_capacity, self.time_to_idle
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum StorageConfig {
     #[serde(rename = "inmemory")]
-    InMemory,
+    InMemory { cache: CacheConfig },
     #[serde(rename = "disk")]
-    Disk(DiskConfig),
+    Disk {
+        config: DiskConfig,
+        cache: CacheConfig,
+    },
     #[serde(rename = "managed")]
-    Managed(ManagedConfig),
+    Managed {
+        config: ManagedConfig,
+        cache: CacheConfig,
+    },
 }
 
 impl Display for StorageConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            StorageConfig::InMemory => write!(f, "InMemory"),
-            StorageConfig::Disk(config) => write!(f, "{}", config),
-            StorageConfig::Managed(config) => write!(f, "{}", config),
+            StorageConfig::InMemory { cache } => {
+                write!(f, "InMemory with {}", cache)
+            }
+            StorageConfig::Disk { config, cache } => {
+                write!(f, "{} with {}", config, cache)
+            }
+            StorageConfig::Managed { config, cache } => {
+                write!(f, "{} with {}", config, cache)
+            }
         }
     }
 }

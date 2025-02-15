@@ -10,11 +10,9 @@ mod dispatch_test;
 pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
 mod topic_cache;
-use topic_cache::TopicCache;
+pub use topic_cache::TopicCache;
 
-use danube_core::{
-    dispatch_strategy::ReliableOptions, message::StreamMessage, storage::StorageBackend,
-};
+use danube_core::{dispatch_strategy::ReliableOptions, message::StreamMessage};
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
@@ -33,14 +31,13 @@ impl ReliableDispatch {
     pub fn new(
         topic_name: &str,
         reliable_options: ReliableOptions,
-        storage_backend: Arc<dyn StorageBackend>,
+        topic_cache: TopicCache,
     ) -> Self {
         let subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>> = Arc::new(DashMap::new());
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
         let retention_policy = reliable_options.retention_policy.clone();
-        let topic_cache = TopicCache::new(storage_backend);
         let topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
         // Start the lifecycle management task
         topic_store.start_lifecycle_management_task(

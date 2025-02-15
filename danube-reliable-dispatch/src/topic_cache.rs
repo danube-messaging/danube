@@ -14,13 +14,13 @@ pub struct TopicCache {
 }
 
 impl TopicCache {
-    pub fn new(storage: Arc<dyn StorageBackend>) -> Self {
+    pub fn new(storage: Arc<dyn StorageBackend>, max_capacity: u64, idle_time: u64) -> Self {
         let memory_cache = MokaCache::builder()
             // Max 100 segment entries
-            .max_capacity(100)
+            .max_capacity(max_capacity)
             // Time to idle (TTI):  10 minutes
             // A cached entry will be expired after the specified duration past from get or insert.
-            .time_to_idle(Duration::from_secs(10 * 60))
+            .time_to_idle(Duration::from_secs(idle_time * 60))
             // Create the cache.
             .build();
 

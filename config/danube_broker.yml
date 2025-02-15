@@ -41,6 +41,13 @@ storage:
   # Valid options: inmemory, disk, s3
   type: "inmemory"
 
+  # Cache configuration
+  # if the segment is not found in the cache, it will be loaded from the storage
+  cache:
+    max_capacity: 100 # number of segment entries in the cache
+    # A cached entry will be expired after the specified duration past from get or insert.
+    time_to_idle: 10 # in minutes
+
   # Disk storage configuration
   disk:
     path: "./your_directory"
