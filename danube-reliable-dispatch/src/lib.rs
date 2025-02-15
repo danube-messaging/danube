@@ -9,6 +9,8 @@ mod dispatch;
 mod dispatch_test;
 pub use dispatch::SubscriptionDispatch;
 mod storage_backend;
+mod topic_cache;
+use topic_cache::TopicCache;
 
 use danube_core::{
     dispatch_strategy::ReliableOptions, message::StreamMessage, storage::StorageBackend,
@@ -38,7 +40,8 @@ impl ReliableDispatch {
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
         let retention_policy = reliable_options.retention_policy.clone();
-        let topic_store = TopicStore::new(&topic_name, storage_backend, reliable_options);
+        let topic_cache = TopicCache::new(storage_backend);
+        let topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
         // Start the lifecycle management task
         topic_store.start_lifecycle_management_task(
             shutdown_rx,
