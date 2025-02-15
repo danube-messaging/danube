@@ -126,13 +126,13 @@ impl Display for CacheConfig {
 pub enum StorageConfig {
     #[serde(rename = "inmemory")]
     InMemory { cache: CacheConfig },
-    #[serde(rename = "disk")]
-    Disk {
+    #[serde(rename = "local")]
+    Local {
         config: DiskConfig,
         cache: CacheConfig,
     },
-    #[serde(rename = "managed")]
-    Managed {
+    #[serde(rename = "remote")]
+    Remote {
         config: ManagedConfig,
         cache: CacheConfig,
     },
@@ -144,10 +144,10 @@ impl Display for StorageConfig {
             StorageConfig::InMemory { cache } => {
                 write!(f, "InMemory with {}", cache)
             }
-            StorageConfig::Disk { config, cache } => {
+            StorageConfig::Local { config, cache } => {
                 write!(f, "{} with {}", config, cache)
             }
-            StorageConfig::Managed { config, cache } => {
+            StorageConfig::Remote { config, cache } => {
                 write!(f, "{} with {}", config, cache)
             }
         }

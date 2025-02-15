@@ -101,7 +101,7 @@ async fn test_topic_store_message_storage() {
         3600, // 3600s retention period
     );
     let topic_name = "/default/test_topic";
-    let topic_cache = TopicCache::new(storage);
+    let topic_cache = TopicCache::new(storage, 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let message = create_test_message(0, 0, vec![1, 2, 3]);
 
@@ -125,7 +125,7 @@ async fn test_topic_store_segment_transition() {
         3600, // 3600s retention period
     );
     let topic_name = "/default/test_topic";
-    let topic_cache = TopicCache::new(storage);
+    let topic_cache = TopicCache::new(storage, 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let large_message = create_test_message(0, 0, vec![0; 1024 * 1024]); // 1MB message
 
@@ -163,7 +163,7 @@ async fn test_topic_store_cleanup() {
         1, // 1s retention period
     );
     let topic_name = "/default/test_topic";
-    let topic_cache = TopicCache::new(storage);
+    let topic_cache = TopicCache::new(storage, 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let subscriptions = Arc::new(DashMap::new());
     let subscription_id = "test_sub".to_string();
@@ -218,7 +218,7 @@ async fn test_topic_store_acknowledged_cleanup() {
         3600, // 3600s retention period
     );
     let topic_name = "/default/test_topic";
-    let topic_cache = TopicCache::new(storage);
+    let topic_cache = TopicCache::new(storage, 10, 10);
     let topic_store = TopicStore::new(topic_name, topic_cache, reliable_options);
     let subscriptions = Arc::new(DashMap::new());
     let subscription_id = "test_sub".to_string();
