@@ -128,12 +128,12 @@ pub enum StorageConfig {
     InMemory { cache: CacheConfig },
     #[serde(rename = "local")]
     Local {
-        config: DiskConfig,
+        local_config: DiskConfig,
         cache: CacheConfig,
     },
     #[serde(rename = "remote")]
     Remote {
-        config: RemoteStorageConfig,
+        remote_config: RemoteStorageConfig,
         cache: CacheConfig,
     },
 }
@@ -144,11 +144,17 @@ impl Display for StorageConfig {
             StorageConfig::InMemory { cache } => {
                 write!(f, "InMemory with {}", cache)
             }
-            StorageConfig::Local { config, cache } => {
-                write!(f, "{} with {}", config, cache)
+            StorageConfig::Local {
+                local_config,
+                cache,
+            } => {
+                write!(f, "{} with {}", local_config, cache)
             }
-            StorageConfig::Remote { config, cache } => {
-                write!(f, "{} with {}", config, cache)
+            StorageConfig::Remote {
+                remote_config,
+                cache,
+            } => {
+                write!(f, "{} with {}", remote_config, cache)
             }
         }
     }

@@ -13,13 +13,19 @@ pub async fn create_message_storage(storage_config: &StorageConfig) -> TopicCach
             let storage = Arc::new(InMemoryStorage::new());
             return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
         }
-        StorageConfig::Local { config, cache } => {
-            let storage = Arc::new(DiskStorage::new(&config.path));
+        StorageConfig::Local {
+            local_config,
+            cache,
+        } => {
+            let storage = Arc::new(DiskStorage::new(&local_config.path));
             return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
         }
-        StorageConfig::Remote { config, cache } => {
+        StorageConfig::Remote {
+            remote_config,
+            cache,
+        } => {
             let storage = Arc::new(
-                RemoteStorage::new(config)
+                RemoteStorage::new(remote_config)
                     .await
                     .expect("Failed to create managed storage"),
             );

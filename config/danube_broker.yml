@@ -50,11 +50,11 @@ storage:
     time_to_idle: 10 # in minutes
 
   # Disk storage configuration
-  local:
+  local_config:
     path: "./your_directory"
 
   # Managed storage configuration, connect to external grpc storage layer
-  remote:
+  remote_config:
     endpoint: "grpc://storage.example.com:5353"
     use_tls: false
     ca_file: "ca-cert.pem"
