@@ -88,18 +88,18 @@ impl Display for DiskConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ManagedConfig {
+pub struct RemoteStorageConfig {
     pub endpoint: String,
     pub use_tls: bool,
     pub ca_file: String,
     pub connection_timeout: usize,
 }
 
-impl Display for ManagedConfig {
+impl Display for RemoteStorageConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ManagedConfig(endpoint: {}, connection_timeout: {})",
+            "RemoteStorageConfig(endpoint: {}, connection_timeout: {})",
             self.endpoint, self.connection_timeout
         )
     }
@@ -133,7 +133,7 @@ pub enum StorageConfig {
     },
     #[serde(rename = "remote")]
     Remote {
-        config: ManagedConfig,
+        config: RemoteStorageConfig,
         cache: CacheConfig,
     },
 }
