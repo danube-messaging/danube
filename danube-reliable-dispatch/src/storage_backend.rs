@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::topic_cache::TopicCache;
-use danube_persistent_storage::{DiskStorage, ManagedStorage};
+use danube_persistent_storage::{DiskStorage, RemoteStorage};
 
 pub async fn create_message_storage(storage_config: &StorageConfig) -> TopicCache {
     match storage_config {
@@ -19,7 +19,7 @@ pub async fn create_message_storage(storage_config: &StorageConfig) -> TopicCach
         }
         StorageConfig::Remote { config, cache } => {
             let storage = Arc::new(
-                ManagedStorage::new(config)
+                RemoteStorage::new(config)
                     .await
                     .expect("Failed to create managed storage"),
             );

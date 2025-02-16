@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use danube_core::storage::{ManagedConfig, Segment, StorageBackend, StorageBackendError};
+use danube_core::storage::{RemoteStorageConfig, Segment, StorageBackend, StorageBackendError};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Uri};
@@ -16,12 +16,12 @@ use danube_core::managed_storage_proto::{
 };
 
 #[derive(Debug, Clone)]
-pub struct ManagedStorage {
+pub struct RemoteStorage {
     client: Arc<Mutex<ManagedStorageClient<Channel>>>,
 }
 
-impl ManagedStorage {
-    pub async fn new(config: &ManagedConfig) -> Result<Self, PersistentStorageError> {
+impl RemoteStorage {
+    pub async fn new(config: &RemoteStorageConfig) -> Result<Self, PersistentStorageError> {
         let tls_config = if config.use_tls {
             let ca_cert = std::fs::read(&config.ca_file)?;
             Some(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_cert)))
@@ -56,7 +56,7 @@ impl ManagedStorage {
 }
 
 #[async_trait]
-impl StorageBackend for ManagedStorage {
+impl StorageBackend for RemoteStorage {
     async fn get_segment(
         &self,
         topic_name: &str,
