@@ -1,7 +1,10 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use danube_core::storage::{RemoteStorageConfig, Segment, StorageBackend, StorageBackendError};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Uri};
 
 use crate::{
@@ -11,8 +14,8 @@ use crate::{
 
 // Generated gRPC client code
 use danube_core::managed_storage_proto::{
-    managed_storage_client::ManagedStorageClient, GetSegmentRequest, PutSegmentRequest,
-    RemoveSegmentRequest,
+    managed_storage_client::ManagedStorageClient, GetSegmentRequest, RemoveSegmentRequest,
+    SegmentChunk,
 };
 
 #[derive(Debug, Clone)]
@@ -69,21 +72,25 @@ impl StorageBackend for RemoteStorage {
             segment_id: id as u64,
         };
 
-        dbg!("Sending GET request...");
+        let response = client
+            .get_segment(request)
+            .await
+            .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
+        let mut stream = response.into_inner();
+        let mut segment_data = Vec::new();
 
-        match client.get_segment(request).await {
-            Ok(response) => {
-                let segment_data = response.into_inner().segment_data;
-                if segment_data.is_empty() {
-                    Ok(None)
-                } else {
-                    let segment: Segment = bincode::deserialize(&segment_data)
-                        .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
-                    Ok(Some(Arc::new(RwLock::new(segment))))
-                }
-            }
-            Err(e) => Err(StorageBackendError::Managed(e.to_string())),
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| StorageBackendError::Managed(e.to_string()))?;
+            segment_data.extend_from_slice(&chunk.chunk_data);
         }
+
+        if segment_data.is_empty() {
+            return Ok(None);
+        }
+
+        let segment: Segment = bincode::deserialize(&segment_data)
+            .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
+        Ok(Some(Arc::new(RwLock::new(segment))))
     }
 
     async fn put_segment(
@@ -97,22 +104,46 @@ impl StorageBackend for RemoteStorage {
         let mut client_guard = self.client.lock().await;
         let client = client_guard.as_mut().unwrap();
 
+        const CHUNK_SIZE: usize = 2_097_152; // 2MB chunks
+        let (tx, rx) = mpsc::channel(10);
+
         let segment_data = segment.read().await;
         let serialized = bincode::serialize(&*segment_data)
             .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
 
-        let request = PutSegmentRequest {
-            topic_name: topic_name.to_string(),
-            segment_id: id as u64,
-            segment_data: serialized,
-        };
+        let topic_name = topic_name.to_string();
+        let total_chunks = (serialized.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-        dbg!("Sending PUT request...");
+        tokio::spawn(async move {
+            for (chunk_index, chunk) in serialized.chunks(CHUNK_SIZE).enumerate() {
+                let is_last_chunk = chunk_index == total_chunks - 1;
 
-        match client.put_segment(request).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(StorageBackendError::Managed(e.to_string())),
+                let chunk_request = SegmentChunk {
+                    topic_name: topic_name.clone(),
+                    segment_id: id as u64,
+                    chunk_data: Bytes::copy_from_slice(chunk).to_vec(),
+                    chunk_index: chunk_index as u64,
+                    is_last_chunk,
+                };
+
+                if tx.send(chunk_request).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let response = client
+            .put_segment(ReceiverStream::new(rx))
+            .await
+            .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
+
+        if response.get_ref().total_chunks_received as usize != total_chunks {
+            return Err(StorageBackendError::Managed(
+                "Incomplete segment transmission".to_string(),
+            ));
         }
+
+        Ok(())
     }
 
     async fn remove_segment(&self, topic_name: &str, id: usize) -> Result<(), StorageBackendError> {

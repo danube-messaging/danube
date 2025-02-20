@@ -7,21 +7,23 @@ pub struct GetSegmentRequest {
     pub segment_id: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetSegmentResponse {
-    #[prost(bytes = "vec", tag = "1")]
-    pub segment_data: ::prost::alloc::vec::Vec<u8>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PutSegmentRequest {
+pub struct SegmentChunk {
     #[prost(string, tag = "1")]
     pub topic_name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub segment_id: u64,
     #[prost(bytes = "vec", tag = "3")]
-    pub segment_data: ::prost::alloc::vec::Vec<u8>,
+    pub chunk_data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub chunk_index: u64,
+    #[prost(bool, tag = "5")]
+    pub is_last_chunk: bool,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct PutSegmentResponse {}
+pub struct PutSegmentResponse {
+    #[prost(uint64, tag = "1")]
+    pub total_chunks_received: u64,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemoveSegmentRequest {
     #[prost(string, tag = "1")]
@@ -126,7 +128,7 @@ pub mod managed_storage_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetSegmentRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetSegmentResponse>,
+            tonic::Response<tonic::codec::Streaming<super::SegmentChunk>>,
             tonic::Status,
         > {
             self.inner
@@ -144,11 +146,11 @@ pub mod managed_storage_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("managed_storage.ManagedStorage", "GetSegment"));
-            self.inner.unary(req, path, codec).await
+            self.inner.server_streaming(req, path, codec).await
         }
         pub async fn put_segment(
             &mut self,
-            request: impl tonic::IntoRequest<super::PutSegmentRequest>,
+            request: impl tonic::IntoStreamingRequest<Message = super::SegmentChunk>,
         ) -> std::result::Result<
             tonic::Response<super::PutSegmentResponse>,
             tonic::Status,
@@ -165,10 +167,10 @@ pub mod managed_storage_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/managed_storage.ManagedStorage/PutSegment",
             );
-            let mut req = request.into_request();
+            let mut req = request.into_streaming_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("managed_storage.ManagedStorage", "PutSegment"));
-            self.inner.unary(req, path, codec).await
+            self.inner.client_streaming(req, path, codec).await
         }
         pub async fn remove_segment(
             &mut self,
@@ -211,16 +213,19 @@ pub mod managed_storage_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ManagedStorageServer.
     #[async_trait]
     pub trait ManagedStorage: std::marker::Send + std::marker::Sync + 'static {
+        /// Server streaming response type for the GetSegment method.
+        type GetSegmentStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::SegmentChunk, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
         async fn get_segment(
             &self,
             request: tonic::Request<super::GetSegmentRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetSegmentResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<Self::GetSegmentStream>, tonic::Status>;
         async fn put_segment(
             &self,
-            request: tonic::Request<super::PutSegmentRequest>,
+            request: tonic::Request<tonic::Streaming<super::SegmentChunk>>,
         ) -> std::result::Result<
             tonic::Response<super::PutSegmentResponse>,
             tonic::Status,
@@ -314,11 +319,12 @@ pub mod managed_storage_server {
                     struct GetSegmentSvc<T: ManagedStorage>(pub Arc<T>);
                     impl<
                         T: ManagedStorage,
-                    > tonic::server::UnaryService<super::GetSegmentRequest>
+                    > tonic::server::ServerStreamingService<super::GetSegmentRequest>
                     for GetSegmentSvc<T> {
-                        type Response = super::GetSegmentResponse;
+                        type Response = super::SegmentChunk;
+                        type ResponseStream = T::GetSegmentStream;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
+                            tonic::Response<Self::ResponseStream>,
                             tonic::Status,
                         >;
                         fn call(
@@ -349,7 +355,7 @@ pub mod managed_storage_server {
                                 max_decoding_message_size,
                                 max_encoding_message_size,
                             );
-                        let res = grpc.unary(method, req).await;
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
@@ -359,7 +365,7 @@ pub mod managed_storage_server {
                     struct PutSegmentSvc<T: ManagedStorage>(pub Arc<T>);
                     impl<
                         T: ManagedStorage,
-                    > tonic::server::UnaryService<super::PutSegmentRequest>
+                    > tonic::server::ClientStreamingService<super::SegmentChunk>
                     for PutSegmentSvc<T> {
                         type Response = super::PutSegmentResponse;
                         type Future = BoxFuture<
@@ -368,7 +374,9 @@ pub mod managed_storage_server {
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::PutSegmentRequest>,
+                            request: tonic::Request<
+                                tonic::Streaming<super::SegmentChunk>,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -394,7 +402,7 @@ pub mod managed_storage_server {
                                 max_decoding_message_size,
                                 max_encoding_message_size,
                             );
-                        let res = grpc.unary(method, req).await;
+                        let res = grpc.client_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
