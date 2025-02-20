@@ -63,11 +63,20 @@ impl TopicCache {
     ) -> Result<()> {
         let key = format!("{}:{}", topic_name, id);
 
-        // Update memory cache
+        // Always update memory cache
         self.memory_cache.insert(key, segment.clone()).await;
 
-        // Update storage backend
-        self.storage.put_segment(topic_name, id, segment).await?;
+        // Only store in backend if segment is closed
+        let is_closed = {
+            let segment_guard = segment.read().await;
+            segment_guard.close_time > 0
+        };
+
+        if is_closed {
+            // Update storage backend only for closed segments
+            self.storage.put_segment(topic_name, id, segment).await?;
+        }
+
         Ok(())
     }
 

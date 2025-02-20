@@ -1,6 +1,7 @@
 use danube_core::storage::StorageBackendError;
 use thiserror::Error;
 use tonic::codegen::http::uri;
+use tonic::Status;
 
 //pub type Result<T> = std::result::Result<T, DiskError>;
 
@@ -16,6 +17,8 @@ pub enum PersistentStorageError {
     Transport(#[from] tonic::transport::Error),
     #[error("unable to parse the address: {0}")]
     UrlParseError(#[from] uri::InvalidUri),
+    #[error("gRPC status error: {0}")]
+    Status(#[from] Status),
 }
 
 impl From<PersistentStorageError> for StorageBackendError {
@@ -26,6 +29,7 @@ impl From<PersistentStorageError> for StorageBackendError {
             PersistentStorageError::Bincode(e) => StorageBackendError::Disk(e.to_string()),
             PersistentStorageError::Transport(e) => StorageBackendError::Managed(e.to_string()),
             PersistentStorageError::UrlParseError(e) => StorageBackendError::Managed(e.to_string()),
+            PersistentStorageError::Status(e) => StorageBackendError::Managed(e.to_string()),
         }
     }
 }

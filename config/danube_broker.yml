@@ -55,7 +55,7 @@ storage:
 
   # Managed storage configuration, connect to external grpc storage layer
   remote_config:
-    endpoint: "grpc://storage.example.com:5353"
+    endpoint: "grpc://0.0.0.0:50060"
     use_tls: false
     ca_file: "ca-cert.pem"
     connection_timeout: 5000

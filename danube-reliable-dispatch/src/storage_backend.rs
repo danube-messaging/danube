@@ -24,11 +24,7 @@ pub async fn create_message_storage(storage_config: &StorageConfig) -> TopicCach
             remote_config,
             cache,
         } => {
-            let storage = Arc::new(
-                RemoteStorage::new(remote_config)
-                    .await
-                    .expect("Failed to create managed storage"),
-            );
+            let storage = Arc::new(RemoteStorage::new(remote_config.clone()));
             return TopicCache::new(storage, cache.max_capacity, cache.time_to_idle);
         }
     };
