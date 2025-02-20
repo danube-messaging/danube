@@ -72,20 +72,18 @@ impl StorageBackend for RemoteStorage {
             segment_id: id as u64,
         };
 
-        let response = client
-            .get_segment(request)
-            .await
-            .map_err(|e| StorageBackendError::Managed(e.to_string()))?;
+        let response = match client.get_segment(request).await {
+            Ok(response) => response,
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(None),
+            Err(e) => return Err(StorageBackendError::Managed(e.to_string())),
+        };
+
         let mut stream = response.into_inner();
         let mut segment_data = Vec::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| StorageBackendError::Managed(e.to_string()))?;
             segment_data.extend_from_slice(&chunk.chunk_data);
-        }
-
-        if segment_data.is_empty() {
-            return Ok(None);
         }
 
         let segment: Segment = bincode::deserialize(&segment_data)
