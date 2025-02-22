@@ -350,10 +350,13 @@ impl DanubeService {
                                                 .create_topic_locally(&topic_name)
                                                 .await
                                             {
-                                                Ok(()) => info!(
-                                        "The topic {} , was successfully created on broker {}",
-                                        topic_name, broker_id
-                                    ),
+                                                Ok((disp_strategy, schema_type)) => info!(
+                                                    "Topic '{}' created on broker {} - Strategy: {}, Schema: {}", 
+                                                    topic_name, 
+                                                    broker_id,
+                                                    disp_strategy,
+                                                    schema_type
+                                                    ),
                                                 Err(err) => {
                                                     error!("Unable to create the topic due to error: {}", err)
                                                 }

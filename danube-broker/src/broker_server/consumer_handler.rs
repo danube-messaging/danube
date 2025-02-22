@@ -24,7 +24,7 @@ impl ConsumerService for DanubeServerImpl {
         let req = request.into_inner();
 
         info!(
-            "New Consumer request with name: {} for topic: {} with subscription_type {}",
+            "Received consumer creation request - name: '{}', topic: '{}', type: '{}'",
             req.consumer_name, req.topic_name, req.subscription_type
         );
 
@@ -87,7 +87,7 @@ impl ConsumerService for DanubeServerImpl {
             })?;
 
         info!(
-            "The Consumer with id: {} for subscription: {}, has been created.",
+            "Consumer successfully created - ID: '{}', subscription: '{}'",
             consumer_id, sub_name
         );
 

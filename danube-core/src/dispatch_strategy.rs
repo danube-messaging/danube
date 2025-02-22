@@ -1,5 +1,6 @@
 use crate::proto::{ReliableOptions as ProtoReliableOptions, TopicDispatchStrategy};
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 
 /// Dispatch strategy for a topic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +46,25 @@ pub enum RetentionPolicy {
 impl Default for ConfigDispatchStrategy {
     fn default() -> Self {
         ConfigDispatchStrategy::NonReliable
+    }
+}
+
+impl Display for ConfigDispatchStrategy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigDispatchStrategy::NonReliable => write!(f, "Non-Reliable"),
+            ConfigDispatchStrategy::Reliable(opts) => {
+                let policy = match opts.retention_policy {
+                    RetentionPolicy::RetainUntilAck => "Retain Until Ack",
+                    RetentionPolicy::RetainUntilExpire => "Retain Until Expire",
+                };
+                write!(
+                    f,
+                    "Reliable (Segment: {} MB, RetentionPolicy: {}, Period: {}s)",
+                    opts.segment_size, policy, opts.retention_period
+                )
+            }
+        }
     }
 }
 
