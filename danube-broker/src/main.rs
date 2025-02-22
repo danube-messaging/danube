@@ -94,13 +94,13 @@ async fn main() -> Result<()> {
     }
 
     // initialize the metadata storage layer for Danube Broker
-    info!("Use ETCD storage as metadata persistent store");
+    info!("Initializing ETCD as metadata persistent store");
     let metadata_store: MetadataStorage =
         MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
 
     // initialize the message storage layer for Danube Broker
     info!(
-        "Use {} storage as message persistent store",
+        "Initializing {} for message persistence",
         service_config.storage
     );
     let message_storage = create_message_storage(&service_config.storage).await;
@@ -132,6 +132,12 @@ async fn main() -> Result<()> {
 
     let broker: Arc<Mutex<BrokerService>> = Arc::new(Mutex::new(broker_service));
 
+    let broker_addr = service_config.broker_addr;
+    info!(
+        "Initializing Danube Message Broker service on {}",
+        broker_addr
+    );
+
     // DanubeService coordinate and start all the services
     let mut danube = DanubeService::new(
         broker_id,
@@ -145,10 +151,12 @@ async fn main() -> Result<()> {
         load_manager,
     );
 
-    info!("Start the Danube Service");
-    danube.start().await.expect("the broker unable to start");
+    danube
+        .start()
+        .await
+        .expect("Danube Message Broker service unable to start");
 
-    info!("The Danube Service has started succesfully");
+    info!("Danube Message Broker service has started succesfully");
 
     Ok(())
 }

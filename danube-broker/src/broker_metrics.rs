@@ -1,4 +1,6 @@
 use metrics_exporter_prometheus::PrometheusBuilder;
+use tracing::info;
+
 pub(crate) struct Metric {
     pub name: &'static str,
     description: &'static str,
@@ -62,7 +64,7 @@ pub(crate) const CONSUMER_BYTES_OUT_COUNTER: Metric = Metric {
 };
 
 pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>) {
-    println!("initializing metrics exporter");
+    info!("Initializing metrics exporter");
 
     if let Some(addr) = prom_addr {
         PrometheusBuilder::new()

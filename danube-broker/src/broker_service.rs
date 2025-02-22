@@ -16,6 +16,7 @@ use crate::{
     message::AckMessage,
     policies::Policies,
     resources::Resources,
+    schema::SchemaType,
     subscription::{ConsumerInfo, SubscriptionOptions},
     topic::Topic,
     utils::get_random_id,
@@ -314,7 +315,10 @@ impl BrokerService {
     // creates the topic on the local broker
     // assumes that it was received from legitimate sources, like ETCDWatchEvent
     // so we know that the topic was checked before and assigned to this broker by load manager
-    pub(crate) async fn create_topic_locally(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn create_topic_locally(
+        &mut self,
+        topic_name: &str,
+    ) -> Result<(ConfigDispatchStrategy, SchemaType)> {
         //get retention strategy from local_cache
         let dispatch_strategy = self.resources.topic.get_dispatch_strategy(topic_name);
         if dispatch_strategy.is_none() {
@@ -324,10 +328,12 @@ impl BrokerService {
             ));
         }
 
+        let dispatch_strategy = dispatch_strategy.unwrap();
+
         // create the topic,
         let mut new_topic = Topic::new(
             topic_name,
-            dispatch_strategy.unwrap(),
+            dispatch_strategy.clone(),
             self.storage_backend.clone(),
         );
 
@@ -337,7 +343,8 @@ impl BrokerService {
             warn!("Unable to create topic without a valid schema");
             return Err(anyhow!("Unable to create topic without a valid schema"));
         }
-        let _ = new_topic.add_schema(schema.unwrap());
+        let schema = schema.unwrap();
+        let _ = new_topic.add_schema(schema.clone());
 
         // get policies from local_cache
         let policies = self.resources.topic.get_policies(topic_name);
@@ -360,7 +367,7 @@ impl BrokerService {
 
         gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).increment(1);
 
-        Ok(())
+        Ok((dispatch_strategy, schema.type_schema))
     }
 
     // deletes the topic

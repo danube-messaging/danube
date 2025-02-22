@@ -109,7 +109,7 @@ impl DanubeService {
 
     pub(crate) async fn start(&mut self) -> Result<()> {
         info!(
-            "Setting up the cluster {}",
+            "Initializing Danube cluster '{}'",
             self.service_config.cluster_name
         );
 
@@ -123,7 +123,7 @@ impl DanubeService {
         // Process the ETCD Watch events
         tokio::spawn(async move { local_cache_cloned.process_event(watch_stream).await });
 
-        info!("Started the Local Cache service.");
+        info!("Local Cache service initialized and ready");
 
         // Cluster metadata setup
         //==========================================================================
@@ -185,7 +185,7 @@ impl DanubeService {
             .await?;
         }
 
-        info!("cluster metadata setup completed");
+        info!("Cluster metadata initialization completed successfully");
 
         // Start the Broker GRPC server
         //==========================================================================
@@ -201,7 +201,10 @@ impl DanubeService {
 
         let server_handle = grpc_server.start(ready_tx).await;
 
-        info!(" Started the Broker GRPC server");
+        info!(
+            "Broker gRPC server listening on {}",
+            self.service_config.broker_addr
+        );
 
         // Start the Syncronizer
         //==========================================================================
@@ -230,7 +233,7 @@ impl DanubeService {
         tokio::spawn(async move {
             leader_election_cloned.start(leader_check_interval).await;
         });
-        info!("Started the Leader Election service");
+        info!("Leader Election service initialized and ready");
 
         // Start the Load Manager Service
         //==========================================================================
@@ -253,7 +256,7 @@ impl DanubeService {
         let broker_service_cloned = Arc::clone(&self.broker);
         let meta_store_cloned = self.meta_store.clone();
 
-        info!("Started the Load Manager service.");
+        info!("Load Manager service initialized and ready");
 
         // Publish periodic Load Reports
         // This enable the broker to register with Load Manager
@@ -281,7 +284,10 @@ impl DanubeService {
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
 
-        info!(" Started the Danube Admin GRPC server");
+        info!(
+            "Admin gRPC server listening on {}",
+            self.service_config.admin_addr
+        );
 
         // Wait for the server task to complete
         // Await both tasks concurrently
@@ -344,10 +350,13 @@ impl DanubeService {
                                                 .create_topic_locally(&topic_name)
                                                 .await
                                             {
-                                                Ok(()) => info!(
-                                        "The topic {} , was successfully created on broker {}",
-                                        topic_name, broker_id
-                                    ),
+                                                Ok((disp_strategy, schema_type)) => info!(
+                                                    "Topic '{}' created on broker {} - Strategy: {}, Schema: {}", 
+                                                    topic_name, 
+                                                    broker_id,
+                                                    disp_strategy,
+                                                    schema_type
+                                                    ),
                                                 Err(err) => {
                                                     error!("Unable to create the topic due to error: {}", err)
                                                 }

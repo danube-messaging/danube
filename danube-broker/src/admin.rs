@@ -14,7 +14,7 @@ use danube_core::admin_proto::{
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{sync::Mutex, task::JoinHandle};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use tracing::{info, warn};
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeAdminImpl {
@@ -54,7 +54,7 @@ impl DanubeAdminImpl {
 
         // Server has started
         let handle = tokio::spawn(async move {
-            info!("Admin is listening on address: {}", socket_addr);
+            // info!("Admin is listening on address: {}", socket_addr);
             if let Err(e) = server.await {
                 warn!("Server error: {:?}", e);
             }

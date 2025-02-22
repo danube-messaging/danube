@@ -142,19 +142,31 @@ impl Display for StorageConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             StorageConfig::InMemory { cache } => {
-                write!(f, "InMemory with {}", cache)
+                write!(
+                    f,
+                    "In-Memory Storage (Cache entries: {}, TTL: {}min)",
+                    cache.max_capacity, cache.time_to_idle
+                )
             }
             StorageConfig::Local {
                 local_config,
                 cache,
             } => {
-                write!(f, "{} with {}", local_config, cache)
+                write!(
+                    f,
+                    "Local Disk Storage at '{}' (Cache entries: {}, TTL: {}min)",
+                    local_config.path, cache.max_capacity, cache.time_to_idle
+                )
             }
             StorageConfig::Remote {
                 remote_config,
                 cache,
             } => {
-                write!(f, "{} with {}", remote_config, cache)
+                write!(
+                    f,
+                    "Remote Storage at '{}' (Cache entries: {}, TTL: {}min)",
+                    remote_config.endpoint, cache.max_capacity, cache.time_to_idle
+                )
             }
         }
     }

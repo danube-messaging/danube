@@ -22,8 +22,8 @@ impl ProducerService for DanubeServerImpl {
         let req = request.into_inner();
 
         info!(
-            "New Producer request with name: {} for topic: {}",
-            req.producer_name, req.topic_name,
+            "Received producer creation request - name: '{}', topic: '{}'",
+            req.producer_name, req.topic_name
         );
 
         let arc_service = self.service.clone();
@@ -72,7 +72,7 @@ impl ProducerService for DanubeServerImpl {
             })?;
 
         info!(
-            "The Producer with name: {} and with id: {}, has been created",
+            "Producer '{}' successfully created with ID '{}'",
             req.producer_name, new_producer_id
         );
 

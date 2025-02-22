@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
+use std::fmt::{Display, Formatter};
 
 use danube_core::proto::{schema::TypeSchema as ProtoTypeSchema, Schema as ProtoSchema};
 
@@ -10,6 +11,17 @@ pub enum SchemaType {
     String,
     Int64,
     Json(String), // JSON schema described by a string
+}
+
+impl Display for SchemaType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SchemaType::Bytes => write!(f, "Bytes"),
+            SchemaType::String => write!(f, "String"),
+            SchemaType::Int64 => write!(f, "Int64"),
+            SchemaType::Json(schema) => write!(f, "Json({})", schema),
+        }
+    }
 }
 
 impl SchemaType {
@@ -54,9 +66,9 @@ impl From<ProtoTypeSchema> for SchemaType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
-    name: String,
-    schema_data: Option<Vec<u8>>,
-    type_schema: SchemaType,
+    pub(crate) name: String,
+    pub(crate) schema_data: Option<Vec<u8>>,
+    pub(crate) type_schema: SchemaType,
 }
 
 impl Schema {
