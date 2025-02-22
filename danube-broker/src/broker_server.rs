@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::transport::{server::ServerTlsConfig, Identity};
-use tracing::{info, warn};
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeServerImpl {
@@ -90,7 +90,7 @@ impl DanubeServerImpl {
 
         let server = server_builder.serve(socket_addr);
 
-        self.spawn_server(server, socket_addr, ready_tx)
+        self.spawn_server(server, ready_tx)
     }
 
     async fn configure_tls(&self, server: Server) -> Server {
@@ -113,11 +113,9 @@ impl DanubeServerImpl {
     fn spawn_server(
         &self,
         server: impl futures::Future<Output = Result<(), tonic::transport::Error>> + Send + 'static,
-        socket_addr: SocketAddr,
         ready_tx: oneshot::Sender<()>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            info!("Server is listening on address: {}", socket_addr);
             let _ = ready_tx.send(());
             if let Err(e) = server.await {
                 warn!("Server error: {:?}", e);
