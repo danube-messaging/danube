@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use danube_client::{DanubeClient, SchemaType, SubType};
+use danube_core::message::MessageID;
 use serde_json::{from_slice, Value};
 use std::{collections::HashMap, str::from_utf8};
+
+// Print the message to the console only if the message is not too large
+const LARGE_MESSAGE_THRESHOLD: usize = 1024; // 1KB threshold
 
 #[derive(Debug, Parser)]
 #[command(after_help = EXAMPLES_TEXT)]
@@ -102,12 +106,24 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
     consumer.subscribe().await?;
     let mut message_stream = consumer.receive().await?;
 
+    let mut state = ConsumerState {
+        last_segment_id: 0,
+        last_segment_offset: 0,
+        total_received_bytes: 0,
+    };
+
     while let Some(stream_message) = message_stream.recv().await {
         let payload = stream_message.payload.clone();
         let attr = stream_message.attributes.clone();
 
-        // Process message based on the schema type
-        if let Err(e) = process_message(&payload, attr, &schema.type_schema, &schema_validator) {
+        if let Err(e) = process_message(
+            &payload,
+            attr,
+            &schema.type_schema,
+            &schema_validator,
+            &stream_message.msg_id,
+            &mut state,
+        ) {
             eprintln!("Error processing message: {:?}", e);
             continue;
         }
@@ -125,22 +141,24 @@ fn process_message(
     attr: HashMap<String, String>,
     schema_type: &SchemaType,
     schema_validator: &Option<jsonschema::Validator>,
+    msg_id: &MessageID,
+    state: &mut ConsumerState,
 ) -> Result<()> {
     match schema_type {
         SchemaType::Bytes => {
             let decoded_message = from_utf8(payload)?;
-            print_to_console(decoded_message, attr);
+            print_to_console(decoded_message, attr, msg_id, payload.len(), state);
         }
         SchemaType::String => {
             let decoded_message = from_utf8(payload)?;
-            print_to_console(decoded_message, attr);
+            print_to_console(decoded_message, attr, msg_id, payload.len(), state);
         }
         SchemaType::Int64 => {
             let message = std::str::from_utf8(payload)
                 .context("Invalid UTF-8 sequence")?
                 .parse::<i64>()
                 .context("Failed to parse Int64")?;
-            print_to_console(&message.to_string(), attr);
+            print_to_console(&message.to_string(), attr, msg_id, payload.len(), state);
         }
         SchemaType::Json(_) => {
             if payload.is_empty() {
@@ -163,7 +181,7 @@ fn process_message(
 
             let json_str =
                 serde_json::to_string_pretty(&json_value).context("Failed to format JSON")?;
-            print_to_console(&json_str, attr);
+            print_to_console(&json_str, attr, msg_id, payload.len(), state);
         }
     }
     Ok(())
@@ -208,14 +226,52 @@ fn print_attr(attributes: &HashMap<String, String>) -> String {
     result
 }
 
-fn print_to_console(message: &str, attributes: HashMap<String, String>) {
-    if attributes.is_empty() {
-        println!("Received bytes message with payload: {}", message);
+struct ConsumerState {
+    last_segment_id: u64,
+    last_segment_offset: u64,
+    total_received_bytes: usize,
+}
+
+fn print_to_console(
+    message: &str,
+    attributes: HashMap<String, String>,
+    msg_id: &MessageID,
+    payload_size: usize,
+    state: &mut ConsumerState,
+) {
+    let is_reliable = msg_id.segment_offset > state.last_segment_offset
+        || msg_id.segment_id != state.last_segment_id;
+
+    state.total_received_bytes += payload_size;
+
+    if is_reliable {
+        let message_preview = if payload_size > LARGE_MESSAGE_THRESHOLD {
+            "[binary data]".to_string()
+        } else {
+            format!("\"{}\"", message)
+        };
+
+        println!(
+            "Received reliable message: {} \nSegment: {}, Offset: {}, Size: {} bytes, Total received: {} bytes\nProducer: {}, Topic: {}",
+            message_preview,
+            msg_id.segment_id,
+            msg_id.segment_offset,
+            payload_size,
+            state.total_received_bytes,
+            msg_id.producer_id,
+            msg_id.topic_name
+        );
     } else {
         println!(
-            "Received bytes message with payload: {}, with attributes: {}",
-            message,
-            print_attr(&attributes)
+            "Received message: {}\nSize: {} bytes, Total received: {} bytes",
+            message, payload_size, state.total_received_bytes,
         );
     }
+
+    if !attributes.is_empty() {
+        println!("Attributes: {}", print_attr(&attributes));
+    }
+
+    state.last_segment_id = msg_id.segment_id;
+    state.last_segment_offset = msg_id.segment_offset;
 }

@@ -49,6 +49,13 @@ pub struct BasicArgs {
         help = "The message to send. This is a required argument."
     )]
     pub message: String,
+
+    #[arg(
+        long,
+        short = 'f',
+        help = "Binary file path to send. Takes precedence over --message when specified."
+    )]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -149,6 +156,13 @@ EXAMPLES:
         --segment-size 10 \
         --retention expire \
         --retention-period 7200
+    
+    # Reliable message delivery with binary file
+    danube-cli produce -s http://localhost:6650 -m "none" -f ./data.blob -c 100\
+        --reliable \
+        --segment-size 5 \
+        --retention expire \
+        --retention-period 7200
 
     # Producing with attributes
     danube-cli produce -s http://localhost:6650 -m "Hello Danube" -a "key1:value1,key2:value2"
@@ -203,7 +217,16 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     producer.create().await?;
 
-    let encoded_data = produce.basic_args.message.as_bytes().to_vec();
+    // Use the provided message or read from a file if provided
+    let encoded_data = if produce.reliable_args.reliable {
+        if let Some(file_path) = &produce.basic_args.file {
+            std::fs::read(file_path)?
+        } else {
+            produce.basic_args.message.as_bytes().to_vec()
+        }
+    } else {
+        produce.basic_args.message.as_bytes().to_vec()
+    };
 
     for _ in 0..produce.extended_args.count {
         let cloned_attributes = produce.extended_args.attributes.clone();

@@ -13,6 +13,7 @@ anyhow = "1.0.95"
 jsonschema = "0.28.1"
 
 danube-client = {path = "../danube-client"}
+danube-core = {path = "../danube-core"}
 
 [lints]
 workspace = true
