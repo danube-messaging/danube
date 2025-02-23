@@ -13,7 +13,7 @@ Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the
   * **Partitioned topics**: Divided into partitions, served by different brokers from the cluster, enhancing scalability and fault tolerance.
 * [**Message Dispatch**](https://danube-docs.dev-state.com/architecture/dispatch_strategy/):
   * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial. The acknowledgement mechanism is ignored.
-  * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options including in-memory, disk, and S3, ensuring message persistence and durability.
+  * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options as `Local Disk` and `GRPC connected storages`, ensuring message persistence and durability.
 * [**Subscription Types:**](https://danube-docs.dev-state.com/architecture/subscriptions/):
   * Supports various subscription types (**Exclusive**, **Shared**, **Failover**) enabling different messaging patterns such as message queueing and pub-sub.
 * **Flexible Message Schemas**
@@ -87,22 +87,20 @@ tail -n 100 -f broker.log
 ```
 
 ```bash
-2025-01-12T06:15:53.705416Z  INFO danube_broker: Use ETCD storage as metadata persistent store
-2025-01-12T06:15:53.705665Z  INFO danube_broker: Start the Danube Service
-2025-01-12T06:15:53.705679Z  INFO danube_broker::danube_service: Setting up the cluster MY_CLUSTER
-2025-01-12T06:15:53.707988Z  INFO danube_broker::danube_service::local_cache: Initial cache populated
-2025-01-12T06:15:53.709521Z  INFO danube_broker::danube_service: Started the Local Cache service.
-2025-01-12T06:15:53.713329Z  INFO danube_broker::danube_service::broker_register: Broker 15139934490483381581 registered in the cluster
-2025-01-12T06:15:53.714977Z  INFO danube_broker::danube_service: Namespace default already exists.
-2025-01-12T06:15:53.716405Z  INFO danube_broker::danube_service: Namespace system already exists.
-2025-01-12T06:15:53.717979Z  INFO danube_broker::danube_service: Namespace default already exists.
-2025-01-12T06:15:53.718012Z  INFO danube_broker::danube_service: cluster metadata setup completed
-2025-01-12T06:15:53.718092Z  INFO danube_broker::danube_service:  Started the Broker GRPC server
-2025-01-12T06:15:53.718116Z  INFO danube_broker::broker_server: Server is listening on address: 0.0.0.0:6650
-2025-01-12T06:15:53.718191Z  INFO danube_broker::danube_service: Started the Leader Election service
-2025-01-12T06:15:53.722454Z  INFO danube_broker::danube_service: Started the Load Manager service.
-2025-01-12T06:15:53.724727Z  INFO danube_broker::danube_service:  Started the Danube Admin GRPC server
-2025-01-12T06:15:53.724727Z  INFO danube_broker::admin: Admin is listening on address: 0.0.0.0:50051
+2025-02-23T05:45:14.019650Z  INFO danube_broker::broker_metrics: Initializing metrics exporter
+2025-02-23T05:45:14.021220Z  INFO danube_broker: Initializing ETCD as metadata persistent store
+2025-02-23T05:45:14.021658Z  INFO danube_broker: Initializing In-Memory Storage (Cache entries: 100, TTL: 10min) for message persistence
+2025-02-23T05:45:14.022061Z  INFO danube_broker: Initializing Danube Message Broker service on 0.0.0.0:6650
+2025-02-23T05:45:14.022095Z  INFO danube_broker::danube_service: Initializing Danube cluster 'MY_CLUSTER'
+2025-02-23T05:45:14.028492Z  INFO danube_broker::danube_service::local_cache: Initial cache populated
+2025-02-23T05:45:14.032731Z  INFO danube_broker::danube_service: Local Cache service initialized and ready
+2025-02-23T05:45:14.039726Z  INFO danube_broker::danube_service::broker_register: Broker 15789098141031633884 registered in the cluster
+2025-02-23T05:45:14.055625Z  INFO danube_broker::danube_service: Namespace default already exists.
+2025-02-23T05:45:14.055672Z  INFO danube_broker::danube_service: Cluster metadata initialization completed successfully
+2025-02-23T05:45:14.057516Z  INFO danube_broker::danube_service: Broker gRPC server listening on 0.0.0.0:6650
+2025-02-23T05:45:14.057652Z  INFO danube_broker::danube_service: Leader Election service initialized and ready
+2025-02-23T05:45:14.068276Z  INFO danube_broker::danube_service: Load Manager service initialized and ready
+2025-02-23T05:45:14.072362Z  INFO danube_broker::danube_service: Admin gRPC server listening on 0.0.0.0:50051
 ```
 
 ### Use Danube CLI to Publish and Consume Messages
@@ -165,8 +163,9 @@ Continuously working on enhancing and adding new features.
 **The crates part of the Danube workspace**:
 
 * danube-broker - The main crate, danube pubsub platform
-  * danube-reliable-dispatch - Part of danube-broker, responsible of reliable dispatching
-  * danube-metadata-store - Part of danube-broker, responsibile of Metadata storage
+  * danube-reliable-dispatch - Responsible of reliable dispatching, that stores and forward the messages to the subscribers
+  * danube-persistent-storage - Responsible of persistent storage, supports `Local Disk` or `GRPC connected storages`
+  * danube-metadata-store - Responsibile of Metadata storage, that stores and syncronizes the metadata across the Danube cluster
 * danube-client - An async Rust client library for interacting with Danube Pub/Sub messaging platform
 * danube-cli - Client CLI to handle message publishing and consumption
 * danube-admin-cli - Admin CLI designed for interacting with and managing the Danube cluster
