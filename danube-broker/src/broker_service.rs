@@ -155,14 +155,18 @@ impl BrokerService {
     fn ensure_topic_routed(&self, topic_name: &str) {
         // Fast path: if worker already has topic, nothing to do
         if self.topic_worker_pool.has_topic(topic_name) {
+            info!("Topic {} already routed to worker pool", topic_name);
             return;
         }
 
         // If the broker serves the topic, (re)register it in the worker pool
         if let Some(topic_arc) = self.topics.get(topic_name) {
+            info!("Routing topic {} to worker pool (was missing)", topic_name);
             self
                 .topic_worker_pool
                 .add_topic_to_worker(topic_name.to_string(), topic_arc.value().clone());
+        } else {
+            warn!("Topic {} not found in broker topics map", topic_name);
         }
     }
 
