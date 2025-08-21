@@ -151,8 +151,26 @@ impl BrokerService {
         self.topics.get(topic_name).map(|entry| entry.value().clone())
     }
 
+    // Ensure topic is registered in the worker pool before delegating
+    fn ensure_topic_routed(&self, topic_name: &str) {
+        // Fast path: if worker already has topic, nothing to do
+        if self.topic_worker_pool.has_topic(topic_name) {
+            return;
+        }
+
+        // If the broker serves the topic, (re)register it in the worker pool
+        if let Some(topic_arc) = self.topics.get(topic_name) {
+            self
+                .topic_worker_pool
+                .add_topic_to_worker(topic_name.to_string(), topic_arc.value().clone());
+        }
+    }
+
     // Async version of message publishing using topic worker pool
     pub async fn publish_message_async(&self, topic_name: String, message: StreamMessage) -> Result<()> {
+        // Ensure routing exists in worker pool for this topic
+        self.ensure_topic_routed(&topic_name);
+
         // Route message through topic worker pool for async processing
         self.topic_worker_pool.publish_message_async(topic_name, message).await
     }
@@ -164,6 +182,9 @@ impl BrokerService {
         topic_name: String,
         subscription_options: SubscriptionOptions,
     ) -> Result<u64> {
+        // Ensure routing exists in worker pool for this topic
+        self.ensure_topic_routed(&topic_name);
+
         let consumer_id = self.topic_worker_pool
             .subscribe_async(topic_name.clone(), subscription_options.clone())
             .await?;
@@ -179,6 +200,9 @@ impl BrokerService {
 
     // Async version of message acknowledgment
     pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
+        // Ensure routing exists in worker pool for this topic
+        self.ensure_topic_routed(&ack_msg.msg_id.topic_name);
+
         self.topic_worker_pool.ack_message_async(ack_msg).await
     }
 
