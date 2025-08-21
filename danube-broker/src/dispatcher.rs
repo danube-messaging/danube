@@ -26,6 +26,7 @@ pub(crate) enum Dispatcher {
 enum DispatcherCommand {
     AddConsumer(Consumer),
     RemoveConsumer(u64),
+    #[allow(dead_code)]
     DisconnectAllConsumers,
     DispatchMessage(StreamMessage),
     MessageAcked(u64, MessageID),
@@ -96,6 +97,7 @@ impl Dispatcher {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn disconnect_all_consumers(&mut self) -> Result<()> {
         match self {
             Dispatcher::OneConsumer(dispatcher) => {

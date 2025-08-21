@@ -26,6 +26,7 @@ pub(crate) enum ProducerAccessMode {
 }
 
 impl Producer {
+    #[allow(dead_code)]
     pub(crate) fn new(
         producer_id: u64,
         producer_name: String,
@@ -41,6 +42,7 @@ impl Producer {
         }
     }
     // publish message to topic
+    #[allow(dead_code)]
     pub(crate) async fn publish_message(
         &self,
         _producer_id: u64,
@@ -56,6 +58,7 @@ impl Producer {
 
     // closes the producer from server-side and inform the client through health_check mechanism
     // to disconnect producer
+    #[allow(dead_code)]
     pub(crate) fn disconnect(&mut self) -> u64 {
         //metrics, number of producers per topic
         gauge!(TOPIC_PRODUCERS.name, "topic" => self.topic_name.to_string()).decrement(1);

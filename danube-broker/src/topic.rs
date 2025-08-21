@@ -68,6 +68,7 @@ impl Topic {
     }
 
     #[allow(unused_assignments)]
+    #[allow(dead_code)]
     pub(crate) fn create_producer(
         &mut self,
         producer_id: u64,
@@ -99,6 +100,7 @@ impl Topic {
     }
 
     // Close this topic - disconnect all producers and subscriptions associated with this topic
+    #[allow(dead_code)]
     pub(crate) async fn close(&mut self) -> Result<(Vec<u64>, Vec<u64>)> {
         let mut disconnected_producers = Vec::new();
         let mut disconnected_consumers = Vec::new();
@@ -118,10 +120,6 @@ impl Topic {
         Ok((disconnected_producers, disconnected_consumers))
     }
 
-    // Publishes the message to the topic, and send to active consumers
-    pub(crate) async fn publish_message(&self, stream_message: StreamMessage) -> Result<()> {
-        self.publish_message_sync(stream_message).await
-    }
 
     // Asynchronous version of publish_message for better performance
     pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
@@ -195,32 +193,9 @@ impl Topic {
         Ok(())
     }
 
-    // Synchronous version (original implementation)
-    async fn publish_message_sync(&self, stream_message: StreamMessage) -> Result<()> {
-        let producer = if let Some(top) = self.producers.get(&stream_message.msg_id.producer_id) {
-            top
-        } else {
-            return Err(anyhow!(
-                "the producer with id {} is not attached to topic name: {}",
-                &stream_message.msg_id.producer_id,
-                self.topic_name
-            ));
-        };
-
-        //TODO! this is doing nothing for now, and may not need to be async
-        match producer
-            .publish_message(stream_message.msg_id.producer_id, &stream_message.payload)
-            .await
-        {
-            Ok(_) => {
-                counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => stream_message.msg_id.producer_id.to_string()).increment(1);
-                counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => stream_message.msg_id.producer_id.to_string()).increment(stream_message.payload.len() as u64);
-            }
-            Err(err) => {
-                return Err(anyhow!("the Producer checks have failed: {}", err));
-            }
-        }
-
+    // Legacy dispatch method - kept for compatibility
+    #[allow(dead_code)]
+    async fn dispatch_legacy(&self, stream_message: StreamMessage) -> Result<()> {
         match &self.dispatch_strategy {
             DispatchStrategy::NonReliable => {
                 // Collect subscriptions that need to be unsubscribed, if contain no active consumers

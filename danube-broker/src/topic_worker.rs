@@ -32,6 +32,7 @@ pub enum TopicWorkerMessage {
         ack_msg: AckMessage,
         response_tx: flume::Sender<Result<()>>,
     },
+    #[allow(dead_code)]
     CreateTopic {
         topic_name: String,
         response_tx: flume::Sender<Result<()>>,
@@ -45,6 +46,7 @@ pub struct TopicWorker {
     worker_id: usize,
     topics: DashMap<String, Arc<Topic>>,
     message_rx: Receiver<TopicWorkerMessage>,
+    #[allow(dead_code)]
     shutdown_handle: Option<JoinHandle<()>>,
 }
 
@@ -185,10 +187,12 @@ impl TopicWorker {
         self.topics.remove(topic_name).map(|(_, topic)| topic)
     }
 
+    #[allow(dead_code)]
     pub fn has_topic(&self, topic_name: &str) -> bool {
         self.topics.contains_key(topic_name)
     }
 
+    #[allow(dead_code)]
     pub async fn shutdown(&mut self) {
         if let Some(handle) = self.shutdown_handle.take() {
             handle.abort();
@@ -221,6 +225,7 @@ pub struct TopicWorkerPool {
     workers: Vec<TopicWorker>,
     worker_senders: Vec<Sender<TopicWorkerMessage>>,
     router: TopicRouter,
+    #[allow(dead_code)]
     worker_handles: Vec<JoinHandle<()>>,
 }
 
@@ -331,30 +336,27 @@ impl TopicWorkerPool {
     }
 
     /// Check if a topic exists in any worker
+    #[allow(dead_code)]
     pub fn has_topic(&self, topic_name: &str) -> bool {
-        let worker_id = self.router.route_topic(topic_name);
-        self.workers[worker_id].has_topic(topic_name)
+        self.workers
+            .iter()
+            .any(|worker| worker.has_topic(topic_name))
     }
 
     /// Shutdown all workers
+    #[allow(dead_code)]
     pub async fn shutdown(&mut self) {
-        // Send shutdown messages to all workers
+        // Send shutdown signal to all workers
         for sender in &self.worker_senders {
-            let _ = sender.send_async(TopicWorkerMessage::Shutdown).await;
+            let _ = sender.send(TopicWorkerMessage::Shutdown);
         }
 
-        // Wait for all workers to finish
+        // Wait for all worker handles to complete
         for handle in self.worker_handles.drain(..) {
             let _ = handle.await;
         }
-
-        // Shutdown individual workers
-        for worker in &mut self.workers {
-            worker.shutdown().await;
-        }
     }
 }
-
 impl Drop for TopicWorkerPool {
     fn drop(&mut self) {
         // Send shutdown signal to all workers

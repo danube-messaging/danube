@@ -96,6 +96,7 @@ impl DispatcherSingleConsumer {
     }
 
     /// Disconnect all consumers
+    #[allow(dead_code)]
     pub(crate) async fn disconnect_all_consumers(&self) -> Result<()> {
         self.control_tx
             .send(DispatcherCommand::DisconnectAllConsumers)

@@ -77,7 +77,7 @@ impl ConsumerService for DanubeServerImpl {
         let sub_name = subscription_options.subscription_name.clone();
 
         let consumer_id = service
-            .subscribe(&req.topic_name, subscription_options)
+            .subscribe_async(req.topic_name.clone(), subscription_options)
             .await
             .map_err(|err| {
                 Status::permission_denied(format!(
@@ -163,7 +163,7 @@ impl ConsumerService for DanubeServerImpl {
         let arc_service = self.service.clone();
         let service = arc_service.lock().await;
 
-        match service.ack_message(ack).await {
+        match service.ack_message_async(ack).await {
             Ok(()) => {
                 trace!("Message with id: {} was acknowledged", msg_id);
                 Ok(tonic::Response::new(AckResponse { request_id }))

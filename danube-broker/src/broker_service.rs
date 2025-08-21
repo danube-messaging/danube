@@ -146,6 +146,7 @@ impl BrokerService {
         self.topics.iter().map(|entry| entry.key().clone()).collect()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn find_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
         self.topics.get(topic_name).map(|entry| entry.value().clone())
     }
@@ -632,6 +633,7 @@ impl BrokerService {
     }
 
     //consumer subscribe to topic
+    #[allow(dead_code)]
     pub(crate) async fn subscribe(
         &mut self,
         topic_name: &str,
@@ -673,6 +675,7 @@ impl BrokerService {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         if let Some(topic) = self.topics.get(&ack_msg.msg_id.topic_name) {
             topic.ack_message(ack_msg).await?;
@@ -735,6 +738,7 @@ impl BrokerService {
     }
 
     // Shutdown the broker service and all worker threads
+    #[allow(dead_code)]
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down BrokerService with {} topics", self.topics.len());
         

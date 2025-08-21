@@ -26,6 +26,7 @@ use crate::{
 pub(crate) struct Subscription {
     pub(crate) subscription_name: String,
     pub(crate) subscription_type: i32,
+    #[allow(dead_code)]
     pub(crate) topic_name: String,
     pub(crate) dispatcher: Option<Dispatcher>,
     pub(crate) consumers: HashMap<u64, ConsumerInfo>,
@@ -43,6 +44,7 @@ impl ConsumerInfo {
     pub(crate) async fn get_status(&self) -> bool {
         *self.status.lock().await
     }
+    #[allow(dead_code)]
     pub(crate) async fn set_status_false(&self) -> () {
         *self.status.lock().await = false
     }
@@ -240,6 +242,7 @@ impl Subscription {
     }
 
     // handles the disconnection of consumers associated with the subscription.
+    #[allow(dead_code)]
     pub(crate) async fn disconnect(&mut self) -> Result<Vec<u64>> {
         let mut consumers_id = Vec::new();
 

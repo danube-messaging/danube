@@ -1,4 +1,3 @@
-use crate::broker_service::BrokerService;
 use crate::utils::get_random_id;
 use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
 use danube_core::proto::{
@@ -123,19 +122,12 @@ impl ProducerService for DanubeServerImpl {
             Entry::Occupied(_) => (),
         };
 
-        let topic = service
-            .find_topic_by_producer(stream_message.msg_id.producer_id)
-            .ok_or_else(|| {
-                Status::internal(format!(
-                    "Unable to get the topic for the producer: {}",
-                    stream_message.msg_id.producer_id
-                ))
-            })?;
-
         let req_id = stream_message.request_id;
         let producer_id = stream_message.msg_id.producer_id;
+        let topic_name = stream_message.msg_id.topic_name.clone();
 
-        topic.publish_message(stream_message).await.map_err(|err| {
+        // Use async message publishing through the performance-enhanced pipeline
+        service.publish_message_async(topic_name, stream_message).await.map_err(|err| {
             Status::permission_denied(format!("Unable to publish the message: {}", err))
         })?;
 
