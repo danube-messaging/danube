@@ -448,7 +448,7 @@ async fn post_broker_load_report(
         interval.tick().await;
         {
             let broker_service = broker_service.lock().await;
-            topics = broker_service.get_topics().into_iter().cloned().collect();
+            topics = broker_service.get_topics();
             broker_id = broker_service.broker_id;
         }
         let topics_len = topics.len();

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
 use danube_reliable_dispatch::{ReliableDispatch, TopicCache};
 use metrics::counter;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
@@ -120,6 +120,83 @@ impl Topic {
 
     // Publishes the message to the topic, and send to active consumers
     pub(crate) async fn publish_message(&self, stream_message: StreamMessage) -> Result<()> {
+        self.publish_message_sync(stream_message).await
+    }
+
+    // Asynchronous version of publish_message for better performance
+    pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
+        // Validate producer without blocking
+        let producer_id = stream_message.msg_id.producer_id;
+        if !self.producers.contains_key(&producer_id) {
+            return Err(anyhow!(
+                "the producer with id {} is not attached to topic name: {}",
+                producer_id,
+                self.topic_name
+            ));
+        }
+
+        // Update metrics
+        counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(1);
+        counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(stream_message.payload.len() as u64);
+
+        // Process message based on dispatch strategy
+        match &self.dispatch_strategy {
+            DispatchStrategy::NonReliable => {
+                self.dispatch_to_subscriptions_async(stream_message).await
+            }
+            DispatchStrategy::Reliable(reliable_dispatch) => {
+                // Store message and notify consumers concurrently
+                let store_future = reliable_dispatch.store_message(stream_message);
+                let notify_future = async {
+                    let notifier_guard = self.notifiers.lock().await;
+                    for notifier in notifier_guard.iter() {
+                        notifier.notify_one();
+                    }
+                };
+                
+                tokio::try_join!(store_future, async { notify_future.await; Ok(()) })?;
+                Ok(())
+            }
+        }
+    }
+
+    // Helper method for async subscription dispatch
+    async fn dispatch_to_subscriptions_async(&self, stream_message: StreamMessage) -> Result<()> {
+        // For now, we'll use a simpler approach without cloning subscriptions
+        // TODO: Implement proper concurrent dispatch with Arc<Subscription> or interior mutability
+        let subscription_names: Vec<String> = {
+            let subscriptions = self.subscriptions.lock().await;
+            subscriptions.keys().cloned().collect()
+        };
+        
+        // For now, dispatch synchronously to avoid Arc<Subscription> issues
+        // TODO: Implement proper async concurrent dispatch
+        let mut subscriptions_to_remove = Vec::new();
+        
+        for subscription_name in &subscription_names {
+            let subscriptions = self.subscriptions.lock().await;
+            if let Some(subscription) = subscriptions.get(subscription_name) {
+                let result = subscription.send_message_to_dispatcher(stream_message.clone()).await;
+                if let Err(err) = result {
+                    info!(
+                        "The subscription {}, has no active consumers, got error: {} ",
+                        subscription_name, err
+                    );
+                    subscriptions_to_remove.push(subscription_name.clone());
+                }
+            }
+        }
+
+        // Clean up failed subscriptions
+        for subscription_name in subscriptions_to_remove {
+            self.unsubscribe(&subscription_name).await;
+        }
+
+        Ok(())
+    }
+
+    // Synchronous version (original implementation)
+    async fn publish_message_sync(&self, stream_message: StreamMessage) -> Result<()> {
         let producer = if let Some(top) = self.producers.get(&stream_message.msg_id.producer_id) {
             top
         } else {

@@ -1,3 +1,5 @@
+use crate::broker_service::BrokerService;
+use crate::utils::get_random_id;
 use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
 use danube_core::proto::{
     producer_service_server::ProducerService, MessageResponse, ProducerRequest, ProducerResponse,
@@ -6,7 +8,7 @@ use danube_core::proto::{
 
 use danube_core::message::StreamMessage;
 use metrics::histogram;
-use std::collections::hash_map::Entry;
+use dashmap::mapref::entry::Entry;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, Level};
@@ -63,8 +65,9 @@ impl ProducerService for DanubeServerImpl {
         let new_producer_id = service
             .create_new_producer(
                 &req.producer_name,
-                &req.topic_name,
+                get_random_id(),
                 req.producer_access_mode,
+                &req.topic_name,
             )
             .await
             .map_err(|err| {
@@ -103,7 +106,7 @@ impl ProducerService for DanubeServerImpl {
         let start_time = Instant::now();
 
         let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = arc_service.lock().await;
 
         // check if the producer exist
         match service

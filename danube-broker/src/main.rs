@@ -18,7 +18,11 @@ mod schema;
 mod service_configuration;
 mod subscription;
 mod topic;
+mod topic_worker;
 mod utils;
+
+#[cfg(test)]
+mod async_performance_test;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
 

@@ -114,7 +114,7 @@ impl ConsumerService for DanubeServerImpl {
         info!("Consumer {} is ready to receive messages", consumer_id);
 
         let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = arc_service.lock().await;
 
         let rx = if let Some(consumer) = service.find_consumer_rx(consumer_id).await {
             consumer
@@ -161,7 +161,7 @@ impl ConsumerService for DanubeServerImpl {
         trace!("Received ack request for message_id: {}", ack.msg_id);
 
         let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = arc_service.lock().await;
 
         match service.ack_message(ack).await {
             Ok(()) => {

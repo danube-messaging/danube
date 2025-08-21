@@ -29,7 +29,7 @@ impl HealthCheck for DanubeServerImpl {
                 client_status = ClientStatus::Close;
             }
         } else if req.client == ClientType::Consumer as i32 {
-            let mut service = self.service.lock().await;
+            let service = self.service.lock().await;
 
             if !service.health_consumer(req.id).await {
                 client_status = ClientStatus::Close;
