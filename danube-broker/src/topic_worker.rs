@@ -335,12 +335,11 @@ impl TopicWorkerPool {
         self.workers[worker_id].remove_topic(topic_name)
     }
 
-    /// Check if a topic exists in any worker
+    /// Check if a topic exists in the correct worker (using consistent hashing)
     #[allow(dead_code)]
     pub fn has_topic(&self, topic_name: &str) -> bool {
-        self.workers
-            .iter()
-            .any(|worker| worker.has_topic(topic_name))
+        let worker_id = self.router.route_topic(topic_name);
+        self.workers[worker_id].has_topic(topic_name)
     }
 
     /// Shutdown all workers
