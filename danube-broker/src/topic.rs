@@ -37,7 +37,7 @@ pub(crate) struct Topic {
     // subscription_name -> Subscription
     pub(crate) subscriptions: Mutex<HashMap<String, Subscription>>,
     // the producers currently connected to this topic, producer_id -> Producer
-    pub(crate) producers: HashMap<u64, Producer>,
+    pub(crate) producers: Mutex<HashMap<u64, Producer>>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
     notifiers: Mutex<Vec<Arc<Notify>>>,
@@ -61,22 +61,23 @@ impl Topic {
             schema: None,
             topic_policies: None,
             subscriptions: Mutex::new(HashMap::new()),
-            producers: HashMap::new(),
+            producers: Mutex::new(HashMap::new()),
             dispatch_strategy,
             notifiers: Mutex::new(Vec::new()),
         }
     }
 
     #[allow(unused_assignments)]
-    #[allow(dead_code)]
-    pub(crate) fn create_producer(
-        &mut self,
+    pub(crate) async fn create_producer(
+        &self,
         producer_id: u64,
         producer_name: &str,
         producer_access_mode: i32,
     ) -> Result<serde_json::Value> {
         let mut producer_config = serde_json::Value::String(String::new());
-        match self.producers.entry(producer_id) {
+        let mut producers = self.producers.lock().await;
+        
+        match producers.entry(producer_id) {
             Entry::Vacant(entry) => {
                 let new_producer = Producer::new(
                     producer_id,
@@ -106,9 +107,12 @@ impl Topic {
         let mut disconnected_consumers = Vec::new();
 
         // Disconnect all the topic producers
-        for (_, producer) in self.producers.iter_mut() {
-            let producer_id = producer.disconnect();
-            disconnected_producers.push(producer_id);
+        {
+            let mut producers = self.producers.lock().await;
+            for (_, producer) in producers.iter_mut() {
+                let producer_id = producer.disconnect();
+                disconnected_producers.push(producer_id);
+            }
         }
 
         // Disconnect all the topic subscriptions
@@ -125,12 +129,15 @@ impl Topic {
     pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
         // Validate producer without blocking
         let producer_id = stream_message.msg_id.producer_id;
-        if !self.producers.contains_key(&producer_id) {
-            return Err(anyhow!(
-                "the producer with id {} is not attached to topic name: {}",
-                producer_id,
-                self.topic_name
-            ));
+        {
+            let producers = self.producers.lock().await;
+            if !producers.contains_key(&producer_id) {
+                return Err(anyhow!(
+                    "the producer with id {} is not attached to topic name: {}",
+                    producer_id,
+                    self.topic_name
+                ));
+            }
         }
 
         // Update metrics
@@ -247,8 +254,9 @@ impl Topic {
         Ok(())
     }
 
-    pub(crate) fn get_producer_status(&self, producer_id: u64) -> bool {
-        if let Some(producer) = self.producers.get(&producer_id) {
+    pub(crate) async fn get_producer_status(&self, producer_id: u64) -> bool {
+        let producers = self.producers.lock().await;
+        if let Some(producer) = producers.get(&producer_id) {
             if producer.status == true {
                 return true;
             }

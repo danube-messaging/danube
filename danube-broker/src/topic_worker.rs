@@ -44,7 +44,7 @@ pub enum TopicWorkerMessage {
 #[derive(Debug)]
 pub struct TopicWorker {
     worker_id: usize,
-    topics: DashMap<String, Arc<Topic>>,
+    topics: Arc<DashMap<String, Arc<Topic>>>,
     message_rx: Receiver<TopicWorkerMessage>,
     #[allow(dead_code)]
     shutdown_handle: Option<JoinHandle<()>>,
@@ -54,7 +54,7 @@ impl TopicWorker {
     pub fn new(worker_id: usize, message_rx: Receiver<TopicWorkerMessage>) -> Self {
         Self {
             worker_id,
-            topics: DashMap::new(),
+            topics: Arc::new(DashMap::new()),
             message_rx,
             shutdown_handle: None,
         }
@@ -63,7 +63,7 @@ impl TopicWorker {
     /// Start the worker in a background task
     pub fn start(&mut self) -> JoinHandle<()> {
         let worker_id = self.worker_id;
-        let topics = self.topics.clone();
+        let topics = Arc::clone(&self.topics);
         let message_rx = self.message_rx.clone();
 
         let handle = tokio::spawn(async move {
@@ -132,7 +132,7 @@ impl TopicWorker {
     }
 
     async fn handle_publish_message(
-        topics: &DashMap<String, Arc<Topic>>,
+        topics: &Arc<DashMap<String, Arc<Topic>>>,
         topic_name: &str,
         message: StreamMessage,
     ) -> Result<()> {
@@ -144,19 +144,21 @@ impl TopicWorker {
     }
 
     async fn handle_subscribe(
-        topics: &DashMap<String, Arc<Topic>>,
+        topics: &Arc<DashMap<String, Arc<Topic>>>,
         topic_name: &str,
         options: SubscriptionOptions,
     ) -> Result<u64> {
         if let Some(topic) = topics.get(topic_name) {
             topic.subscribe(topic_name, options).await
         } else {
+            let available_topics: Vec<String> = topics.iter().map(|entry| entry.key().clone()).collect();
+            error!("Topic {} not found in worker. Available topics: {:?}", topic_name, available_topics);
             Err(anyhow::anyhow!("Topic {} not found in worker", topic_name))
         }
     }
 
     async fn handle_ack_message(
-        topics: &DashMap<String, Arc<Topic>>,
+        topics: &Arc<DashMap<String, Arc<Topic>>>,
         ack_msg: AckMessage,
     ) -> Result<()> {
         if let Some(topic) = topics.get(&ack_msg.msg_id.topic_name) {
@@ -170,7 +172,7 @@ impl TopicWorker {
     }
 
     async fn handle_create_topic(
-        _topics: &DashMap<String, Arc<Topic>>,
+        _topics: &Arc<DashMap<String, Arc<Topic>>>,
         topic_name: &str,
     ) -> Result<()> {
         // This is a placeholder - in real implementation, you'd need to pass
@@ -180,6 +182,7 @@ impl TopicWorker {
     }
 
     pub fn add_topic(&self, topic_name: String, topic: Arc<Topic>) {
+        info!("Worker {} adding topic: {}", self.worker_id, topic_name);
         self.topics.insert(topic_name, topic);
     }
 
