@@ -15,7 +15,7 @@ use danube_core::proto::{
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
@@ -24,7 +24,7 @@ use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeServerImpl {
-    service: Arc<Mutex<BrokerService>>,
+    service: Arc<BrokerService>,
     broker_addr: SocketAddr,
     auth: AuthConfig,
     // the api key is used to authenticate the user for JWT auth
@@ -33,7 +33,7 @@ pub(crate) struct DanubeServerImpl {
 
 impl DanubeServerImpl {
     pub(crate) fn new(
-        service: Arc<Mutex<BrokerService>>,
+        service: Arc<BrokerService>,
         broker_addr: SocketAddr,
         auth: AuthConfig,
     ) -> Self {

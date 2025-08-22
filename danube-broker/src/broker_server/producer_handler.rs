@@ -27,8 +27,7 @@ impl ProducerService for DanubeServerImpl {
             req.producer_name, req.topic_name
         );
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         match service
             .get_topic(&req.topic_name, req.dispatch_strategy, req.schema, true)
@@ -105,8 +104,7 @@ impl ProducerService for DanubeServerImpl {
         // Get the start time before sending the message
         let start_time = Instant::now();
 
-        let arc_service = self.service.clone();
-        let service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         // check if the producer exist
         match service

@@ -36,7 +36,7 @@ impl Discovery for DanubeServerImpl {
             return Err(status);
         }
 
-        let service = self.service.lock().await;
+        let service = self.service.as_ref();
 
         let result = match service.lookup_topic(&req.topic).await {
             Some((true, _)) => {
@@ -102,7 +102,7 @@ impl Discovery for DanubeServerImpl {
             return Err(status);
         }
 
-        let service = self.service.lock().await;
+        let service = self.service.as_ref();
 
         let result = service.topic_partitions(&req.topic).await;
 
@@ -139,7 +139,7 @@ impl Discovery for DanubeServerImpl {
             return Err(status);
         }
 
-        let service = self.service.lock().await;
+        let service = self.service.as_ref();
 
         // if it's non-partitioned topic, then the Vec should contain only one element
         // if it's partitoned, then the Vec should contain more than one element

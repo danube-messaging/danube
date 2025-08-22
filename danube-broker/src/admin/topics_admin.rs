@@ -61,7 +61,7 @@ impl TopicAdmin for DanubeAdminImpl {
             _ => unimplemented!("not implemented yet for admin"),
         };
 
-        let mut service = self.broker_service.lock().await;
+        let service = self.broker_service.as_ref();
 
         let schema = Schema::new(format!("{}_schema", req.name), schema_type);
 
@@ -92,7 +92,7 @@ impl TopicAdmin for DanubeAdminImpl {
 
         trace!("Admin: delete the topic: {}", req.name);
 
-        let mut service = self.broker_service.lock().await;
+        let service = self.broker_service.as_ref();
 
         let success = match service.post_delete_topic(&req.name).await {
             Ok(()) => true,
@@ -144,7 +144,7 @@ impl TopicAdmin for DanubeAdminImpl {
             req.topic
         );
 
-        let mut service = self.broker_service.lock().await;
+        let service = self.broker_service.as_ref();
 
         let success = match service.unsubscribe(&req.subscription, &req.topic).await {
             Ok(()) => true,

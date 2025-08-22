@@ -12,14 +12,14 @@ use danube_core::admin_proto::{
     topic_admin_server::TopicAdminServer,
 };
 use std::{net::SocketAddr, sync::Arc};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeAdminImpl {
     admin_addr: SocketAddr,
-    broker_service: Arc<Mutex<BrokerService>>,
+    broker_service: Arc<BrokerService>,
     resources: Resources,
     auth: AuthConfig,
 }
@@ -27,7 +27,7 @@ pub(crate) struct DanubeAdminImpl {
 impl DanubeAdminImpl {
     pub(crate) fn new(
         admin_addr: SocketAddr,
-        broker_service: Arc<Mutex<BrokerService>>,
+        broker_service: Arc<BrokerService>,
         resources: Resources,
         auth: AuthConfig,
     ) -> Self {

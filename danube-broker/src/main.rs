@@ -39,7 +39,7 @@ use anyhow::{Context, Result};
 use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_reliable_dispatch::create_message_storage;
 use std::net::SocketAddr;
-use tokio::sync::Mutex;
+ 
 use tracing::info;
 use tracing_subscriber;
 
@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
     // Load Manager, monitor and distribute load across brokers.
     let load_manager = LoadManager::new(broker_service.broker_id, metadata_store.clone());
 
-    let broker: Arc<Mutex<BrokerService>> = Arc::new(Mutex::new(broker_service));
+    let broker: Arc<BrokerService> = Arc::new(broker_service);
 
     let broker_addr = service_config.broker_addr;
     info!(
