@@ -1,7 +1,7 @@
 //! # Partitioning Validation Tests
-//! 
+//!
 //! This test file validates topic partitioning functionality in Danube.
-//! 
+//!
 //! ## Tests:
 //! - `partitioning_validation`: Tests that partitioned topics work correctly by creating
 //!   a partitioned topic, sending messages to it, and verifying that messages are received
@@ -10,8 +10,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaType};
-use danube_core::admin_proto::{topic_admin_client::TopicAdminClient, NamespaceRequest};
+use danube_client::DanubeClient;
 use rustls::crypto;
 use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
@@ -62,10 +61,7 @@ async fn partitioning_validation() -> Result<()> {
     let mut np_stream = np_consumer.receive().await?;
     sleep(Duration::from_millis(200)).await;
     let _ = np_producer.send(b"np".to_vec(), None).await?;
-    let np_recv = timeout(Duration::from_secs(5), async {
-        np_stream.recv().await
-    })
-    .await?;
+    let np_recv = timeout(Duration::from_secs(5), async { np_stream.recv().await }).await?;
     let np_msg = np_recv.expect("expected np message");
     assert_eq!(np_msg.msg_id.topic_name, np_topic);
 
@@ -106,7 +102,11 @@ async fn partitioning_validation() -> Result<()> {
     .await;
     for i in 0..partitions {
         let expected = format!("{}-part-{}", p_topic, i);
-        assert!(seen_parts.contains(&expected), "missing partition {}", expected);
+        assert!(
+            seen_parts.contains(&expected),
+            "missing partition {}",
+            expected
+        );
     }
 
     Ok(())
