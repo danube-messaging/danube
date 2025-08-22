@@ -419,12 +419,23 @@ impl BrokerService {
             ));
         }
 
-        // Remove from worker pool (single source of truth)
-        let topic = self.topic_worker_pool.remove_topic_from_worker(topic_name)
+        // Remove from worker pool (single source of truth) to prevent new operations
+        let topic = self
+            .topic_worker_pool
+            .remove_topic_from_worker(topic_name)
             .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
-        
-        // Clean up indices - for now we'll skip the close() call since Arc<Topic> doesn't support it
-        // TODO: Implement proper cleanup when we add interior mutability to Topic
+
+        // Disconnect all attached producers/consumers and clean indices
+        // Note: Topic::close() is async and uses interior mutability; Arc<Topic> is fine
+        let (producers, consumers) = topic.close().await?;
+
+        for producer_id in producers {
+            self.producer_index.remove(&producer_id);
+        }
+
+        for consumer_id in consumers {
+            self.consumer_index.remove(&consumer_id);
+        }
         
         info!(
             "The topic {} was removed from the broker {}",
