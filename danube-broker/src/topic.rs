@@ -101,7 +101,6 @@ impl Topic {
     }
 
     // Close this topic - disconnect all producers and subscriptions associated with this topic
-    #[allow(dead_code)]
     pub(crate) async fn close(&self) -> Result<(Vec<u64>, Vec<u64>)> {
         let mut disconnected_producers = Vec::new();
         let mut disconnected_consumers = Vec::new();

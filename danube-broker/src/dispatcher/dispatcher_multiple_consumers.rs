@@ -82,7 +82,6 @@ impl DispatcherMultipleConsumers {
     }
 
     /// Remove a consumer by its ID
-    #[allow(dead_code)]
     pub(crate) async fn remove_consumer(&self, consumer_id: u64) -> Result<()> {
         self.control_tx
             .send(DispatcherCommand::RemoveConsumer(consumer_id))
@@ -91,7 +90,6 @@ impl DispatcherMultipleConsumers {
     }
 
     /// Disconnect all consumers
-    #[allow(dead_code)]
     pub(crate) async fn disconnect_all_consumers(&self) -> Result<()> {
         self.control_tx
             .send(DispatcherCommand::DisconnectAllConsumers)
