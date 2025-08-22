@@ -1,3 +1,12 @@
+//! # Subscription Exclusive Tests
+//! 
+//! This test file validates the exclusive subscription functionality in Danube.
+//! 
+//! ## Tests:
+//! - `exclusive_subscription`: Tests basic exclusive subscription behavior where only one consumer
+//!   can be active on the subscription at a time. Validates message sending, receiving, and 
+//!   acknowledgment in an exclusive subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 

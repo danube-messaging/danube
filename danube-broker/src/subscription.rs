@@ -44,7 +44,6 @@ impl ConsumerInfo {
     pub(crate) async fn get_status(&self) -> bool {
         *self.status.lock().await
     }
-    #[allow(dead_code)]
     pub(crate) async fn set_status_false(&self) -> () {
         *self.status.lock().await = false
     }

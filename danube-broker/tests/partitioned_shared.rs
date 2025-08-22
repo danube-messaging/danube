@@ -1,3 +1,13 @@
+//! # Partitioned Shared Subscription Tests
+//! 
+//! This test file validates shared subscription functionality on partitioned topics in Danube.
+//! 
+//! ## Tests:
+//! - `partitioned_shared_subscription`: Tests shared subscription behavior on a partitioned
+//!   topic, ensuring that multiple consumers can share the same subscription across partitions
+//!   and that messages are properly distributed and acknowledged in a partitioned shared 
+//!   subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 

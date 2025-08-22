@@ -109,7 +109,7 @@ impl ConsumerService for DanubeServerImpl {
         let consumer_id = request.into_inner().consumer_id;
 
         // Create a new mpsc channel to stream messages to the client via gRPC
-        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Buffer size of 4, adjust as needed
+        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Small buffer to trigger send failures quickly
 
         info!("Consumer {} is ready to receive messages", consumer_id);
 
@@ -127,6 +127,7 @@ impl ConsumerService for DanubeServerImpl {
         };
 
         let rx_cloned = Arc::clone(&rx);
+        let arc_service_for_disconnect = self.service.clone();
 
         tokio::spawn(async move {
             let mut rx_guard = rx_cloned.lock().await;
@@ -134,7 +135,16 @@ impl ConsumerService for DanubeServerImpl {
             while let Some(stream_message) = rx_guard.recv().await {
                 if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
                     // Error handling for when the client disconnects
-                    warn!("Client disconnected for consumer_id: {}", consumer_id);
+                    warn!(
+                        "Client disconnected for consumer_id: {}, marking inactive",
+                        consumer_id
+                    );
+
+                    // Mark the consumer as inactive on disconnect
+                    let service = arc_service_for_disconnect.lock().await;
+                    if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
+                        consumer_info.set_status_false().await;
+                    }
                     break;
                 }
             }

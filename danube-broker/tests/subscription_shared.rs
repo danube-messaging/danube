@@ -1,3 +1,12 @@
+//! # Subscription Shared Tests
+//! 
+//! This test file validates the shared subscription functionality in Danube.
+//! 
+//! ## Tests:
+//! - `shared_subscription`: Tests basic shared subscription behavior where multiple consumers
+//!   can share the same subscription and messages are distributed among them. Validates
+//!   message sending, receiving, and acknowledgment in a shared subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 
