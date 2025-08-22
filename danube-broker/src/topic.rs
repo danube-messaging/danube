@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
 use danube_reliable_dispatch::{ReliableDispatch, TopicCache};
 use metrics::counter;
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
@@ -15,6 +15,7 @@ use crate::{
     producer::Producer,
     schema::Schema,
     subscription::{Subscription, SubscriptionOptions},
+    resources::TopicResources,
 };
 
 pub(crate) static SYSTEM_TOPIC: &str = "/system/_events_topic";
@@ -41,6 +42,8 @@ pub(crate) struct Topic {
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
     notifiers: Mutex<Vec<Arc<Notify>>>,
+    // handle to metadata topic resources for cleanup operations
+    resources_topic: Option<TopicResources>,
 }
 
 impl Topic {
@@ -48,6 +51,7 @@ impl Topic {
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
         storage_backend: TopicCache,
+        resources_topic: Option<TopicResources>,
     ) -> Self {
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
@@ -64,6 +68,7 @@ impl Topic {
             producers: Mutex::new(HashMap::new()),
             dispatch_strategy,
             notifiers: Mutex::new(Vec::new()),
+            resources_topic,
         }
     }
 
@@ -76,7 +81,7 @@ impl Topic {
     ) -> Result<serde_json::Value> {
         let mut producer_config = serde_json::Value::String(String::new());
         let mut producers = self.producers.lock().await;
-        
+
         match producers.entry(producer_id) {
             Entry::Vacant(entry) => {
                 let new_producer = Producer::new(
@@ -123,7 +128,6 @@ impl Topic {
         Ok((disconnected_producers, disconnected_consumers))
     }
 
-
     // Asynchronous version of publish_message for better performance
     pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
         // Validate producer without blocking
@@ -149,16 +153,13 @@ impl Topic {
                 self.dispatch_to_subscriptions_async(stream_message).await
             }
             DispatchStrategy::Reliable(reliable_dispatch) => {
-                // Store message and notify consumers concurrently
-                let store_future = reliable_dispatch.store_message(stream_message);
-                let notify_future = async {
-                    let notifier_guard = self.notifiers.lock().await;
-                    for notifier in notifier_guard.iter() {
-                        notifier.notify_one();
-                    }
-                };
-                
-                tokio::try_join!(store_future, async { notify_future.await; Ok(()) })?;
+                // Reliable: persist first, notify only on success
+                reliable_dispatch.store_message(stream_message).await?;
+
+                let notifier_guard = self.notifiers.lock().await;
+                for notifier in notifier_guard.iter() {
+                    notifier.notify_one();
+                }
                 Ok(())
             }
         }
@@ -172,15 +173,17 @@ impl Topic {
             let subscriptions = self.subscriptions.lock().await;
             subscriptions.keys().cloned().collect()
         };
-        
+
         // For now, dispatch synchronously to avoid Arc<Subscription> issues
         // TODO: Implement proper async concurrent dispatch
         let mut subscriptions_to_remove = Vec::new();
-        
+
         for subscription_name in &subscription_names {
             let subscriptions = self.subscriptions.lock().await;
             if let Some(subscription) = subscriptions.get(subscription_name) {
-                let result = subscription.send_message_to_dispatcher(stream_message.clone()).await;
+                let result = subscription
+                    .send_message_to_dispatcher(stream_message.clone())
+                    .await;
                 if let Err(err) = result {
                     info!(
                         "The subscription {}, has no active consumers, got error: {} ",
@@ -194,54 +197,20 @@ impl Topic {
         // Clean up failed subscriptions
         for subscription_name in subscriptions_to_remove {
             self.unsubscribe(&subscription_name).await;
+            // Best-effort delete from metadata store
+            self.delete_subscription_metadata(&subscription_name).await;
         }
 
         Ok(())
     }
 
-    // Legacy dispatch method - kept for compatibility
-    #[allow(dead_code)]
-    async fn dispatch_legacy(&self, stream_message: StreamMessage) -> Result<()> {
-        match &self.dispatch_strategy {
-            DispatchStrategy::NonReliable => {
-                // Collect subscriptions that need to be unsubscribed, if contain no active consumers
-                let subscriptions_to_remove: Vec<String> = {
-                    let subscriptions = self.subscriptions.lock().await;
-                    let mut to_remove = Vec::new();
-
-                    for (_name, subscription) in subscriptions.iter() {
-                        let duplicate_message = stream_message.clone();
-                        if let Err(err) = subscription
-                            .send_message_to_dispatcher(duplicate_message)
-                            .await
-                        {
-                            info!(
-                                "The subscription {}, has no active consumers, got error: {} ",
-                                subscription.subscription_name, err
-                            );
-                            to_remove.push(subscription.subscription_name.clone());
-                        }
-                    }
-
-                    to_remove
-                };
-
-                for subscription_name in subscriptions_to_remove {
-                    self.unsubscribe(&subscription_name).await;
-
-                    //TODO! delete the subscription from the metadata store
-                }
-            }
-            DispatchStrategy::Reliable(reliable_dispatch) => {
-                reliable_dispatch.store_message(stream_message).await?;
-                let mut notifier_guard = self.notifiers.lock().await;
-                for notifier in notifier_guard.iter_mut() {
-                    notifier.notify_one();
-                }
-            }
-        };
-
-        Ok(())
+    // Best-effort deletion of subscription from metadata store
+    async fn delete_subscription_metadata(&self, subscription_name: &str) {
+        if let Some(mut topic_res) = self.resources_topic.clone() {
+            let _ = topic_res
+                .delete_subscription(subscription_name, &self.topic_name)
+                .await;
+        }
     }
 
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {

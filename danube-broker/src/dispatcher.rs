@@ -78,6 +78,7 @@ impl Dispatcher {
             }
         }
     }
+    #[allow(dead_code)]
     pub(crate) async fn remove_consumer(&mut self, consumer_id: u64) -> Result<()> {
         match self {
             Dispatcher::OneConsumer(dispatcher) => {

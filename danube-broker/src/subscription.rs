@@ -242,7 +242,6 @@ impl Subscription {
     }
 
     // handles the disconnection of consumers associated with the subscription.
-    #[allow(dead_code)]
     pub(crate) async fn disconnect(&mut self) -> Result<Vec<u64>> {
         let mut consumers_id = Vec::new();
 

@@ -9,11 +9,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    message::AckMessage,
-    subscription::SubscriptionOptions,
-    topic::Topic,
-};
+use crate::{message::AckMessage, subscription::SubscriptionOptions, topic::Topic};
 
 /// Message types that can be sent to topic workers
 #[derive(Debug)]
@@ -68,9 +64,9 @@ impl TopicWorker {
 
         let handle = tokio::spawn(async move {
             info!("Topic worker {} started", worker_id);
-            
+
             let backoff = Backoff::new();
-            
+
             loop {
                 match message_rx.recv_async().await {
                     Ok(TopicWorkerMessage::PublishMessage {
@@ -78,7 +74,8 @@ impl TopicWorker {
                         message,
                         response_tx,
                     }) => {
-                        let result = Self::handle_publish_message(&topics, &topic_name, message).await;
+                        let result =
+                            Self::handle_publish_message(&topics, &topic_name, message).await;
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send publish response: {}", e);
                         }
@@ -89,13 +86,17 @@ impl TopicWorker {
                         options,
                         response_tx,
                     }) => {
-                        let result = Self::handle_subscribe(&topics, &topic_name.clone(), options).await;
+                        let result =
+                            Self::handle_subscribe(&topics, &topic_name.clone(), options).await;
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send subscribe response: {}", e);
                         }
                         backoff.reset();
                     }
-                    Ok(TopicWorkerMessage::AckMessage { ack_msg, response_tx }) => {
+                    Ok(TopicWorkerMessage::AckMessage {
+                        ack_msg,
+                        response_tx,
+                    }) => {
                         let result = Self::handle_ack_message(&topics, ack_msg).await;
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send ack response: {}", e);
@@ -122,7 +123,7 @@ impl TopicWorker {
                     }
                 }
             }
-            
+
             info!("Topic worker {} stopped", worker_id);
         });
 
@@ -151,8 +152,12 @@ impl TopicWorker {
         if let Some(topic) = topics.get(topic_name) {
             topic.subscribe(topic_name, options).await
         } else {
-            let available_topics: Vec<String> = topics.iter().map(|entry| entry.key().clone()).collect();
-            error!("Topic {} not found in worker. Available topics: {:?}", topic_name, available_topics);
+            let available_topics: Vec<String> =
+                topics.iter().map(|entry| entry.key().clone()).collect();
+            error!(
+                "Topic {} not found in worker. Available topics: {:?}",
+                topic_name, available_topics
+            );
             Err(anyhow::anyhow!("Topic {} not found in worker", topic_name))
         }
     }
@@ -243,7 +248,7 @@ impl TopicWorkerPool {
             let (tx, rx) = flume::unbounded();
             let mut worker = TopicWorker::new(i, rx);
             let handle = worker.start();
-            
+
             workers.push(worker);
             worker_senders.push(tx);
             worker_handles.push(handle);
@@ -265,8 +270,10 @@ impl TopicWorkerPool {
     ) -> Result<()> {
         let worker_id = self.router.route_topic(topic_name);
         let sender = &self.worker_senders[worker_id];
-        
-        sender.send_async(message).await
+
+        sender
+            .send_async(message)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to send message to worker {}: {}", worker_id, e))
     }
 
@@ -277,7 +284,7 @@ impl TopicWorkerPool {
         message: StreamMessage,
     ) -> Result<()> {
         let (response_tx, response_rx) = flume::bounded(1);
-        
+
         self.send_to_worker(
             &topic_name,
             TopicWorkerMessage::PublishMessage {
@@ -285,9 +292,12 @@ impl TopicWorkerPool {
                 message,
                 response_tx,
             },
-        ).await?;
+        )
+        .await?;
 
-        response_rx.recv_async().await
+        response_rx
+            .recv_async()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to receive publish response: {}", e))?
     }
 
@@ -298,7 +308,7 @@ impl TopicWorkerPool {
         options: SubscriptionOptions,
     ) -> Result<u64> {
         let (response_tx, response_rx) = flume::bounded(1);
-        
+
         self.send_to_worker(
             &topic_name,
             TopicWorkerMessage::Subscribe {
@@ -306,9 +316,12 @@ impl TopicWorkerPool {
                 options,
                 response_tx,
             },
-        ).await?;
+        )
+        .await?;
 
-        response_rx.recv_async().await
+        response_rx
+            .recv_async()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to receive subscribe response: {}", e))?
     }
 
@@ -316,13 +329,19 @@ impl TopicWorkerPool {
     pub async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
         let (response_tx, response_rx) = flume::bounded(1);
         let topic_name = ack_msg.msg_id.topic_name.clone();
-        
+
         self.send_to_worker(
             &topic_name,
-            TopicWorkerMessage::AckMessage { ack_msg, response_tx },
-        ).await?;
+            TopicWorkerMessage::AckMessage {
+                ack_msg,
+                response_tx,
+            },
+        )
+        .await?;
 
-        response_rx.recv_async().await
+        response_rx
+            .recv_async()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to receive ack response: {}", e))?
     }
 
@@ -338,23 +357,24 @@ impl TopicWorkerPool {
         self.workers[worker_id].remove_topic(topic_name)
     }
 
-    /// Check if a topic exists in the correct worker (using consistent hashing)
-    pub fn has_topic(&self, topic_name: &str) -> bool {
-        let worker_id = self.router.route_topic(topic_name);
-        self.workers[worker_id].has_topic(topic_name)
-    }
-
     /// Get a topic from the appropriate worker
     pub fn get_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
         let worker_id = self.router.route_topic(topic_name);
-        self.workers[worker_id].topics.get(topic_name).map(|entry| entry.value().clone())
+        self.workers[worker_id]
+            .topics
+            .get(topic_name)
+            .map(|entry| entry.value().clone())
     }
 
     /// Get all topics currently managed by the worker pool
     pub fn get_all_topics(&self) -> Vec<String> {
         let mut all_topics = Vec::new();
         for worker in &self.workers {
-            let topics: Vec<String> = worker.topics.iter().map(|entry| entry.key().clone()).collect();
+            let topics: Vec<String> = worker
+                .topics
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
             all_topics.extend(topics);
         }
         all_topics

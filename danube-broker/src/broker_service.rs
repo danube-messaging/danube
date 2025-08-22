@@ -143,55 +143,6 @@ impl BrokerService {
         self.topic_worker_pool.get_all_topics()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn find_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
-        self.topic_worker_pool.get_topic(topic_name)
-    }
-
-
-    // Async version of message publishing using topic worker pool
-    pub async fn publish_message_async(&self, topic_name: String, message: StreamMessage) -> Result<()> {
-        // Route message through topic worker pool for async processing
-        self.topic_worker_pool.publish_message_async(topic_name, message).await
-    }
-
-
-    // Async version of subscription using topic worker pool
-    pub(crate) async fn subscribe_async(
-        &mut self,
-        topic_name: String,
-        subscription_options: SubscriptionOptions,
-    ) -> Result<u64> {
-        let consumer_id = self.topic_worker_pool
-            .subscribe_async(topic_name.clone(), subscription_options.clone())
-            .await?;
-
-        // Update consumer index
-        let sub_name_clone = subscription_options.subscription_name.clone();
-        self.consumer_index.insert(
-            consumer_id,
-            (topic_name.clone(), sub_name_clone),
-        );
-
-        // Increment metrics for number of consumers per topic
-        gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
-
-        // Create a metadata store entry for newly created subscription
-        // TODO: avoid overwriting when not necessary
-        let sub_options = serde_json::to_value(&subscription_options)?;
-        self.resources
-            .topic
-            .create_subscription(&subscription_options.subscription_name, &topic_name, sub_options)
-            .await?;
-
-        Ok(consumer_id)
-    }
-
-    // Async version of message acknowledgment
-    pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
-        self.topic_worker_pool.ack_message_async(ack_msg).await
-    }
-
     // Creates a topic on the cluster
     // and leave to the Leader Broker to assign to one of the active brokers
     pub(crate) async fn create_topic_cluster(
@@ -383,6 +334,7 @@ impl BrokerService {
             topic_name,
             dispatch_strategy.clone(),
             self.storage_backend.clone(),
+            Some(self.resources.topic.clone()),
         );
 
         let schema = self.resources.topic.get_schema(topic_name);
@@ -402,7 +354,7 @@ impl BrokerService {
             // get namespace policies
             let parts: Vec<_> = topic_name.split('/').collect();
             let ns_name = format!("/{}", parts[1]);
-            
+
             let ns_policies = self.resources.namespace.get_policies(&ns_name);
             if let Ok(ns_policies) = ns_policies {
                 let _ = new_topic.policies_update(ns_policies);
@@ -413,7 +365,8 @@ impl BrokerService {
         let new_topic_arc = Arc::new(new_topic);
 
         // Add topic to worker pool (single source of truth)
-        self.topic_worker_pool.add_topic_to_worker(topic_name.to_string(), new_topic_arc);
+        self.topic_worker_pool
+            .add_topic_to_worker(topic_name.to_string(), new_topic_arc);
 
         gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).increment(1);
 
@@ -448,13 +401,13 @@ impl BrokerService {
         for consumer_id in consumers {
             self.consumer_index.remove(&consumer_id);
         }
-        
+
         info!(
             "The topic {} was removed from the broker {}",
             topic.topic_name, self.broker_id
         );
         gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
-        
+
         Ok(topic)
     }
 
@@ -553,9 +506,10 @@ impl BrokerService {
         topic_name: &str,
     ) -> Result<u64> {
         if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-            
             // Add producer to the topic's producers map using proper async interior mutability
-            let producer_config = topic.create_producer(producer_id, producer_name, producer_access_mode).await?;
+            let producer_config = topic
+                .create_producer(producer_id, producer_name, producer_access_mode)
+                .await?;
 
             // insert into producer_index for efficient searches and retrievals
             self.producer_index
@@ -565,7 +519,10 @@ impl BrokerService {
             gauge!(TOPIC_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
 
             // create a metadata store entry for newly created producer
-            self.resources.topic.create_producer(producer_id, topic_name, producer_config).await?;
+            self.resources
+                .topic
+                .create_producer(producer_id, topic_name, producer_config)
+                .await?;
         } else {
             return Err(anyhow!("Unable to find the topic: {}", topic_name));
         }
@@ -592,9 +549,10 @@ impl BrokerService {
         if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
             let (topic_name, subscription_name) = consumer_ref.value().clone();
             drop(consumer_ref);
-            
+
             if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name) {
+                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
+                {
                     return subscription.get_consumer_rx(consumer_id);
                 }
             }
@@ -607,9 +565,10 @@ impl BrokerService {
         if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
             let (topic_name, subscription_name) = consumer_ref.value().clone();
             drop(consumer_ref);
-            
+
             if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name) {
+                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
+                {
                     return subscription.get_consumer_info(consumer_id);
                 }
             }
@@ -631,7 +590,9 @@ impl BrokerService {
         topic_name: &str,
     ) -> Option<u64> {
         let topic = self.topic_worker_pool.get_topic(topic_name)?;
-        topic.validate_consumer(subscription_name, consumer_name).await
+        topic
+            .validate_consumer(subscription_name, consumer_name)
+            .await
     }
 
     //validate if the consumer is allowed to create new subscription
@@ -647,55 +608,55 @@ impl BrokerService {
         true
     }
 
-    //consumer subscribe to topic
-    #[allow(dead_code)]
-    pub(crate) async fn subscribe(
-        &mut self,
-        topic_name: &str,
-        subscription_options: SubscriptionOptions,
-    ) -> Result<u64> {
-        // the caller of this function should ensure that the topic is served by this broker
-
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-            let consumer_id = topic
-                .subscribe(topic_name, subscription_options.clone())
-                .await?;
-
-            // insert into consumer_index for efficient searches and retrievals
-            self.consumer_index.insert(
-                consumer_id,
-                (
-                    topic_name.to_string(),
-                    subscription_options.subscription_name.clone(),
-                ),
-            );
-
-            gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.to_string()).increment(1);
-
-            // create a metadata store entry for newly created subscription
-            // TODO!, don't overwrite if not neccessary
-            let sub_options = serde_json::to_value(&subscription_options)?;
-            self.resources
-                .topic
-                .create_subscription(
-                    &subscription_options.subscription_name,
-                    topic_name,
-                    sub_options,
-                )
-                .await?;
-
-            return Ok(consumer_id);
-        } else {
-            return Err(anyhow!("Unable to find the topic: {}", topic_name));
-        }
+    // Async version of message publishing using topic worker pool
+    pub async fn publish_message_async(
+        &self,
+        topic_name: String,
+        message: StreamMessage,
+    ) -> Result<()> {
+        // Route message through topic worker pool for async processing
+        self.topic_worker_pool
+            .publish_message_async(topic_name, message)
+            .await
     }
 
-    #[allow(dead_code)]
-    pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(&ack_msg.msg_id.topic_name) {
-            topic.ack_message(ack_msg).await?;
-        }
-        Ok(())
+    // Async version of subscription using topic worker pool
+    pub(crate) async fn subscribe_async(
+        &mut self,
+        topic_name: String,
+        subscription_options: SubscriptionOptions,
+    ) -> Result<u64> {
+        let consumer_id = self
+            .topic_worker_pool
+            .subscribe_async(topic_name.clone(), subscription_options.clone())
+            .await?;
+
+        // Update consumer index
+        let sub_name_clone = subscription_options.subscription_name.clone();
+        self.consumer_index
+            .insert(consumer_id, (topic_name.clone(), sub_name_clone));
+
+        // Increment metrics for number of consumers per topic
+        gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
+
+        // Create a metadata store entry for newly created subscription
+        // TODO: avoid overwriting when not necessary
+        let sub_options = serde_json::to_value(&subscription_options)?;
+        self.resources
+            .topic
+            .create_subscription(
+                &subscription_options.subscription_name,
+                &topic_name,
+                sub_options,
+            )
+            .await?;
+
+        Ok(consumer_id)
+    }
+
+    // Async version of message acknowledgment
+    pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
+        self.topic_worker_pool.ack_message_async(ack_msg).await
     }
 
     // unsubscribe subscription from topic
@@ -710,6 +671,12 @@ impl BrokerService {
             if let Some(value) = topic.check_subscription(subscription_name).await {
                 if value == false {
                     topic.unsubscribe(subscription_name).await;
+                    // Best-effort delete from metadata store
+                    let _ = self
+                        .resources
+                        .topic
+                        .delete_subscription(subscription_name, topic_name)
+                        .await;
                     return Ok(());
                 }
             }
@@ -757,13 +724,13 @@ impl BrokerService {
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
         let topic_count = self.topic_worker_pool.get_all_topics().len();
         info!("Shutting down BrokerService with {} topics", topic_count);
-        
+
         // Shutdown the topic worker pool
         Arc::get_mut(&mut self.topic_worker_pool)
             .ok_or_else(|| anyhow!("Failed to get mutable reference to topic worker pool"))?
             .shutdown()
             .await;
-        
+
         info!("BrokerService shutdown completed");
         Ok(())
     }

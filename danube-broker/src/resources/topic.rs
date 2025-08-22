@@ -131,6 +131,23 @@ impl TopicResources {
         Ok(())
     }
 
+    pub(crate) async fn delete_subscription(
+        &mut self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+        ]);
+
+        self.delete(&path).await?;
+
+        Ok(())
+    }
+
     pub(crate) fn get_schema(&self, topic_name: &str) -> Option<Schema> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
         let result = self.local_cache.get(&path);
