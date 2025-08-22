@@ -339,10 +339,31 @@ impl TopicWorkerPool {
     }
 
     /// Check if a topic exists in the correct worker (using consistent hashing)
-    #[allow(dead_code)]
     pub fn has_topic(&self, topic_name: &str) -> bool {
         let worker_id = self.router.route_topic(topic_name);
         self.workers[worker_id].has_topic(topic_name)
+    }
+
+    /// Get a topic from the appropriate worker
+    pub fn get_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
+        let worker_id = self.router.route_topic(topic_name);
+        self.workers[worker_id].topics.get(topic_name).map(|entry| entry.value().clone())
+    }
+
+    /// Get all topics currently managed by the worker pool
+    pub fn get_all_topics(&self) -> Vec<String> {
+        let mut all_topics = Vec::new();
+        for worker in &self.workers {
+            let topics: Vec<String> = worker.topics.iter().map(|entry| entry.key().clone()).collect();
+            all_topics.extend(topics);
+        }
+        all_topics
+    }
+
+    /// Check if any topic exists across all workers
+    pub fn contains_topic(&self, topic_name: &str) -> bool {
+        let worker_id = self.router.route_topic(topic_name);
+        self.workers[worker_id].topics.contains_key(topic_name)
     }
 
     /// Shutdown all workers

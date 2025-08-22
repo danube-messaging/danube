@@ -32,8 +32,6 @@ pub(crate) struct BrokerService {
     pub(crate) broker_id: u64,
     // to handle the metadata and configurations
     pub(crate) resources: Resources,
-    // lock-free concurrent map of topic_name to Topic
-    pub(crate) topics: DashMap<String, Arc<Topic>>,
     // message storage config
     pub(crate) storage_backend: TopicCache,
     // lock-free concurrent maps for indexing
@@ -49,7 +47,6 @@ impl BrokerService {
         BrokerService {
             broker_id,
             resources,
-            topics: DashMap::new(),
             storage_backend,
             producer_index: Arc::new(DashMap::new()),
             consumer_index: Arc::new(DashMap::new()),
@@ -88,7 +85,7 @@ impl BrokerService {
         }
 
         // check if topic is served by this broker
-        if self.topics.contains_key(topic_name) {
+        if self.topic_worker_pool.contains_topic(topic_name) {
             return Ok(true);
         }
 
@@ -143,32 +140,17 @@ impl BrokerService {
 
     // get all the topics currently served by the Broker
     pub(crate) fn get_topics(&self) -> Vec<String> {
-        self.topics.iter().map(|entry| entry.key().clone()).collect()
+        self.topic_worker_pool.get_all_topics()
     }
 
     #[allow(dead_code)]
     pub(crate) fn find_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
-        self.topics.get(topic_name).map(|entry| entry.value().clone())
+        self.topic_worker_pool.get_topic(topic_name)
     }
 
-    // Ensure topic is registered in the worker pool before delegating
-    fn ensure_topic_routed(&self, topic_name: &str) {
-        // Always re-register the topic to fix race conditions
-        if let Some(topic_arc) = self.topics.get(topic_name) {
-            info!("Ensuring topic {} is routed to worker pool", topic_name);
-            self
-                .topic_worker_pool
-                .add_topic_to_worker(topic_name.to_string(), topic_arc.value().clone());
-        } else {
-            warn!("Topic {} not found in broker topics map", topic_name);
-        }
-    }
 
     // Async version of message publishing using topic worker pool
     pub async fn publish_message_async(&self, topic_name: String, message: StreamMessage) -> Result<()> {
-        // Ensure routing exists in worker pool for this topic
-        self.ensure_topic_routed(&topic_name);
-
         // Route message through topic worker pool for async processing
         self.topic_worker_pool.publish_message_async(topic_name, message).await
     }
@@ -180,9 +162,6 @@ impl BrokerService {
         topic_name: String,
         subscription_options: SubscriptionOptions,
     ) -> Result<u64> {
-        // Ensure routing exists in worker pool for this topic
-        self.ensure_topic_routed(&topic_name);
-
         let consumer_id = self.topic_worker_pool
             .subscribe_async(topic_name.clone(), subscription_options.clone())
             .await?;
@@ -198,9 +177,6 @@ impl BrokerService {
 
     // Async version of message acknowledgment
     pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
-        // Ensure routing exists in worker pool for this topic
-        self.ensure_topic_routed(&ack_msg.msg_id.topic_name);
-
         self.topic_worker_pool.ack_message_async(ack_msg).await
     }
 
@@ -424,10 +400,7 @@ impl BrokerService {
         // Wrap topic in Arc for concurrent access
         let new_topic_arc = Arc::new(new_topic);
 
-        // Add topic to DashMap
-        self.topics.insert(topic_name.to_string(), new_topic_arc.clone());
-
-        // Add topic to worker pool
+        // Add topic to worker pool (single source of truth)
         self.topic_worker_pool.add_topic_to_worker(topic_name.to_string(), new_topic_arc);
 
         gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).increment(1);
@@ -438,7 +411,7 @@ impl BrokerService {
     // deletes the topic
     pub(crate) async fn delete_topic(&mut self, topic_name: &str) -> Result<Arc<Topic>> {
         // First check if topic exists
-        if !self.topics.contains_key(topic_name) {
+        if !self.topic_worker_pool.contains_topic(topic_name) {
             return Err(anyhow!(
                 "The topic {} does not exist on the broker {}",
                 topic_name,
@@ -446,9 +419,9 @@ impl BrokerService {
             ));
         }
 
-        // Remove from worker pool and topics map
-        self.topic_worker_pool.remove_topic_from_worker(topic_name);
-        let (_, topic) = self.topics.remove(topic_name).unwrap();
+        // Remove from worker pool (single source of truth)
+        let topic = self.topic_worker_pool.remove_topic_from_worker(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
         
         // Clean up indices - for now we'll skip the close() call since Arc<Topic> doesn't support it
         // TODO: Implement proper cleanup when we add interior mutability to Topic
@@ -465,7 +438,7 @@ impl BrokerService {
     // search for the broker socket address that serve this topic
     pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String)> {
         // check if it is served by the this broker
-        if self.topics.contains_key(topic_name) {
+        if self.topic_worker_pool.contains_topic(topic_name) {
             return Some((true, "".to_string()));
         }
 
@@ -532,7 +505,7 @@ impl BrokerService {
         producer_name: String,
     ) -> Option<u64> {
         // the topic is already checked
-        let topic = match self.topics.get(&topic_name) {
+        let topic = match self.topic_worker_pool.get_topic(&topic_name) {
             None => return None,
             Some(topic) => topic,
         };
@@ -557,11 +530,10 @@ impl BrokerService {
         producer_access_mode: i32,
         topic_name: &str,
     ) -> Result<u64> {
-        if let Some(topic_ref) = self.topics.get(topic_name) {
-            let topic = topic_ref.value();
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
             
             // Add producer to the topic's producers map using proper async interior mutability
-            topic.create_producer(producer_id, producer_name, producer_access_mode).await?;
+            let producer_config = topic.create_producer(producer_id, producer_name, producer_access_mode).await?;
 
             // insert into producer_index for efficient searches and retrievals
             self.producer_index
@@ -571,8 +543,7 @@ impl BrokerService {
             gauge!(TOPIC_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
 
             // create a metadata store entry for newly created producer
-            // Skip for now due to Arc<Topic> limitations
-            // self.resources.topic.create_producer(producer_id, topic_name, producer_config).await?;
+            self.resources.topic.create_producer(producer_id, topic_name, producer_config).await?;
         } else {
             return Err(anyhow!("Unable to find the topic: {}", topic_name));
         }
@@ -581,11 +552,11 @@ impl BrokerService {
     }
 
     // finding a Topic by Producer ID
-    pub(crate) fn find_topic_by_producer(&self, producer_id: u64) -> Option<dashmap::mapref::one::Ref<String, Arc<Topic>>> {
+    pub(crate) fn find_topic_by_producer(&self, producer_id: u64) -> Option<Arc<Topic>> {
         if let Some(topic_name_ref) = self.producer_index.get(&producer_id) {
             let topic_name = topic_name_ref.value().clone();
             drop(topic_name_ref);
-            self.topics.get(&topic_name)
+            self.topic_worker_pool.get_topic(&topic_name)
         } else {
             None
         }
@@ -600,7 +571,7 @@ impl BrokerService {
             let (topic_name, subscription_name) = consumer_ref.value().clone();
             drop(consumer_ref);
             
-            if let Some(topic) = self.topics.get(&topic_name) {
+            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
                 if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name) {
                     return subscription.get_consumer_rx(consumer_id);
                 }
@@ -615,7 +586,7 @@ impl BrokerService {
             let (topic_name, subscription_name) = consumer_ref.value().clone();
             drop(consumer_ref);
             
-            if let Some(topic) = self.topics.get(&topic_name) {
+            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
                 if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name) {
                     return subscription.get_consumer_info(consumer_id);
                 }
@@ -637,7 +608,7 @@ impl BrokerService {
         subscription_name: &str,
         topic_name: &str,
     ) -> Option<u64> {
-        let topic = self.topics.get(topic_name)?;
+        let topic = self.topic_worker_pool.get_topic(topic_name)?;
         topic.validate_consumer(subscription_name, consumer_name).await
     }
 
@@ -645,8 +616,8 @@ impl BrokerService {
     pub(crate) fn allow_subscription_creation(&self, topic_name: impl Into<String>) -> bool {
         // check the topic policies here
         let _topic = self
-            .topics
-            .get(&topic_name.into())
+            .topic_worker_pool
+            .get_topic(&topic_name.into())
             .expect("unable to find the topic");
 
         //TODO! once the policies Topic&Namespace Policies are in place we can verify if it is allowed
@@ -663,7 +634,7 @@ impl BrokerService {
     ) -> Result<u64> {
         // the caller of this function should ensure that the topic is served by this broker
 
-        if let Some(topic) = self.topics.get(topic_name) {
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
             let consumer_id = topic
                 .subscribe(topic_name, subscription_options.clone())
                 .await?;
@@ -699,7 +670,7 @@ impl BrokerService {
 
     #[allow(dead_code)]
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
-        if let Some(topic) = self.topics.get(&ack_msg.msg_id.topic_name) {
+        if let Some(topic) = self.topic_worker_pool.get_topic(&ack_msg.msg_id.topic_name) {
             topic.ack_message(ack_msg).await?;
         }
         Ok(())
@@ -713,7 +684,7 @@ impl BrokerService {
         topic_name: &str,
     ) -> Result<()> {
         // works if topic is local
-        if let Some(topic) = self.topics.get(topic_name) {
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
             if let Some(value) = topic.check_subscription(subscription_name).await {
                 if value == false {
                     topic.unsubscribe(subscription_name).await;
@@ -762,7 +733,8 @@ impl BrokerService {
     // Shutdown the broker service and all worker threads
     #[allow(dead_code)]
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
-        info!("Shutting down BrokerService with {} topics", self.topics.len());
+        let topic_count = self.topic_worker_pool.get_all_topics().len();
+        info!("Shutting down BrokerService with {} topics", topic_count);
         
         // Shutdown the topic worker pool
         Arc::get_mut(&mut self.topic_worker_pool)
