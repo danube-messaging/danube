@@ -158,7 +158,7 @@ impl BrokerService {
 
     // Async version of subscription using topic worker pool
     pub(crate) async fn subscribe_async(
-        &self,
+        &mut self,
         topic_name: String,
         subscription_options: SubscriptionOptions,
     ) -> Result<u64> {
@@ -167,10 +167,22 @@ impl BrokerService {
             .await?;
 
         // Update consumer index
+        let sub_name_clone = subscription_options.subscription_name.clone();
         self.consumer_index.insert(
             consumer_id,
-            (topic_name, subscription_options.subscription_name),
+            (topic_name.clone(), sub_name_clone),
         );
+
+        // Increment metrics for number of consumers per topic
+        gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
+
+        // Create a metadata store entry for newly created subscription
+        // TODO: avoid overwriting when not necessary
+        let sub_options = serde_json::to_value(&subscription_options)?;
+        self.resources
+            .topic
+            .create_subscription(&subscription_options.subscription_name, &topic_name, sub_options)
+            .await?;
 
         Ok(consumer_id)
     }
