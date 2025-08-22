@@ -49,8 +49,9 @@ impl ProducerService for DanubeServerImpl {
         //
         // should not throw an error here, even if the producer already exist,
         // as the server should handle producer reconnections and reuses gracefully
-        if let Some(id) =
-            service.check_if_producer_exist(req.topic_name.clone(), req.producer_name.clone())
+        if let Some(id) = service
+            .check_if_producer_exist(&req.topic_name, &req.producer_name)
+            .await
         {
             let response = ProducerResponse {
                 request_id: req.request_id,

@@ -510,20 +510,19 @@ impl BrokerService {
         None
     }
 
-    pub(crate) fn check_if_producer_exist(
+    pub(crate) async fn check_if_producer_exist(
         &self,
-        topic_name: String,
-        producer_name: String,
+        topic_name: &str,
+        producer_name: &str,
     ) -> Option<u64> {
-        // the topic is already checked
-        let topic = match self.topic_worker_pool.get_topic(&topic_name) {
-            None => return None,
-            Some(topic) => topic,
-        };
-        // This method needs to be async to access the Mutex<HashMap>
-        // For now, return None to avoid compilation errors
-        // TODO: Make this method async and properly check producers
-        return None;
+        let topic = self.topic_worker_pool.get_topic(topic_name)?;
+        let producers = topic.producers.lock().await;
+        for (_id, producer) in producers.iter() {
+            if producer.producer_name == producer_name {
+                return Some(producer.producer_id);
+            }
+        }
+        None
     }
 
     pub(crate) async fn health_producer(&mut self, producer_id: u64) -> bool {
