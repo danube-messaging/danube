@@ -11,6 +11,19 @@ use tokio::time::{sleep, timeout, Duration};
 #[path = "test_utils.rs"]
 mod test_utils;
 
+/// What this test validates
+///
+/// - Scenario: a reliable producer sends messages to a Shared subscription. The first consumer (c1)
+///   intentionally skips acknowledgments for some messages and then disconnects. A second consumer (c2)
+///   joins the same subscription.
+/// - Expectation: the broker should redeliver the unacknowledged messages to another available
+///   consumer (here, c2). We detect this by observing that c2 receives some of the payloads that c1
+///   previously skipped.
+///
+/// Why this matters
+/// - Reliable dispatch must guarantee at-least-once delivery. If a consumer fails or does not ack,
+///   messages must be redelivered to ensure durability and progress for Shared subscriptions.
+///
 // NOTE: This test depends on broker-side redelivery triggers (e.g., nack or ack-timeout)
 // which are not configurable via the client at the moment. We start with one consumer,
 // skip acks for some messages, then drop it and start another. On some setups this may

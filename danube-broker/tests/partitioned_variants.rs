@@ -11,6 +11,22 @@ use tokio::time::{sleep, timeout, Duration};
 #[path = "test_utils.rs"]
 mod test_utils;
 
+/// What this test validates
+///
+/// - Scenario: a producer writes to a partitioned topic (3 partitions). Three consumers share the
+///   SAME subscription with `SubType::Shared` (queue semantics).
+/// - Expectations:
+///   - Partition coverage: across all deliveries we should see messages from each partition name
+///     (e.g., `{topic}-part-0/1/2`).
+///   - Distribution: messages are split across the three consumers near-evenly, even though they
+///     originate from different partitions.
+/// - Example: with 60 messages and 3 consumers, each should receive roughly 20 messages overall,
+///   within a small tolerance due to per-partition scheduling.
+///
+/// Why this matters
+/// - In Danube, a single logical consumer merges streams from all partitions. Under Shared
+///   subscriptions, the broker distributes messages across the group to scale processing.
+///
 #[tokio::test]
 async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -115,6 +131,19 @@ async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Resul
     Ok(())
 }
 
+/// What this test validates
+///
+/// - Scenario: a producer writes to a partitioned topic (3 partitions). Three consumers each use a
+///   UNIQUE `SubType::Exclusive` subscription (fan-out/broadcast semantics).
+/// - Expectations:
+///   - Every consumer receives ALL messages (no sharing across consumers).
+///   - Partition coverage observed across the received set.
+/// - Example: if 45 messages are produced, each of the 3 consumers should receive 45.
+///
+/// Why this matters
+/// - Unique Exclusive subscriptions model independent readers of the same topic. Fan-out must
+///   preserve complete delivery to each subscriber regardless of partitioning.
+///
 #[tokio::test]
 async fn partitioned_pubsub_fanout_exclusive_full_receipt() -> Result<()> {
     let client = test_utils::setup_client().await?;

@@ -60,11 +60,29 @@ async fn run_basic_subscription(topic_prefix: &str, sub_type: SubType) -> Result
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: one producer and one consumer using a `SubType::Shared` subscription name.
+/// - Expectation: the consumer receives the published message and acks it successfully.
+/// - Example: sending "Hello Danube" should be received as-is by the consumer.
+///
+/// Why this matters
+/// - Baseline sanity for Shared subscription wiring (auth, subscribe, receive, ack) without
+///   distribution concerns.
 async fn basic_subscription_shared() -> Result<()> {
     run_basic_subscription("/default/sub_basic_shared", SubType::Shared).await
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: one producer and one consumer using a `SubType::Exclusive` subscription name.
+/// - Expectation: the consumer receives the published message and acks it successfully.
+/// - Example: sending "Hello Danube" should be received as-is by the consumer.
+///
+/// Why this matters
+/// - Baseline sanity for Exclusive subscription wiring; other consumers would be blocked from the
+///   same subscription, but this single-consumer path ensures the flow works end-to-end.
 async fn basic_subscription_exclusive() -> Result<()> {
     run_basic_subscription("/default/sub_basic_exclusive", SubType::Exclusive).await
 }

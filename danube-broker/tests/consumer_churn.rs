@@ -12,6 +12,20 @@ use tokio::time::{sleep, timeout, Duration};
 mod test_utils;
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: queue semantics with `SubType::Shared`. We start with 2 consumers on the same
+///   subscription, publish some messages, then a 3rd consumer joins mid-stream. We continue
+///   publishing. All consumers ack what they receive.
+/// - Expectations:
+///   - Every message is delivered exactly once overall (no duplicates across consumers).
+///   - After the join, messages are distributed across 3 consumers (soft check: everyone gets some).
+/// - Example: publish 45 messages in three tranches; verify total unique payloads seen is 45 and
+///   each consumer received a non-zero count.
+///
+/// Why this matters
+/// - Validates that Shared subscriptions handle consumer churn (joins) without duplication or loss
+///   and continue distributing load across the expanded group.
 async fn churn_shared_queue_join_leave() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/churn_shared");
@@ -65,18 +79,6 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
 
     // Publish some messages, then add a consumer, then remove one
     let total = 45; // divisible by 3 (after join we will have 3 consumers)
-
-    // Start background publisher
-    let topic_clone = topic.clone();
-    tokio::spawn(async move {
-        // slow-ish publish to allow churn actions to happen during stream
-        for i in 0..total {
-            let body = format!("m{}", i);
-            // Create a lightweight client+producer each time would be heavy; we reuse producer in outer scope
-            // but we can't move it into this task; so do nothing here
-            // publisher handled in main task below
-        }
-    });
 
     // Actually publish first tranche (15), then add third consumer, then publish next tranche (15), remove one, then final tranche (15)
     for i in 0..15 {
@@ -153,6 +155,21 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: pub-sub fan-out with `SubType::Exclusive` + unique subscription per consumer.
+///   We start with 2 subscribers, publish some messages, then a 3rd subscriber joins and we publish
+///   more. All ack their messages.
+/// - Expectations:
+///   - Each unique subscription independently receives a stream of messages (fan-out behavior).
+///   - Soft expectation: each consumer receives messages; exact boundaries around join timing may vary
+///     without seeking, so we do not over-constrain delivery before/after join.
+/// - Example: publish 45 messages in tranches around the join and verify all consumers have received
+///   messages from the topic.
+///
+/// Why this matters
+/// - Ensures Exclusive unique subscriptions behave as independent readers and that churn (joins)
+///   does not disrupt ongoing delivery to existing subscribers.
 async fn churn_exclusive_fanout_join_leave() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/churn_exclusive");
@@ -242,19 +259,21 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         let _ = producer.send(format!("m{}", i).into_bytes(), None).await?;
     }
 
-    // Collect until each consumer got all messages (fan-out)
+    // Collect receipts with timeout; require early subscribers to get all, late joiner to get some
     let total = 45;
     let recv_future = async move {
         let mut per_consumer: HashMap<String, HashSet<String>> = HashMap::new();
-        let need = total;
-        let mut done = 0usize;
-        while done < 3 {
+        // Keep reading until the two initial consumers have all messages; late joiner just needs >0
+        loop {
             if let Some((cname, payload)) = rx.recv().await {
                 let entry = per_consumer.entry(cname.clone()).or_default();
                 entry.insert(payload);
-                if entry.len() == need {
-                    done += 1;
-                }
+                let c0 = per_consumer.get("ce-cons-0").map(|s| s.len()).unwrap_or(0);
+                let c1 = per_consumer.get("ce-cons-1").map(|s| s.len()).unwrap_or(0);
+                let c2 = per_consumer.get("ce-cons-2").map(|s| s.len()).unwrap_or(0);
+                if c0 == total && c1 == total && c2 > 0 { break; }
+            } else {
+                break;
             }
         }
         per_consumer
@@ -264,12 +283,13 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         .await
         .expect("timeout receiving churn exclusive messages");
 
-    // All consumers should receive all messages (fan-out), including the one that joined later should only have messages from after join ideally.
-    // However, without seeking we assert minimum: every consumer received all messages published after they subscribed or simply that all have all messages if broker delivers from start.
-    for cname in ["ce-cons-0", "ce-cons-1", "ce-cons-2"] {
-        let got = per_consumer.get(cname).cloned().unwrap_or_default();
-        assert!(got.len() > 0, "{} should receive messages", cname);
-    }
+    // Early subscribers should receive all messages (fan-out); late joiner should receive some
+    let got0 = per_consumer.get("ce-cons-0").cloned().unwrap_or_default();
+    let got1 = per_consumer.get("ce-cons-1").cloned().unwrap_or_default();
+    let got2 = per_consumer.get("ce-cons-2").cloned().unwrap_or_default();
+    assert_eq!(got0.len(), total, "ce-cons-0 should receive all messages");
+    assert_eq!(got1.len(), total, "ce-cons-1 should receive all messages");
+    assert!(got2.len() > 0, "ce-cons-2 should receive some messages after joining");
 
     Ok(())
 }

@@ -67,11 +67,30 @@ async fn run_reliable_basic(topic_prefix: &str, sub_type: SubType) -> Result<()>
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: a reliable producer sends a fixed payload repeatedly; a single Exclusive consumer
+///   receives and acks every message.
+/// - Expectation: consumer receives all 20 messages with exact payload integrity.
+/// - Example: all received payloads must match `tests/test.blob` bytes.
+///
+/// Why this matters
+/// - Ensures the reliable dispatch path works for the simplest Exclusive case: no drops, no corruption,
+///   and acknowledgments succeed end-to-end.
 async fn reliable_basic_exclusive() -> Result<()> {
     run_reliable_basic("/default/reliable_basic_exclusive", SubType::Exclusive).await
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: a reliable producer sends a fixed payload repeatedly; a single Shared consumer
+///   receives and acks every message (no load sharing since only one consumer).
+/// - Expectation: consumer receives all 20 messages with exact payload integrity.
+///
+/// Why this matters
+/// - Confirms reliable dispatch behavior is consistent under Shared subscription type as well,
+///   establishing parity with Exclusive for the single-consumer baseline.
 async fn reliable_basic_shared() -> Result<()> {
     run_reliable_basic("/default/reliable_basic_shared", SubType::Shared).await
 }

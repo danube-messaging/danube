@@ -11,6 +11,18 @@ use tokio::time::{sleep, timeout, Duration};
 #[path = "test_utils.rs"]
 mod test_utils;
 
+/// What this test validates
+///
+/// - Scenario: one producer sends N messages to a topic; three consumers subscribe with the SAME
+///   subscription name and `SubType::Shared` (queue semantics).
+/// - Expectation: messages are distributed across consumers (approximately round-robin). Each message
+///   should be delivered to exactly one consumer. We assert near-equal counts per consumer.
+/// - Example: with 36 messages and 3 consumers, each consumer should receive ~12 messages.
+///
+/// Why this matters
+/// - Shared subscriptions implement queue semantics (work is split among consumers). This ensures
+///   horizontal scaling where adding consumers increases parallelism without duplicating deliveries.
+///
 #[tokio::test]
 async fn queue_shared_round_robin_distribution() -> Result<()> {
     let client = test_utils::setup_client().await?;

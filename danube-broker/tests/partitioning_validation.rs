@@ -39,6 +39,19 @@ async fn setup_client() -> Result<DanubeClient> {
 // Admin not needed for this test variant
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: verify topic name semantics for non-partitioned topics and partition coverage for
+///   partitioned topics (3 partitions).
+/// - Expectations:
+///   - For a non-partitioned topic, `msg_id.topic_name` matches the base topic (no `-part-` suffix).
+///   - For a partitioned topic, received messages include all partition names `{topic}-part-0..2`.
+/// - Example: produce a couple of messages to the partitioned topic and observe that the set of
+///   `msg_id.topic_name` values spans all partitions.
+///
+/// Why this matters
+/// - Confirms the broker/client surface correct topic identifiers in message IDs and that partitioned
+///   producers dispatch across all partitions so consumers can observe coverage.
 async fn partitioning_validation() -> Result<()> {
     let danube_client = setup_client().await?;
 

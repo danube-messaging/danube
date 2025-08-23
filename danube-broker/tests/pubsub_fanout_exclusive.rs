@@ -11,6 +11,18 @@ use tokio::time::{sleep, timeout, Duration};
 #[path = "test_utils.rs"]
 mod test_utils;
 
+/// What this test validates
+///
+/// - Scenario: one producer sends N messages; three consumers subscribe with UNIQUE subscription
+///   names and `SubType::Exclusive` (classic pub-sub fan-out).
+/// - Expectation: every consumer receives ALL messages (no load sharing), because each unique
+///   subscription is an independent stream.
+/// - Example: with 24 messages and 3 unique Exclusive subscriptions, each consumer should receive 24.
+///
+/// Why this matters
+/// - Pub-sub fan-out is the core broadcast primitive: adding subscribers should not reduce what
+///   the others receive. This test ensures no message is dropped or shared between unique subscriptions.
+///
 #[tokio::test]
 async fn pubsub_fanout_exclusive_unique_subscriptions() -> Result<()> {
     let client = test_utils::setup_client().await?;

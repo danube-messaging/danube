@@ -80,11 +80,32 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: a single consumer with `SubType::Exclusive` reads from a partitioned topic (3 parts).
+/// - Expectations:
+///   - The consumer receives all produced messages.
+///   - Partition coverage across the received set includes all `{topic}-part-0..2`.
+/// - Example: produce 3 messages; consumer should receive all 3 and we should observe all partitions
+///   among `msg_id.topic_name` over time.
+///
+/// Why this matters
+/// - Confirms that a single consumer transparently merges streams from all partitions in Exclusive mode.
 async fn partitioned_basic_exclusive() -> Result<()> {
     run_partitioned_basic("/default/part_basic_excl", SubType::Exclusive, 3).await
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: a single consumer with `SubType::Shared` reads from a partitioned topic (3 parts).
+/// - Expectations:
+///   - The consumer receives all produced messages (no load sharing because there's only one consumer).
+///   - Partition coverage across the received set includes all `{topic}-part-0..2`.
+///
+/// Why this matters
+/// - Confirms that Shared subscription mode also merges all partitions for a single consumer and that
+///   partitioning does not affect the ability to receive the complete stream.
 async fn partitioned_basic_shared() -> Result<()> {
     run_partitioned_basic("/default/part_basic_shared", SubType::Shared, 3).await
 }
