@@ -13,9 +13,9 @@ use crate::{
     message::AckMessage,
     policies::Policies,
     producer::Producer,
+    resources::TopicResources,
     schema::Schema,
     subscription::{Subscription, SubscriptionOptions},
-    resources::TopicResources,
 };
 
 pub(crate) static SYSTEM_TOPIC: &str = "/system/_events_topic";

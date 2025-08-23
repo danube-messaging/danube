@@ -7,7 +7,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{message::AckMessage, subscription::SubscriptionOptions, topic::Topic};
 
@@ -26,11 +26,6 @@ pub enum TopicWorkerMessage {
     },
     AckMessage {
         ack_msg: AckMessage,
-        response_tx: flume::Sender<Result<()>>,
-    },
-    #[allow(dead_code)]
-    CreateTopic {
-        topic_name: String,
         response_tx: flume::Sender<Result<()>>,
     },
     Shutdown,
@@ -103,16 +98,6 @@ impl TopicWorker {
                         }
                         backoff.reset();
                     }
-                    Ok(TopicWorkerMessage::CreateTopic {
-                        topic_name,
-                        response_tx,
-                    }) => {
-                        let result = Self::handle_create_topic(&topics, &topic_name).await;
-                        if let Err(e) = response_tx.send_async(result).await {
-                            error!("Failed to send create topic response: {}", e);
-                        }
-                        backoff.reset();
-                    }
                     Ok(TopicWorkerMessage::Shutdown) => {
                         info!("Topic worker {} shutting down", worker_id);
                         break;
@@ -176,15 +161,7 @@ impl TopicWorker {
         }
     }
 
-    async fn handle_create_topic(
-        _topics: &Arc<DashMap<String, Arc<Topic>>>,
-        topic_name: &str,
-    ) -> Result<()> {
-        // This is a placeholder - in real implementation, you'd need to pass
-        // the necessary parameters to create a topic
-        debug!("Create topic request for {} (placeholder)", topic_name);
-        Ok(())
-    }
+    
 
     pub fn add_topic(&self, topic_name: String, topic: Arc<Topic>) {
         info!("Worker {} adding topic: {}", self.worker_id, topic_name);

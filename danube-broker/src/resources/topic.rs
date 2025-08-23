@@ -93,7 +93,6 @@ impl TopicResources {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn create_producer(
         &mut self,
         producer_id: u64,
@@ -112,7 +111,6 @@ impl TopicResources {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn create_subscription(
         &mut self,
         subscription_name: &str,
