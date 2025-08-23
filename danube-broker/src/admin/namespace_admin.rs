@@ -75,7 +75,7 @@ impl NamespaceAdmin for DanubeAdminImpl {
         trace!("Admin: create a new namespace");
 
         let req = request.into_inner();
-        let mut service = self.broker_service.lock().await;
+        let service = self.broker_service.as_ref();
 
         let success = match service.create_namespace_if_absent(&req.name).await {
             Ok(()) => true,
@@ -100,7 +100,7 @@ impl NamespaceAdmin for DanubeAdminImpl {
         trace!("Admin: delete the namespace");
 
         let req = request.into_inner();
-        let mut service = self.broker_service.lock().await;
+        let service = self.broker_service.as_ref();
 
         let success = match service.delete_namespace(&req.name).await {
             Ok(()) => true,

@@ -13,6 +13,7 @@ use crate::{
     message::AckMessage,
     policies::Policies,
     producer::Producer,
+    resources::TopicResources,
     schema::Schema,
     subscription::{Subscription, SubscriptionOptions},
 };
@@ -37,10 +38,12 @@ pub(crate) struct Topic {
     // subscription_name -> Subscription
     pub(crate) subscriptions: Mutex<HashMap<String, Subscription>>,
     // the producers currently connected to this topic, producer_id -> Producer
-    pub(crate) producers: HashMap<u64, Producer>,
+    pub(crate) producers: Mutex<HashMap<u64, Producer>>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
     notifiers: Mutex<Vec<Arc<Notify>>>,
+    // handle to metadata topic resources for cleanup operations
+    resources_topic: Option<TopicResources>,
 }
 
 impl Topic {
@@ -48,6 +51,7 @@ impl Topic {
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
         storage_backend: TopicCache,
+        resources_topic: Option<TopicResources>,
     ) -> Self {
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
@@ -61,21 +65,24 @@ impl Topic {
             schema: None,
             topic_policies: None,
             subscriptions: Mutex::new(HashMap::new()),
-            producers: HashMap::new(),
+            producers: Mutex::new(HashMap::new()),
             dispatch_strategy,
             notifiers: Mutex::new(Vec::new()),
+            resources_topic,
         }
     }
 
     #[allow(unused_assignments)]
-    pub(crate) fn create_producer(
-        &mut self,
+    pub(crate) async fn create_producer(
+        &self,
         producer_id: u64,
         producer_name: &str,
         producer_access_mode: i32,
     ) -> Result<serde_json::Value> {
         let mut producer_config = serde_json::Value::String(String::new());
-        match self.producers.entry(producer_id) {
+        let mut producers = self.producers.lock().await;
+
+        match producers.entry(producer_id) {
             Entry::Vacant(entry) => {
                 let new_producer = Producer::new(
                     producer_id,
@@ -99,14 +106,17 @@ impl Topic {
     }
 
     // Close this topic - disconnect all producers and subscriptions associated with this topic
-    pub(crate) async fn close(&mut self) -> Result<(Vec<u64>, Vec<u64>)> {
+    pub(crate) async fn close(&self) -> Result<(Vec<u64>, Vec<u64>)> {
         let mut disconnected_producers = Vec::new();
         let mut disconnected_consumers = Vec::new();
 
         // Disconnect all the topic producers
-        for (_, producer) in self.producers.iter_mut() {
-            let producer_id = producer.disconnect();
-            disconnected_producers.push(producer_id);
+        {
+            let mut producers = self.producers.lock().await;
+            for (_, producer) in producers.iter_mut() {
+                let producer_id = producer.disconnect();
+                disconnected_producers.push(producer_id);
+            }
         }
 
         // Disconnect all the topic subscriptions
@@ -118,72 +128,89 @@ impl Topic {
         Ok((disconnected_producers, disconnected_consumers))
     }
 
-    // Publishes the message to the topic, and send to active consumers
-    pub(crate) async fn publish_message(&self, stream_message: StreamMessage) -> Result<()> {
-        let producer = if let Some(top) = self.producers.get(&stream_message.msg_id.producer_id) {
-            top
-        } else {
-            return Err(anyhow!(
-                "the producer with id {} is not attached to topic name: {}",
-                &stream_message.msg_id.producer_id,
-                self.topic_name
-            ));
-        };
-
-        //TODO! this is doing nothing for now, and may not need to be async
-        match producer
-            .publish_message(stream_message.msg_id.producer_id, &stream_message.payload)
-            .await
+    // Asynchronous version of publish_message for better performance
+    pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
+        // Validate producer without blocking
+        let producer_id = stream_message.msg_id.producer_id;
         {
-            Ok(_) => {
-                counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => stream_message.msg_id.producer_id.to_string()).increment(1);
-                counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => stream_message.msg_id.producer_id.to_string()).increment(stream_message.payload.len() as u64);
-            }
-            Err(err) => {
-                return Err(anyhow!("the Producer checks have failed: {}", err));
+            let producers = self.producers.lock().await;
+            if !producers.contains_key(&producer_id) {
+                return Err(anyhow!(
+                    "the producer with id {} is not attached to topic name: {}",
+                    producer_id,
+                    self.topic_name
+                ));
             }
         }
 
+        // Update metrics
+        counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(1);
+        counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(stream_message.payload.len() as u64);
+
+        // Process message based on dispatch strategy
         match &self.dispatch_strategy {
             DispatchStrategy::NonReliable => {
-                // Collect subscriptions that need to be unsubscribed, if contain no active consumers
-                let subscriptions_to_remove: Vec<String> = {
-                    let subscriptions = self.subscriptions.lock().await;
-                    let mut to_remove = Vec::new();
-
-                    for (_name, subscription) in subscriptions.iter() {
-                        let duplicate_message = stream_message.clone();
-                        if let Err(err) = subscription
-                            .send_message_to_dispatcher(duplicate_message)
-                            .await
-                        {
-                            info!(
-                                "The subscription {}, has no active consumers, got error: {} ",
-                                subscription.subscription_name, err
-                            );
-                            to_remove.push(subscription.subscription_name.clone());
-                        }
-                    }
-
-                    to_remove
-                };
-
-                for subscription_name in subscriptions_to_remove {
-                    self.unsubscribe(&subscription_name).await;
-
-                    //TODO! delete the subscription from the metadata store
-                }
+                self.dispatch_to_subscriptions_async(stream_message).await
             }
             DispatchStrategy::Reliable(reliable_dispatch) => {
+                // Reliable: persist first, notify only on success
                 reliable_dispatch.store_message(stream_message).await?;
-                let mut notifier_guard = self.notifiers.lock().await;
-                for notifier in notifier_guard.iter_mut() {
+
+                let notifier_guard = self.notifiers.lock().await;
+                for notifier in notifier_guard.iter() {
                     notifier.notify_one();
                 }
+                Ok(())
             }
+        }
+    }
+
+    // Helper method for async subscription dispatch
+    async fn dispatch_to_subscriptions_async(&self, stream_message: StreamMessage) -> Result<()> {
+        // For now, we'll use a simpler approach without cloning subscriptions
+        // TODO: Implement proper concurrent dispatch with Arc<Subscription> or interior mutability
+        let subscription_names: Vec<String> = {
+            let subscriptions = self.subscriptions.lock().await;
+            subscriptions.keys().cloned().collect()
         };
 
+        // For now, dispatch synchronously to avoid Arc<Subscription> issues
+        // TODO: Implement proper async concurrent dispatch
+        let mut subscriptions_to_remove = Vec::new();
+
+        for subscription_name in &subscription_names {
+            let subscriptions = self.subscriptions.lock().await;
+            if let Some(subscription) = subscriptions.get(subscription_name) {
+                let result = subscription
+                    .send_message_to_dispatcher(stream_message.clone())
+                    .await;
+                if let Err(err) = result {
+                    info!(
+                        "The subscription {}, has no active consumers, got error: {} ",
+                        subscription_name, err
+                    );
+                    subscriptions_to_remove.push(subscription_name.clone());
+                }
+            }
+        }
+
+        // Clean up failed subscriptions
+        for subscription_name in subscriptions_to_remove {
+            self.unsubscribe(&subscription_name).await;
+            // Best-effort delete from metadata store
+            self.delete_subscription_metadata(&subscription_name).await;
+        }
+
         Ok(())
+    }
+
+    // Best-effort deletion of subscription from metadata store
+    async fn delete_subscription_metadata(&self, subscription_name: &str) {
+        if let Some(mut topic_res) = self.resources_topic.clone() {
+            let _ = topic_res
+                .delete_subscription(subscription_name, &self.topic_name)
+                .await;
+        }
     }
 
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
@@ -195,8 +222,9 @@ impl Topic {
         Ok(())
     }
 
-    pub(crate) fn get_producer_status(&self, producer_id: u64) -> bool {
-        if let Some(producer) = self.producers.get(&producer_id) {
+    pub(crate) async fn get_producer_status(&self, producer_id: u64) -> bool {
+        let producers = self.producers.lock().await;
+        if let Some(producer) = producers.get(&producer_id) {
             if producer.status == true {
                 return true;
             }

@@ -1,3 +1,13 @@
+//! # Reliable Dispatch Exclusive Subscription Tests
+//! 
+//! This test file validates reliable message dispatch with exclusive subscriptions in Danube.
+//! 
+//! ## Tests:
+//! - `reliable_dispatch_exclusive_subscription`: Tests reliable message dispatch functionality
+//!   with exclusive subscriptions, ensuring messages are persisted and properly delivered
+//!   even in failure scenarios. Validates message persistence, recovery, and acknowledgment
+//!   in a reliable exclusive subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 

@@ -1,3 +1,12 @@
+//! # Partitioned Exclusive Subscription Tests
+//! 
+//! This test file validates exclusive subscription functionality on partitioned topics in Danube.
+//! 
+//! ## Tests:
+//! - `partitioned_exclusive_subscription`: Tests exclusive subscription behavior on a partitioned
+//!   topic, ensuring that only one consumer can be active on each partition and that messages
+//!   are properly delivered and acknowledged in a partitioned exclusive subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 

@@ -41,6 +41,7 @@ impl Producer {
         }
     }
     // publish message to topic
+    #[allow(dead_code)]
     pub(crate) async fn publish_message(
         &self,
         _producer_id: u64,

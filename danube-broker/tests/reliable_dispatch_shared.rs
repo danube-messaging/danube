@@ -1,3 +1,13 @@
+//! # Reliable Dispatch Shared Subscription Tests
+//! 
+//! This test file validates reliable message dispatch with shared subscriptions in Danube.
+//! 
+//! ## Tests:
+//! - `reliable_dispatch_shared_subscription`: Tests reliable message dispatch functionality
+//!   with shared subscriptions, ensuring messages are persisted and properly delivered
+//!   to multiple consumers even in failure scenarios. Validates message persistence, 
+//!   recovery, and acknowledgment in a reliable shared subscription model.
+
 extern crate danube_client;
 extern crate futures_util;
 

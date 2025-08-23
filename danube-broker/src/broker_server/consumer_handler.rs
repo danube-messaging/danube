@@ -30,8 +30,7 @@ impl ConsumerService for DanubeServerImpl {
 
         // TODO! check if the subscription is authorized to consume from the topic (isTopicOperationAllowed)
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         // the client is allowed to create the subscription only if the topic is served by this broker
         match service.get_topic(&req.topic_name, None, None, false).await {
@@ -77,7 +76,7 @@ impl ConsumerService for DanubeServerImpl {
         let sub_name = subscription_options.subscription_name.clone();
 
         let consumer_id = service
-            .subscribe(&req.topic_name, subscription_options)
+            .subscribe_async(req.topic_name.clone(), subscription_options)
             .await
             .map_err(|err| {
                 Status::permission_denied(format!(
@@ -109,12 +108,11 @@ impl ConsumerService for DanubeServerImpl {
         let consumer_id = request.into_inner().consumer_id;
 
         // Create a new mpsc channel to stream messages to the client via gRPC
-        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Buffer size of 4, adjust as needed
+        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Small buffer to trigger send failures quickly
 
         info!("Consumer {} is ready to receive messages", consumer_id);
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         let rx = if let Some(consumer) = service.find_consumer_rx(consumer_id).await {
             consumer
@@ -127,6 +125,7 @@ impl ConsumerService for DanubeServerImpl {
         };
 
         let rx_cloned = Arc::clone(&rx);
+        let service_for_disconnect = self.service.clone();
 
         tokio::spawn(async move {
             let mut rx_guard = rx_cloned.lock().await;
@@ -134,7 +133,18 @@ impl ConsumerService for DanubeServerImpl {
             while let Some(stream_message) = rx_guard.recv().await {
                 if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
                     // Error handling for when the client disconnects
-                    warn!("Client disconnected for consumer_id: {}", consumer_id);
+                    warn!(
+                        "Client disconnected for consumer_id: {}, marking inactive",
+                        consumer_id
+                    );
+
+                    // Mark the consumer as inactive on disconnect
+                    if let Some(consumer_info) = service_for_disconnect
+                        .find_consumer_by_id(consumer_id)
+                        .await
+                    {
+                        consumer_info.set_status_false().await;
+                    }
                     break;
                 }
             }
@@ -160,10 +170,9 @@ impl ConsumerService for DanubeServerImpl {
 
         trace!("Received ack request for message_id: {}", ack.msg_id);
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
-        match service.ack_message(ack).await {
+        match service.ack_message_async(ack).await {
             Ok(()) => {
                 trace!("Message with id: {} was acknowledged", msg_id);
                 Ok(tonic::Response::new(AckResponse { request_id }))

@@ -26,6 +26,7 @@ use crate::{
 pub(crate) struct Subscription {
     pub(crate) subscription_name: String,
     pub(crate) subscription_type: i32,
+    #[allow(dead_code)]
     pub(crate) topic_name: String,
     pub(crate) dispatcher: Option<Dispatcher>,
     pub(crate) consumers: HashMap<u64, ConsumerInfo>,

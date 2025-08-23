@@ -1,3 +1,4 @@
+use crate::utils::get_random_id;
 use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
 use danube_core::proto::{
     producer_service_server::ProducerService, MessageResponse, ProducerRequest, ProducerResponse,
@@ -6,7 +7,7 @@ use danube_core::proto::{
 
 use danube_core::message::StreamMessage;
 use metrics::histogram;
-use std::collections::hash_map::Entry;
+use dashmap::mapref::entry::Entry;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, Level};
@@ -26,8 +27,7 @@ impl ProducerService for DanubeServerImpl {
             req.producer_name, req.topic_name
         );
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         match service
             .get_topic(&req.topic_name, req.dispatch_strategy, req.schema, true)
@@ -48,8 +48,9 @@ impl ProducerService for DanubeServerImpl {
         //
         // should not throw an error here, even if the producer already exist,
         // as the server should handle producer reconnections and reuses gracefully
-        if let Some(id) =
-            service.check_if_producer_exist(req.topic_name.clone(), req.producer_name.clone())
+        if let Some(id) = service
+            .check_if_producer_exist(&req.topic_name, &req.producer_name)
+            .await
         {
             let response = ProducerResponse {
                 request_id: req.request_id,
@@ -63,8 +64,9 @@ impl ProducerService for DanubeServerImpl {
         let new_producer_id = service
             .create_new_producer(
                 &req.producer_name,
-                &req.topic_name,
+                get_random_id(),
                 req.producer_access_mode,
+                &req.topic_name,
             )
             .await
             .map_err(|err| {
@@ -102,8 +104,7 @@ impl ProducerService for DanubeServerImpl {
         // Get the start time before sending the message
         let start_time = Instant::now();
 
-        let arc_service = self.service.clone();
-        let mut service = arc_service.lock().await;
+        let service = self.service.as_ref();
 
         // check if the producer exist
         match service
@@ -120,19 +121,12 @@ impl ProducerService for DanubeServerImpl {
             Entry::Occupied(_) => (),
         };
 
-        let topic = service
-            .find_topic_by_producer(stream_message.msg_id.producer_id)
-            .ok_or_else(|| {
-                Status::internal(format!(
-                    "Unable to get the topic for the producer: {}",
-                    stream_message.msg_id.producer_id
-                ))
-            })?;
-
         let req_id = stream_message.request_id;
         let producer_id = stream_message.msg_id.producer_id;
+        let topic_name = stream_message.msg_id.topic_name.clone();
 
-        topic.publish_message(stream_message).await.map_err(|err| {
+        // Use async message publishing through the performance-enhanced pipeline
+        service.publish_message_async(topic_name, stream_message).await.map_err(|err| {
             Status::permission_denied(format!("Unable to publish the message: {}", err))
         })?;
 

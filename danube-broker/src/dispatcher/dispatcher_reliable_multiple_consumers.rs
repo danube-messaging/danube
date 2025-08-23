@@ -133,7 +133,6 @@ impl DispatcherReliableMultipleConsumers {
     }
 
     /// Remove a consumer by its ID
-    #[allow(dead_code)]
     pub(crate) async fn remove_consumer(&self, consumer_id: u64) -> Result<()> {
         self.control_tx
             .send(DispatcherCommand::RemoveConsumer(consumer_id))

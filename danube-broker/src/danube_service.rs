@@ -16,7 +16,7 @@ use danube_client::DanubeClient;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent};
 use futures::StreamExt;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+ 
 use tokio::time::{self, sleep, Duration};
 use tracing::{error, info, trace, warn};
 
@@ -71,7 +71,7 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct DanubeService {
     broker_id: u64,
-    broker: Arc<Mutex<BrokerService>>,
+    broker: Arc<BrokerService>,
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
     local_cache: LocalCache,
@@ -85,7 +85,7 @@ pub(crate) struct DanubeService {
 impl DanubeService {
     pub(crate) fn new(
         broker_id: u64,
-        broker: Arc<Mutex<BrokerService>>,
+        broker: Arc<BrokerService>,
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
         local_cache: LocalCache,
@@ -312,7 +312,7 @@ impl DanubeService {
     async fn watch_events_for_broker(
         &self,
         meta_store: MetadataStorage,
-        broker_service: Arc<Mutex<BrokerService>>,
+        broker_service: Arc<BrokerService>,
     ) {
         // Create watch stream for broker-specific events
         let topic_assignment_path = join_path(&[BASE_BROKER_PATH, &self.broker_id.to_string()]);
@@ -345,7 +345,6 @@ impl DanubeService {
                                             let topic_name = format!("/{}/{}", parts[4], parts[5]);
                                             // wait a sec so the LocalCache receive the updates from the persistent metadata
                                             sleep(Duration::from_secs(2)).await;
-                                            let mut broker_service = broker_service.lock().await;
                                             match broker_service
                                                 .create_topic_locally(&topic_name)
                                                 .await
@@ -380,7 +379,6 @@ impl DanubeService {
                                             // Format: namespace/topic
                                             let topic_name = format!("{}/{}", parts[4], parts[5]);
                                             // wait a sec so the LocalCache receive the updates from the persistent metadata
-                                            let mut broker_service = broker_service.lock().await;
                                             match broker_service.delete_topic(&topic_name).await {
                                     Ok(_) => info!(
                                         "The topic {} , was successfully deleted from the broker {}",
@@ -438,7 +436,7 @@ pub(crate) async fn create_namespace_if_absent(
 }
 
 async fn post_broker_load_report(
-    broker_service: Arc<Mutex<BrokerService>>,
+    broker_service: Arc<BrokerService>,
     meta_store: MetadataStorage,
 ) {
     let mut topics: Vec<String>;
@@ -446,11 +444,8 @@ async fn post_broker_load_report(
     let mut interval = time::interval(Duration::from_secs(30));
     loop {
         interval.tick().await;
-        {
-            let broker_service = broker_service.lock().await;
-            topics = broker_service.get_topics().into_iter().cloned().collect();
-            broker_id = broker_service.broker_id;
-        }
+        topics = broker_service.get_topics();
+        broker_id = broker_service.broker_id;
         let topics_len = topics.len();
         let load_report: LoadReport = generate_load_report(topics_len, topics);
         if let Ok(value) = serde_json::to_value(&load_report) {
