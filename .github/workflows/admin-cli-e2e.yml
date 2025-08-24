@@ -50,6 +50,13 @@ jobs:
             sleep 5
           done
 
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
