@@ -20,9 +20,9 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 20
         env:
           ETCD_NAME: etcd-danube
-        command: >-
-          /usr/local/bin/etcd --name etcd-danube --data-dir /etcd-data 
-          --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_DATA_DIR: /etcd-data
 
     steps:
       - name: Checkout
