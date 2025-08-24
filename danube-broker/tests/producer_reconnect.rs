@@ -37,6 +37,17 @@ async fn setup() -> Result<DanubeClient> {
 }
 
 #[tokio::test]
+/// What this test validates
+///
+/// - Scenario: create a producer, send a message, optionally create another producer with the same
+///   name (broker may or may not enforce uniqueness), then send again with the original producer.
+/// - Expectation: the original producer remains connected and can send multiple messages over time
+///   without re-creation.
+/// - Example: send "Hello Danube" and then "Hello again" using the same producer instance.
+///
+/// Why this matters
+/// - Validates connection reuse and resilience; ensures the client can keep using the same producer
+///   for multiple sends across time without unintended disconnects.
 async fn producer_reconnection_reuse() -> Result<()> {
     let danube_client = setup().await?;
     let topic = "/default/producer_reconnect_reuse";

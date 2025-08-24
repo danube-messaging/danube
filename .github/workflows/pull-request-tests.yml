@@ -130,8 +130,11 @@ jobs:
           profile: minimal
 
       - name: Run integration tests
+        env:
+          RUST_BACKTRACE: 1
         run: |
-          cargo test --release --package danube-broker --tests
+          # Run broker integration tests serially to avoid flakiness in timing-sensitive tests
+          cargo test --release -p danube-broker --tests -- --test-threads=1 --nocapture
           cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
