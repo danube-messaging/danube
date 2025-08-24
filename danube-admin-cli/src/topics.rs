@@ -80,7 +80,11 @@ pub(crate) enum TopicsCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
-    #[command(about = "Create a topic (use --partitions for partitioned)", long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable --segment-size-mb 128\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema Json --schema-file schema.json\n")]
+    #[command(
+        about = "Create a topic (use --partitions for partitioned)",
+        long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable --segment-size-mb 128\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema Json --schema-file schema.json\n",
+        arg_required_else_help = true
+    )]
     Create {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' (use --namespace for the latter)")]
         topic: String,
