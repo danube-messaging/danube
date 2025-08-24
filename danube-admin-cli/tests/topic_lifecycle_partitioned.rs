@@ -18,7 +18,7 @@ fn topic_lifecycle_partitioned() {
     // list topics should include both partitions (parse JSON for robustness)
     let mut list = cli();
     let out = list
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list");
     assert!(out.status.success());
@@ -32,7 +32,7 @@ fn topic_lifecycle_partitioned() {
     // subscriptions should be an array on part-0
     let mut subs = cli();
     let part0_cli = format!("{}-part-0", base_cli);
-    subs.args(["topic", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
+    subs.args(["topics", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
 
     // delete both partitions
     let part1_cli = format!("{}-part-1", base_cli);
@@ -42,7 +42,7 @@ fn topic_lifecycle_partitioned() {
     // verify deletion: list should not include them anymore (parse JSON)
     let mut list2 = cli();
     let out2 = list2
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list after delete");
     assert!(out2.status.success());

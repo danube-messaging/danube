@@ -45,18 +45,19 @@ pub fn list_ns_contains(ns: &str) {
 
 pub fn create_topic(topic: &str, dispatch: &str) {
     let mut cmd = cli();
-    cmd.args(["topic", "create", topic, "--dispatch-strategy", dispatch])
+    cmd.args(["topics", "create", topic, "--dispatch-strategy", dispatch])
         .assert()
         .success();
 }
 
 pub fn create_partitioned_topic(base: &str, partitions: u32, dispatch: &str) {
     let mut cmd = cli();
-    // partitions is positional in CLI: topic create-partitioned <TOPIC> <PARTITIONS>
+    // unified create with --partitions
     cmd.args([
-        "topic",
-        "create-partitioned",
+        "topics",
+        "create",
         base,
+        "--partitions",
         &partitions.to_string(),
         "--dispatch-strategy",
         dispatch,
@@ -67,7 +68,7 @@ pub fn create_partitioned_topic(base: &str, partitions: u32, dispatch: &str) {
 
 pub fn topic_list_contains(ns: &str, name_substr: &str) {
     let mut cmd = cli();
-    cmd.args(["topic", "list", ns, "--output", "json"]) // pretty JSON
+    cmd.args(["topics", "list", ns, "--output", "json"]) // pretty JSON
         .assert()
         .success()
         .stdout(contains(name_substr));
@@ -75,5 +76,5 @@ pub fn topic_list_contains(ns: &str, name_substr: &str) {
 
 pub fn delete_topic(topic: &str) {
     let mut cmd = cli();
-    cmd.args(["topic", "delete", topic]).assert().success();
+    cmd.args(["topics", "delete", topic]).assert().success();
 }

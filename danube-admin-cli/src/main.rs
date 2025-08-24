@@ -24,7 +24,7 @@ enum Commands {
     Brokers(Brokers),
     #[command(about = "Manage the namespaces from the Danube cluster")]
     Namespaces(Namespaces),
-    #[command(name = "topic", about = "Manage the topics from the Danube cluster")]
+    #[command(name = "topics", about = "Manage the topics from the Danube cluster")]
     Topics(Topics),
 }
 
