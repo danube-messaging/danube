@@ -32,7 +32,7 @@ danube-admin-cli brokers list
 
 ## Reliable dispatch options
 
-The `topic create` and `topic create-partitioned` commands accept a `--dispatch-strategy` flag.
+The `topics create` command accepts a `--dispatch-strategy` flag.
 
 Values:
 
@@ -80,44 +80,53 @@ danube-admin-cli namespaces delete default
 
 ```bash
 # List topics in a namespace
-danube-admin-cli topic list default
+danube-admin-cli topics list default
 # JSON output
-danube-admin-cli topic list default --output json
+danube-admin-cli topics list default --output json
 
 # Create non-partitioned topic (non-reliable)
-danube-admin-cli topic create /default/mytopic --dispatch-strategy non_reliable
+danube-admin-cli topics create /default/mytopic --dispatch-strategy non_reliable
 
 # Create non-partitioned topic (reliable with defaults)
-danube-admin-cli topic create /default/mytopic --dispatch-strategy reliable
+danube-admin-cli topics create /default/mytopic --dispatch-strategy reliable
 
 # Create non-partitioned topic (reliable with overrides)
-danube-admin-cli topic create /default/mytopic \
+danube-admin-cli topics create /default/mytopic \
   --dispatch-strategy reliable \
   --segment-size-mb 128 \
   --retention-policy retain_until_expire \
   --retention-period-sec 172800
 
-# Create partitioned topic (server-side batch)
-danube-admin-cli topic create-partitioned /default/mytopic \
+# Create partitioned topic (unified create with --partitions)
+danube-admin-cli topics create /default/mytopic \
   --partitions 3 \
   --dispatch-strategy reliable \
   --segment-size-mb 64 \
   --retention-policy retain_until_ack \
   --retention-period-sec 86400
 
+# You can omit namespace in the topic and provide it via --namespace
+danube-admin-cli topics create mytopic --namespace default --dispatch-strategy reliable
+
+# Schema ergonomics: provide type and schema file for Json
+danube-admin-cli topics create mytopic \
+  --namespace default \
+  --schema Json \
+  --schema-file ./schema.json
+
 # Delete a topic
-danube-admin-cli topic delete /default/mytopic
+danube-admin-cli topics delete /default/mytopic
 
 # List subscriptions on a topic
-danube-admin-cli topic subscriptions /default/mytopic
+danube-admin-cli topics subscriptions /default/mytopic
 # JSON output
-danube-admin-cli topic subscriptions /default/mytopic --output json
+danube-admin-cli topics subscriptions /default/mytopic --output json
 
 # Unsubscribe a subscription from a topic
-danube-admin-cli topic unsubscribe --subscription sub1 /default/mytopic
+danube-admin-cli topics unsubscribe --subscription sub1 /default/mytopic
 
 # Describe a topic (schema + subscriptions)
-danube-admin-cli topic describe /default/mytopic
-# JSON output (uses DANUBE_BROKER_ENDPOINT for Discovery; default http://127.0.0.1:6650)
-danube-admin-cli topic describe /default/mytopic --output json
+danube-admin-cli topics describe /default/mytopic
+# JSON output (describe uses Admin endpoint at DANUBE_ADMIN_ENDPOINT; default http://127.0.0.1:50051)
+danube-admin-cli topics describe /default/mytopic --output json
 ```
