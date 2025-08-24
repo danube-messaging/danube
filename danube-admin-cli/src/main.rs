@@ -2,6 +2,7 @@ mod brokers;
 mod namespaces;
 mod shared;
 mod topics;
+mod client;
 
 use brokers::Brokers;
 use namespaces::Namespaces;
@@ -23,7 +24,7 @@ enum Commands {
     Brokers(Brokers),
     #[command(about = "Manage the namespaces from the Danube cluster")]
     Namespaces(Namespaces),
-    #[command(about = "Manage the topics from the Danube cluster")]
+    #[command(name = "topic", about = "Manage the topics from the Danube cluster")]
     Topics(Topics),
 }
 

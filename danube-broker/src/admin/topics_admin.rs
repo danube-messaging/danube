@@ -1,8 +1,9 @@
 use crate::admin::DanubeAdminImpl;
 use crate::schema::{Schema, SchemaType};
 use danube_core::admin_proto::{
-    topic_admin_server::TopicAdmin, NamespaceRequest, NewTopicRequest, SubscriptionListResponse,
-    SubscriptionRequest, SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
+    topic_admin_server::TopicAdmin, DescribeTopicRequest, DescribeTopicResponse, NamespaceRequest,
+    NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse, SubscriptionRequest,
+    SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
 };
 use danube_core::proto::TopicDispatchStrategy;
 
@@ -52,13 +53,27 @@ impl TopicAdmin for DanubeAdminImpl {
             schema_type = SchemaType::Json(req.schema_data);
         }
 
-        // Todo!: Implement dispatch strategy for admin service
-        let dispatch_strategy = match req.dispatch_strategy.as_ref() {
-            "non-reliable" => TopicDispatchStrategy {
-                strategy: 0,
-                reliable_options: None,
-            },
-            _ => unimplemented!("not implemented yet for admin"),
+        // Map admin NewTopicRequest.dispatch_strategy (structured) into core TopicDispatchStrategy
+        let dispatch_strategy = {
+            let ds = req
+                .dispatch_strategy
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("dispatch_strategy is required"))?;
+
+            // Map enum value directly; enums are aligned with core proto
+            let strategy = ds.strategy;
+
+            // Map reliable options if present
+            let reliable_options = ds.reliable_options.as_ref().map(|ro| danube_core::proto::ReliableOptions {
+                segment_size: ro.segment_size,
+                retention_policy: ro.retention_policy,
+                retention_period: ro.retention_period,
+            });
+
+            TopicDispatchStrategy {
+                strategy,
+                reliable_options,
+            }
         };
 
         let service = self.broker_service.as_ref();
@@ -81,6 +96,74 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let response = TopicResponse { success };
         Ok(tonic::Response::new(response))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn create_partitioned_topic(
+        &self,
+        request: Request<PartitionedTopicRequest>,
+    ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        trace!(
+            "Admin: creates a partitioned topic: {} with {} partitions",
+            req.base_name, req.partitions
+        );
+
+        // Schema mapping
+        let mut schema_type = match SchemaType::from_str(&req.schema_type) {
+            Some(schema_type) => schema_type,
+            None => {
+                let status = Status::not_found(
+                    "Invalid schema_type, allowed values: Bytes, String, Int64, Json ",
+                );
+                return Err(status);
+            }
+        };
+
+        if schema_type == SchemaType::Json(String::new()) {
+            schema_type = SchemaType::Json(req.schema_data);
+        }
+
+        // Dispatch mapping
+        let dispatch_strategy = {
+            let ds = req
+                .dispatch_strategy
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("dispatch_strategy is required"))?;
+
+            let strategy = ds.strategy;
+            let reliable_options = ds.reliable_options.as_ref().map(|ro| danube_core::proto::ReliableOptions {
+                segment_size: ro.segment_size,
+                retention_policy: ro.retention_policy,
+                retention_period: ro.retention_period,
+            });
+
+            TopicDispatchStrategy {
+                strategy,
+                reliable_options,
+            }
+        };
+
+        let service = self.broker_service.as_ref();
+        let schema = Schema::new(format!("{}_schema", req.base_name), schema_type);
+
+        // Create all partitions; fail fast on error
+        for partition_id in 0..req.partitions {
+            let topic = format!("{}-part-{}", req.base_name, partition_id);
+            if let Err(err) = service
+                .create_topic_cluster(&topic, Some(dispatch_strategy), Some(schema.clone().into()))
+                .await
+            {
+                let status = Status::not_found(format!(
+                    "Unable to create the topic {} due to {}",
+                    topic, err
+                ));
+                return Err(status);
+            }
+        }
+
+        Ok(tonic::Response::new(TopicResponse { success: true }))
     }
 
     #[tracing::instrument(level = Level::INFO, skip_all)]
@@ -158,6 +241,39 @@ impl TopicAdmin for DanubeAdminImpl {
         };
 
         let response = SubscriptionResponse { success };
+        Ok(tonic::Response::new(response))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn describe_topic(
+        &self,
+        request: Request<DescribeTopicRequest>,
+    ) -> std::result::Result<Response<DescribeTopicResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        // Subscriptions
+        let subscriptions = self
+            .resources
+            .topic
+            .get_subscription_for_topic(&req.name)
+            .await;
+
+        // Schema
+        let service = self.broker_service.as_ref();
+        let schema = service.get_schema(&req.name);
+
+        let (type_schema, schema_data) = if let Some(s) = schema {
+            (s.type_schema, s.schema_data)
+        } else {
+            (0, Vec::new())
+        };
+
+        let response = DescribeTopicResponse {
+            name: req.name,
+            type_schema,
+            schema_data,
+            subscriptions,
+        };
         Ok(tonic::Response::new(response))
     }
 }

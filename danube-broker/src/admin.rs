@@ -13,7 +13,7 @@ use danube_core::admin_proto::{
 };
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
-use tonic::transport::{Identity, Server, ServerTlsConfig};
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -74,8 +74,19 @@ impl DanubeAdminImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        server
-            .tls_config(ServerTlsConfig::new().identity(identity))
-            .unwrap()
+        // Base TLS config with server identity
+        let mut tls = ServerTlsConfig::new().identity(identity);
+
+        // If verify_client is enabled, load CA and require client auth
+        if tls_config.verify_client {
+            if let Ok(ca_pem) = tokio::fs::read(&tls_config.ca_file).await {
+                let ca = Certificate::from_pem(ca_pem);
+                tls = tls.client_ca_root(ca);
+            } else {
+                warn!("verify_client enabled but unable to read CA file: {}", tls_config.ca_file);
+            }
+        }
+
+        server.tls_config(tls).unwrap()
     }
 }

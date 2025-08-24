@@ -2,6 +2,29 @@ syntax = "proto3";
 
 package danube_admin;
 
+// Keep enums/messages consistent with danube/DanubeApi.proto
+enum DispatchStrategy {
+  NonReliable = 0;
+  Reliable = 1;
+}
+
+enum RetentionPolicy {
+  RetainUntilAck = 0;
+  RetainUntilExpire = 1;
+}
+
+message ReliableOptions {
+  uint64 segment_size = 1; // in MB
+  RetentionPolicy retention_policy = 4; // RetainUntilAck or RetainUntilExpire
+  uint64 retention_period = 5; // in seconds
+}
+
+// Message representing topic retention/dispatch strategy
+message TopicDispatchStrategy {
+  DispatchStrategy strategy = 1; // NonReliable or Reliable
+  ReliableOptions reliable_options = 2; // options for Reliable dispatch strategy
+}
+
 service BrokerAdmin {
   // Broker related RPCs
   rpc ListBrokers(Empty) returns (BrokerListResponse);
@@ -22,9 +45,11 @@ service TopicAdmin {
   // Topic related RPCs
   rpc ListTopics(NamespaceRequest) returns (TopicListResponse);
   rpc CreateTopic(NewTopicRequest) returns (TopicResponse);
+  rpc CreatePartitionedTopic(PartitionedTopicRequest) returns (TopicResponse);
   rpc DeleteTopic(TopicRequest) returns (TopicResponse);
   rpc ListSubscriptions(TopicRequest) returns (SubscriptionListResponse);
   rpc Unsubscribe(SubscriptionRequest) returns (SubscriptionResponse);
+  rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
 // Common Messages
@@ -42,7 +67,7 @@ message NewTopicRequest {
   string name = 1;
   string schema_type = 2;
   string schema_data = 3;
-  string dispatch_strategy = 4;
+  TopicDispatchStrategy dispatch_strategy = 4;
 }
 
 message TopicRequest {
@@ -51,6 +76,14 @@ message TopicRequest {
 
 message TopicResponse {
   bool success = 1;
+}
+
+message PartitionedTopicRequest {
+  string base_name = 1;          // /namespace/topic
+  uint32 partitions = 2;         // number of partitions
+  string schema_type = 3;
+  string schema_data = 4;
+  TopicDispatchStrategy dispatch_strategy = 5;
 }
 
 message SubscriptionRequest {
@@ -91,4 +124,16 @@ message PolicyResponse {
 
 message SubscriptionListResponse {
   repeated string subscriptions = 1;
+}
+
+// Describe Topic (schema + subscriptions)
+message DescribeTopicRequest {
+  string name = 1; // /namespace/topic
+}
+
+message DescribeTopicResponse {
+  string name = 1;
+  int32 type_schema = 2;
+  bytes schema_data = 3;
+  repeated string subscriptions = 4;
 }
