@@ -32,8 +32,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install jq and netcat
-        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
       - name: Wait for etcd to be ready
         run: |
