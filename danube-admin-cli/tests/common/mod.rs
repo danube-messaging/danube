@@ -1,5 +1,4 @@
 use assert_cmd::prelude::*;
-use predicates::str::contains;
 use rand::{distributions::Alphanumeric, Rng};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,46 +34,3 @@ pub fn delete_ns(ns: &str) {
     let _ = cmd.args(["namespaces", "delete", ns]).output();
 }
 
-pub fn list_ns_contains(ns: &str) {
-    let mut cmd = cli();
-    cmd.args(["brokers", "namespaces", "--output", "json"]) // brokers namespaces aggregates cluster namespaces
-        .assert()
-        .success()
-        .stdout(contains(ns));
-}
-
-pub fn create_topic(topic: &str, dispatch: &str) {
-    let mut cmd = cli();
-    cmd.args(["topics", "create", topic, "--dispatch-strategy", dispatch])
-        .assert()
-        .success();
-}
-
-pub fn create_partitioned_topic(base: &str, partitions: u32, dispatch: &str) {
-    let mut cmd = cli();
-    // unified create with --partitions
-    cmd.args([
-        "topics",
-        "create",
-        base,
-        "--partitions",
-        &partitions.to_string(),
-        "--dispatch-strategy",
-        dispatch,
-    ])
-    .assert()
-    .success();
-}
-
-pub fn topic_list_contains(ns: &str, name_substr: &str) {
-    let mut cmd = cli();
-    cmd.args(["topics", "list", ns, "--output", "json"]) // pretty JSON
-        .assert()
-        .success()
-        .stdout(contains(name_substr));
-}
-
-pub fn delete_topic(topic: &str) {
-    let mut cmd = cli();
-    cmd.args(["topics", "delete", topic]).assert().success();
-}

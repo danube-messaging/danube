@@ -13,7 +13,10 @@ fn topic_lifecycle_non_partitioned() {
     create_ns(&ns);
 
     // create topic non-reliable
-    create_topic(&topic, "non_reliable");
+    let mut cmd = cli();
+    cmd.args(["topics", "create", &topic, "--dispatch-strategy", "non_reliable"])
+        .assert()
+        .success();
 
     // assert it appears in namespace list (parse JSON for robustness)
     let mut list = cli();
@@ -39,7 +42,8 @@ fn topic_lifecycle_non_partitioned() {
     subs.args(["topics", "subscriptions", &topic, "--output", "json"]).assert().success();
 
     // delete and verify removal
-    delete_topic(&topic);
+    let mut delete_cmd = cli();
+    delete_cmd.args(["topics", "delete", &topic]).assert().success();
     let mut list2 = cli();
     let out2 = list2
         .args(["topics", "list", &ns, "--output", "json"]) 

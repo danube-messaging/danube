@@ -13,7 +13,18 @@ fn topic_lifecycle_partitioned() {
     create_ns(&ns);
 
     // create partitioned topic (server-side)
-    create_partitioned_topic(&base_cli, 2, "reliable");
+    let mut cmd = cli();
+    cmd.args([
+        "topics",
+        "create",
+        &base_cli,
+        "--partitions",
+        "2",
+        "--dispatch-strategy",
+        "reliable",
+    ])
+    .assert()
+    .success();
 
     // list topics should include both partitions (parse JSON for robustness)
     let mut list = cli();
@@ -36,8 +47,10 @@ fn topic_lifecycle_partitioned() {
 
     // delete both partitions
     let part1_cli = format!("{}-part-1", base_cli);
-    delete_topic(&part0_cli);
-    delete_topic(&part1_cli);
+    let mut delete_cmd1 = cli();
+    delete_cmd1.args(["topics", "delete", &part0_cli]).assert().success();
+    let mut delete_cmd2 = cli();
+    delete_cmd2.args(["topics", "delete", &part1_cli]).assert().success();
 
     // verify deletion: list should not include them anymore (parse JSON)
     let mut list2 = cli();
