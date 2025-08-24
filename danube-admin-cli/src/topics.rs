@@ -12,6 +12,12 @@ use crate::client::admin_channel;
 use std::fs;
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Manage topics in the Danube cluster",
+    long_about = "Manage topics in the Danube cluster.\n\nCommon examples:\n  danube-admin-cli topics list default\n  danube-admin-cli topics create /default/mytopic\n  danube-admin-cli topics create /default/mytopic --partitions 3\n  danube-admin-cli topics describe /default/mytopic\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
 pub(crate) struct Topics {
     #[command(subcommand)]
     command: TopicsCommands,
@@ -83,6 +89,7 @@ pub(crate) enum TopicsCommands {
     #[command(
         about = "Create a topic (use --partitions for partitioned)",
         long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable --segment-size-mb 128\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema Json --schema-file schema.json\n",
+        after_help = "Examples:\n  danube-admin-cli topics create /default/mytopic\n  danube-admin-cli topics create /default/mytopic --dispatch-strategy reliable --segment-size-mb 128\n  danube-admin-cli topics create /default/mytopic --partitions 3\n  danube-admin-cli topics create mytopic --namespace default --schema Json --schema-file schema.json\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
         arg_required_else_help = true
     )]
     Create {
@@ -107,14 +114,14 @@ pub(crate) enum TopicsCommands {
         #[arg(long)]
         retention_period_sec: Option<u64>,
     },
-    #[command(about = "Delete an existing topic")]
+    #[command(about = "Delete an existing topic", after_help = "Example:\n  danube-admin-cli topics delete /default/mytopic\n  danube-admin-cli topics delete mytopic --namespace default", arg_required_else_help = true)]
     Delete { 
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
         #[arg(long)]
         namespace: Option<String>,
     },
-    #[command(about = "List the subscriptions of the specified topic")]
+    #[command(about = "List the subscriptions of the specified topic", after_help = "Example:\n  danube-admin-cli topics subscriptions /default/mytopic --output json", arg_required_else_help = true)]
     Subscriptions {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
@@ -123,7 +130,7 @@ pub(crate) enum TopicsCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
-    #[command(about = "Describe a topic (schema and subscriptions)")]
+    #[command(about = "Describe a topic (schema and subscriptions)", after_help = "Example:\n  danube-admin-cli topics describe /default/mytopic --output json", arg_required_else_help = true)]
     Describe {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
@@ -132,7 +139,7 @@ pub(crate) enum TopicsCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
         output: Option<String>,
     },
-    #[command(about = "Delete a subscription from a topic")]
+    #[command(about = "Delete a subscription from a topic", after_help = "Example:\n  danube-admin-cli topics unsubscribe --subscription sub1 /default/mytopic", arg_required_else_help = true)]
     Unsubscribe {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
