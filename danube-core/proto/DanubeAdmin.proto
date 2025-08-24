@@ -49,6 +49,7 @@ service TopicAdmin {
   rpc DeleteTopic(TopicRequest) returns (TopicResponse);
   rpc ListSubscriptions(TopicRequest) returns (SubscriptionListResponse);
   rpc Unsubscribe(SubscriptionRequest) returns (SubscriptionResponse);
+  rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
 // Common Messages
@@ -123,4 +124,16 @@ message PolicyResponse {
 
 message SubscriptionListResponse {
   repeated string subscriptions = 1;
+}
+
+// Describe Topic (schema + subscriptions)
+message DescribeTopicRequest {
+  string name = 1; // /namespace/topic
+}
+
+message DescribeTopicResponse {
+  string name = 1;
+  int32 type_schema = 2;
+  bytes schema_data = 3;
+  repeated string subscriptions = 4;
 }

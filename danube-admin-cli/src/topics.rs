@@ -2,12 +2,13 @@ use crate::client::topic_admin_client;
 use base64::{engine::general_purpose, Engine as _};
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
+    topic_admin_client::TopicAdminClient,
+    DescribeTopicRequest,
     DispatchStrategy as AdminDispatchStrategy, NamespaceRequest, NewTopicRequest,
     PartitionedTopicRequest, ReliableOptions, RetentionPolicy, SubscriptionRequest,
     TopicDispatchStrategy, TopicRequest,
 };
-use danube_core::proto::{discovery_client::DiscoveryClient, SchemaRequest};
-use std::env;
+use crate::client::admin_channel;
 
 #[derive(Debug, Args)]
 pub(crate) struct Topics {
@@ -15,26 +16,19 @@ pub(crate) struct Topics {
     command: TopicsCommands,
 }
 
-// Helper: fetch schema for a topic via Discovery service and return JSON value
+// Helper: fetch schema for a topic via Admin service and return JSON value
 async fn fetch_schema_json(topic: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let endpoint =
-        env::var("DANUBE_BROKER_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".to_string());
-    let mut client = DiscoveryClient::connect(endpoint).await?;
-    let req = SchemaRequest {
-        request_id: 1,
-        topic: topic.to_string(),
-    };
-    let resp = client.get_schema(req).await?;
-    let schema = resp.into_inner().schema;
+    let ch = admin_channel().await?;
+    let mut client = TopicAdminClient::new(ch);
+    let req = DescribeTopicRequest { name: topic.to_string() };
+    let resp = client.describe_topic(req).await?;
+    let resp = resp.into_inner();
     // Convert the prost `Schema` into JSON for printing
     let value = serde_json::json!({
-        "name": schema.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
-        "type_schema": schema.as_ref().map(|s| s.type_schema).unwrap_or_default(),
+        "name": resp.name,
+        "type_schema": resp.type_schema,
         // schema_data is bytes; render as string when possible, else base64
-        "schema_data": schema
-            .as_ref()
-            .map(|s| String::from_utf8(s.schema_data.clone()).unwrap_or_else(|_| general_purpose::STANDARD.encode(s.schema_data.clone())))
-            .unwrap_or_default(),
+        "schema_data": String::from_utf8(resp.schema_data.clone()).unwrap_or_else(|_| general_purpose::STANDARD.encode(resp.schema_data.clone())),
     });
     Ok(value)
 }

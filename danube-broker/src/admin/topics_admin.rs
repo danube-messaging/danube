@@ -1,9 +1,9 @@
 use crate::admin::DanubeAdminImpl;
 use crate::schema::{Schema, SchemaType};
 use danube_core::admin_proto::{
-    topic_admin_server::TopicAdmin, NamespaceRequest, NewTopicRequest, PartitionedTopicRequest,
-    SubscriptionListResponse, SubscriptionRequest, SubscriptionResponse, TopicListResponse,
-    TopicRequest, TopicResponse,
+    topic_admin_server::TopicAdmin, DescribeTopicRequest, DescribeTopicResponse, NamespaceRequest,
+    NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse, SubscriptionRequest,
+    SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
 };
 use danube_core::proto::TopicDispatchStrategy;
 
@@ -241,6 +241,39 @@ impl TopicAdmin for DanubeAdminImpl {
         };
 
         let response = SubscriptionResponse { success };
+        Ok(tonic::Response::new(response))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn describe_topic(
+        &self,
+        request: Request<DescribeTopicRequest>,
+    ) -> std::result::Result<Response<DescribeTopicResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        // Subscriptions
+        let subscriptions = self
+            .resources
+            .topic
+            .get_subscription_for_topic(&req.name)
+            .await;
+
+        // Schema
+        let service = self.broker_service.as_ref();
+        let schema = service.get_schema(&req.name);
+
+        let (type_schema, schema_data) = if let Some(s) = schema {
+            (s.type_schema, s.schema_data)
+        } else {
+            (0, Vec::new())
+        };
+
+        let response = DescribeTopicResponse {
+            name: req.name,
+            type_schema,
+            schema_data,
+            subscriptions,
+        };
         Ok(tonic::Response::new(response))
     }
 }

@@ -27,13 +27,12 @@ fn topic_lifecycle_non_partitioned() {
     assert!(topics.iter().any(|t| t == &list_name), "missing {list_name} in {topics:?}");
 
     // describe topic (json path contains schema)
-    // TODO: re-enable when Discovery schema fetch is stable in CI
-    // let mut describe = cli();
-    // describe
-    //     .args(["topic", "describe", &topic, "--output", "json"])
-    //     .assert()
-    //     .success()
-    //     .stdout(predicates::str::contains("\"schema\""));
+    let mut describe = cli();
+    describe
+        .args(["topic", "describe", &topic, "--output", "json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"schema\""));
 
     // subscriptions should be an array (we only assert success here)
     let mut subs = cli();
