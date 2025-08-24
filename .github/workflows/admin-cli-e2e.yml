@@ -12,17 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     services:
       etcd:
-        image: quay.io/coreos/etcd:v3.5.9
+        image: bitnami/etcd:latest
         ports:
           - 2379:2379
         options: >-
-          --health-cmd "ETCDCTL_API=3 etcdctl endpoint health --endpoints=http://localhost:2379 || exit 1" 
-          --health-interval 5s --health-timeout 5s --health-retries 20
+          --name etcd-danube
         env:
-          ETCD_NAME: etcd-danube
-        command: >-
-          /usr/local/bin/etcd --name etcd-danube --data-dir /etcd-data 
-          --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://0.0.0.0:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
 
     steps:
       - name: Checkout
@@ -34,8 +32,30 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Wait for etcd to be ready
+        run: |
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 2379; then
+              echo "etcd is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "etcd failed to start."
+              docker logs etcd-danube
+              exit 1
+            fi
+            echo "Waiting for etcd to start..."
+            sleep 5
+          done
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
       - name: Build workspace (release)
         run: cargo build --workspace --release
@@ -51,12 +71,18 @@ jobs:
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
           # Wait for admin and discovery ports to be ready
-          for i in {1..60}; do \
-            (echo > /dev/tcp/127.0.0.1/50051) >/dev/null 2>&1 && \
-            (echo > /dev/tcp/127.0.0.1/6650) >/dev/null 2>&1 && break; \
-            sleep 1; \
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 50051; then
+              echo "Broker admin port is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "Broker failed to start."
+              cat broker.log
+              exit 1
+            fi
+            echo "Waiting for broker to start..."
+            sleep 5
           done
-          echo "Broker started" && tail -n +1 broker.log | sed -n '1,40p'
 
       - name: Run admin CLI E2E tests
         env:

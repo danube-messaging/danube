@@ -13,12 +13,23 @@ fn topic_lifecycle_partitioned() {
     create_ns(&ns);
 
     // create partitioned topic (server-side)
-    create_partitioned_topic(&base_cli, 2, "reliable");
+    let mut cmd = cli();
+    cmd.args([
+        "topics",
+        "create",
+        &base_cli,
+        "--partitions",
+        "2",
+        "--dispatch-strategy",
+        "reliable",
+    ])
+    .assert()
+    .success();
 
     // list topics should include both partitions (parse JSON for robustness)
     let mut list = cli();
     let out = list
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list");
     assert!(out.status.success());
@@ -32,17 +43,19 @@ fn topic_lifecycle_partitioned() {
     // subscriptions should be an array on part-0
     let mut subs = cli();
     let part0_cli = format!("{}-part-0", base_cli);
-    subs.args(["topic", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
+    subs.args(["topics", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
 
     // delete both partitions
     let part1_cli = format!("{}-part-1", base_cli);
-    delete_topic(&part0_cli);
-    delete_topic(&part1_cli);
+    let mut delete_cmd1 = cli();
+    delete_cmd1.args(["topics", "delete", &part0_cli]).assert().success();
+    let mut delete_cmd2 = cli();
+    delete_cmd2.args(["topics", "delete", &part1_cli]).assert().success();
 
     // verify deletion: list should not include them anymore (parse JSON)
     let mut list2 = cli();
     let out2 = list2
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list after delete");
     assert!(out2.status.success());

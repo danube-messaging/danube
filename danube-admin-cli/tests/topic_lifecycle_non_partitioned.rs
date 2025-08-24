@@ -13,12 +13,15 @@ fn topic_lifecycle_non_partitioned() {
     create_ns(&ns);
 
     // create topic non-reliable
-    create_topic(&topic, "non_reliable");
+    let mut cmd = cli();
+    cmd.args(["topics", "create", &topic, "--dispatch-strategy", "non_reliable"])
+        .assert()
+        .success();
 
     // assert it appears in namespace list (parse JSON for robustness)
     let mut list = cli();
     let out = list
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list");
     assert!(out.status.success());
@@ -29,20 +32,21 @@ fn topic_lifecycle_non_partitioned() {
     // describe topic (json path contains schema)
     let mut describe = cli();
     describe
-        .args(["topic", "describe", &topic, "--output", "json"])
+        .args(["topics", "describe", &topic, "--output", "json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("\"schema\""));
 
     // subscriptions should be an array (we only assert success here)
     let mut subs = cli();
-    subs.args(["topic", "subscriptions", &topic, "--output", "json"]).assert().success();
+    subs.args(["topics", "subscriptions", &topic, "--output", "json"]).assert().success();
 
     // delete and verify removal
-    delete_topic(&topic);
+    let mut delete_cmd = cli();
+    delete_cmd.args(["topics", "delete", &topic]).assert().success();
     let mut list2 = cli();
     let out2 = list2
-        .args(["topic", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list after delete");
     assert!(out2.status.success());
