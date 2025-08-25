@@ -9,26 +9,32 @@ use async_trait::async_trait;
 use dashmap::{mapref::one::RefMut, DashMap};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// MemoryStore is a simple in-memory key-value store that implements the MetadataStore trait.
 /// SHOULD BE USED ONLY FOR TESTING PURPOSES
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    inner: DashMap<String, BTreeMap<String, Value>>,
+    inner: Arc<DashMap<String, BTreeMap<String, Value>>>,
 }
 
 impl MemoryStore {
     #[allow(dead_code)]
     pub async fn new() -> Result<Self> {
         Ok(MemoryStore {
-            inner: DashMap::new(),
+            inner: Arc::new(DashMap::new()),
         })
     }
 
     fn get_map(&self, path: &str) -> Result<RefMut<String, BTreeMap<String, Value>>> {
         let parts: Vec<&str> = path.split('/').take(3).collect();
+        
+        // Validate that path has at least 3 parts (empty, namespace, category)
+        if parts.len() < 3 {
+            return Err(MetadataError::InvalidArguments(format!("Path must have at least 3 segments: {}", path)));
+        }
+        
         let key = parts.join("/");
-
         let bmap = self.inner.entry(key.to_owned()).or_insert(BTreeMap::new());
 
         Ok(bmap)
@@ -51,22 +57,31 @@ impl MetadataStore for MemoryStore {
     }
 
     // Return all the paths that are children to the specific path.
+    // Returns full paths to match ETCD behavior for production compatibility
     async fn get_childrens(&self, path: &str) -> Result<Vec<String>> {
-        let bmap = self.get_map(path)?;
-        let mut child_paths = Vec::new();
-
         let parts: Vec<&str> = path.split('/').skip(3).collect();
         let minimum_path = parts.join("/");
 
-        for key in bmap.keys() {
-            if key.starts_with(&minimum_path)
-                && key.len() > minimum_path.len()
-                && key.chars().nth(minimum_path.len()).unwrap() == '/'
-            {
-                child_paths.push(key.clone());
+        // Get the map prefix (first 3 parts of the path)
+        let path_parts: Vec<&str> = path.split('/').take(3).collect();
+        let map_prefix = path_parts.join("/");
+        let map_key = map_prefix.clone();
+
+        let mut child_paths = Vec::new();
+
+        // Access the map directly without creating a new one if it doesn't exist
+        if let Some(bmap_ref) = self.inner.get(&map_key) {
+            for key in bmap_ref.keys() {
+                if key.starts_with(&minimum_path)
+                    && key.len() > minimum_path.len()
+                    && key.chars().nth(minimum_path.len()).unwrap() == '/'
+                {
+                    // Return full path to match ETCD behavior
+                    let full_path = format!("{}/{}", map_prefix, key);
+                    child_paths.push(full_path);
+                }
             }
         }
-
         Ok(child_paths)
     }
 
@@ -77,8 +92,9 @@ impl MetadataStore for MemoryStore {
         let parts: Vec<&str> = path.split('/').skip(3).collect();
         let key = parts.join("/");
 
+        // Validate that there's actually a key to store (path must have more than 3 parts)
         if key.is_empty() {
-            return Err(MetadataError::Unknown("wrong path".to_string()).into());
+            return Err(MetadataError::InvalidArguments(format!("Path must have a key component: {}", path)));
         }
 
         bmap.insert(key, value);
@@ -137,6 +153,9 @@ impl MemoryStore {
 mod tests {
     use super::*;
 
+    /// Tests basic CRUD operations: put, get, and delete
+    /// Purpose: Validates core store functionality with valid paths
+    /// Expected: Successful storage, retrieval, and removal of key-value pairs
     #[tokio::test]
     async fn test_put_get_delete() -> Result<()> {
         let store = MemoryStore::new().await?;
@@ -163,6 +182,9 @@ mod tests {
         Ok(())
     }
 
+    /// Tests retrieval of non-existent keys
+    /// Purpose: Ensures proper None return for missing keys
+    /// Expected: Returns Ok(None) without errors for unknown keys
     #[tokio::test]
     async fn test_get_nonexistent_key() -> Result<()> {
         let store = MemoryStore::new().await?;
@@ -193,6 +215,9 @@ mod tests {
         Ok(())
     }
 
+    /// Tests error handling for invalid path formats
+    /// Purpose: Validates path validation and error reporting
+    /// Expected: Returns error for paths missing required segments
     #[tokio::test]
     async fn test_put_invalid_path() -> Result<()> {
         let store = MemoryStore::new().await?;
@@ -207,6 +232,9 @@ mod tests {
         Ok(())
     }
 
+    /// Tests recursive deletion of path hierarchies
+    /// Purpose: Validates bulk deletion while preserving unrelated data
+    /// Expected: Removes all children under target path, leaves others intact
     #[tokio::test]
     async fn test_delete_recursive() -> Result<()> {
         let mut store = MemoryStore::new().await?;
@@ -259,6 +287,9 @@ mod tests {
         Ok(())
     }
 
+    /// Tests child path discovery functionality
+    /// Purpose: Validates hierarchical path traversal and filtering
+    /// Expected: Returns all child paths under given prefix, excludes unrelated paths
     #[tokio::test]
     async fn test_get_childrens() -> Result<()> {
         let store = MemoryStore::new().await?;
@@ -298,8 +329,8 @@ mod tests {
 
         // Assert that all matching paths are found
         assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&"topic_1/key1".to_string()));
-        assert!(paths.contains(&"topic_1/subtopic/key3".to_string()));
+        assert!(paths.contains(&"/danube/topics/topic_1/key1".to_string()));
+        assert!(paths.contains(&"/danube/topics/topic_1/subtopic/key3".to_string()));
 
         // Test finding a non-existent path
         let paths = store.get_childrens("/non/existent/path").await?;
