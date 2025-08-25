@@ -104,7 +104,7 @@ jobs:
           RUST_LOG: info
         run: |
           echo "Running baseline subscription test to verify Broker A functionality..."
-          timeout 60s cargo test -p danube-broker subscription_basic::test_exclusive_subscription -- --nocapture || {
+          timeout 60s cargo test -p danube-broker subscription_basic::basic_subscription_exclusive -- --nocapture || {
             echo "Baseline test failed on Broker A"
             cat broker-a.log
             exit 1
