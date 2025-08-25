@@ -89,9 +89,6 @@ jobs:
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          # Create namespace
-          ./target/release/danube-admin-cli namespaces create default
-          
           # Create failover test topic
           ./target/release/danube-admin-cli topics create /default/failover-test
           
