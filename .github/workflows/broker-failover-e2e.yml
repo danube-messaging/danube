@@ -1,0 +1,222 @@
+name: Broker Failover E2E
+
+on:
+  pull_request:
+    paths:
+      - 'danube-broker/**'
+      - '.github/workflows/broker-failover-e2e.yml'
+
+jobs:
+  broker-failover-e2e:
+    runs-on: ubuntu-latest
+    services:
+      etcd:
+        image: bitnami/etcd:latest
+        ports:
+          - 2379:2379
+        options: >-
+          --name etcd-danube
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://0.0.0.0:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Wait for etcd to be ready
+        run: |
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 2379; then
+              echo "etcd is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "etcd failed to start."
+              docker logs etcd-danube
+              exit 1
+            fi
+            echo "Waiting for etcd to start..."
+            sleep 5
+          done
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      - name: Start Broker A (background)
+        env:
+          RUST_LOG: info
+        run: |
+          nohup ./target/release/danube-broker \
+            --config-file ./config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --prom-exporter 0.0.0.0:9040 \
+            > broker-a.log 2>&1 &
+          echo $! > broker-a.pid
+          
+          # Wait for Broker A admin and discovery ports to be ready
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 50051 && nc -zv 127.0.0.1 6650; then
+              echo "Broker A is ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker A failed to start."
+              cat broker-a.log
+              exit 1
+            fi
+            echo "Waiting for Broker A to start... ($i/15)"
+            sleep 3
+          done
+
+      - name: Provision namespace and topic via admin CLI
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          # Create namespace
+          ./target/release/danube-admin-cli namespaces create default
+          
+          # Create failover test topic
+          ./target/release/danube-admin-cli topics create /default/failover-test
+          
+          # Verify topic was created successfully
+          ./target/release/danube-admin-cli topics describe /default/failover-test || {
+            echo "ERROR: Topic creation failed"
+            exit 1
+          }
+          echo "✓ Topic successfully created"
+
+      - name: Run baseline pub/sub test on Broker A
+        env:
+          RUST_LOG: info
+        run: |
+          echo "Running baseline subscription test to verify Broker A functionality..."
+          timeout 60s cargo test -p danube-broker subscription_basic::test_exclusive_subscription -- --nocapture || {
+            echo "Baseline test failed on Broker A"
+            cat broker-a.log
+            exit 1
+          }
+          echo "✓ Baseline pub/sub test passed on Broker A"
+
+      - name: Start Broker B (background)
+        env:
+          RUST_LOG: info
+        run: |
+          nohup ./target/release/danube-broker \
+            --config-file ./config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6651 \
+            --admin-addr 0.0.0.0:50052 \
+            --prom-exporter 0.0.0.0:9041 \
+            > broker-b.log 2>&1 &
+          echo $! > broker-b.pid
+          
+          # Wait for Broker B to be ready
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then
+              echo "Broker B is ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker B failed to start."
+              cat broker-b.log
+              exit 1
+            fi
+            echo "Waiting for Broker B to start... ($i/15)"
+            sleep 3
+          done
+          
+          # Give brokers time to discover each other
+          sleep 10
+
+      - name: Simulate Broker A failure
+        run: |
+          echo "Killing Broker A to simulate failure..."
+          if [ -f broker-a.pid ]; then
+            BROKER_A_PID=$(cat broker-a.pid)
+            kill $BROKER_A_PID || echo "Broker A process may have already exited"
+            sleep 2
+            kill -9 $BROKER_A_PID 2>/dev/null || echo "Force kill not needed"
+          fi
+          echo "✓ Broker A terminated"
+
+      - name: Wait for topic reassignment to Broker B
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50052
+        run: |
+          echo "Waiting for topic reassignment to Broker B..."
+          REASSIGNMENT_TIMEOUT=60
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $REASSIGNMENT_TIMEOUT ]; do
+            echo "Checking reassignment progress... ($((ELAPSED/5 + 1))/12)"
+            
+            # Check Broker B logs for topic assignment messages
+            if grep -q "Topic '/default/failover-test' created on broker" broker-b.log 2>/dev/null; then
+              echo "✓ Topic successfully reassigned to Broker B (found in logs)"
+              break
+            elif [ $ELAPSED -ge $((REASSIGNMENT_TIMEOUT - 5)) ]; then
+              echo "ERROR: Topic reassignment to Broker B timed out"
+              echo "=== Broker B Logs ==="
+              tail -20 broker-b.log
+              echo "=== End Broker B Logs ==="
+              exit 1
+            fi
+            
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+
+      - name: Verify Broker B is operational
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50052
+        run: |
+          echo "Verifying Broker B is operational after failover..."
+          
+          # Verify broker B is responding to admin commands
+          ./target/release/danube-admin-cli brokers list || {
+            echo "ERROR: Broker B not responding to admin commands"
+            cat broker-b.log
+            exit 1
+          }
+          
+          # Verify topic is accessible on Broker B
+          ./target/release/danube-admin-cli topics describe /default/failover-test || {
+            echo "ERROR: Topic not accessible on Broker B"
+            cat broker-b.log
+            exit 1
+          }
+          
+          echo "✓ Broker B is operational and serving the failover topic"
+
+      - name: Collect etcd state for debugging
+        if: failure()
+        run: |
+          echo "=== ETCD State Dump ==="
+          docker exec etcd-danube etcdctl get --prefix "" || echo "Failed to dump etcd state"
+          echo "=== End ETCD State ==="
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-failover-logs
+          path: |
+            broker-a.log
+            broker-b.log
+            failover_test
+            *.rs
