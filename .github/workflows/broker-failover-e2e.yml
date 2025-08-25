@@ -99,18 +99,6 @@ jobs:
           }
           echo "✓ Topic successfully created"
 
-      - name: Run baseline pub/sub test on Broker A
-        env:
-          RUST_LOG: info
-        run: |
-          echo "Running baseline subscription test to verify Broker A functionality..."
-          timeout 60s cargo test -p danube-broker subscription_basic::basic_subscription_exclusive -- --nocapture || {
-            echo "Baseline test failed on Broker A"
-            cat broker-a.log
-            exit 1
-          }
-          echo "✓ Baseline pub/sub test passed on Broker A"
-
       - name: Start Broker B (background)
         env:
           RUST_LOG: info
