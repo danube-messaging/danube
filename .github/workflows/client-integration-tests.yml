@@ -92,7 +92,7 @@ jobs:
           ./target/release/danube-admin-cli topics create /default/client-reconnect-test || true
           ./target/release/danube-admin-cli topics create /default/client-consumer-reconnect || true
 
-      - name: Background failover: kill A and start B (delayed)
+      - name: Background failover - kill A and start B (delayed)
         env:
           RUST_LOG: info
         run: |
