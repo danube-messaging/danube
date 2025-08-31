@@ -6,7 +6,7 @@ use rand::{thread_rng, Rng};
 use rustls::crypto;
 use tokio::time::{sleep, Duration};
 
-mod common;
+// no local helpers; CI workflow manages brokers
 
 async fn setup_client() -> Result<DanubeClient> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
