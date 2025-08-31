@@ -20,18 +20,56 @@ pub fn ensure_certs_or_skip() {
     }
 }
 
-pub fn start_broker(broker_port: u16, admin_port: u16, prom_port: u16, log_file: &str) -> Option<BrokerHandle> {
-    let broker_bin = if cfg!(debug_assertions) {
-        "./target/debug/danube-broker"
-    } else {
-        "./target/release/danube-broker"
-    };
-    if !Path::new(broker_bin).exists() {
-        eprintln!("[test] broker binary not found at {}", broker_bin);
-        return None;
-    }
+fn broker_bin_paths() -> [&'static str; 2] {
+    ["./target/debug/danube-broker", "./target/release/danube-broker"]
+}
 
-    let child = Command::new(broker_bin)
+fn admin_cli_paths() -> [&'static str; 2] {
+    ["./target/debug/danube-admin-cli", "./target/release/danube-admin-cli"]
+}
+
+fn ensure_broker_built() -> Option<String> {
+    for p in broker_bin_paths() {
+        if Path::new(p).exists() {
+            return Some(p.to_string());
+        }
+    }
+    // Try building debug first
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "danube-broker"])
+        .status()
+        .ok()?;
+    for p in broker_bin_paths() {
+        if Path::new(p).exists() {
+            return Some(p.to_string());
+        }
+    }
+    None
+}
+
+fn ensure_admin_cli_built() -> Option<String> {
+    for p in admin_cli_paths() {
+        if Path::new(p).exists() {
+            return Some(p.to_string());
+        }
+    }
+    // Try building debug first
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "danube-admin-cli"])
+        .status()
+        .ok()?;
+    for p in admin_cli_paths() {
+        if Path::new(p).exists() {
+            return Some(p.to_string());
+        }
+    }
+    None
+}
+
+pub fn start_broker(broker_port: u16, admin_port: u16, prom_port: u16, log_file: &str) -> Option<BrokerHandle> {
+    let broker_bin = ensure_broker_built()?;
+
+    let child = Command::new(&broker_bin)
         .args([
             "--config-file", "./config/danube_broker.yml",
             "--broker-addr", &format!("0.0.0.0:{}", broker_port),
@@ -57,16 +95,14 @@ pub fn kill_broker(handle: &mut BrokerHandle) {
 }
 
 pub fn run_admin_cli(args: &[&str]) -> bool {
-    let cli_bin = if cfg!(debug_assertions) {
-        "./target/debug/danube-admin-cli"
-    } else {
-        "./target/release/danube-admin-cli"
+    let cli_bin = match ensure_admin_cli_built() {
+        Some(p) => p,
+        None => {
+            eprintln!("[test] admin cli binary not found and build failed");
+            return false;
+        }
     };
-    if !Path::new(cli_bin).exists() {
-        eprintln!("[test] admin cli binary not found at {}", cli_bin);
-        return false;
-    }
-    let status = Command::new(cli_bin)
+    let status = Command::new(&cli_bin)
         .args(args)
         .status();
     match status {
