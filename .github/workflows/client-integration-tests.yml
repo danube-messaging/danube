@@ -133,6 +133,7 @@ jobs:
       - name: Run danube-client tests only (serialized)
         env:
           RUST_LOG: info
+          DANUBE_CA_CERT: ./cert/ca-cert.pem
         run: |
           cargo test -p danube-client -- --nocapture --test-threads=1
 
