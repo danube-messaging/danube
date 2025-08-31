@@ -261,4 +261,18 @@ impl TopicConsumer {
         self.stream_client = Some(client);
         Ok(())
     }
+
+    pub(crate) fn retry_params(&self) -> (u64, u64) {
+        let base = if self.consumer_options.base_backoff_ms == 0 {
+            200
+        } else {
+            self.consumer_options.base_backoff_ms
+        };
+        let cap = if self.consumer_options.max_backoff_ms == 0 {
+            5_000
+        } else {
+            self.consumer_options.max_backoff_ms
+        };
+        (base, cap)
+    }
 }

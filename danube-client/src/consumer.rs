@@ -9,6 +9,8 @@ use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::{sleep, Duration};
+use rand::{thread_rng, Rng};
 
 /// Represents the type of subscription
 ///
@@ -157,31 +159,59 @@ impl Consumer {
         for (_, consumer) in &self.consumers {
             let tx = tx.clone();
 
-            let stream_result = {
-                let mut consumer = consumer.lock().await;
-                consumer.receive().await
-            };
-
-            if let Ok(stream) = stream_result {
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    while let Some(message) = stream.next().await {
-                        match message {
-                            Ok(stream_message) => {
-                                let message: StreamMessage = stream_message.into();
-                                if let Err(_) = tx.send(message).await {
-                                    // if the channel is closed exit the loop
-                                    break;
+            let consumer_clone = Arc::clone(consumer);
+            tokio::spawn(async move {
+                // Retry loop: obtain a stream, read until error, then resubscribe and retry
+                loop {
+                    // Obtain current options and a fresh stream
+                    let (base_ms, cap_ms) = {
+                        let mut locked = consumer_clone.lock().await;
+                        match locked.receive().await {
+                            Ok(stream) => {
+                                // store options via accessor
+                                let (base, cap) = locked.retry_params();
+                                drop(locked);
+                                // Start consuming the stream
+                                let mut stream = stream;
+                                while let Some(message) = stream.next().await {
+                                    match message {
+                                        Ok(stream_message) => {
+                                            let message: StreamMessage = stream_message.into();
+                                            if tx.send(message).await.is_err() {
+                                                return; // channel closed
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error receiving message: {}", e);
+                                            break; // break to outer retry loop
+                                        }
+                                    }
                                 }
+                                (base, cap)
                             }
                             Err(e) => {
-                                eprintln!("Error receiving message: {}", e);
-                                break;
+                                eprintln!("Failed to create receive stream: {}", e);
+                                let (base, cap) = locked.retry_params();
+                                (base, cap)
                             }
                         }
+                    };
+
+                    // Exponential backoff with jitter before re-subscribing
+                    let jitter = thread_rng().gen_range(0..=base_ms.min(cap_ms));
+                    sleep(Duration::from_millis(jitter)).await;
+
+                    // Re-subscribe to refresh routing and consumer_id
+                    let mut locked = consumer_clone.lock().await;
+                    if let Err(e) = locked.subscribe().await {
+                        eprintln!("Resubscribe failed: {}", e);
+                        // Additional backoff on repeated failures
+                        let jitter = thread_rng().gen_range(0..=cap_ms);
+                        sleep(Duration::from_millis(jitter)).await;
                     }
-                });
-            }
+                    drop(locked);
+                }
+            });
         }
 
         Ok(rx)
@@ -310,6 +340,10 @@ impl ConsumerBuilder {
 /// Configuration options for consumers
 #[derive(Debug, Clone, Default)]
 pub struct ConsumerOptions {
-    // schema used to encode the messages
+    // Reserved for future use
     pub others: String,
+    // Base backoff in milliseconds for exponential backoff
+    pub base_backoff_ms: u64,
+    // Maximum backoff cap in milliseconds
+    pub max_backoff_ms: u64,
 }

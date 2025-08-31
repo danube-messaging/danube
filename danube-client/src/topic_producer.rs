@@ -23,6 +23,7 @@ use tokio::time::{sleep, Duration};
 use tonic::metadata::MetadataValue;
 use tonic::{transport::Uri, Code, Response, Status};
 use tracing::warn;
+use rand::{thread_rng, Rng};
 
 /// Represents a Producer
 #[derive(Debug)]
@@ -87,13 +88,10 @@ impl TopicProducer {
 
         let mut request = tonic::Request::new(producer_request);
 
-        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
-            self.insert_auth_token(&mut request, &self.client.uri, api_key)
-                .await?;
-        }
+        // Auth will be inserted per-attempt below
 
-        let max_retries = 4;
-        let mut attempts = 0;
+        let (max_retries, base_backoff_ms, max_backoff_ms) = self.retry_params();
+        let mut attempts = 0usize;
 
         let mut broker_addr = self.client.uri.clone();
 
@@ -131,21 +129,22 @@ impl TopicProducer {
                         return Err(DanubeError::FromStatus(status, error_message));
                     }
 
-                    attempts += 1;
-                    if attempts >= max_retries {
-                        return Err(DanubeError::FromStatus(status, error_message));
-                    }
-
-                    // if not a SERVICE_NOT_READY error received from broker returns
-                    // else continue to loop as the topic may be in process to be assigned to a broker
+                    // Check retryable conditions: ServiceNotReady or transport retryables
+                    let mut retryable = matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted);
                     if let Some(error_m) = &error_message {
-                        if error_m.error_type != 3 {
-                            return Err(DanubeError::FromStatus(status, error_message));
+                        if error_m.error_type == 3 { // SERVICE_NOT_READY
+                            retryable = true;
                         }
                     }
 
-                    // as we are in SERVICE_NOT_READY case, let give some space to the broker to assign the topic
-                    sleep(Duration::from_secs(2)).await;
+                    attempts += 1;
+                    if !retryable || attempts > max_retries {
+                        return Err(DanubeError::FromStatus(status, error_message));
+                    }
+
+                    // backoff with full jitter
+                    let backoff = self.jittered_backoff(attempts - 1, base_backoff_ms, max_backoff_ms);
+                    sleep(backoff).await;
 
                     match self
                         .client
@@ -186,7 +185,7 @@ impl TopicProducer {
 
     // the Producer sends messages to the topic
     pub(crate) async fn send(
-        &self,
+        &mut self,
         data: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
     ) -> Result<u64> {
@@ -227,26 +226,80 @@ impl TopicProducer {
 
         let req: ProtoStreamMessage = send_message.into();
 
-        let mut request = tonic::Request::new(req);
+        let (max_retries, base_backoff_ms, max_backoff_ms) = self.retry_params();
+        let mut attempts = 0usize;
+        let mut broker_addr = self.client.uri.clone();
 
-        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
-            self.insert_auth_token(&mut request, &self.client.uri, api_key)
-                .await?;
-        }
-
-        let mut client = self.stream_client.as_ref().unwrap().clone();
-        let response: std::result::Result<Response<MessageResponse>, Status> =
-            client.send_message(request).await;
-
-        match response {
-            Ok(resp) => {
-                let response = resp.into_inner();
-                return Ok(response.request_id);
+        loop {
+            let mut client = self.stream_client.as_ref().unwrap().clone();
+            // Rebuild request each attempt
+            let mut request = tonic::Request::new(req.clone());
+            if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
+                self.insert_auth_token(&mut request, &self.client.uri, api_key).await?;
             }
-            // maybe some checks on the status, if anything can be handled by server
-            Err(status) => {
-                let decoded_message = decode_error_details(&status);
-                return Err(DanubeError::FromStatus(status, decoded_message));
+            let response: std::result::Result<Response<MessageResponse>, Status> =
+                client.send_message(request).await;
+
+            match response {
+                Ok(resp) => {
+                    let response = resp.into_inner();
+                    return Ok(response.request_id);
+                }
+                Err(status) => {
+                    let error_message = decode_error_details(&status);
+                    // retryable?
+                    let mut retryable = matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted);
+                    if let Some(error_m) = &error_message {
+                        if error_m.error_type == 3 { // SERVICE_NOT_READY
+                            retryable = true;
+                        }
+                    }
+
+                    attempts += 1;
+                    if !retryable || attempts > max_retries {
+                        return Err(DanubeError::FromStatus(status, error_message));
+                    }
+
+                    // backoff with jitter
+                    let backoff = self.jittered_backoff(attempts - 1, base_backoff_ms, max_backoff_ms);
+                    sleep(backoff).await;
+
+                    // lookup and reconnect, then recreate producer id on that broker
+                    match self
+                        .client
+                        .lookup_service
+                        .handle_lookup(&broker_addr, &self.topic)
+                        .await
+                    {
+                        Ok(addr) => {
+                            broker_addr = addr.clone();
+                            self.connect(&addr).await?;
+                            // update the client URI with the latest connection
+                            self.client.uri = addr;
+                            // Re-create on new connection to obtain producer_id
+                            let _ = self.create().await?;
+                        }
+
+                        Err(err) => {
+                            if let Some(status) = err.extract_status() {
+                                if let Some(error_message) = decode_error_details(status) {
+                                    if error_message.error_type != 3 {
+                                        return Err(DanubeError::FromStatus(
+                                            status.to_owned(),
+                                            Some(error_message),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                warn!("Lookup request failed with error:  {}", err);
+                                return Err(DanubeError::Unrecoverable(format!(
+                                    "Lookup failed with error: {}",
+                                    err
+                                )));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -275,5 +328,32 @@ impl TopicProducer {
         let client = ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone());
         self.stream_client = Some(client);
         Ok(())
+    }
+
+    fn retry_params(&self) -> (usize, u64, u64) {
+        let max_retries = if self.producer_options.max_retries == 0 {
+            5
+        } else {
+            self.producer_options.max_retries
+        }; // attempts beyond this are not allowed
+        let base_backoff_ms = if self.producer_options.base_backoff_ms == 0 {
+            200
+        } else {
+            self.producer_options.base_backoff_ms
+        };
+        let max_backoff_ms = if self.producer_options.max_backoff_ms == 0 {
+            5_000
+        } else {
+            self.producer_options.max_backoff_ms
+        };
+        (max_retries, base_backoff_ms, max_backoff_ms)
+    }
+
+    fn jittered_backoff(&self, attempt: usize, base_ms: u64, cap_ms: u64) -> Duration {
+        let pow = 1u64.checked_shl(attempt.min(16) as u32).unwrap_or(u64::MAX);
+        let exp = base_ms.saturating_mul(pow);
+        let backoff = exp.min(cap_ms);
+        let jitter = thread_rng().gen_range(0..=backoff);
+        Duration::from_millis(jitter)
     }
 }

@@ -140,9 +140,11 @@ impl Producer {
             None => 0,
         };
 
-        let producers = self.producers.lock().await;
+        let mut producers = self.producers.lock().await;
 
-        let sequence_id = producers[next_partition].send(data, attributes).await?;
+        let sequence_id = producers[next_partition]
+            .send(data, attributes)
+            .await?;
 
         Ok(sequence_id)
     }
@@ -298,6 +300,12 @@ impl ProducerBuilder {
 /// Configuration options for producers
 #[derive(Debug, Clone, Default)]
 pub struct ProducerOptions {
-    // schema used to encode the messages
+    // Reserved for future use
     pub others: String,
+    // Maximum number of retries for operations like create/send on transient failures
+    pub max_retries: usize,
+    // Base backoff in milliseconds for exponential backoff
+    pub base_backoff_ms: u64,
+    // Maximum backoff cap in milliseconds
+    pub max_backoff_ms: u64,
 }
