@@ -36,4 +36,5 @@ workspace = true
 [dev-dependencies]
 anyhow = "1.0.82"
 tracing-subscriber = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 

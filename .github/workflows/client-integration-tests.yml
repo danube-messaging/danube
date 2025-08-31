@@ -1,0 +1,66 @@
+name: Danube Client Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - 'danube-client/**'
+      - '.github/workflows/client-integration-tests.yml'
+
+jobs:
+  client-tests:
+    runs-on: ubuntu-latest
+    services:
+      etcd:
+        image: bitnami/etcd:latest
+        ports:
+          - 2379:2379
+        options: >-
+          --name etcd-danube-client
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://0.0.0.0:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Wait for etcd to be ready
+        run: |
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 2379; then
+              echo "etcd is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "etcd failed to start."
+              docker logs etcd-danube-client
+              exit 1
+            fi
+            echo "Waiting for etcd to start..."
+            sleep 5
+          done
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      - name: Run danube-client tests only
+        env:
+          RUST_LOG: info
+        run: |
+          cargo test -p danube-client -- --nocapture
