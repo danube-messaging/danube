@@ -16,18 +16,9 @@ async fn setup_client() -> Result<DanubeClient> {
     })
     .await;
 
-    let ca_path = std::env::var("DANUBE_CA_CERT").ok()
-        .unwrap_or_else(|| {
-            if std::path::Path::new("./cert/ca-cert.pem").exists() {
-                "./cert/ca-cert.pem".to_string()
-            } else {
-                "../cert/ca-cert.pem".to_string()
-            }
-        });
-
     let client = DanubeClient::builder()
         .service_url("https://127.0.0.1:6650")
-        .with_tls(ca_path)?
+        .with_tls("../cert/ca-cert.pem")?
         .build()
         .await?;
 
