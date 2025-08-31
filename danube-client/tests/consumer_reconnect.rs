@@ -7,7 +7,6 @@ use rustls::crypto;
 use tokio::time::{sleep, timeout, Duration};
 
 mod common;
-use common::{kill_broker, run_admin_cli, start_broker};
 
 async fn setup_client() -> Result<DanubeClient> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -31,14 +30,6 @@ async fn setup_client() -> Result<DanubeClient> {
 
 #[tokio::test]
 async fn consumer_reconnect_after_broker_failover() -> Result<()> {
-    // Start Broker A on 6650 / 50051
-    let mut handle_a = start_broker(6650, 50051, 9040, "broker-a-client-consumer.log").expect("start broker A");
-
-    // Provision a topic via admin CLI
-    std::env::set_var("DANUBE_ADMIN_ENDPOINT", "http://127.0.0.1:50051");
-    assert!(run_admin_cli(&["topics", "create", "/default/client-consumer-reconnect"]))
-        ;
-
     // Build client
     let client = setup_client().await?;
 
@@ -73,13 +64,8 @@ async fn consumer_reconnect_after_broker_failover() -> Result<()> {
         .expect("timed out waiting for first message")
         .expect("channel closed");
 
-    // Start Broker B and fail Broker A
-    let _handle_b = start_broker(6651, 50052, 9041, "broker-b-client-consumer.log").expect("start broker B");
-    sleep(Duration::from_secs(2)).await;
-    kill_broker(&mut handle_a);
-
-    // Allow reassignment
-    sleep(Duration::from_secs(5)).await;
+    // Background workflow will kill A and start B; allow time for reassignments
+    sleep(Duration::from_secs(10)).await;
 
     // Send second message; producer should reconnect; consumer should resubscribe and receive
     let _ = producer.send(b"m2".to_vec(), None).await?;

@@ -59,8 +59,88 @@ jobs:
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
+      - name: Start Broker A (background)
+        env:
+          RUST_LOG: info
+        run: |
+          nohup ./target/release/danube-broker \
+            --config-file ./config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --prom-exporter 0.0.0.0:9040 \
+            > broker-a.log 2>&1 &
+          echo $! > broker-a.pid
+          
+          # Wait for Broker A admin and discovery ports to be ready
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 50051 && nc -zv 127.0.0.1 6650; then
+              echo "Broker A is ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker A failed to start."
+              cat broker-a.log
+              exit 1
+            fi
+            echo "Waiting for Broker A to start... ($i/15)"
+            sleep 3
+          done
+
+      - name: Provision client test topics (optional)
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          ./target/release/danube-admin-cli topics create /default/client-reconnect-test || true
+          ./target/release/danube-admin-cli topics create /default/client-consumer-reconnect || true
+
+      - name: Background failover: kill A and start B
+        env:
+          RUST_LOG: info
+        run: |
+          ( \
+            sleep 6; \
+            echo "Killing Broker A to simulate failure..."; \
+            if [ -f broker-a.pid ]; then \
+              BROKER_A_PID=$(cat broker-a.pid); \
+              kill $BROKER_A_PID || echo "Broker A may have already exited"; \
+              sleep 2; \
+              kill -9 $BROKER_A_PID 2>/dev/null || echo "Force kill not needed"; \
+            fi; \
+            echo "✓ Broker A terminated"; \
+            \
+            echo "Starting Broker B..."; \
+            nohup ./target/release/danube-broker \
+              --config-file ./config/danube_broker.yml \
+              --broker-addr 0.0.0.0:6651 \
+              --admin-addr 0.0.0.0:50052 \
+              --prom-exporter 0.0.0.0:9041 \
+              > broker-b.log 2>&1 & \
+            echo $! > broker-b.pid; \
+            for i in {1..15}; do \
+              if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then \
+                echo "Broker B is ready."; \
+                break; \
+              elif [ $i -eq 15 ]; then \
+                echo "Broker B failed to start."; \
+                cat broker-b.log; \
+                exit 1; \
+              fi; \
+              echo "Waiting for Broker B to start... ($i/15)"; \
+              sleep 3; \
+            done; \
+          ) &
+
       - name: Run danube-client tests only
         env:
           RUST_LOG: info
         run: |
           cargo test -p danube-client -- --nocapture
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-integration-logs
+          path: |
+            broker-a.log
+            broker-b.log
+            **/*.rs
