@@ -92,12 +92,13 @@ jobs:
           ./target/release/danube-admin-cli topics create /default/client-reconnect-test || true
           ./target/release/danube-admin-cli topics create /default/client-consumer-reconnect || true
 
-      - name: Background failover: kill A and start B
+      - name: Background failover: kill A and start B (delayed)
         env:
           RUST_LOG: info
         run: |
           ( \
-            sleep 6; \
+            # Delay failover sufficiently so tests establish connections to Broker A first
+            sleep 20; \
             echo "Killing Broker A to simulate failure..."; \
             if [ -f broker-a.pid ]; then \
               BROKER_A_PID=$(cat broker-a.pid); \
@@ -129,11 +130,11 @@ jobs:
             done; \
           ) &
 
-      - name: Run danube-client tests only
+      - name: Run danube-client tests only (serialized)
         env:
           RUST_LOG: info
         run: |
-          cargo test -p danube-client -- --nocapture
+          cargo test -p danube-client -- --nocapture --test-threads=1
 
       - name: Upload logs on failure
         if: failure()

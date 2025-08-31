@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -7,6 +7,17 @@ pub struct BrokerHandle {
     pub child: Child,
     pub admin_port: u16,
     pub broker_port: u16,
+}
+
+fn wait_for_etcd(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if std::net::TcpStream::connect(("127.0.0.1", 2379)).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    false
 }
 
 pub fn ensure_certs_or_skip() {
