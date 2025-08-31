@@ -20,6 +20,13 @@ pub fn ensure_certs_or_skip() {
     }
 }
 
+pub fn ca_cert_path() -> String {
+    workspace_root()
+        .join("cert/ca-cert.pem")
+        .to_string_lossy()
+        .to_string()
+}
+
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR points to danube-client; workspace root is parent
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
@@ -86,6 +93,12 @@ fn ensure_admin_cli_built() -> Option<String> {
 
 pub fn start_broker(broker_port: u16, admin_port: u16, prom_port: u16, log_file: &str) -> Option<BrokerHandle> {
     let broker_bin = ensure_broker_built()?;
+
+    // Ensure etcd is up like in CI workflow
+    if !wait_for_etcd(Duration::from_secs(30)) {
+        eprintln!("[test] etcd is not reachable at 127.0.0.1:2379. Start etcd (e.g., docker run bitnami/etcd ...) and retry.");
+        return None;
+    }
 
     let root = workspace_root();
     let cfg_path = root.join("config/danube_broker.yml");
