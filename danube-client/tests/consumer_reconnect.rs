@@ -6,18 +6,15 @@ use rand::{thread_rng, Rng};
 use rustls::crypto;
 use tokio::time::{sleep, timeout, Duration};
 
-mod common;
-
 async fn setup_client() -> Result<DanubeClient> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-    INIT
-        .get_or_init(|| async {
-            let provider = crypto::ring::default_provider();
-            provider
-                .install_default()
-                .expect("Failed to install default CryptoProvider");
-        })
-        .await;
+    INIT.get_or_init(|| async {
+        let provider = crypto::ring::default_provider();
+        provider
+            .install_default()
+            .expect("Failed to install default CryptoProvider");
+    })
+    .await;
 
     let client = DanubeClient::builder()
         .service_url("https://127.0.0.1:6650")
