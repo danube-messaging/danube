@@ -68,6 +68,9 @@ jobs:
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --prom-exporter 0.0.0.0:9040 \
+            --cert-file ./cert/server-cert.pem \
+            --key-file ./cert/server-key.pem \
+            --ca-file ./cert/ca-cert.pem \
             > broker-a.log 2>&1 &
           echo $! > broker-a.pid
           
@@ -114,6 +117,9 @@ jobs:
               --broker-addr 0.0.0.0:6651 \
               --admin-addr 0.0.0.0:50052 \
               --prom-exporter 0.0.0.0:9041 \
+              --cert-file ./cert/server-cert.pem \
+              --key-file ./cert/server-key.pem \
+              --ca-file ./cert/ca-cert.pem \
               > broker-b.log 2>&1 & \
             echo $! > broker-b.pid; \
             for i in {1..15}; do \
