@@ -1,5 +1,6 @@
 use crate::{
     errors::{DanubeError, Result},
+    reconnect_manager::ReconnectManager,
     topic_consumer::TopicConsumer,
     DanubeClient,
 };
@@ -150,38 +151,57 @@ impl Consumer {
     /// - `Ok(mpsc::Receiver<StreamMessage>)` if the receive client is successfully created and ready to receive messages.
     /// - `Err(e)` if the receive client cannot be created or if other issues occur.
     pub async fn receive(&mut self) -> Result<mpsc::Receiver<StreamMessage>> {
-        // Create a channel to send messages to the client
-        let (tx, rx) = mpsc::channel(100); // Buffer size of 100, adjust as needed
+        let (tx, rx) = mpsc::channel(100);
 
-        // Spawn a task for each cloned TopicConsumer
-        for (_, consumer) in &self.consumers {
+        // Create reconnect manager for consumers
+        let reconnect_manager = ReconnectManager::new(
+            self.client.clone(),
+            5, // max retries
+            self.consumer_options.base_backoff_ms,
+            self.consumer_options.max_backoff_ms,
+        );
+
+        // Spawn simplified receive task for each consumer
+        for (_topic_name, consumer) in &self.consumers {
             let tx = tx.clone();
+            let consumer = Arc::clone(consumer);
+            let _reconnect_manager = reconnect_manager.clone();
 
-            let stream_result = {
-                let mut consumer = consumer.lock().await;
-                consumer.receive().await
-            };
+            tokio::spawn(async move {
+                loop {
+                    // Get stream with automatic reconnect on failure
+                    let stream_result = {
+                        let mut locked = consumer.lock().await;
+                        locked.receive().await
+                    };
 
-            if let Ok(stream) = stream_result {
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    while let Some(message) = stream.next().await {
-                        match message {
-                            Ok(stream_message) => {
-                                let message: StreamMessage = stream_message.into();
-                                if let Err(_) = tx.send(message).await {
-                                    // if the channel is closed exit the loop
-                                    break;
+                    match stream_result {
+                        Ok(mut stream) => {
+                            // Process messages until stream ends or errors
+                            while let Some(message) = stream.next().await {
+                                match message {
+                                    Ok(stream_message) => {
+                                        let message: StreamMessage = stream_message.into();
+                                        if tx.send(message).await.is_err() {
+                                            return; // channel closed
+                                        }
+                                    }
+                                    Err(_) => break, // Stream error, will retry
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Error receiving message: {}", e);
-                                break;
-                            }
+                        }
+                        Err(_) => {
+                            // Failed to get stream, will retry after backoff
                         }
                     }
-                });
-            }
+
+                    // Re-subscribe with automatic backoff and reconnect
+                    let _ = {
+                        let mut locked = consumer.lock().await;
+                        locked.subscribe().await
+                    };
+                }
+            });
         }
 
         Ok(rx)
@@ -310,6 +330,10 @@ impl ConsumerBuilder {
 /// Configuration options for consumers
 #[derive(Debug, Clone, Default)]
 pub struct ConsumerOptions {
-    // schema used to encode the messages
+    // Reserved for future use
     pub others: String,
+    // Base backoff in milliseconds for exponential backoff
+    pub base_backoff_ms: u64,
+    // Maximum backoff cap in milliseconds
+    pub max_backoff_ms: u64,
 }

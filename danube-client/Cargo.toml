@@ -28,6 +28,7 @@ futures = { workspace = true }
 futures-core = "0.3.31"
 futures-util = "0.3.31"
 base64 = "0.22.1"
+rand = "0.8"
 
 [lints]
 workspace = true
@@ -35,3 +36,5 @@ workspace = true
 [dev-dependencies]
 anyhow = "1.0.82"
 tracing-subscriber = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
