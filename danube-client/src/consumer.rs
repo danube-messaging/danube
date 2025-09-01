@@ -1,5 +1,6 @@
 use crate::{
     errors::{DanubeError, Result},
+    reconnect_manager::ReconnectManager,
     topic_consumer::TopicConsumer,
     DanubeClient,
 };
@@ -9,8 +10,6 @@ use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{sleep, Duration};
-use rand::{thread_rng, Rng};
 
 /// Represents the type of subscription
 ///
@@ -152,64 +151,55 @@ impl Consumer {
     /// - `Ok(mpsc::Receiver<StreamMessage>)` if the receive client is successfully created and ready to receive messages.
     /// - `Err(e)` if the receive client cannot be created or if other issues occur.
     pub async fn receive(&mut self) -> Result<mpsc::Receiver<StreamMessage>> {
-        // Create a channel to send messages to the client
-        let (tx, rx) = mpsc::channel(100); // Buffer size of 100, adjust as needed
+        let (tx, rx) = mpsc::channel(100);
 
-        // Spawn a task for each cloned TopicConsumer
-        for (_, consumer) in &self.consumers {
+        // Create reconnect manager for consumers
+        let reconnect_manager = ReconnectManager::new(
+            self.client.clone(),
+            5, // max retries
+            self.consumer_options.base_backoff_ms,
+            self.consumer_options.max_backoff_ms,
+        );
+
+        // Spawn simplified receive task for each consumer
+        for (_topic_name, consumer) in &self.consumers {
             let tx = tx.clone();
+            let consumer = Arc::clone(consumer);
+            let _reconnect_manager = reconnect_manager.clone();
 
-            let consumer_clone = Arc::clone(consumer);
             tokio::spawn(async move {
-                // Retry loop: obtain a stream, read until error, then resubscribe and retry
                 loop {
-                    // Obtain current options and a fresh stream
-                    let (base_ms, cap_ms) = {
-                        let mut locked = consumer_clone.lock().await;
-                        match locked.receive().await {
-                            Ok(stream) => {
-                                // store options via accessor
-                                let (base, cap) = locked.retry_params();
-                                drop(locked);
-                                // Start consuming the stream
-                                let mut stream = stream;
-                                while let Some(message) = stream.next().await {
-                                    match message {
-                                        Ok(stream_message) => {
-                                            let message: StreamMessage = stream_message.into();
-                                            if tx.send(message).await.is_err() {
-                                                return; // channel closed
-                                            }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Error receiving message: {}", e);
-                                            break; // break to outer retry loop
-                                        }
-                                    }
-                                }
-                                (base, cap)
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create receive stream: {}", e);
-                                let (base, cap) = locked.retry_params();
-                                (base, cap)
-                            }
-                        }
+                    // Get stream with automatic reconnect on failure
+                    let stream_result = {
+                        let mut locked = consumer.lock().await;
+                        locked.receive().await
                     };
 
-                    // Exponential backoff with jitter before re-subscribing
-                    let jitter = thread_rng().gen_range(0..=base_ms.min(cap_ms));
-                    sleep(Duration::from_millis(jitter)).await;
-
-                    // Re-subscribe to refresh routing and consumer_id
-                    let mut locked = consumer_clone.lock().await;
-                    if let Err(e) = locked.subscribe().await {
-                        eprintln!("Resubscribe failed: {}", e);
-                        // Additional backoff on repeated failures
-                        let jitter = thread_rng().gen_range(0..=cap_ms);
-                        sleep(Duration::from_millis(jitter)).await;
+                    match stream_result {
+                        Ok(mut stream) => {
+                            // Process messages until stream ends or errors
+                            while let Some(message) = stream.next().await {
+                                match message {
+                                    Ok(stream_message) => {
+                                        let message: StreamMessage = stream_message.into();
+                                        if tx.send(message).await.is_err() {
+                                            return; // channel closed
+                                        }
+                                    }
+                                    Err(_) => break, // Stream error, will retry
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Failed to get stream, will retry after backoff
+                        }
                     }
-                    drop(locked);
+
+                    // Re-subscribe with automatic backoff and reconnect
+                    let _ = {
+                        let mut locked = consumer.lock().await;
+                        locked.subscribe().await
+                    };
                 }
             });
         }

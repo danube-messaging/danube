@@ -32,5 +32,9 @@ mod connection_manager;
 
 mod health_check;
 
+mod retry_manager;
+
+mod reconnect_manager;
+
 mod reliable_options;
 pub use reliable_options::{ConfigReliableOptions, ConfigRetentionPolicy};
