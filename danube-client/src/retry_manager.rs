@@ -32,6 +32,11 @@ impl RetryManager {
         }
     }
 
+    /// Get the maximum number of retries
+    pub fn max_retries(&self) -> usize {
+        self.max_retries
+    }
+
     /// Insert authentication token into request
     pub async fn insert_auth_token<T>(
         client: &DanubeClient,

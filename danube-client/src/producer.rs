@@ -130,6 +130,9 @@ impl Producer {
         data: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
     ) -> Result<u64> {
+        use crate::retry_manager::RetryManager;
+        use crate::errors::DanubeError;
+
         let next_partition = match self.partitions {
             Some(_) => self
                 .message_router
@@ -140,13 +143,91 @@ impl Producer {
             None => 0,
         };
 
-        let mut producers = self.producers.lock().await;
+        // Create retry manager for producers
+        let retry_manager = RetryManager::new(
+            self.producer_options.max_retries,
+            self.producer_options.base_backoff_ms,
+            self.producer_options.max_backoff_ms,
+        );
 
-        let sequence_id = producers[next_partition]
-            .send(data, attributes)
-            .await?;
+        let mut attempts = 0;
+        let max_retries = if self.producer_options.max_retries == 0 { 5 } else { self.producer_options.max_retries };
 
-        Ok(sequence_id)
+        loop {
+            let send_result = {
+                let mut producers = self.producers.lock().await;
+                producers[next_partition].send(data.clone(), attributes.clone()).await
+            };
+
+            match send_result {
+                Ok(sequence_id) => return Ok(sequence_id),
+                Err(error) => {
+                    // Check if this is an unrecoverable error (e.g., stream client not initialized)
+                    if matches!(error, DanubeError::Unrecoverable(_)) {
+                        eprintln!("Unrecoverable error detected in producer send, attempting recreation: {:?}", error);
+                        
+                        // Attempt to recreate the producer for unrecoverable errors
+                        let recreate_result = {
+                            let mut producers = self.producers.lock().await;
+                            producers[next_partition].create().await
+                        };
+                        
+                        match recreate_result {
+                            Ok(_) => {
+                                eprintln!("Producer recreation successful after unrecoverable error, continuing...");
+                                attempts = 0; // Reset attempts after successful recreation
+                                continue; // Go back to sending
+                            }
+                            Err(e) => {
+                                eprintln!("Producer recreation failed after unrecoverable error: {:?}", e);
+                                return Err(e); // Return error if recreation fails
+                            }
+                        }
+                    }
+                    
+                    // Failed to send, check if retryable
+                    if retry_manager.is_retryable_error(&error) {
+                        attempts += 1;
+                        if attempts > max_retries {
+                            eprintln!("Max retries exceeded for producer send, attempting broker lookup and recreation");
+                            
+                            // Attempt broker lookup and producer recreation
+                            let lookup_and_recreate_result = {
+                                let mut producers = self.producers.lock().await;
+                                let producer = &mut producers[next_partition];
+                                
+                                // Perform lookup and reconnect
+                                if let Ok(new_addr) = producer.client.lookup_service.handle_lookup(&producer.client.uri, &producer.topic).await {
+                                    producer.client.uri = new_addr;
+                                    producer.connect(&producer.client.uri.clone()).await?;
+                                    // Recreate producer on new connection
+                                    producer.create().await
+                                } else {
+                                    Err(error)
+                                }
+                            };
+                            
+                            match lookup_and_recreate_result {
+                                Ok(_) => {
+                                    eprintln!("Broker lookup and producer recreation successful, continuing...");
+                                    attempts = 0; // Reset attempts after successful recreation
+                                    continue; // Go back to sending
+                                }
+                                Err(e) => {
+                                    eprintln!("Broker lookup and producer recreation failed: {:?}", e);
+                                    return Err(e); // Return error if recreation fails
+                                }
+                            }
+                        }
+                        let backoff = retry_manager.calculate_backoff(attempts - 1);
+                        tokio::time::sleep(backoff).await;
+                    } else {
+                        eprintln!("Non-retryable error in producer send: {:?}", error);
+                        return Err(error); // Non-retryable error
+                    }
+                }
+            }
+        }
     }
 }
 

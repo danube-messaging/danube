@@ -1,8 +1,5 @@
 use crate::{
-    errors::Result,
-    retry_manager::{RetryManager, status_to_danube_error},
-    schema::Schema,
-    DanubeClient, ProducerOptions,
+    errors::{DanubeError, Result}, retry_manager::{RetryManager, status_to_danube_error}, DanubeClient, ProducerOptions, Schema,
 };
 use danube_core::proto::{
     producer_service_client::ProducerServiceClient, ProducerAccessMode,
@@ -26,9 +23,9 @@ use tonic::transport::Uri;
 #[allow(dead_code)]
 pub(crate) struct TopicProducer {
     // the Danube client
-    client: DanubeClient,
+    pub(crate) client: DanubeClient,
     // the topic name, used by the producer to publish messages
-    topic: String,
+    pub(crate) topic: String,
     // the name of the producer
     producer_name: String,
     // unique identifier of the producer, provided by the Broker
@@ -168,48 +165,20 @@ impl TopicProducer {
         };
 
         let req: ProtoStreamMessage = send_message.into();
-        let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 { 5 } else { self.producer_options.max_retries };
+        let mut request = tonic::Request::new(req);
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
-        loop {
-            let mut request = tonic::Request::new(req.clone());
-            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-            let stream_client = self.stream_client.as_ref().unwrap();
-            match stream_client.clone().send_message(request).await {
-                Ok(resp) => {
-                    let response = resp.into_inner();
-                    return Ok(response.request_id);
-                }
-                Err(status) => {
-                    let error = status_to_danube_error(status);
-                    
-                    if !self.retry_manager.is_retryable_error(&error) {
-                        return Err(error);
-                    }
-                    
-                    attempts += 1;
-                    if attempts > max_retries {
-                        return Err(error);
-                    }
-                    
-                    // Perform lookup and reconnect
-                    if let Ok(new_addr) = self.client.lookup_service.handle_lookup(&self.client.uri, &self.topic).await {
-                        self.client.uri = new_addr;
-                        self.connect(&self.client.uri.clone()).await?;
-                        // Recreate producer on new connection
-                        let _ = self.create().await?;
-                    }
-                    
-                    let backoff = self.retry_manager.calculate_backoff(attempts - 1);
-                    tokio::time::sleep(backoff).await;
-                }
-            }
-        }
+        let stream_client = self.stream_client.as_ref().ok_or_else(|| {
+            DanubeError::Unrecoverable("Send: Stream client is not initialized".to_string())
+        })?;
+        
+        let response = stream_client.clone().send_message(request).await
+            .map_err(status_to_danube_error)?;
+        Ok(response.into_inner().request_id)
     }
 
 
-    async fn connect(&mut self, addr: &Uri) -> Result<()> {
+    pub(crate) async fn connect(&mut self, addr: &Uri) -> Result<()> {
         let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
         let client = ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone());
         self.stream_client = Some(client);
