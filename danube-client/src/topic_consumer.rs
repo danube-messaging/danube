@@ -1,9 +1,10 @@
 use crate::{
     errors::{DanubeError, Result},
-    reconnect_manager::ReconnectManager,
-    retry_manager::status_to_danube_error,
+    retry_manager::{RetryManager, status_to_danube_error},
     ConsumerOptions, DanubeClient, SubType,
 };
+
+use tracing::warn;
 
 use danube_core::message::MessageID;
 use danube_core::proto::{
@@ -43,7 +44,7 @@ pub(crate) struct TopicConsumer {
     // stop_signal received from broker, should close the consumer
     stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
-    reconnect_manager: ReconnectManager,
+    retry_manager: RetryManager,
 }
 
 impl TopicConsumer {
@@ -61,9 +62,8 @@ impl TopicConsumer {
             SubType::Shared
         };
 
-        let reconnect_manager = ReconnectManager::new(
-            client.clone(),
-            5, // default max retries for consumers
+        let retry_manager = RetryManager::new(
+            consumer_options.max_retries,
             consumer_options.base_backoff_ms,
             consumer_options.max_backoff_ms,
         );
@@ -79,7 +79,7 @@ impl TopicConsumer {
             request_id: AtomicU64::new(0),
             stream_client: None,
             stop_signal: Arc::new(AtomicBool::new(false)),
-            reconnect_manager,
+            retry_manager,
         }
     }
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
@@ -99,7 +99,7 @@ impl TopicConsumer {
             };
 
             let mut request = tonic::Request::new(consumer_request);
-            ReconnectManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
             let stream_client = self.stream_client.as_mut().unwrap();
             match stream_client.subscribe(request).await {
@@ -116,9 +116,17 @@ impl TopicConsumer {
                     return Ok(response.consumer_id);
                 }
                 Err(status) => {
+                    // Handle AlreadyExists specifically - consumer already present on connection
+                    if status.code() == tonic::Code::AlreadyExists {
+                        warn!(
+                            "The consumer already exist, not allowed to create the same consumer twice"
+                        );
+                        return Err(status_to_danube_error(status));
+                    }
+                    
                     let error = status_to_danube_error(status);
                     
-                    if !self.reconnect_manager.is_retryable(&error) {
+                    if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
                     
@@ -132,7 +140,7 @@ impl TopicConsumer {
                         self.client.uri = new_addr;
                     }
                     
-                    let backoff = self.reconnect_manager.retry_manager.calculate_backoff(attempts - 1);
+                    let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
             }
@@ -149,7 +157,7 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(receive_request);
-        ReconnectManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
         let stream_client = self.stream_client.as_mut().ok_or_else(|| {
             DanubeError::Unrecoverable("Receive: Stream client is not initialized".to_string())
@@ -177,7 +185,7 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(ack_request);
-        ReconnectManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
         let stream_client = self.stream_client.as_mut().ok_or_else(|| {
             DanubeError::Unrecoverable("SendAck: Stream client is not initialized".to_string())

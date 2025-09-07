@@ -1,11 +1,14 @@
-use std::time::Duration;
-use tokio::time::sleep;
+use crate::{
+    errors::{decode_error_details, DanubeError, Result},
+    DanubeClient,
+};
 use rand::{thread_rng, Rng};
-use tonic::{Code, Status};
-use crate::errors::{decode_error_details, DanubeError};
+use std::time::Duration;
+use tonic::{metadata::MetadataValue, transport::Uri, Code, Status};
 
-/// Centralized retry management with exponential backoff and jitter
+/// Centralized retry and reconnection management with backoff, jitter, and authentication
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RetryManager {
     max_retries: usize,
     base_backoff_ms: u64,
@@ -16,34 +19,34 @@ impl RetryManager {
     pub fn new(max_retries: usize, base_backoff_ms: u64, max_backoff_ms: u64) -> Self {
         Self {
             max_retries: if max_retries == 0 { 5 } else { max_retries },
-            base_backoff_ms: if base_backoff_ms == 0 { 200 } else { base_backoff_ms },
-            max_backoff_ms: if max_backoff_ms == 0 { 5_000 } else { max_backoff_ms },
+            base_backoff_ms: if base_backoff_ms == 0 {
+                200
+            } else {
+                base_backoff_ms
+            },
+            max_backoff_ms: if max_backoff_ms == 0 {
+                5_000
+            } else {
+                max_backoff_ms
+            },
         }
     }
 
-    /// Execute an operation with retry logic
-    pub async fn retry_with_backoff<F, Fut, T>(&self, mut operation: F) -> Result<T, DanubeError>
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Result<T, DanubeError>>,
-    {
-        let mut attempts = 0;
-
-        loop {
-            match operation().await {
-                Ok(result) => return Ok(result),
-                Err(error) => {
-                    attempts += 1;
-                    
-                    if !self.is_retryable_error(&error) || attempts > self.max_retries {
-                        return Err(error);
-                    }
-
-                    let backoff = self.calculate_backoff(attempts - 1);
-                    sleep(backoff).await;
-                }
-            }
+    /// Insert authentication token into request
+    pub async fn insert_auth_token<T>(
+        client: &DanubeClient,
+        request: &mut tonic::Request<T>,
+        addr: &Uri,
+    ) -> Result<()> {
+        if let Some(api_key) = &client.cnx_manager.connection_options.api_key {
+            let token = client.auth_service.get_valid_token(addr, api_key).await?;
+            let token_metadata = MetadataValue::try_from(format!("Bearer {}", token))
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request
+                .metadata_mut()
+                .insert("authorization", token_metadata);
         }
+        Ok(())
     }
 
     /// Check if an error is retryable based on status codes and error types
@@ -68,12 +71,12 @@ impl RetryManager {
         }
     }
 
-    /// Calculate exponential backoff with full jitter
+    /// Calculate linear backoff with jitter
     pub fn calculate_backoff(&self, attempt: usize) -> Duration {
-        let pow = 1u64.checked_shl(attempt.min(16) as u32).unwrap_or(u64::MAX);
-        let exp = self.base_backoff_ms.saturating_mul(pow);
-        let backoff = exp.min(self.max_backoff_ms);
-        let jitter = thread_rng().gen_range(0..=backoff);
+        // Linear backoff: base * (attempt + 1), capped at max
+        let linear = self.base_backoff_ms.saturating_mul(attempt as u64 + 1);
+        let backoff = linear.min(self.max_backoff_ms);
+        let jitter = thread_rng().gen_range(backoff / 2..=backoff); // 50-100% jitter
         Duration::from_millis(jitter)
     }
 }

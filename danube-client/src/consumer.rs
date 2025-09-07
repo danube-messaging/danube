@@ -1,6 +1,6 @@
 use crate::{
     errors::{DanubeError, Result},
-    reconnect_manager::ReconnectManager,
+    retry_manager::RetryManager,
     topic_consumer::TopicConsumer,
     DanubeClient,
 };
@@ -153,9 +153,8 @@ impl Consumer {
     pub async fn receive(&mut self) -> Result<mpsc::Receiver<StreamMessage>> {
         let (tx, rx) = mpsc::channel(100);
 
-        // Create reconnect manager for consumers
-        let reconnect_manager = ReconnectManager::new(
-            self.client.clone(),
+        // Create retry manager for consumers
+        let retry_manager = RetryManager::new(
             5, // max retries
             self.consumer_options.base_backoff_ms,
             self.consumer_options.max_backoff_ms,
@@ -165,9 +164,11 @@ impl Consumer {
         for (_topic_name, consumer) in &self.consumers {
             let tx = tx.clone();
             let consumer = Arc::clone(consumer);
-            let _reconnect_manager = reconnect_manager.clone();
+            let retry_manager = retry_manager.clone();
 
             tokio::spawn(async move {
+                let mut attempts = 0;
+                
                 loop {
                     // Get stream with automatic reconnect on failure
                     let stream_result = {
@@ -177,6 +178,8 @@ impl Consumer {
 
                     match stream_result {
                         Ok(mut stream) => {
+                            attempts = 0; // Reset attempts on successful connection
+                            
                             // Process messages until stream ends or errors
                             while let Some(message) = stream.next().await {
                                 match message {
@@ -190,16 +193,32 @@ impl Consumer {
                                 }
                             }
                         }
-                        Err(_) => {
-                            // Failed to get stream, will retry after backoff
+                        Err(error) => {
+                            // Failed to get stream, use reconnect manager for backoff
+                            if retry_manager.is_retryable_error(&error) {
+                                attempts += 1;
+                                let backoff = retry_manager.calculate_backoff(attempts - 1);
+                                tokio::time::sleep(backoff).await;
+                            } else {
+                                return;
+                            }
                         }
                     }
 
                     // Re-subscribe with automatic backoff and reconnect
-                    let _ = {
+                    let subscribe_result = {
                         let mut locked = consumer.lock().await;
                         locked.subscribe().await
                     };
+                    
+                    // If subscribe fails, apply backoff before retrying
+                    if let Err(error) = subscribe_result {
+                        if retry_manager.is_retryable_error(&error) {
+                            attempts += 1;
+                            let backoff = retry_manager.calculate_backoff(attempts - 1);
+                            tokio::time::sleep(backoff).await;
+                        }
+                    }
                 }
             });
         }
@@ -332,6 +351,8 @@ impl ConsumerBuilder {
 pub struct ConsumerOptions {
     // Reserved for future use
     pub others: String,
+    // Maximum number of retry attempts
+    pub max_retries: usize,
     // Base backoff in milliseconds for exponential backoff
     pub base_backoff_ms: u64,
     // Maximum backoff cap in milliseconds

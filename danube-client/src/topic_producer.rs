@@ -1,7 +1,6 @@
 use crate::{
     errors::Result,
-    reconnect_manager::ReconnectManager,
-    retry_manager::status_to_danube_error,
+    retry_manager::{RetryManager, status_to_danube_error},
     schema::Schema,
     DanubeClient, ProducerOptions,
 };
@@ -47,7 +46,7 @@ pub(crate) struct TopicProducer {
     // stop_signal received from broker, should close the producer
     stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
-    reconnect_manager: ReconnectManager,
+    retry_manager: RetryManager,
 }
 
 impl TopicProducer {
@@ -59,8 +58,7 @@ impl TopicProducer {
         dispatch_strategy: ConfigDispatchStrategy,
         producer_options: ProducerOptions,
     ) -> Self {
-        let reconnect_manager = ReconnectManager::new(
-            client.clone(),
+        let retry_manager = RetryManager::new(
             producer_options.max_retries,
             producer_options.base_backoff_ms,
             producer_options.max_backoff_ms,
@@ -77,7 +75,7 @@ impl TopicProducer {
             producer_options,
             stream_client: None,
             stop_signal: Arc::new(AtomicBool::new(false)),
-            reconnect_manager,
+            retry_manager,
         }
     }
     pub(crate) async fn create(&mut self) -> Result<u64> {
@@ -98,7 +96,7 @@ impl TopicProducer {
             };
 
             let mut request = tonic::Request::new(producer_request);
-            ReconnectManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
             let stream_client = self.stream_client.as_mut().unwrap();
             match stream_client.create_producer(request).await {
@@ -117,7 +115,7 @@ impl TopicProducer {
                 Err(status) => {
                     let error = status_to_danube_error(status);
                     
-                    if !self.reconnect_manager.is_retryable(&error) {
+                    if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
                     
@@ -131,7 +129,7 @@ impl TopicProducer {
                         self.client.uri = new_addr;
                     }
                     
-                    let backoff = self.reconnect_manager.retry_manager.calculate_backoff(attempts - 1);
+                    let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
             }
@@ -175,7 +173,7 @@ impl TopicProducer {
 
         loop {
             let mut request = tonic::Request::new(req.clone());
-            ReconnectManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
             let stream_client = self.stream_client.as_ref().unwrap();
             match stream_client.clone().send_message(request).await {
@@ -186,7 +184,7 @@ impl TopicProducer {
                 Err(status) => {
                     let error = status_to_danube_error(status);
                     
-                    if !self.reconnect_manager.is_retryable(&error) {
+                    if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
                     
@@ -203,7 +201,7 @@ impl TopicProducer {
                         let _ = self.create().await?;
                     }
                     
-                    let backoff = self.reconnect_manager.retry_manager.calculate_backoff(attempts - 1);
+                    let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
             }
