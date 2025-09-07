@@ -92,43 +92,52 @@ jobs:
           ./target/release/danube-admin-cli topics create /default/client-reconnect-test || true
           ./target/release/danube-admin-cli topics create /default/client-consumer-reconnect || true
 
-      - name: Background failover - kill A and start B (delayed)
+      - name: Start Broker B (background)
         env:
           RUST_LOG: info
         run: |
-          ( \
-            # Delay failover sufficiently so tests establish connections to Broker A first
-            sleep 20; \
-            echo "Killing Broker A to simulate failure..."; \
-            if [ -f broker-a.pid ]; then \
-              BROKER_A_PID=$(cat broker-a.pid); \
-              kill $BROKER_A_PID || echo "Broker A may have already exited"; \
-              sleep 2; \
-              kill -9 $BROKER_A_PID 2>/dev/null || echo "Force kill not needed"; \
-            fi; \
-            echo "✓ Broker A terminated"; \
-            \
-            echo "Starting Broker B..."; \
-            nohup ./target/release/danube-broker \
-              --config-file ./config/danube_broker.yml \
-              --broker-addr 0.0.0.0:6651 \
-              --admin-addr 0.0.0.0:50052 \
-              --prom-exporter 0.0.0.0:9041 \
-              > broker-b.log 2>&1 & \
-            echo $! > broker-b.pid; \
-            for i in {1..15}; do \
-              if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then \
-                echo "Broker B is ready."; \
-                break; \
-              elif [ $i -eq 15 ]; then \
-                echo "Broker B failed to start."; \
-                cat broker-b.log; \
-                exit 1; \
-              fi; \
-              echo "Waiting for Broker B to start... ($i/15)"; \
-              sleep 3; \
-            done; \
-          ) &
+          nohup ./target/release/danube-broker \
+            --config-file ./config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6651 \
+            --admin-addr 0.0.0.0:50052 \
+            --prom-exporter 0.0.0.0:9041 \
+            > broker-b.log 2>&1 &
+          echo $! > broker-b.pid
+          
+          # Wait for Broker B to be ready
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then
+              echo "Broker B is ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker B failed to start."
+              cat broker-b.log
+              exit 1
+            fi
+            echo "Waiting for Broker B to start... ($i/15)"
+            sleep 3
+          done
+          
+          # Give brokers time to discover each other
+          sleep 10
+
+      - name: Delay for test setup
+        run: |
+          # Allow tests to establish connections to Broker A first
+          sleep 20 &
+
+      - name: Simulate Broker A failure
+        run: |
+          # Wait for test setup delay to complete
+          wait
+          echo "Killing Broker A to simulate failure..."
+          if [ -f broker-a.pid ]; then
+            BROKER_A_PID=$(cat broker-a.pid)
+            kill $BROKER_A_PID || echo "Broker A process may have already exited"
+            sleep 2
+            kill -9 $BROKER_A_PID 2>/dev/null || echo "Force kill not needed"
+          fi
+          echo "✓ Broker A terminated"
 
       - name: Run danube-client tests only (serialized)
         env:
