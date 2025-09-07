@@ -18,7 +18,7 @@ async fn setup_client() -> Result<DanubeClient> {
     .await;
 
     let client = DanubeClient::builder()
-        .service_url("https://127.0.0.1:6650")
+        .service_url("https://127.0.0.1:6650")  // Connect to Broker A initially
         .with_tls("../cert/ca-cert.pem")?
         .build()
         .await?;

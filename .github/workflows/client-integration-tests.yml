@@ -121,15 +121,19 @@ jobs:
           # Give brokers time to discover each other
           sleep 10
 
-      - name: Delay for test setup
+      - name: Run danube-client tests with coordinated failover
+        env:
+          RUST_LOG: info
+          DANUBE_CA_CERT: ${{ github.workspace }}/cert/ca-cert.pem
         run: |
+          # Start tests in background
+          cargo test -p danube-client -- --nocapture --test-threads=1 &
+          TEST_PID=$!
+          
           # Allow tests to establish connections to Broker A first
-          sleep 20 &
-
-      - name: Simulate Broker A failure
-        run: |
-          # Wait for test setup delay to complete
-          wait
+          sleep 20
+          
+          # Kill Broker A to simulate failure
           echo "Killing Broker A to simulate failure..."
           if [ -f broker-a.pid ]; then
             BROKER_A_PID=$(cat broker-a.pid)
@@ -138,13 +142,9 @@ jobs:
             kill -9 $BROKER_A_PID 2>/dev/null || echo "Force kill not needed"
           fi
           echo "✓ Broker A terminated"
-
-      - name: Run danube-client tests only (serialized)
-        env:
-          RUST_LOG: info
-          DANUBE_CA_CERT: ${{ github.workspace }}/cert/ca-cert.pem
-        run: |
-          cargo test -p danube-client -- --nocapture --test-threads=1
+          
+          # Wait for tests to complete
+          wait $TEST_PID
 
       - name: Upload logs on failure
         if: failure()
