@@ -1,5 +1,6 @@
 use crate::{
     errors::{DanubeError, Result},
+    retry_manager::RetryManager,
     topic_consumer::TopicConsumer,
     DanubeClient,
 };
@@ -153,35 +154,113 @@ impl Consumer {
         // Create a channel to send messages to the client
         let (tx, rx) = mpsc::channel(100); // Buffer size of 100, adjust as needed
 
+        // Create retry manager for consumers
+        let retry_manager = RetryManager::new(
+            self.consumer_options.max_retries,
+            self.consumer_options.base_backoff_ms,
+            self.consumer_options.max_backoff_ms,
+        );
+
         // Spawn a task for each cloned TopicConsumer
         for (_, consumer) in &self.consumers {
             let tx = tx.clone();
+            let consumer = Arc::clone(consumer);
+            let retry_manager = retry_manager.clone();
 
-            let stream_result = {
-                let mut consumer = consumer.lock().await;
-                consumer.receive().await
-            };
+            tokio::spawn(async move {
+                let mut attempts = 0;
+                let max_retries = if retry_manager.max_retries() == 0 {
+                    5
+                } else {
+                    retry_manager.max_retries()
+                };
 
-            if let Ok(stream) = stream_result {
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    while let Some(message) = stream.next().await {
-                        match message {
-                            Ok(stream_message) => {
-                                let message: StreamMessage = stream_message.into();
-                                if let Err(_) = tx.send(message).await {
-                                    // if the channel is closed exit the loop
-                                    break;
+                loop {
+                    // Try to get stream from consumer (subscribe is handled internally with its own retry)
+                    let stream_result = {
+                        let mut locked = consumer.lock().await;
+                        locked.receive().await
+                    };
+
+                    match stream_result {
+                        Ok(mut stream) => {
+                            attempts = 0; // Reset attempts on successful connection
+
+                            // Process messages until stream ends or errors
+                            while let Some(message) = stream.next().await {
+                                match message {
+                                    Ok(stream_message) => {
+                                        let message: StreamMessage = stream_message.into();
+                                        if tx.send(message).await.is_err() {
+                                            // Channel is closed, exit the task
+                                            return;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error receiving message: {}", e);
+                                        break; // Stream error, will retry receive
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Error receiving message: {}", e);
-                                break;
+                            // Stream ended, retry receive
+                        }
+                        Err(error) => {
+                            // Check if this is an unrecoverable error (e.g., stream client not initialized)
+                            if matches!(error, DanubeError::Unrecoverable(_)) {
+                                eprintln!("Unrecoverable error detected, attempting resubscription: {:?}", error);
+                                
+                                // Attempt to resubscribe for unrecoverable errors
+                                let resubscribe_result = {
+                                    let mut locked = consumer.lock().await;
+                                    locked.subscribe().await
+                                };
+                                
+                                match resubscribe_result {
+                                    Ok(_) => {
+                                        eprintln!("Resubscription successful after unrecoverable error, continuing...");
+                                        attempts = 0; // Reset attempts after successful resubscription
+                                        continue; // Go back to creating stream_result
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Resubscription failed after unrecoverable error: {:?}", e);
+                                        return; // Exit task if resubscription fails
+                                    }
+                                }
+                            }
+                            
+                            // Failed to get stream, check if retryable
+                            if retry_manager.is_retryable_error(&error) {
+                                attempts += 1;
+                                if attempts > max_retries {
+                                    eprintln!("Max retries exceeded for consumer receive, attempting resubscription");
+                                    
+                                    // Attempt to resubscribe
+                                    let resubscribe_result = {
+                                        let mut locked = consumer.lock().await;
+                                        locked.subscribe().await
+                                    };
+                                    
+                                    match resubscribe_result {
+                                        Ok(_) => {
+                                            eprintln!("Resubscription successful, continuing...");
+                                            break; // Break out of retry loop and go back to creating stream_result
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Resubscription failed: {:?}", e);
+                                            return; // Exit task if resubscription fails
+                                        }
+                                    }
+                                }
+                                let backoff = retry_manager.calculate_backoff(attempts - 1);
+                                tokio::time::sleep(backoff).await;
+                            } else {
+                                eprintln!("Non-retryable error in consumer receive: {:?}", error);
+                                return; // Non-retryable error
                             }
                         }
                     }
-                });
-            }
+                }
+            });
         }
 
         Ok(rx)
@@ -310,6 +389,12 @@ impl ConsumerBuilder {
 /// Configuration options for consumers
 #[derive(Debug, Clone, Default)]
 pub struct ConsumerOptions {
-    // schema used to encode the messages
+    // Reserved for future use
     pub others: String,
+    // Maximum number of retry attempts
+    pub max_retries: usize,
+    // Base backoff in milliseconds for exponential backoff
+    pub base_backoff_ms: u64,
+    // Maximum backoff cap in milliseconds
+    pub max_backoff_ms: u64,
 }

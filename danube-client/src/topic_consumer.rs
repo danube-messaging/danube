@@ -1,23 +1,23 @@
 use crate::{
-    errors::{decode_error_details, DanubeError, Result},
+    errors::{DanubeError, Result},
+    retry_manager::{RetryManager, status_to_danube_error},
     ConsumerOptions, DanubeClient, SubType,
 };
+
+use tracing::warn;
 
 use danube_core::message::MessageID;
 use danube_core::proto::{
     consumer_service_client::ConsumerServiceClient, AckRequest, AckResponse, ConsumerRequest,
-    ConsumerResponse, ReceiveRequest, StreamMessage,
+    ReceiveRequest, StreamMessage,
 };
 
 use futures_core::Stream;
-use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use tonic::metadata::MetadataValue;
-use tonic::{transport::Uri, Code, Response, Status};
-use tracing::warn;
+use tonic::{transport::Uri, Status};
 
 /// Represents a Consumer
 #[derive(Debug)]
@@ -43,6 +43,8 @@ pub(crate) struct TopicConsumer {
     stream_client: Option<ConsumerServiceClient<tonic::transport::Channel>>,
     // stop_signal received from broker, should close the consumer
     stop_signal: Arc<AtomicBool>,
+    // unified reconnection manager
+    retry_manager: RetryManager,
 }
 
 impl TopicConsumer {
@@ -60,6 +62,12 @@ impl TopicConsumer {
             SubType::Shared
         };
 
+        let retry_manager = RetryManager::new(
+            consumer_options.max_retries,
+            consumer_options.base_backoff_ms,
+            consumer_options.max_backoff_ms,
+        );
+
         TopicConsumer {
             client,
             topic_name,
@@ -71,100 +79,70 @@ impl TopicConsumer {
             request_id: AtomicU64::new(0),
             stream_client: None,
             stop_signal: Arc::new(AtomicBool::new(false)),
+            retry_manager,
         }
     }
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
-        let mut broker_addr = self.client.uri.clone();
+        let mut attempts = 0;
+        let max_retries = 5; // Default for consumers
+        
+        loop {
+            // Connect to current broker
+            self.connect(&self.client.uri.clone()).await?;
+            
+            let consumer_request = ConsumerRequest {
+                request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
+                topic_name: self.topic_name.clone(),
+                consumer_name: self.consumer_name.clone(),
+                subscription: self.subscription.clone(),
+                subscription_type: self.subscription_type.clone() as i32,
+            };
 
-        match self
-            .client
-            .lookup_service
-            .handle_lookup(&broker_addr, &self.topic_name)
-            .await
-        {
-            Ok(addr) => {
-                //broker_addr = addr.clone();
-                self.connect(&addr).await?;
-                // update the client URI with the latest connection
-                self.client.uri = addr.clone();
-                // update the broker_addr with new addr
-                broker_addr = addr;
-            }
+            let mut request = tonic::Request::new(consumer_request);
+            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
-            Err(err) => {
-                if let Some(status) = err.extract_status() {
-                    if let Some(error_message) = decode_error_details(status) {
-                        return Err(DanubeError::FromStatus(
-                            status.to_owned(),
-                            Some(error_message),
-                        ));
-                    } else {
-                        warn!("Lookup request failed with error:  {}", status);
-                        return Err(DanubeError::Unrecoverable(format!(
-                            "Lookup failed with error: {}",
-                            status
-                        )));
+            let stream_client = self.stream_client.as_mut().unwrap();
+            match stream_client.subscribe(request).await {
+                Ok(resp) => {
+                    let response = resp.into_inner();
+                    self.consumer_id = Some(response.consumer_id);
+                    
+                    // Start health check
+                    let stop_signal = Arc::clone(&self.stop_signal);
+                    let _ = self.client.health_check_service
+                        .start_health_check(&self.client.uri, 1, response.consumer_id, stop_signal)
+                        .await;
+                        
+                    return Ok(response.consumer_id);
+                }
+                Err(status) => {
+                    // Handle AlreadyExists specifically - consumer already present on connection
+                    if status.code() == tonic::Code::AlreadyExists {
+                        warn!(
+                            "The consumer already exist, not allowed to create the same consumer twice"
+                        );
+                        return Err(status_to_danube_error(status));
                     }
-                } else {
-                    warn!("Lookup request failed with error:  {}", err);
-                    return Err(DanubeError::Unrecoverable(format!(
-                        "Lookup failed with error: {}",
-                        err
-                    )));
+                    
+                    let error = status_to_danube_error(status);
+                    
+                    if !self.retry_manager.is_retryable_error(&error) {
+                        return Err(error);
+                    }
+                    
+                    attempts += 1;
+                    if attempts > max_retries {
+                        return Err(error);
+                    }
+                    
+                    // Perform lookup and backoff
+                    if let Ok(new_addr) = self.client.lookup_service.handle_lookup(&self.client.uri, &self.topic_name).await {
+                        self.client.uri = new_addr;
+                    }
+                    
+                    let backoff = self.retry_manager.calculate_backoff(attempts - 1);
+                    tokio::time::sleep(backoff).await;
                 }
-            }
-        }
-
-        let req = ConsumerRequest {
-            request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
-            topic_name: self.topic_name.clone(),
-            consumer_name: self.consumer_name.clone(),
-            subscription: self.subscription.clone(),
-            subscription_type: self.subscription_type.clone() as i32,
-        };
-
-        let mut request = tonic::Request::new(req);
-
-        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
-            self.insert_auth_token(&mut request, &self.client.uri, api_key)
-                .await?;
-        }
-
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("Subscribe: Stream client is not initialized".to_string())
-        })?;
-
-        let response: std::result::Result<Response<ConsumerResponse>, Status> =
-            stream_client.subscribe(request).await;
-
-        match response {
-            Ok(resp) => {
-                let r = resp.into_inner();
-                self.consumer_id = Some(r.consumer_id);
-
-                // start health_check service, which regularly check the status of the producer on the connected broker
-                let stop_signal = Arc::clone(&self.stop_signal);
-
-                let _ = self
-                    .client
-                    .health_check_service
-                    .start_health_check(&broker_addr, 1, r.consumer_id, stop_signal)
-                    .await;
-
-                return Ok(r.consumer_id);
-            }
-            Err(status) => {
-                let error_message = decode_error_details(&status);
-
-                if status.code() == Code::AlreadyExists {
-                    // meaning that the consumer is already present on the connection
-                    // creating a consumer with the same name is not allowed
-                    warn!(
-                        "The consumer already exist, not allowed to create the same consumer twice"
-                    );
-                }
-
-                return Err(DanubeError::FromStatus(status, error_message));
             }
         }
     }
@@ -179,11 +157,7 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(receive_request);
-
-        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
-            self.insert_auth_token(&mut request, &self.client.uri, api_key)
-                .await?;
-        }
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
         let stream_client = self.stream_client.as_mut().ok_or_else(|| {
             DanubeError::Unrecoverable("Receive: Stream client is not initialized".to_string())
@@ -192,8 +166,7 @@ impl TopicConsumer {
         let response = match stream_client.receive_messages(request).await {
             Ok(response) => response,
             Err(status) => {
-                let decoded_message = decode_error_details(&status);
-                return Err(DanubeError::FromStatus(status, decoded_message));
+                return Err(status_to_danube_error(status));
             }
         };
         Ok(response.into_inner())
@@ -212,11 +185,7 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(ack_request);
-
-        if let Some(api_key) = &self.client.cnx_manager.connection_options.api_key {
-            self.insert_auth_token(&mut request, &self.client.uri, api_key)
-                .await?;
-        }
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
 
         let stream_client = self.stream_client.as_mut().ok_or_else(|| {
             DanubeError::Unrecoverable("SendAck: Stream client is not initialized".to_string())
@@ -225,8 +194,7 @@ impl TopicConsumer {
         let response = match stream_client.ack(request).await {
             Ok(response) => response,
             Err(status) => {
-                let decoded_message = decode_error_details(&status);
-                return Err(DanubeError::FromStatus(status, decoded_message));
+                return Err(status_to_danube_error(status));
             }
         };
         Ok(response.into_inner())
@@ -236,24 +204,6 @@ impl TopicConsumer {
         &self.topic_name
     }
 
-    async fn insert_auth_token<T>(
-        &self,
-        request: &mut tonic::Request<T>,
-        addr: &Uri,
-        api_key: &str,
-    ) -> Result<()> {
-        let token = self
-            .client
-            .auth_service
-            .get_valid_token(addr, api_key)
-            .await?;
-        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
-            .map_err(|_| DanubeError::InvalidToken)?;
-        request
-            .metadata_mut()
-            .insert("authorization", token_metadata);
-        Ok(())
-    }
 
     async fn connect(&mut self, addr: &Uri) -> Result<()> {
         let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
@@ -261,4 +211,5 @@ impl TopicConsumer {
         self.stream_client = Some(client);
         Ok(())
     }
+
 }
