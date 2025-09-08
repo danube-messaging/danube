@@ -1,14 +1,18 @@
 use crate::{
-    errors::{DanubeError, Result}, retry_manager::{RetryManager, status_to_danube_error}, DanubeClient, ProducerOptions, Schema,
+    errors::{DanubeError, Result},
+    retry_manager::{status_to_danube_error, RetryManager},
+    DanubeClient, ProducerOptions, Schema,
 };
 use danube_core::proto::{
-    producer_service_client::ProducerServiceClient, ProducerAccessMode,
-    ProducerRequest, StreamMessage as ProtoStreamMessage,
+    producer_service_client::ProducerServiceClient, ProducerAccessMode, ProducerRequest,
+    StreamMessage as ProtoStreamMessage,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
     message::{MessageID, StreamMessage},
 };
+
+use tracing::warn;
 
 use std::collections::HashMap;
 use std::sync::{
@@ -77,12 +81,16 @@ impl TopicProducer {
     }
     pub(crate) async fn create(&mut self) -> Result<u64> {
         let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 { 5 } else { self.producer_options.max_retries };
-        
+        let max_retries = if self.producer_options.max_retries == 0 {
+            5
+        } else {
+            self.producer_options.max_retries
+        };
+
         loop {
             // Connect to current broker
             self.connect(&self.client.uri.clone()).await?;
-            
+
             let producer_request = ProducerRequest {
                 request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
                 producer_name: self.producer_name.clone(),
@@ -100,32 +108,47 @@ impl TopicProducer {
                 Ok(resp) => {
                     let response = resp.into_inner();
                     self.producer_id = Some(response.producer_id);
-                    
+
                     // Start health check
                     let stop_signal = Arc::clone(&self.stop_signal);
-                    let _ = self.client.health_check_service
+                    let _ = self
+                        .client
+                        .health_check_service
                         .start_health_check(&self.client.uri, 0, response.producer_id, stop_signal)
                         .await;
-                        
+
                     return Ok(response.producer_id);
                 }
                 Err(status) => {
+                    // Handle AlreadyExists specifically - producer already present on connection
+                    if status.code() == tonic::Code::AlreadyExists {
+                        warn!(
+                            "The producer already exist, not allowed to create the same producer twice"
+                        );
+                        return Err(status_to_danube_error(status));
+                    }
+
                     let error = status_to_danube_error(status);
-                    
+
                     if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
-                    
+
                     attempts += 1;
                     if attempts > max_retries {
                         return Err(error);
                     }
-                    
+
                     // Perform lookup and backoff
-                    if let Ok(new_addr) = self.client.lookup_service.handle_lookup(&self.client.uri, &self.topic).await {
+                    if let Ok(new_addr) = self
+                        .client
+                        .lookup_service
+                        .handle_lookup(&self.client.uri, &self.topic)
+                        .await
+                    {
                         self.client.uri = new_addr;
                     }
-                    
+
                     let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
@@ -147,7 +170,9 @@ impl TopicProducer {
         let attr = attributes.unwrap_or_default();
 
         let msg_id = MessageID {
-            producer_id: self.producer_id.expect("Producer ID should be set before sending messages"),
+            producer_id: self
+                .producer_id
+                .expect("Producer ID should be set before sending messages"),
             topic_name: self.topic.clone(),
             broker_addr: self.client.uri.to_string(),
             segment_id: 0,
@@ -171,12 +196,14 @@ impl TopicProducer {
         let stream_client = self.stream_client.as_ref().ok_or_else(|| {
             DanubeError::Unrecoverable("Send: Stream client is not initialized".to_string())
         })?;
-        
-        let response = stream_client.clone().send_message(request).await
+
+        let response = stream_client
+            .clone()
+            .send_message(request)
+            .await
             .map_err(status_to_danube_error)?;
         Ok(response.into_inner().request_id)
     }
-
 
     pub(crate) async fn connect(&mut self, addr: &Uri) -> Result<()> {
         let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
@@ -184,5 +211,4 @@ impl TopicProducer {
         self.stream_client = Some(client);
         Ok(())
     }
-
 }
