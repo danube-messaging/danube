@@ -1,6 +1,6 @@
 [package]
 name = "danube-client"
-version = "0.4.0"
+version = "0.4.1"
 description = "The async client for Danube Messaging Broker platform"
 keywords = ["danube", "pub-sub", "messaging_system", "message_broker", "event_streaming"]
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
