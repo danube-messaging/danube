@@ -36,10 +36,10 @@ use crate::{
 };
 
 use anyhow::{Context, Result};
+use danube_core::storage::StorageConfig;
 use danube_metadata_store::{EtcdStore, MetadataStorage};
-use danube_reliable_dispatch::create_message_storage;
+use danube_reliable_dispatch::{create_message_storage, TopicCache};
 use std::net::SocketAddr;
- 
 use tracing::info;
 use tracing_subscriber;
 
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
         "Initializing {} for message persistence",
         service_config.storage
     );
-    let message_storage = create_message_storage(&service_config.storage).await;
+    let message_storage = create_message_storage_from_config(&service_config.storage).await?;
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store
     let local_cache = LocalCache::new(metadata_store.clone());
@@ -163,4 +163,109 @@ async fn main() -> Result<()> {
     info!("Danube Message Broker service has started succesfully");
 
     Ok(())
+}
+
+/// Create message storage from configuration
+async fn create_message_storage_from_config(storage_config: &StorageConfig) -> Result<TopicCache> {
+    match storage_config {
+        StorageConfig::InMemory { cache } => {
+            let storage_backend = create_message_storage("inmemory")?;
+            Ok(TopicCache::new(
+                storage_backend.into(),
+                cache.max_capacity as u64,
+                cache.time_to_idle as u64,
+            ))
+        }
+        StorageConfig::Local {
+            local_config,
+            cache,
+        } => {
+            // For now, fall back to in-memory storage for local disk
+            // TODO: Implement proper local disk storage with PersistentStorage trait
+            let storage_backend = create_message_storage("inmemory")?;
+            Ok(TopicCache::new(
+                storage_backend.into(),
+                cache.max_capacity as u64,
+                cache.time_to_idle as u64,
+            ))
+        }
+        StorageConfig::Remote {
+            remote_config,
+            cache,
+        } => {
+            // For now, fall back to in-memory storage for remote
+            // TODO: Implement proper remote storage with PersistentStorage trait
+            let storage_backend = create_message_storage("inmemory")?;
+            Ok(TopicCache::new(
+                storage_backend.into(),
+                cache.max_capacity as u64,
+                cache.time_to_idle as u64,
+            ))
+        }
+        StorageConfig::Iceberg { iceberg_config } => {
+            // Create Iceberg storage backend
+            use danube_iceberg_storage::{config::IcebergConfig, IcebergStorage};
+            use danube_reliable_dispatch::create_persistent_storage_adapter;
+
+            // Convert broker config to Iceberg config
+            let config = IcebergConfig {
+                catalog: danube_iceberg_storage::config::CatalogConfig::Rest {
+                    uri: iceberg_config.catalog_uri.clone().unwrap_or_default(),
+                    token: None,
+                    properties: std::collections::HashMap::new(),
+                },
+                object_store: match iceberg_config.object_store_type.as_str() {
+                    "s3" => danube_iceberg_storage::config::ObjectStoreConfig::S3 {
+                        bucket: iceberg_config.bucket_name.clone().unwrap_or_default(),
+                        region: iceberg_config.region.clone().unwrap_or_default(),
+                        profile: None,
+                        endpoint: iceberg_config.endpoint.clone(),
+                        path_style: false,
+                    },
+                    "local" => danube_iceberg_storage::config::ObjectStoreConfig::Local {
+                        path: iceberg_config
+                            .local_path
+                            .clone()
+                            .unwrap_or_else(|| "/tmp/danube".to_string()),
+                    },
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Unsupported object store type: {}",
+                            iceberg_config.object_store_type
+                        ))
+                    }
+                },
+                wal: danube_iceberg_storage::config::WalConfig {
+                    base_path: iceberg_config.wal_path.clone(),
+                    max_file_size: iceberg_config.wal_segment_size as u64,
+                    sync_mode: match iceberg_config.wal_sync_mode.as_str() {
+                        "always" => danube_iceberg_storage::config::SyncMode::Always,
+                        "periodic" => danube_iceberg_storage::config::SyncMode::Periodic,
+                        "none" => danube_iceberg_storage::config::SyncMode::None,
+                        _ => danube_iceberg_storage::config::SyncMode::Periodic,
+                    },
+                },
+                warehouse: iceberg_config.warehouse_path.clone(),
+                writer: danube_iceberg_storage::config::WriterConfig {
+                    batch_size: iceberg_config.writer_batch_size,
+                    flush_interval_ms: iceberg_config.writer_flush_interval_ms,
+                    max_memory_bytes: iceberg_config.writer_max_memory_bytes,
+                },
+                reader: danube_iceberg_storage::config::ReaderConfig {
+                    poll_interval_ms: iceberg_config.reader_poll_interval_ms,
+                    max_concurrent_reads: 10, // Default value
+                    prefetch_size: iceberg_config.reader_prefetch_batches,
+                },
+            };
+
+            // Create Iceberg storage instance
+            let iceberg_storage = IcebergStorage::new(config)
+                .await
+                .context("Failed to initialize Iceberg storage")?;
+
+            // Create adapter to bridge with legacy TopicCache
+            let storage_backend = create_persistent_storage_adapter(Arc::new(iceberg_storage));
+            Ok(TopicCache::new(storage_backend.into(), 1000, 3600)) // Default cache settings for Iceberg
+        }
+    }
 }
