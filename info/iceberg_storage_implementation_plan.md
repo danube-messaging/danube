@@ -132,15 +132,35 @@ The Iceberg storage implementation is partially complete and compiles, but sever
     - `danube-iceberg-storage/src/topic_reader.rs`: Switched to `tokio::sync::broadcast::Sender<StreamMessage>` for fan-out to multiple subscribers; updated send path. Kept shutdown as `mpsc::Receiver<()>`.
     - `danube-iceberg-storage/src/iceberg_storage.rs`: Created per-topic broadcast channels stored in `message_senders`; `create_message_stream()` now subscribes to the broadcast and bridges to an `mpsc::Receiver<StreamMessage>` returned to callers. Background `TopicReader` publishes to the topic broadcast.
 
+- Implemented next two configuration tasks:
+  - Honor configuration and remove hardcoded paths:
+    - `danube-iceberg-storage/src/topic_writer.rs`: Table location now derived from `IcebergConfig.warehouse` instead of a hardcoded S3 URI. Parquet files are written under a per-topic prefix in the configured `ObjectStore`.
+    - `danube-iceberg-storage/src/topic_reader.rs`: `TopicReader::new()` now accepts the configured `ObjectStore`; removed hardcoded `LocalFileSystem`.
+    - `danube-iceberg-storage/src/iceberg_storage.rs`: Wires `WriterConfig`, `ReaderConfig`, `warehouse`, and `ObjectStore` into `TopicWriter` and `TopicReader`.
+  - Apply Writer/Reader configs:
+    - `TopicWriter`: uses `WriterConfig.batch_size` and `WriterConfig.flush_interval_ms`.
+    - `TopicReader`: uses `ReaderConfig.poll_interval_ms` for polling cadence.
+    - Enforced `WriterConfig.max_memory_bytes` with a pre-flush policy when a new message would exceed the memory budget.
+
+- Implemented reader concurrency and prefetch:
+  - `danube-iceberg-storage/src/topic_reader.rs`:
+    - Added `Semaphore`-based concurrency control honoring `ReaderConfig.max_concurrent_reads`.
+    - Added bounded prefetch queue sized by `ReaderConfig.prefetch_size`.
+    - Updated main loop to drain prefetch queue and broadcast to subscribers.
+    - Current implementation still produces dummy messages; the concurrency/prefetch scaffolding will apply to real Parquet reads.
+
 - Notes:
-  - Writer/Reader still use placeholders for Parquet and commit protocol; next steps are to remove hardcoded paths and honor config, then implement REST commit and reader incrementals.
+  - Reader incremental scan and Parquet reading are next to leverage the new concurrency/prefetch.
+  - Parquet compression/encoding is still at defaults; expose via config in a later step.
 
 ## Remaining Work (Tracking Checklist)
 
 - [x] WAL reader: `read_next()` and `seek()`; periodic fsync in WAL
 - [x] Stream wiring: connect `TopicReader` to subscribers; fan-out/backpressure
-- [ ] Config usage: pass object store to reader; use `warehouse` for table/data paths
-- [ ] Apply Writer/Reader configs (`WriterConfig`, `ReaderConfig`)
+- [x] Config usage: pass object store to reader; use `warehouse` for table/data paths
+- [x] Apply Writer/Reader configs (`WriterConfig`, `ReaderConfig`)
+- [x] Enforce WriterConfig.max_memory_bytes (flush-before-exceed policy)
+- [x] ReaderConfig.max_concurrent_reads and prefetch buffer
 - [ ] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
 - [ ] Reader incremental processing and Parquet -> `StreamMessage`
 - [ ] Committed position tracking and reporting

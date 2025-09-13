@@ -1,10 +1,11 @@
 use crate::catalog::{IcebergCatalog, TableMetadata};
+use crate::config::ReaderConfig;
 use crate::errors::{IcebergStorageError, Result};
 use danube_core::message::StreamMessage;
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -21,9 +22,16 @@ pub struct TopicReader {
     /// Last processed snapshot ID
     last_snapshot_id: Option<i64>,
     /// Shutdown signal
-    shutdown_rx: broadcast::Receiver<()>,
+    shutdown_rx: mpsc::Receiver<()>,
     /// Table metadata cache
     table_metadata: Arc<RwLock<Option<TableMetadata>>>,
+    /// Reader configuration
+    reader_cfg: ReaderConfig,
+    /// Concurrency limiter for file reads
+    concurrent_reads: Arc<Semaphore>,
+    /// Prefetch queue for fetched messages
+    prefetch_tx: mpsc::Sender<StreamMessage>,
+    prefetch_rx: mpsc::Receiver<StreamMessage>,
 }
 
 impl TopicReader {
@@ -31,17 +39,25 @@ impl TopicReader {
     pub async fn new(
         topic_name: String,
         catalog: Arc<dyn IcebergCatalog>,
+        object_store: Arc<dyn ObjectStore>,
+        reader_cfg: &ReaderConfig,
         message_tx: broadcast::Sender<StreamMessage>,
-        shutdown_rx: broadcast::Receiver<()>,
+        shutdown_rx: mpsc::Receiver<()>,
     ) -> Result<Self> {
+        // Create prefetch queue according to configuration
+        let (prefetch_tx, prefetch_rx) = mpsc::channel(reader_cfg.prefetch_size);
         let reader = Self {
             topic_name,
             catalog,
-            object_store: Arc::new(object_store::local::LocalFileSystem::new()),
+            object_store,
             message_tx,
             last_snapshot_id: None,
             shutdown_rx,
             table_metadata: Arc::new(RwLock::new(None)),
+            reader_cfg: reader_cfg.clone(),
+            concurrent_reads: Arc::new(Semaphore::new(reader_cfg.max_concurrent_reads.max(1))),
+            prefetch_tx,
+            prefetch_rx,
         };
 
         Ok(reader)
@@ -51,7 +67,7 @@ impl TopicReader {
     pub async fn start(mut self) -> Result<()> {
         info!(topic = %self.topic_name, "Starting TopicReader");
 
-        let mut poll_interval = interval(Duration::from_millis(1000)); // 1 second polling
+        let mut poll_interval = interval(Duration::from_millis(self.reader_cfg.poll_interval_ms));
 
         loop {
             tokio::select! {
@@ -65,6 +81,20 @@ impl TopicReader {
                 _ = poll_interval.tick() => {
                     if let Err(e) = self.poll_for_new_snapshots().await {
                         error!(topic = %self.topic_name, error = %e, "Failed to poll for new snapshots");
+                    }
+                }
+
+                // Drain prefetch queue and broadcast to subscribers
+                maybe_msg = self.prefetch_rx.recv() => {
+                    match maybe_msg {
+                        Some(msg) => {
+                            if let Err(e) = self.message_tx.send(msg) {
+                                warn!(topic = %self.topic_name, error = %e, "Broadcast send failed");
+                            }
+                        }
+                        None => {
+                            // channel closed; should not happen normally
+                        }
                     }
                 }
             }
@@ -133,59 +163,40 @@ impl TopicReader {
             "Processing snapshot"
         );
 
-        // For now, we'll create dummy messages since we don't have full manifest processing
-        // In a real implementation, you would:
-        // 1. Read the manifest list file
-        // 2. Parse manifest files to get data file locations
-        // 3. Read Parquet files and convert back to StreamMessage
-
-        self.create_dummy_messages_for_snapshot(snapshot_id).await?;
-
-        Ok(())
-    }
-
-    /// Create dummy messages for testing (replace with real Parquet reading)
-    async fn create_dummy_messages_for_snapshot(&self, snapshot_id: i64) -> Result<()> {
-        use danube_core::message::MessageID;
-        use std::collections::HashMap;
-
-        // Create a few dummy messages for this snapshot
-        for i in 0..5 {
-            let message = StreamMessage {
-                request_id: (snapshot_id as u64) * 1000 + i,
-                msg_id: MessageID {
-                    producer_id: 1,
-                    topic_name: self.topic_name.clone(),
-                    broker_addr: "localhost:6650".to_string(),
-                    segment_id: snapshot_id as u64,
-                    segment_offset: i,
-                },
-                payload: format!("Message {} from snapshot {}", i, snapshot_id).into_bytes(),
-                publish_time: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-                producer_name: "iceberg_reader".to_string(),
-                subscription_name: None,
-                attributes: HashMap::new(),
-            };
-
-            // Send message to consumers
-            if let Err(e) = self.message_tx.send(message) {
-                warn!(
-                    topic = %self.topic_name,
-                    error = %e,
-                    "Failed to send message to consumer"
-                );
-                break; // Consumer might have disconnected
+        // For now, we simulate a single "file read" with dummy messages but enforce concurrency and prefetch
+        let permit = self.concurrent_reads.clone().acquire_owned().await.unwrap();
+        let mut tx = self.prefetch_tx.clone();
+        let topic = self.topic_name.clone();
+        tokio::spawn(async move {
+            // Simulated fetch: create dummy messages and push into prefetch
+            use danube_core::message::MessageID;
+            use std::collections::HashMap;
+            for i in 0..5 {
+                let message = StreamMessage {
+                    request_id: (snapshot_id as u64) * 1000 + i,
+                    msg_id: MessageID {
+                        producer_id: 1,
+                        topic_name: topic.clone(),
+                        broker_addr: "localhost:6650".to_string(),
+                        segment_id: snapshot_id as u64,
+                        segment_offset: i,
+                    },
+                    payload: format!("Message {} from snapshot {}", i, snapshot_id).into_bytes(),
+                    publish_time: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                    producer_name: "iceberg_reader".to_string(),
+                    subscription_name: None,
+                    attributes: HashMap::new(),
+                };
+                if tx.send(message).await.is_err() {
+                    // receiver dropped; stop
+                    break;
+                }
             }
-        }
-
-        debug!(
-            topic = %self.topic_name,
-            snapshot_id = snapshot_id,
-            "Sent dummy messages for snapshot"
-        );
+            drop(permit);
+        });
 
         Ok(())
     }

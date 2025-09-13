@@ -20,6 +20,8 @@ use tokio::time::interval;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+use crate::config::WriterConfig;
+
 /// TopicWriter handles asynchronous flushing from WAL to Iceberg tables
 pub struct TopicWriter {
     /// Topic name
@@ -42,6 +44,12 @@ pub struct TopicWriter {
     shutdown_rx: mpsc::Receiver<()>,
     /// Table metadata cache
     table_metadata: Arc<RwLock<Option<TableMetadata>>>,
+    /// Warehouse base location (e.g., s3://bucket/prefix)
+    warehouse: String,
+    /// Max memory budget for in-flight batch (bytes)
+    max_memory_bytes: u64,
+    /// Current batch estimated size (bytes)
+    current_batch_bytes: u64,
 }
 
 impl TopicWriter {
@@ -52,6 +60,8 @@ impl TopicWriter {
         catalog: Arc<dyn IcebergCatalog>,
         object_store: Arc<dyn ObjectStore>,
         shutdown_rx: mpsc::Receiver<()>,
+        writer_cfg: &WriterConfig,
+        warehouse: &str,
     ) -> Result<Self> {
         Ok(Self {
             topic_name,
@@ -59,11 +69,14 @@ impl TopicWriter {
             catalog,
             object_store,
             current_batch: Vec::new(),
-            batch_size: 1000,                      // Default batch size
-            batch_timeout: Duration::from_secs(5), // Default timeout
+            batch_size: writer_cfg.batch_size,
+            batch_timeout: Duration::from_millis(writer_cfg.flush_interval_ms),
             last_flush: SystemTime::now(),
             shutdown_rx,
             table_metadata: Arc::new(RwLock::new(None)),
+            warehouse: warehouse.to_string(),
+            max_memory_bytes: writer_cfg.max_memory_bytes,
+            current_batch_bytes: 0,
         })
     }
 
@@ -121,9 +134,20 @@ impl TopicWriter {
         if let Some(entry) = wal_reader.read_next().await? {
             match entry {
                 crate::wal::WalEntry::Message(message) => {
+                    let est = Self::estimate_message_size(&message) as u64;
+
+                    // If adding this message would exceed memory budget, flush current batch first
+                    if self.current_batch_bytes + est > self.max_memory_bytes {
+                        drop(wal_reader); // Release lock before async flush
+                        self.flush_batch().await?;
+                        wal_reader = self.wal_reader.lock().await;
+                    }
+
+                    // Add to batch
+                    self.current_batch_bytes = self.current_batch_bytes.saturating_add(est);
                     self.current_batch.push(message);
 
-                    // Check if we should flush
+                    // Check if we should flush based on count
                     if self.current_batch.len() >= self.batch_size {
                         drop(wal_reader); // Release lock before async operation
                         self.flush_batch().await?;
@@ -137,6 +161,28 @@ impl TopicWriter {
         }
 
         Ok(())
+    }
+
+    /// Roughly estimate memory size of a message in bytes
+    fn estimate_message_size(m: &StreamMessage) -> usize {
+        let mut sz = 0usize;
+        // payload dominates
+        sz += m.payload.len();
+        // strings and optionals
+        sz += m.msg_id.topic_name.len();
+        sz += m.msg_id.broker_addr.len();
+        sz += m.producer_name.len();
+        if let Some(sub) = &m.subscription_name {
+            sz += sub.len();
+        }
+        // attributes map (keys+values)
+        for (k, v) in &m.attributes {
+            sz += k.len();
+            sz += v.len();
+        }
+        // fixed overhead for struct fields and Arrow array bookkeeping
+        sz += 128;
+        sz
     }
 
     /// Ensure the Iceberg table exists for this topic
@@ -163,7 +209,11 @@ impl TopicWriter {
 
         // Create table
         let schema = create_danube_schema();
-        let location = format!("s3://danube-data/{}", self.topic_name);
+        let location = format!(
+            "{}/{}",
+            self.warehouse.trim_end_matches('/'),
+            self.topic_name
+        );
 
         let metadata = self
             .catalog
@@ -247,6 +297,7 @@ impl TopicWriter {
 
         // Clear the batch
         self.current_batch.clear();
+        self.current_batch_bytes = 0;
         self.last_flush = SystemTime::now();
 
         info!(
@@ -358,7 +409,8 @@ impl TopicWriter {
             .as_millis();
 
         let file_name = format!("data-{}-{}.parquet", self.topic_name, timestamp);
-        let file_path = Path::from(format!("data/{}", file_name));
+        // Store under per-topic prefix within the bucket/prefix
+        let file_path = Path::from(format!("{}/data/{}", self.topic_name, file_name));
 
         // Create in-memory buffer
         let mut buffer = Vec::new();

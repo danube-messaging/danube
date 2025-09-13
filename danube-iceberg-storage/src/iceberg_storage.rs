@@ -114,7 +114,7 @@ impl IcebergStorage {
 
         // Create shutdown channels
         let (writer_shutdown_tx, writer_shutdown_rx) = mpsc::channel(1);
-        let (reader_shutdown_tx, reader_shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let (reader_shutdown_tx, reader_shutdown_rx) = mpsc::channel(1);
 
         // Create WAL reader
         let wal_reader = Arc::new(tokio::sync::Mutex::new(self.wal.create_reader()));
@@ -130,6 +130,8 @@ impl IcebergStorage {
             self.catalog.clone(),
             self.object_store.clone(),
             writer_shutdown_rx,
+            &self.config.writer,
+            &self.config.warehouse,
         )
         .await?;
 
@@ -143,6 +145,8 @@ impl IcebergStorage {
         let reader = TopicReader::new(
             topic_name_for_reader.clone(),
             self.catalog.clone(),
+            self.object_store.clone(),
+            &self.config.reader,
             message_tx.clone(),
             reader_shutdown_rx,
         )
