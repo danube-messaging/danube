@@ -8,7 +8,10 @@ FROM base as builder
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
-    protobuf-compiler
+    protobuf-compiler \
+    pkg-config \
+    libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
