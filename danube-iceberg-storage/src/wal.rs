@@ -67,6 +67,8 @@ pub struct WriteAheadLog {
     current_offset: AtomicU64,
     /// Base directory for WAL files
     base_path: PathBuf,
+    /// Last sync time in milliseconds
+    last_sync_ms: AtomicU64,
 }
 
 impl WriteAheadLog {
@@ -86,6 +88,12 @@ impl WriteAheadLog {
             current_file_size: AtomicU64::new(0),
             current_offset: AtomicU64::new(0),
             base_path,
+            last_sync_ms: AtomicU64::new(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+            ),
         };
 
         // Initialize first WAL file
@@ -138,7 +146,16 @@ impl WriteAheadLog {
                     file.sync_all().await?;
                 }
                 SyncMode::Periodic => {
-                    // TODO: Implement periodic sync
+                    // Simple time-based periodic sync (every ~1s)
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let last = self.last_sync_ms.load(Ordering::Relaxed);
+                    if now_ms.saturating_sub(last) > 1000 {
+                        file.sync_data().await?;
+                        self.last_sync_ms.store(now_ms, Ordering::Relaxed);
+                    }
                 }
                 SyncMode::None => {
                     // No sync
@@ -212,6 +229,8 @@ pub struct WalReader {
     base_path: PathBuf,
     current_file: Option<File>,
     current_offset: u64,
+    files: Vec<PathBuf>,
+    file_index: usize,
 }
 
 impl WalReader {
@@ -221,24 +240,101 @@ impl WalReader {
             base_path,
             current_file: None,
             current_offset: 0,
+            files: Vec::new(),
+            file_index: 0,
         }
     }
 
     /// Read the next entry from the WAL
     pub async fn read_next(&mut self) -> Result<Option<WalEntry>> {
-        // TODO: Implement WAL reading logic
-        // This would involve:
-        // 1. Opening WAL files in order
-        // 2. Reading headers and payloads
-        // 3. Verifying checksums
-        // 4. Deserializing entries
-        Ok(None)
+        use tokio::io::AsyncReadExt;
+
+        // Ensure we have a file open
+        loop {
+            if self.current_file.is_none() {
+                // Initialize file list if needed
+                if self.files.is_empty() {
+                    let mut dir = tokio::fs::read_dir(&self.base_path).await?;
+                    let mut files: Vec<PathBuf> = Vec::new();
+                    while let Some(entry) = dir.next_entry().await? {
+                        let p = entry.path();
+                        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                            if name.starts_with("wal-") && name.ends_with(".log") {
+                                files.push(p);
+                            }
+                        }
+                    }
+                    // Sort by filename (timestamp-based naming ensures order)
+                    files.sort();
+                    self.files = files;
+                    self.file_index = 0;
+                }
+
+                if self.file_index >= self.files.len() {
+                    // No files to read
+                    return Ok(None);
+                }
+
+                let path = self.files[self.file_index].clone();
+                let file = OpenOptions::new().read(true).open(&path).await?;
+                self.current_file = Some(file);
+            }
+
+            if let Some(file) = &mut self.current_file {
+                // Read fixed-size header (bincode of fixed primitives yields 16 bytes)
+                let mut header_buf = vec![0u8; WalEntryHeader::SIZE];
+                match file.read_exact(&mut header_buf).await {
+                    Ok(_) => {
+                        let header = WalEntryHeader::from_bytes(&header_buf)?;
+
+                        // Read payload
+                        let mut payload = vec![0u8; header.payload_len as usize];
+                        file.read_exact(&mut payload).await?;
+
+                        // Verify checksum
+                        let crc = crc32fast::hash(&payload);
+                        if crc != header.checksum {
+                            return Err(IcebergStorageError::Wal(
+                                "WAL checksum mismatch".to_string(),
+                            ));
+                        }
+
+                        // Deserialize entry
+                        let entry: WalEntry = bincode::deserialize(&payload)
+                            .map_err(|e| IcebergStorageError::Serialization(e.to_string()))?;
+
+                        // Advance offset
+                        self.current_offset = self.current_offset.saturating_add(1);
+                        return Ok(Some(entry));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        // End of current file, move to next
+                        self.current_file = None;
+                        self.file_index += 1;
+                        continue;
+                    }
+                    Err(e) => return Err(IcebergStorageError::Io(e)),
+                }
+            }
+        }
     }
 
     /// Seek to a specific offset
     pub async fn seek(&mut self, offset: u64) -> Result<()> {
-        self.current_offset = offset;
-        // TODO: Implement seeking logic
+        // Reset state and scan forward to desired logical offset
+        self.current_file = None;
+        self.files.clear();
+        self.file_index = 0;
+        self.current_offset = 0;
+
+        while self.current_offset < offset {
+            if let Some(_entry) = self.read_next().await? {
+                // continue scanning
+            } else {
+                break;
+            }
+        }
+
         Ok(())
     }
 }
@@ -274,16 +370,23 @@ mod tests {
         let wal = WriteAheadLog::new(&config).await.unwrap();
 
         // Test append
-        let data = b"test message";
-        let offset = wal
-            .write_message(StreamMessage::new(Bytes::from(data)))
-            .await
-            .unwrap();
+        let msg = StreamMessage {
+            request_id: 0,
+            msg_id: danube_core::message::MessageID {
+                producer_id: 0,
+                topic_name: "test".to_string(),
+                broker_addr: "local".to_string(),
+                segment_id: 0,
+                segment_offset: 0,
+            },
+            payload: b"test message".to_vec(),
+            publish_time: 0,
+            producer_name: "test".to_string(),
+            subscription_name: None,
+            attributes: std::collections::HashMap::new(),
+        };
+        let offset = wal.write_message(msg).await.unwrap();
         assert_eq!(offset, 0);
-
-        // Test read
-        // let read_data = wal.read_from(offset).await.unwrap();
-        // assert_eq!(read_data, data);
     }
 
     #[tokio::test]
@@ -298,11 +401,23 @@ mod tests {
         let wal = WriteAheadLog::new(&config).await.unwrap();
 
         // Write some data
-        let messages = vec![b"msg1".to_vec(), b"msg2".to_vec(), b"msg3".to_vec()];
-        for msg in &messages {
-            wal.write_message(StreamMessage::new(Bytes::from(msg)))
-                .await
-                .unwrap();
+        for i in 0..3u64 {
+            let msg = StreamMessage {
+                request_id: i,
+                msg_id: danube_core::message::MessageID {
+                    producer_id: 0,
+                    topic_name: "test".to_string(),
+                    broker_addr: "local".to_string(),
+                    segment_id: 0,
+                    segment_offset: i,
+                },
+                payload: format!("msg{}", i).into_bytes(),
+                publish_time: 0,
+                producer_name: "test".to_string(),
+                subscription_name: None,
+                attributes: std::collections::HashMap::new(),
+            };
+            wal.write_message(msg).await.unwrap();
         }
 
         // Read with reader
@@ -312,7 +427,5 @@ mod tests {
         while let Some(data) = reader.read_next().await.unwrap() {
             read_messages.push(data);
         }
-
-        // assert_eq!(read_messages, messages);
     }
 }

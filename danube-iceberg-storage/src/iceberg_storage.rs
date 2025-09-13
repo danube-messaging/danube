@@ -31,8 +31,9 @@ pub struct IcebergStorage {
     topic_writers: Arc<tokio::sync::RwLock<HashMap<String, JoinHandle<()>>>>,
     /// Topic readers for streaming
     topic_readers: Arc<tokio::sync::RwLock<HashMap<String, JoinHandle<()>>>>,
-    /// Message senders for each topic
-    message_senders: Arc<tokio::sync::RwLock<HashMap<String, mpsc::Sender<StreamMessage>>>>,
+    /// Message broadcasters per topic (fan-out to multiple subscribers)
+    message_senders:
+        Arc<tokio::sync::RwLock<HashMap<String, tokio::sync::broadcast::Sender<StreamMessage>>>>,
     /// Shutdown signal
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
@@ -103,15 +104,17 @@ impl IcebergStorage {
 
         // Check if tasks already exist
         if senders.contains_key(topic_name) {
-            return Ok(senders[topic_name].clone());
+            // Return a bridge mpsc sender to maintain trait compatibility for now
+            let (tx, _rx) = mpsc::channel(1);
+            return Ok(tx);
         }
 
-        // Create message channel for streaming
-        let (message_tx, message_rx) = mpsc::channel(1000);
+        // Create broadcast channel for streaming (fan-out per topic)
+        let (message_tx, _message_rx) = tokio::sync::broadcast::channel(1024);
 
         // Create shutdown channels
         let (writer_shutdown_tx, writer_shutdown_rx) = mpsc::channel(1);
-        let (reader_shutdown_tx, reader_shutdown_rx) = mpsc::channel(1);
+        let (reader_shutdown_tx, reader_shutdown_rx) = tokio::sync::broadcast::channel(1);
 
         // Create WAL reader
         let wal_reader = Arc::new(tokio::sync::Mutex::new(self.wal.create_reader()));
@@ -158,7 +161,9 @@ impl IcebergStorage {
 
         info!(topic = topic_name, "Started background tasks for topic");
 
-        Ok(message_tx)
+        // Return a dummy mpsc::Sender placeholder here; actual stream is created in create_message_stream()
+        let (tx, _rx) = mpsc::channel(1);
+        Ok(tx)
     }
 }
 
@@ -191,16 +196,35 @@ impl PersistentStorage for IcebergStorage {
         _start_position: Option<u64>,
     ) -> std::result::Result<tokio::sync::mpsc::Receiver<StreamMessage>, PersistentStorageError>
     {
-        // Ensure topic tasks are running
-        let _message_sender = self
-            .start_topic_tasks(topic_name)
+        self.start_topic_tasks(topic_name)
             .await
             .map_err(|e| PersistentStorageError::Wal(e.to_string()))?;
 
-        // Create a new receiver for this consumer
-        let (_tx, rx) = mpsc::channel(1000);
+        // Subscribe to the topic broadcast and bridge into an mpsc receiver for the caller
+        let sender_guard = self.message_senders.read().await;
+        let broadcaster = sender_guard
+            .get(topic_name)
+            .ok_or_else(|| {
+                PersistentStorageError::Wal(format!("Topic {} not initialized", topic_name))
+            })?
+            .clone();
+        drop(sender_guard);
 
-        // TODO: Wire up the actual message streaming from TopicReader
+        let mut broadcast_rx = broadcaster.subscribe();
+        let (tx, rx) = mpsc::channel(1024);
+
+        // Spawn a forwarder task to translate broadcast to per-subscriber mpsc
+        let topic = topic_name.to_string();
+        tokio::spawn(async move {
+            while let Ok(msg) = broadcast_rx.recv().await {
+                if tx.send(msg).await.is_err() {
+                    // subscriber dropped; stop forwarding
+                    break;
+                }
+            }
+            info!(topic = %topic, "Broadcast->mpsc forwarder exited");
+        });
+
         Ok(rx)
     }
 

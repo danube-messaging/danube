@@ -4,7 +4,7 @@ use danube_core::message::StreamMessage;
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -17,11 +17,11 @@ pub struct TopicReader {
     /// Object store for reading Parquet files
     object_store: Arc<dyn ObjectStore>,
     /// Message sender for streaming to consumers
-    message_tx: mpsc::Sender<StreamMessage>,
+    message_tx: broadcast::Sender<StreamMessage>,
     /// Last processed snapshot ID
     last_snapshot_id: Option<i64>,
     /// Shutdown signal
-    shutdown_rx: mpsc::Receiver<()>,
+    shutdown_rx: broadcast::Receiver<()>,
     /// Table metadata cache
     table_metadata: Arc<RwLock<Option<TableMetadata>>>,
 }
@@ -31,8 +31,8 @@ impl TopicReader {
     pub async fn new(
         topic_name: String,
         catalog: Arc<dyn IcebergCatalog>,
-        message_tx: mpsc::Sender<StreamMessage>,
-        shutdown_rx: mpsc::Receiver<()>,
+        message_tx: broadcast::Sender<StreamMessage>,
+        shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<Self> {
         let reader = Self {
             topic_name,
@@ -171,7 +171,7 @@ impl TopicReader {
             };
 
             // Send message to consumers
-            if let Err(e) = self.message_tx.send(message).await {
+            if let Err(e) = self.message_tx.send(message) {
                 warn!(
                     topic = %self.topic_name,
                     error = %e,

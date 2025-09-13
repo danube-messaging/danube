@@ -4,9 +4,9 @@
 
 This document outlines the implementation plan for replacing Danube's segment-based persistent storage with Apache Iceberg-native storage, enabling cloud-native architecture with analytics integration.
 
-## Current Status: COMPLETED 
+## Current Status: In Progress (MVP gaps identified)
 
-The Iceberg storage implementation has been successfully completed with full catalog integration. The system now provides production-ready persistent storage using Apache Iceberg with both AWS Glue and REST catalog support.
+The Iceberg storage implementation is partially complete and compiles, but several functional gaps remain before it can deliver end-to-end persistence and consumption with ACID guarantees. The README currently indicates parts are "In Progress" and the code corroborates that critical areas are still placeholders (see Gap Analysis below).
 
 ## Architecture Summary
 
@@ -34,120 +34,124 @@ The Iceberg storage implementation has been successfully completed with full cat
 - **Analytics integration** through Iceberg-compatible query engines
 - **Graceful shutdown** with proper resource cleanup
 
-## Implementation Details
+## Gap Analysis
 
-### Catalog Integration 
-- **REST Catalog Client**: Full HTTP-based implementation with JSON API support
-- **AWS Glue Catalog Client**: Complete AWS SDK integration with proper credential handling
-- **Factory Pattern**: Configuration-driven catalog instantiation
-- **Shared Metadata Structs**: Complete Iceberg table metadata representation
-- **Error Handling**: Comprehensive error mapping and retry logic
+- [High] WAL reader not implemented
+  - `danube-iceberg-storage/src/wal.rs`: `WalReader::read_next()` and `seek()` are TODO. `SyncMode::Periodic` not implemented.
+  - Effect: `TopicWriter` cannot actually tail WAL; ingestion path is not end-to-end.
 
-### Storage Components 
-- **IcebergStorage**: Main storage implementation with PersistentStorage trait
-- **TopicWriter**: Background WAL-to-Iceberg processing with atomic commits
-- **TopicReader**: Streaming reads from Iceberg snapshots with metadata caching
-- **WriteAheadLog**: High-performance local storage for producer acknowledgments
-- **Object Store Integration**: S3 and local filesystem support with configurable backends
+- [High] Consumer stream wiring missing
+  - `danube-iceberg-storage/src/iceberg_storage.rs`: `create_message_stream()` returns a receiver that is not connected to `TopicReader` output (TODO).
+  - Effect: consumers will not receive data.
 
-### Message Schema 
-Default Danube message schema optimized for Iceberg:
-- `request_id` (long): Unique request identifier
-- `producer_id` (long): Producer instance ID
-- `topic_name` (string): Topic name
-- `broker_addr` (string): Broker address
-- `segment_id` (long): Legacy segment ID for compatibility
-- `segment_offset` (long): Message offset within segment
-- `payload` (binary): Message payload data
-- `publish_time` (timestamp): Message publish timestamp
-- `producer_name` (string): Producer name
-- `subscription_name` (string, optional): Subscription name if applicable
+- [High] Hardcoded object store and paths
+  - `topic_writer.rs`: table location hardcoded to `s3://danube-data/{topic}`; does not use configured `warehouse` or object store.
+  - `topic_reader.rs`: always uses `LocalFileSystem`; ignores configured object store.
+  - Effect: configuration for S3/MinIO/local is ineffective or inconsistent.
 
-## Configuration Example
+- [High] Writer/Reader configs not applied
+  - `topic_writer.rs`: ignores `WriterConfig` (batch size, flush interval, memory cap).
+  - `topic_reader.rs`: ignores `ReaderConfig` (poll interval, concurrency, prefetch).
+  - Effect: no control over batching, timeouts, or resource usage.
 
-```yaml
-storage:
-  type: "iceberg"
-  iceberg_config:
-    catalog:
-      type: "rest"  # or "glue"
-      uri: "http://localhost:8181"
-      warehouse: "s3://danube-warehouse/"
-      # For Glue catalog:
-      # database: "danube_iceberg"
-    object_store:
-      type: "s3"
-      bucket: "danube-messages"
-      region: "us-east-1"
-      # endpoint: "http://localhost:9000"  # For MinIO
-      # path_style: true
-    wal:
-      base_path: "/var/lib/danube/wal"
-      max_file_size: 67108864  # 64MB
-      sync_mode: "periodic"
-      sync_interval_ms: 1000
-    warehouse: "s3://danube-warehouse/"
-```
+- [High] Iceberg commit protocol not implemented
+  - `catalog/rest_catalog.rs`: `update_table()` posts entire metadata; not the Iceberg REST commit/branch reference update with optimistic concurrency.
+  - `catalog/glue_catalog.rs`: CRUD resembles Hive Glue tables; not Iceberg commit semantics.
+  - `topic_writer.rs`: synthesizes `Snapshot` and pushes to in-memory metadata; no manifests/manifest lists; not atomic.
+  - Effect: no ACID guarantees; unsafe concurrency across writers.
 
-## Completed Features 
+- [High] Reader incremental processing and Parquet reading missing
+  - `topic_reader.rs`: generates dummy messages; `read_parquet_file()` placeholder; no manifest parsing or incremental scan.
+  - Effect: consumers cannot read actual data files.
 
-### High Priority (Completed)
-- [x] **Full REST catalog client implementation**
-  - Complete HTTP-based catalog operations
-  - Table CRUD operations with proper error handling
-  - Namespace management and listing
-  - JSON serialization for Iceberg metadata
+- [Medium] Committed position tracking unimplemented
+  - `iceberg_storage.rs`: `get_committed_position()` returns 0 (TODO).
+  - Effect: broker cannot report progress or resume correctly.
 
-- [x] **Full AWS Glue catalog client implementation**
-  - AWS SDK integration with proper credential handling
-  - Glue Data Catalog API operations
-  - Database (namespace) management
-  - Iceberg-specific table properties
+- [Medium] Topic deletion incomplete
+  - `iceberg_storage.rs`: `delete_topic()` does not drop table or clean object store paths.
 
-- [x] **Catalog-specific dependencies integration**
-  - Added reqwest for REST catalog HTTP client
-  - Added aws-sdk-glue and aws-config for Glue integration
-  - Added supporting libraries (url, rand)
+- [Medium] Catalog auth and resiliency
+  - REST token header not used; no retry/backoff. Glue profile handling not explicit.
 
-- [x] **TopicWriter real catalog integration**
-  - Atomic snapshot commits with optimistic concurrency
-  - Table creation and metadata caching
-  - Background processing with proper error handling
-  - Data file management and statistics tracking
+- [Medium] etcd integration for subscription progress
+  - Design calls for persisting last processed snapshot/offset; current code keeps state in-memory only.
 
-- [x] **TopicReader real catalog integration**
-  - Snapshot-based incremental processing
-  - Table metadata loading and caching
-  - Background streaming architecture
-  - Graceful shutdown handling
+- [Low] Schema evolution support
+  - Static schema via `create_danube_schema()`; no evolution workflow.
 
-### Architecture Integration 
-- [x] **PersistentStorage trait implementation**
-- [x] **Broker configuration support**
-- [x] **Object store abstraction**
-- [x] **WAL integration**
-- [x] **Background task management**
-- [x] **Error handling and logging**
+- [Low] Metrics/monitoring
+  - No counters or tracing for latency, batch sizes, failures, snapshot lag, etc.
 
-## Remaining Work (Medium/Low Priority)
+- [Low] Retention/compaction/maintenance
+  - No policies for snapshot retention or data compaction.
 
-### Performance & Reliability
-- [ ] **Atomic snapshot commit optimization** with retry logic and conflict resolution
-- [ ] **Table schema evolution support** for backward compatibility
-- [ ] **Catalog authentication configuration** (AWS credentials, REST auth tokens)
-- [ ] **Comprehensive error handling** with circuit breakers and backoff
-- [ ] **Integration tests** for catalog implementations
-- [ ] **Performance benchmarks** and optimization
-- [ ] **Metrics and monitoring** instrumentation
-- [ ] **Compression support** for Parquet files
+- [Low] Tests/benchmarks and Parquet tuning
+  - Lack of integration tests (REST/MinIO) and performance harness; no compression/encoding tuning.
 
-### Operational Features
-- [ ] **Backup and restore capabilities**
-- [ ] **Data retention policies** with automatic cleanup
-- [ ] **Query interface** for analytics integration
-- [ ] **Multi-table format support** (Delta Lake, Hudi)
-- [ ] **Compaction strategies** for optimal query performance
-- [ ] **Partition management** for large-scale deployments
+## Recommended Actions (Prioritized)
+
+1) Implement WAL reading and periodic fsync
+- Implement `WalReader::read_next()` and `seek()`; support `SyncMode::Periodic` in `WriteAheadLog`.
+
+2) Wire consumer streams end-to-end
+- In `IcebergStorage`, maintain per-topic fan-out/broadcast from `TopicReader` to registered subscribers, and return connected receivers from `create_message_stream()`.
+
+3) Honor configuration and remove hardcoded paths
+- Pass configured `ObjectStore` to `TopicReader`.
+- Use `IcebergConfig.warehouse` to derive table and data paths; no hardcoded `s3://...` in `TopicWriter`.
+- Apply `WriterConfig` and `ReaderConfig` values for batch size, flush interval, memory cap, poll interval, concurrency, and prefetch.
+
+4) Implement proper Iceberg REST commit protocol (initial target)
+- Stage data files and manifests; build manifest list.
+- Perform atomic reference update with optimistic concurrency via REST catalog.
+- For Glue, document limitation or route commits through a REST catalog service.
+
+5) Implement reader incremental scan and Parquet conversion
+- Parse manifest list/manifests to enumerate added data files since last processed snapshot.
+- Read Parquet via `object_store`, convert Arrow -> `StreamMessage`, and stream to subscribers.
+
+6) Track committed positions and integrate etcd for subscription progress
+- Persist last processed snapshot/offset per subscription in etcd.
+- Implement `get_committed_position()` using Iceberg metadata and/or etcd state.
+
+7) Complete topic deletion and add catalog/auth resiliency
+- Implement `delete_topic()` to drop table and optionally purge warehouse prefixes.
+- Add REST token auth header support; AWS profile/credentials selection; retries with backoff for transient failures.
+
+8) Productionization items
+- Metrics/monitoring, schema evolution workflow, retention/compaction policies, integration tests (REST + MinIO), performance benchmarks, Parquet compression/encoding settings.
+
+## Progress Update (2025-09-13)
+
+- Implemented the first two high-priority items:
+  - WAL reader and periodic fsync:
+    - `danube-iceberg-storage/src/wal.rs`: Implemented `WalReader::read_next()` and `seek()` to iterate `wal-*.log` files in order, read fixed-size headers (16 bytes), validate CRC32, and deserialize `WalEntry`. Added time-based periodic `sync_data()` when `SyncMode::Periodic` is enabled. Introduced `last_sync_ms` in `WriteAheadLog`.
+    - Fixed `WalEntryHeader::SIZE` to 16 to match two `u32` + one `u64` encoded by bincode.
+  - Consumer stream wiring:
+    - `danube-iceberg-storage/src/topic_reader.rs`: Switched to `tokio::sync::broadcast::Sender<StreamMessage>` for fan-out to multiple subscribers; updated send path. Kept shutdown as `mpsc::Receiver<()>`.
+    - `danube-iceberg-storage/src/iceberg_storage.rs`: Created per-topic broadcast channels stored in `message_senders`; `create_message_stream()` now subscribes to the broadcast and bridges to an `mpsc::Receiver<StreamMessage>` returned to callers. Background `TopicReader` publishes to the topic broadcast.
+
+- Notes:
+  - Writer/Reader still use placeholders for Parquet and commit protocol; next steps are to remove hardcoded paths and honor config, then implement REST commit and reader incrementals.
+
+## Remaining Work (Tracking Checklist)
+
+- [x] WAL reader: `read_next()` and `seek()`; periodic fsync in WAL
+- [x] Stream wiring: connect `TopicReader` to subscribers; fan-out/backpressure
+- [ ] Config usage: pass object store to reader; use `warehouse` for table/data paths
+- [ ] Apply Writer/Reader configs (`WriterConfig`, `ReaderConfig`)
+- [ ] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
+- [ ] Reader incremental processing and Parquet -> `StreamMessage`
+- [ ] Committed position tracking and reporting
+- [ ] `delete_topic()` drops table and cleans object store
+- [ ] Catalog auth (REST token), AWS credentials/profile; retries/backoff
+- [ ] etcd integration for subscription progress
+- [ ] Schema evolution support
+- [ ] Metrics/monitoring instrumentation
+- [ ] Retention/compaction policies
+- [ ] Integration tests (local + MinIO/REST) and performance benchmarks
+- [ ] Parquet compression/encoding tuning
 
 ## Migration Path
 
