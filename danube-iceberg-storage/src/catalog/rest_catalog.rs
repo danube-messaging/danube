@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use url::Url;
 
 // Import the types from the parent catalog module
-use super::{DataFile, IcebergCatalog, TableMetadata, TableSchema};
+use super::{DataFile, IcebergCatalog, PlannedFile, TableMetadata, TableSchema};
 
 /// REST catalog implementation
 #[derive(Debug)]
@@ -49,6 +49,14 @@ impl RestCatalog {
         url.path_segments_mut()
             .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
             .push("commit");
+        Ok(url)
+    }
+
+    fn scan_plan_url(&self, namespace: &str, table_name: &str) -> Result<Url> {
+        let mut url = self.table_url(namespace, table_name)?;
+        url.path_segments_mut()
+            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
+            .push("scan");
         Ok(url)
     }
 }
@@ -336,5 +344,87 @@ impl IcebergCatalog for RestCatalog {
         })?;
 
         Ok(metadata)
+    }
+
+    async fn plan_scan(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        from_snapshot_id: Option<i64>,
+        to_snapshot_id: Option<i64>,
+    ) -> Result<Vec<PlannedFile>> {
+        let url = self.scan_plan_url(namespace, table_name)?;
+        let mut body = serde_json::json!({});
+        if from_snapshot_id.is_some() || to_snapshot_id.is_some() {
+            let mut scan = serde_json::Map::new();
+            if let Some(f) = from_snapshot_id {
+                scan.insert("from-snapshot-id".to_string(), serde_json::json!(f));
+            }
+            if let Some(t) = to_snapshot_id {
+                scan.insert("to-snapshot-id".to_string(), serde_json::json!(t));
+            }
+            body = serde_json::Value::Object(scan);
+        }
+
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(IcebergStorageError::Catalog(format!(
+                "Scan plan failed with status: {}",
+                response.status()
+            )));
+        }
+
+        let v: serde_json::Value = response.json().await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
+        })?;
+
+        // Extract planned files from common shapes: tasks[*].files[*] or files[*]
+        let mut out = Vec::new();
+        if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
+            for t in tasks {
+                if let Some(files) = t.get("files").and_then(|f| f.as_array()) {
+                    for f in files {
+                        let path = f
+                            .get("file")
+                            .and_then(|x| x.get("filePath"))
+                            .and_then(|s| s.as_str())
+                            .or_else(|| f.get("file_path").and_then(|s| s.as_str()))
+                            .unwrap_or("");
+                        let status = f.get("status").and_then(|s| s.as_str()).unwrap_or("ADDED");
+                        if !path.is_empty() {
+                            out.push(PlannedFile {
+                                file_path: path.to_string(),
+                                status: status.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        } else if let Some(files) = v.get("files").and_then(|f| f.as_array()) {
+            for f in files {
+                let path = f
+                    .get("file")
+                    .and_then(|x| x.get("filePath"))
+                    .and_then(|s| s.as_str())
+                    .or_else(|| f.get("file_path").and_then(|s| s.as_str()))
+                    .unwrap_or("");
+                let status = f.get("status").and_then(|s| s.as_str()).unwrap_or("ADDED");
+                if !path.is_empty() {
+                    out.push(PlannedFile {
+                        file_path: path.to_string(),
+                        status: status.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(out)
     }
 }

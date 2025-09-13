@@ -1,5 +1,5 @@
 use crate::catalog::{create_catalog, IcebergCatalog};
-use crate::config::IcebergConfig;
+use crate::config::{CatalogConfig, IcebergConfig};
 use crate::errors::Result;
 use crate::topic_reader::TopicReader;
 use crate::topic_writer::TopicWriter;
@@ -98,6 +98,14 @@ impl IcebergStorage {
 
     /// Start background tasks for a topic
     async fn start_topic_tasks(&self, topic_name: &str) -> Result<mpsc::Sender<StreamMessage>> {
+        // Guard: features require REST catalog for commit and scan planning
+        if let CatalogConfig::Glue { .. } = self.config.catalog {
+            return Err(crate::errors::IcebergStorageError::Config(
+                "Glue catalog is not supported for commit_add_files/plan_scan; use REST catalog for Iceberg commits and precise reader incrementals".to_string(),
+            )
+            .into());
+        }
+
         let mut writers = self.topic_writers.write().await;
         let mut readers = self.topic_readers.write().await;
         let mut senders = self.message_senders.write().await;

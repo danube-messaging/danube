@@ -169,20 +169,21 @@ impl TopicReader {
             "Processing snapshot"
         );
 
-        // Simplified approach: list object store under {topic}/data and find new files
-        let prefix = Path::from(format!("{}/data", self.topic_name));
-        let mut stream = self.object_store.list(Some(&prefix));
+        // Use precise scan planning via catalog to enumerate only newly added files
+        let from_snapshot_id = snapshot.parent_snapshot_id;
+        let to_snapshot_id = Some(snapshot.snapshot_id);
+        let planned = self
+            .catalog
+            .plan_scan("danube", &self.topic_name, from_snapshot_id, to_snapshot_id)
+            .await?;
 
-        while let Some(res) = stream.next().await {
-            let meta = res.map_err(IcebergStorageError::from)?;
-            let path_str = meta.location.to_string();
+        for pf in planned
+            .into_iter()
+            .filter(|pf| pf.status.eq_ignore_ascii_case("ADDED"))
+        {
+            let path_str = pf.file_path;
 
-            // Skip directories
-            if meta.size == 0 {
-                continue;
-            }
-
-            // Check if already processed
+            // Skip already processed files
             {
                 let seen = self.seen_files.read().await;
                 if seen.contains(&path_str) {
@@ -190,16 +191,17 @@ impl TopicReader {
                 }
             }
 
+            // Convert to object_store Path. For now assume the path is a key relative to the store's root.
+            let file_path = Path::from(path_str.clone());
+
             // Acquire concurrency permit and spawn read task
             let permit = self.concurrent_reads.clone().acquire_owned().await.unwrap();
             let obj = self.object_store.clone();
-            let file_path = meta.location;
             let mut tx = self.prefetch_tx.clone();
             let topic = self.topic_name.clone();
             let seen_files = self.seen_files.clone();
 
             tokio::spawn(async move {
-                // Read Parquet file and send messages
                 match Self::read_parquet_file_inner(&obj, &file_path, &topic).await {
                     Ok(messages) => {
                         for msg in messages {
@@ -207,17 +209,11 @@ impl TopicReader {
                                 break;
                             }
                         }
-                        // Mark as seen after successful processing
                         let mut guard = seen_files.write().await;
                         guard.insert(file_path.to_string());
                     }
                     Err(e) => {
-                        warn!(
-                            topic = %topic,
-                            file = %file_path,
-                            error = %e,
-                            "Failed to read Parquet file"
-                        );
+                        warn!(topic = %topic, file = %file_path, error = %e, "Failed to read Parquet file");
                     }
                 }
                 drop(permit);

@@ -152,9 +152,15 @@ The Iceberg storage implementation is partially complete and compiles, but sever
     - Enumerates new Parquet files by listing `{topic}/data` in the configured `ObjectStore`, prevents duplicates with an in-memory `seen_files` set, and reads files concurrently with the configured semaphore and prefetch queue.
     - Reads Parquet bytes using `ParquetRecordBatchReaderBuilder` and converts Arrow `RecordBatch` rows to `StreamMessage`.
 
+- Implemented precise reader incrementals via Iceberg manifests (REST scan planning):
+  - `danube-iceberg-storage/src/catalog.rs`: Added `PlannedFile` and `IcebergCatalog::plan_scan(...)`.
+  - `danube-iceberg-storage/src/catalog/rest_catalog.rs`: Implemented `POST /v1/namespaces/{ns}/tables/{table}/scan` with optional `from-snapshot-id`/`to-snapshot-id`, parsing common response shapes to collect planned files and their `status`.
+  - `danube-iceberg-storage/src/catalog/glue_catalog.rs`: Added `plan_scan` as `not implemented`; advise using REST for planning.
+  - `danube-iceberg-storage/src/topic_reader.rs`: Replaced object-store prefix listing with `plan_scan(...)` and now processes only `status == "ADDED"` files between parent/current snapshot.
+  - `danube-iceberg-storage/src/iceberg_storage.rs`: Added a configuration guard to error out early if `CatalogConfig::Glue` is selected for features requiring commit and scan planning.
+
 - Notes:
-  - Reader incremental scan currently uses object store prefix listing for new files. Next step is to strictly parse Iceberg manifest lists/manifests for added/deleted files and sequence numbers.
-  - Glue commit is not implemented; use REST catalog for committing data in this phase.
+  - Reader incrementals are now precise per Iceberg manifests via REST planning when using REST catalog; Glue remains unsupported for commit/planning in this phase.
   - Parquet compression/encoding is still at defaults; expose via config in a later step.
 
 ## Remaining Work (Tracking Checklist)
@@ -167,7 +173,7 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - [x] ReaderConfig.max_concurrent_reads and prefetch buffer
 - [x] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
 - [x] Reader incremental processing and Parquet -> `StreamMessage` (initial: prefix listing)
-- [ ] Reader incremental processing from manifests (precise added/deleted files, sequence semantics)
+- [x] Reader incrementals from manifests via REST scan plan (precise added/deleted, sequence semantics)
 - [ ] Committed position tracking and reporting
 - [ ] `delete_topic()` drops table and cleans object store
 - [ ] Catalog auth (REST token), AWS credentials/profile; retries/backoff
@@ -180,9 +186,6 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 
 ## Next Phase (Phase 3: Integration and Robustness)
 
-- Precise reader incrementals via Iceberg manifests
-  - Parse manifest list and manifests to enumerate only newly added data files since the last processed snapshot, and handle deletes.
-  - Respect sequence numbers and snapshot lineage.
 - Committed position tracking and etcd integration
   - Persist per-subscription progress (last snapshot/file/offset) to etcd and expose `get_committed_position()`.
   - Use etcd on startup to resume from the correct position.

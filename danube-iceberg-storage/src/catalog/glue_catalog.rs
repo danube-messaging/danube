@@ -5,7 +5,9 @@ use aws_sdk_glue::Client;
 use uuid::Uuid;
 
 // Import the types from the parent catalog module
-use super::{create_danube_schema, DataFile, IcebergCatalog, TableMetadata, TableSchema};
+use super::{
+    create_danube_schema, DataFile, IcebergCatalog, PlannedFile, TableMetadata, TableSchema,
+};
 
 /// AWS Glue catalog implementation
 #[derive(Debug)]
@@ -241,13 +243,27 @@ impl IcebergCatalog for GlueCatalog {
         &self,
         _namespace: &str,
         _table_name: &str,
-        current_metadata: &TableMetadata,
+        _current_metadata: &TableMetadata,
         _data_files: Vec<DataFile>,
     ) -> Result<TableMetadata> {
         // For AWS Glue direct integration, a proper Iceberg commit requires an Iceberg-aware service.
         // For now, return the current metadata unchanged to keep compatibility.
         Err(IcebergStorageError::Catalog(
             "Glue commit_add_files not implemented; use REST catalog for commits".to_string(),
+        ))
+    }
+
+    async fn plan_scan(
+        &self,
+        _namespace: &str,
+        _table_name: &str,
+        _from_snapshot_id: Option<i64>,
+        _to_snapshot_id: Option<i64>,
+    ) -> Result<Vec<PlannedFile>> {
+        // Glue catalog does not expose Iceberg REST scan planning.
+        // Suggest using REST catalog for precise planning; return an explicit error.
+        Err(IcebergStorageError::Catalog(
+            "Glue plan_scan not implemented; use REST catalog for scan planning".to_string(),
         ))
     }
 }

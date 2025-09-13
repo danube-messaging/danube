@@ -71,6 +71,13 @@ pub struct DataFile {
     pub sort_order_id: Option<i32>,
 }
 
+/// Planned file returned by scan planning (status is typically "ADDED" or "DELETED")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedFile {
+    pub file_path: String,
+    pub status: String,
+}
+
 /// Trait for Iceberg catalog operations
 #[async_trait]
 pub trait IcebergCatalog: Send + Sync + std::fmt::Debug {
@@ -110,6 +117,15 @@ pub trait IcebergCatalog: Send + Sync + std::fmt::Debug {
         current_metadata: &TableMetadata,
         data_files: Vec<DataFile>,
     ) -> Result<TableMetadata>;
+
+    /// Plan a scan between two snapshots and return planned data files with status
+    async fn plan_scan(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        from_snapshot_id: Option<i64>,
+        to_snapshot_id: Option<i64>,
+    ) -> Result<Vec<PlannedFile>>;
 }
 
 /// Create catalog based on configuration
