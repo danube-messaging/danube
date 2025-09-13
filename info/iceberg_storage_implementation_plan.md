@@ -159,6 +159,16 @@ The Iceberg storage implementation is partially complete and compiles, but sever
   - `danube-iceberg-storage/src/topic_reader.rs`: Replaced object-store prefix listing with `plan_scan(...)` and now processes only `status == "ADDED"` files between parent/current snapshot.
   - `danube-iceberg-storage/src/iceberg_storage.rs`: Added a configuration guard to error out early if `CatalogConfig::Glue` is selected for features requiring commit and scan planning.
 
+- Committed positions and etcd subscription progress (scaffolding complete):
+  - `danube-iceberg-storage/Cargo.toml`: Added dependency on `danube-metadata-store` and `chrono`.
+  - `danube-iceberg-storage/src/iceberg_storage.rs`:
+    - Added optional etcd-backed `metadata_store` initialized from `DANUBE_METADATA_ENDPOINT` env var.
+    - Added helpers to persist and retrieve per-subscription progress under a new path (does not interfere with existing broker paths):
+      - Path: `/persistent_storage/iceberg/subscriptions/{subscription}/{namespace}/{topic}`
+      - Methods: `record_subscription_progress(...)` and `get_subscription_progress(...)` with JSON payload `{ snapshot_id, file_path, offset_in_file, updated_ms }`.
+    - Implemented `get_committed_position(topic)` using Iceberg table metadata (`current_snapshot_id`) via `catalog.load_table()`.
+  - Note: Broker wiring is deferred by request; no changes in `danube-broker`. When ready, broker can call these helpers on ack and resume.
+
 - Notes:
   - Reader incrementals are now precise per Iceberg manifests via REST planning when using REST catalog; Glue remains unsupported for commit/planning in this phase.
   - Parquet compression/encoding is still at defaults; expose via config in a later step.
@@ -174,10 +184,10 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - [x] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
 - [x] Reader incremental processing and Parquet -> `StreamMessage` (initial: prefix listing)
 - [x] Reader incrementals from manifests via REST scan plan (precise added/deleted, sequence semantics)
-- [ ] Committed position tracking and reporting
+- [x] Committed position (table-level): implemented via `current_snapshot_id`
+- [ ] etcd integration for subscription progress (broker wiring to call helpers)
 - [ ] `delete_topic()` drops table and cleans object store
 - [ ] Catalog auth (REST token), AWS credentials/profile; retries/backoff
-- [ ] etcd integration for subscription progress
 - [ ] Schema evolution support
 - [ ] Metrics/monitoring instrumentation
 - [ ] Retention/compaction policies
@@ -189,6 +199,7 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - Committed position tracking and etcd integration
   - Persist per-subscription progress (last snapshot/file/offset) to etcd and expose `get_committed_position()`.
   - Use etcd on startup to resume from the correct position.
+  - Current status: storage-side helpers available; broker wiring pending.
 - Operational robustness
   - Add REST token auth header support and AWS credentials/profile selection.
   - Implement retries with exponential backoff for transient REST/object_store failures.

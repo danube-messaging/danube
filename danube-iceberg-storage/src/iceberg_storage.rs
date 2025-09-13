@@ -6,9 +6,13 @@ use crate::topic_writer::TopicWriter;
 use crate::wal::WriteAheadLog;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError};
+use danube_metadata_store::MetadataStore; // bring trait into scope for get/put
+use danube_metadata_store::{MetaOptions, MetadataStorage};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -36,6 +40,8 @@ pub struct IcebergStorage {
         Arc<tokio::sync::RwLock<HashMap<String, tokio::sync::broadcast::Sender<StreamMessage>>>>,
     /// Shutdown signal
     shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Optional metadata store for subscription progress (etcd or memory)
+    metadata_store: Option<MetadataStorage>,
 }
 
 impl IcebergStorage {
@@ -52,6 +58,19 @@ impl IcebergStorage {
         // Create object store
         let object_store = Self::create_object_store(&config).await?;
 
+        // Optional metadata store (for subscription progress)
+        // Use DANUBE_METADATA_ENDPOINT env var if present; otherwise leave None to avoid broker changes
+        let metadata_store = match std::env::var("DANUBE_METADATA_ENDPOINT") {
+            Ok(endpoint) => match danube_metadata_store::EtcdStore::new(endpoint).await {
+                Ok(etcd) => Some(MetadataStorage::Etcd(etcd)),
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize etcd metadata store; continuing without subscription progress store");
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+
         Ok(Self {
             config,
             wal,
@@ -61,6 +80,7 @@ impl IcebergStorage {
             topic_readers: Arc::new(RwLock::new(HashMap::new())),
             message_senders: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
+            metadata_store,
         })
     }
 
@@ -177,6 +197,62 @@ impl IcebergStorage {
         let (tx, _rx) = mpsc::channel(1);
         Ok(tx)
     }
+
+    /// Build etcd path for subscription progress without affecting existing business flows
+    /// Path: /persistent_storage/iceberg/subscriptions/{subscription}/{namespace}/{topic}
+    fn subscription_progress_path(
+        &self,
+        namespace: &str,
+        topic: &str,
+        subscription: &str,
+    ) -> String {
+        format!(
+            "/persistent_storage/iceberg/subscriptions/{}/{}/{}",
+            subscription, namespace, topic
+        )
+    }
+
+    /// Record a subscription's last processed position (snapshot/file/offset) into metadata store (if configured)
+    pub async fn record_subscription_progress(
+        &self,
+        namespace: &str,
+        topic: &str,
+        subscription: &str,
+        snapshot_id: i64,
+        file_path: Option<String>,
+        offset_in_file: Option<u64>,
+    ) {
+        if let Some(store) = &self.metadata_store {
+            let key = self.subscription_progress_path(namespace, topic, subscription);
+            let value = json!({
+                "snapshot_id": snapshot_id,
+                "file_path": file_path,
+                "offset_in_file": offset_in_file,
+                "updated_ms": chrono::Utc::now().timestamp_millis(),
+            });
+            if let Err(e) = store.put(&key, value, MetaOptions::None).await {
+                warn!(key = %key, error = %e, "Failed to persist subscription progress");
+            }
+        }
+    }
+
+    /// Fetch a subscription's last processed position from metadata store (if configured)
+    pub async fn get_subscription_progress(
+        &self,
+        namespace: &str,
+        topic: &str,
+        subscription: &str,
+    ) -> Option<SubscriptionProgress> {
+        if let Some(store) = &self.metadata_store {
+            let key = self.subscription_progress_path(namespace, topic, subscription);
+            match store.get(&key, MetaOptions::None).await {
+                Ok(Some(val)) => serde_json::from_value::<SubscriptionProgress>(val).ok(),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -250,10 +326,14 @@ impl PersistentStorage for IcebergStorage {
 
     async fn get_committed_position(
         &self,
-        _topic_name: &str,
+        topic_name: &str,
     ) -> std::result::Result<u64, PersistentStorageError> {
-        // TODO: Track committed position from Iceberg snapshots
-        Ok(0)
+        // Derive committed position from Iceberg table's current snapshot
+        // Namespace is fixed to "danube" for now
+        match self.catalog.load_table("danube", topic_name).await {
+            Ok(meta) => Ok(meta.current_snapshot_id.unwrap_or(0) as u64),
+            Err(e) => Err(PersistentStorageError::Catalog(e.to_string())),
+        }
     }
 
     async fn create_topic(
@@ -337,6 +417,14 @@ impl PersistentStorage for IcebergStorage {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionProgress {
+    pub snapshot_id: i64,
+    pub file_path: Option<String>,
+    pub offset_in_file: Option<u64>,
+    pub updated_ms: i64,
 }
 
 #[cfg(test)]

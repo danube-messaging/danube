@@ -11,6 +11,8 @@ edition = "2021"
 
 [dependencies]
 danube-core = { path = "../danube-core" }
+danube-metadata-store = { path = "../danube-metadata-store" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Iceberg and Arrow ecosystem
 iceberg = "0.6.0"
