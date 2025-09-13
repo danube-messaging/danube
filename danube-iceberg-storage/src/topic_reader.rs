@@ -1,10 +1,13 @@
 use crate::catalog::{IcebergCatalog, TableMetadata};
 use crate::config::ReaderConfig;
 use crate::errors::{IcebergStorageError, Result};
+use arrow::array::{BinaryArray, Int64Array, StringArray, TimestampMillisecondArray, UInt64Array};
 use danube_core::message::StreamMessage;
-use object_store::ObjectStore;
+use futures::StreamExt;
+use object_store::{path::Path, ObjectStore};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
@@ -32,6 +35,8 @@ pub struct TopicReader {
     /// Prefetch queue for fetched messages
     prefetch_tx: mpsc::Sender<StreamMessage>,
     prefetch_rx: mpsc::Receiver<StreamMessage>,
+    /// Set of already processed file paths (to avoid re-reading)
+    seen_files: Arc<RwLock<HashSet<String>>>,
 }
 
 impl TopicReader {
@@ -58,6 +63,7 @@ impl TopicReader {
             concurrent_reads: Arc::new(Semaphore::new(reader_cfg.max_concurrent_reads.max(1))),
             prefetch_tx,
             prefetch_rx,
+            seen_files: Arc::new(RwLock::new(HashSet::new())),
         };
 
         Ok(reader)
@@ -163,58 +169,189 @@ impl TopicReader {
             "Processing snapshot"
         );
 
-        // For now, we simulate a single "file read" with dummy messages but enforce concurrency and prefetch
-        let permit = self.concurrent_reads.clone().acquire_owned().await.unwrap();
-        let mut tx = self.prefetch_tx.clone();
-        let topic = self.topic_name.clone();
-        tokio::spawn(async move {
-            // Simulated fetch: create dummy messages and push into prefetch
-            use danube_core::message::MessageID;
-            use std::collections::HashMap;
-            for i in 0..5 {
-                let message = StreamMessage {
-                    request_id: (snapshot_id as u64) * 1000 + i,
-                    msg_id: MessageID {
-                        producer_id: 1,
-                        topic_name: topic.clone(),
-                        broker_addr: "localhost:6650".to_string(),
-                        segment_id: snapshot_id as u64,
-                        segment_offset: i,
-                    },
-                    payload: format!("Message {} from snapshot {}", i, snapshot_id).into_bytes(),
-                    publish_time: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64,
-                    producer_name: "iceberg_reader".to_string(),
-                    subscription_name: None,
-                    attributes: HashMap::new(),
-                };
-                if tx.send(message).await.is_err() {
-                    // receiver dropped; stop
-                    break;
+        // Simplified approach: list object store under {topic}/data and find new files
+        let prefix = Path::from(format!("{}/data", self.topic_name));
+        let mut stream = self.object_store.list(Some(&prefix));
+
+        while let Some(res) = stream.next().await {
+            let meta = res.map_err(IcebergStorageError::from)?;
+            let path_str = meta.location.to_string();
+
+            // Skip directories
+            if meta.size == 0 {
+                continue;
+            }
+
+            // Check if already processed
+            {
+                let seen = self.seen_files.read().await;
+                if seen.contains(&path_str) {
+                    continue;
                 }
             }
-            drop(permit);
-        });
+
+            // Acquire concurrency permit and spawn read task
+            let permit = self.concurrent_reads.clone().acquire_owned().await.unwrap();
+            let obj = self.object_store.clone();
+            let file_path = meta.location;
+            let mut tx = self.prefetch_tx.clone();
+            let topic = self.topic_name.clone();
+            let seen_files = self.seen_files.clone();
+
+            tokio::spawn(async move {
+                // Read Parquet file and send messages
+                match Self::read_parquet_file_inner(&obj, &file_path, &topic).await {
+                    Ok(messages) => {
+                        for msg in messages {
+                            if tx.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        // Mark as seen after successful processing
+                        let mut guard = seen_files.write().await;
+                        guard.insert(file_path.to_string());
+                    }
+                    Err(e) => {
+                        warn!(
+                            topic = %topic,
+                            file = %file_path,
+                            error = %e,
+                            "Failed to read Parquet file"
+                        );
+                    }
+                }
+                drop(permit);
+            });
+        }
 
         Ok(())
     }
 
-    /// Read Parquet file and convert to messages (placeholder implementation)
-    async fn read_parquet_file(&self, file_path: &str) -> Result<Vec<StreamMessage>> {
-        debug!(
-            topic = %self.topic_name,
-            file_path = file_path,
-            "Reading Parquet file"
-        );
+    /// Read Parquet file and convert to messages (actual implementation)
+    async fn read_parquet_file_inner(
+        object_store: &Arc<dyn ObjectStore>,
+        file_path: &Path,
+        topic_name: &str,
+    ) -> Result<Vec<StreamMessage>> {
+        // Download file into memory as Bytes
+        let file_bytes = object_store.get(file_path).await?.bytes().await?;
 
-        // TODO: Implement actual Parquet reading
-        // This would involve:
-        // 1. Download file from object store
-        // 2. Parse Parquet using Arrow
-        // 3. Convert Arrow records back to StreamMessage
+        // Build a RecordBatch reader using Bytes directly (implements ChunkReader)
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file_bytes.clone())
+            .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
+        let mut reader = builder
+            .build()
+            .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
 
-        Ok(vec![])
+        let mut out = Vec::new();
+        while let Some(batch) = reader.next() {
+            let batch = batch.map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
+            let mut msgs = Self::record_batch_to_messages(&batch, topic_name)?;
+            out.append(&mut msgs);
+        }
+
+        Ok(out)
+    }
+
+    /// Convert Arrow RecordBatch to StreamMessage vector for the Danube schema
+    fn record_batch_to_messages(
+        batch: &arrow::record_batch::RecordBatch,
+        default_topic: &str,
+    ) -> Result<Vec<StreamMessage>> {
+        use arrow::array::Array;
+
+        let request_ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid request_id column type".into()))?;
+        let producer_ids = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid producer_id column type".into()))?;
+        let topic_names = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid topic_name column type".into()))?;
+        let broker_addrs = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid broker_addr column type".into()))?;
+        let segment_ids = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid segment_id column type".into()))?;
+        let segment_offsets = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| {
+                IcebergStorageError::Arrow("Invalid segment_offset column type".into())
+            })?;
+        let payloads = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid payload column type".into()))?;
+        let publish_times = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .ok_or_else(|| IcebergStorageError::Arrow("Invalid publish_time column type".into()))?;
+        let producer_names = batch
+            .column(8)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                IcebergStorageError::Arrow("Invalid producer_name column type".into())
+            })?;
+        let subscription_names = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                IcebergStorageError::Arrow("Invalid subscription_name column type".into())
+            })?;
+
+        let mut messages = Vec::with_capacity(batch.num_rows());
+        for i in 0..batch.num_rows() {
+            let topic_name = if topic_names.is_valid(i) {
+                topic_names.value(i).to_string()
+            } else {
+                default_topic.to_string()
+            };
+            let sub_name = if subscription_names.is_valid(i) {
+                Some(subscription_names.value(i).to_string())
+            } else {
+                None
+            };
+            let payload = if payloads.is_valid(i) {
+                payloads.value(i).to_vec()
+            } else {
+                Vec::new()
+            };
+
+            let msg = StreamMessage {
+                request_id: request_ids.value(i),
+                msg_id: danube_core::message::MessageID {
+                    producer_id: producer_ids.value(i) as u64,
+                    topic_name,
+                    broker_addr: broker_addrs.value(i).to_string(),
+                    segment_id: segment_ids.value(i) as u64,
+                    segment_offset: segment_offsets.value(i) as u64,
+                },
+                payload,
+                publish_time: publish_times.value(i) as u64,
+                producer_name: producer_names.value(i).to_string(),
+                subscription_name: sub_name,
+                attributes: std::collections::HashMap::new(),
+            };
+            messages.push(msg);
+        }
+        Ok(messages)
     }
 }

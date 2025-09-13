@@ -132,22 +132,14 @@ The Iceberg storage implementation is partially complete and compiles, but sever
     - `danube-iceberg-storage/src/topic_reader.rs`: Switched to `tokio::sync::broadcast::Sender<StreamMessage>` for fan-out to multiple subscribers; updated send path. Kept shutdown as `mpsc::Receiver<()>`.
     - `danube-iceberg-storage/src/iceberg_storage.rs`: Created per-topic broadcast channels stored in `message_senders`; `create_message_stream()` now subscribes to the broadcast and bridges to an `mpsc::Receiver<StreamMessage>` returned to callers. Background `TopicReader` publishes to the topic broadcast.
 
-- Implemented next two configuration tasks:
+- Implemented configuration-driven behavior:
   - Honor configuration and remove hardcoded paths:
     - `danube-iceberg-storage/src/topic_writer.rs`: Table location now derived from `IcebergConfig.warehouse` instead of a hardcoded S3 URI. Parquet files are written under a per-topic prefix in the configured `ObjectStore`.
     - `danube-iceberg-storage/src/topic_reader.rs`: `TopicReader::new()` now accepts the configured `ObjectStore`; removed hardcoded `LocalFileSystem`.
     - `danube-iceberg-storage/src/iceberg_storage.rs`: Wires `WriterConfig`, `ReaderConfig`, `warehouse`, and `ObjectStore` into `TopicWriter` and `TopicReader`.
   - Apply Writer/Reader configs:
-    - `TopicWriter`: uses `WriterConfig.batch_size` and `WriterConfig.flush_interval_ms`.
-    - `TopicReader`: uses `ReaderConfig.poll_interval_ms` for polling cadence.
-    - Enforced `WriterConfig.max_memory_bytes` with a pre-flush policy when a new message would exceed the memory budget.
-
-- Implemented reader concurrency and prefetch:
-  - `danube-iceberg-storage/src/topic_reader.rs`:
-    - Added `Semaphore`-based concurrency control honoring `ReaderConfig.max_concurrent_reads`.
-    - Added bounded prefetch queue sized by `ReaderConfig.prefetch_size`.
-    - Updated main loop to drain prefetch queue and broadcast to subscribers.
-    - Current implementation still produces dummy messages; the concurrency/prefetch scaffolding will apply to real Parquet reads.
+    - `TopicWriter`: uses `WriterConfig.batch_size`, `WriterConfig.flush_interval_ms`, and enforces `WriterConfig.max_memory_bytes` with a flush-before-exceed policy.
+    - `TopicReader`: uses `ReaderConfig.poll_interval_ms`, implements `ReaderConfig.max_concurrent_reads` via a semaphore, and uses a bounded prefetch queue sized by `ReaderConfig.prefetch_size`.
 
 - Implemented real Iceberg REST commit protocol (add-files):
   - `danube-iceberg-storage/src/catalog.rs`: Extended `IcebergCatalog` with `commit_add_files(...)`.
@@ -155,10 +147,15 @@ The Iceberg storage implementation is partially complete and compiles, but sever
   - `danube-iceberg-storage/src/catalog/glue_catalog.rs`: Added a clear `not implemented` error for `commit_add_files` with guidance to use REST for commits.
   - `danube-iceberg-storage/src/topic_writer.rs`: Switched `flush_batch()` to call `commit_add_files` with a `DataFile` for the written Parquet instead of synthesizing snapshots and calling `update_table`.
 
+- Implemented reader incremental processing and Parquet read path (initial version):
+  - `danube-iceberg-storage/src/topic_reader.rs`:
+    - Enumerates new Parquet files by listing `{topic}/data` in the configured `ObjectStore`, prevents duplicates with an in-memory `seen_files` set, and reads files concurrently with the configured semaphore and prefetch queue.
+    - Reads Parquet bytes using `ParquetRecordBatchReaderBuilder` and converts Arrow `RecordBatch` rows to `StreamMessage`.
+
 - Notes:
-  - Reader incremental scan and Parquet reading are next to leverage the new concurrency/prefetch.
-  - Parquet compression/encoding is still at defaults; expose via config in a later step.
+  - Reader incremental scan currently uses object store prefix listing for new files. Next step is to strictly parse Iceberg manifest lists/manifests for added/deleted files and sequence numbers.
   - Glue commit is not implemented; use REST catalog for committing data in this phase.
+  - Parquet compression/encoding is still at defaults; expose via config in a later step.
 
 ## Remaining Work (Tracking Checklist)
 
@@ -169,7 +166,8 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - [x] Enforce WriterConfig.max_memory_bytes (flush-before-exceed policy)
 - [x] ReaderConfig.max_concurrent_reads and prefetch buffer
 - [x] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
-- [ ] Reader incremental processing and Parquet -> `StreamMessage`
+- [x] Reader incremental processing and Parquet -> `StreamMessage` (initial: prefix listing)
+- [ ] Reader incremental processing from manifests (precise added/deleted files, sequence semantics)
 - [ ] Committed position tracking and reporting
 - [ ] `delete_topic()` drops table and cleans object store
 - [ ] Catalog auth (REST token), AWS credentials/profile; retries/backoff
@@ -179,6 +177,22 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - [ ] Retention/compaction policies
 - [ ] Integration tests (local + MinIO/REST) and performance benchmarks
 - [ ] Parquet compression/encoding tuning
+
+## Next Phase (Phase 3: Integration and Robustness)
+
+- Precise reader incrementals via Iceberg manifests
+  - Parse manifest list and manifests to enumerate only newly added data files since the last processed snapshot, and handle deletes.
+  - Respect sequence numbers and snapshot lineage.
+- Committed position tracking and etcd integration
+  - Persist per-subscription progress (last snapshot/file/offset) to etcd and expose `get_committed_position()`.
+  - Use etcd on startup to resume from the correct position.
+- Operational robustness
+  - Add REST token auth header support and AWS credentials/profile selection.
+  - Implement retries with exponential backoff for transient REST/object_store failures.
+  - Implement `delete_topic()` to drop the table and optionally purge warehouse prefixes.
+- Observability and performance
+  - Add tracing spans and metrics (commit latency, read lag, WAL flush stats, object_store IO).
+  - Add integration tests (local FS + MinIO/REST) and basic performance benchmarks.
 
 ## Migration Path
 

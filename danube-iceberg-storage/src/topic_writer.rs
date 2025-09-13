@@ -1,4 +1,4 @@
-use crate::catalog::{create_danube_schema, DataFile, IcebergCatalog, Snapshot, TableMetadata};
+use crate::catalog::{create_danube_schema, DataFile, IcebergCatalog, TableMetadata};
 use crate::errors::{IcebergStorageError, Result};
 use crate::wal::WalReader;
 use arrow::array::{
@@ -11,14 +11,12 @@ use danube_core::message::StreamMessage;
 use object_store::{path::Path, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 use tracing::{debug, error, info};
-use uuid::Uuid;
 
 use crate::config::WriterConfig;
 
