@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use url::Url;
 
 // Import the types from the parent catalog module
-use super::{IcebergCatalog, TableMetadata, TableSchema};
+use super::{DataFile, IcebergCatalog, TableMetadata, TableSchema};
 
 /// REST catalog implementation
 #[derive(Debug)]
@@ -41,6 +41,14 @@ impl RestCatalog {
             .push(namespace)
             .push("tables")
             .push(table_name);
+        Ok(url)
+    }
+
+    fn commit_url(&self, namespace: &str, table_name: &str) -> Result<Url> {
+        let mut url = self.table_url(namespace, table_name)?;
+        url.path_segments_mut()
+            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
+            .push("commit");
         Ok(url)
     }
 }
@@ -272,5 +280,61 @@ impl IcebergCatalog for RestCatalog {
             .collect::<Vec<_>>();
 
         Ok(namespace_names)
+    }
+
+    async fn commit_add_files(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        current_metadata: &TableMetadata,
+        data_files: Vec<DataFile>,
+    ) -> Result<TableMetadata> {
+        // Build commit request per Iceberg REST spec
+        // Minimal requirements: assert table uuid and optionally current snapshot id
+        let mut requirements = vec![serde_json::json!({
+            "type": "assert-table-uuid",
+            "uuid": current_metadata.table_uuid
+        })];
+
+        if let Some(sid) = current_metadata.current_snapshot_id {
+            requirements.push(serde_json::json!({
+                "type": "assert-ref-snapshot-id",
+                "ref": "main",
+                "snapshot-id": sid
+            }));
+        }
+
+        let add_op = serde_json::json!({
+            "type": "add",
+            "data-files": data_files
+        });
+
+        let body = serde_json::json!({
+            "requirements": requirements,
+            "operations": [ add_op ]
+        });
+
+        let url = self.commit_url(namespace, table_name)?;
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(IcebergStorageError::Catalog(format!(
+                "Commit add files failed with status: {}",
+                response.status()
+            )));
+        }
+
+        // Response should include updated table metadata or ref
+        let metadata: TableMetadata = response.json().await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
+        })?;
+
+        Ok(metadata)
     }
 }

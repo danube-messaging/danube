@@ -101,6 +101,15 @@ pub trait IcebergCatalog: Send + Sync + std::fmt::Debug {
     async fn create_namespace(&self, namespace: &str) -> Result<()>;
 
     async fn list_namespaces(&self) -> Result<Vec<String>>;
+
+    /// Commit new data files to the table using Iceberg REST commit protocol
+    async fn commit_add_files(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        current_metadata: &TableMetadata,
+        data_files: Vec<DataFile>,
+    ) -> Result<TableMetadata>;
 }
 
 /// Create catalog based on configuration

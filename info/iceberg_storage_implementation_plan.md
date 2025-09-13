@@ -149,9 +149,16 @@ The Iceberg storage implementation is partially complete and compiles, but sever
     - Updated main loop to drain prefetch queue and broadcast to subscribers.
     - Current implementation still produces dummy messages; the concurrency/prefetch scaffolding will apply to real Parquet reads.
 
+- Implemented real Iceberg REST commit protocol (add-files):
+  - `danube-iceberg-storage/src/catalog.rs`: Extended `IcebergCatalog` with `commit_add_files(...)`.
+  - `danube-iceberg-storage/src/catalog/rest_catalog.rs`: Implemented `POST /v1/namespaces/{ns}/tables/{table}/commit` using requirements (`assert-table-uuid`, optional `assert-ref-snapshot-id`) and an `add` operation with `data-files`.
+  - `danube-iceberg-storage/src/catalog/glue_catalog.rs`: Added a clear `not implemented` error for `commit_add_files` with guidance to use REST for commits.
+  - `danube-iceberg-storage/src/topic_writer.rs`: Switched `flush_batch()` to call `commit_add_files` with a `DataFile` for the written Parquet instead of synthesizing snapshots and calling `update_table`.
+
 - Notes:
   - Reader incremental scan and Parquet reading are next to leverage the new concurrency/prefetch.
   - Parquet compression/encoding is still at defaults; expose via config in a later step.
+  - Glue commit is not implemented; use REST catalog for committing data in this phase.
 
 ## Remaining Work (Tracking Checklist)
 
@@ -161,7 +168,7 @@ The Iceberg storage implementation is partially complete and compiles, but sever
 - [x] Apply Writer/Reader configs (`WriterConfig`, `ReaderConfig`)
 - [x] Enforce WriterConfig.max_memory_bytes (flush-before-exceed policy)
 - [x] ReaderConfig.max_concurrent_reads and prefetch buffer
-- [ ] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
+- [x] Iceberg REST commit protocol (manifests, manifest list, atomic ref update)
 - [ ] Reader incremental processing and Parquet -> `StreamMessage`
 - [ ] Committed position tracking and reporting
 - [ ] `delete_topic()` drops table and cleans object store

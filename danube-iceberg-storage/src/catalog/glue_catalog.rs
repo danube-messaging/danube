@@ -5,7 +5,7 @@ use aws_sdk_glue::Client;
 use uuid::Uuid;
 
 // Import the types from the parent catalog module
-use super::{create_danube_schema, IcebergCatalog, TableMetadata, TableSchema};
+use super::{create_danube_schema, DataFile, IcebergCatalog, TableMetadata, TableSchema};
 
 /// AWS Glue catalog implementation
 #[derive(Debug)]
@@ -235,5 +235,19 @@ impl IcebergCatalog for GlueCatalog {
             .collect::<Vec<_>>();
 
         Ok(database_names)
+    }
+
+    async fn commit_add_files(
+        &self,
+        _namespace: &str,
+        _table_name: &str,
+        current_metadata: &TableMetadata,
+        _data_files: Vec<DataFile>,
+    ) -> Result<TableMetadata> {
+        // For AWS Glue direct integration, a proper Iceberg commit requires an Iceberg-aware service.
+        // For now, return the current metadata unchanged to keep compatibility.
+        Err(IcebergStorageError::Catalog(
+            "Glue commit_add_files not implemented; use REST catalog for commits".to_string(),
+        ))
     }
 }

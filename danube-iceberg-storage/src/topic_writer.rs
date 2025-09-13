@@ -245,8 +245,8 @@ impl TopicWriter {
         // Write to Parquet file
         let file_path = self.write_parquet_file(&record_batch).await?;
 
-        // Create data file metadata
-        let _data_file = DataFile {
+        // Create data file metadata for commit
+        let data_file = DataFile {
             content: "data".to_string(),
             file_path: file_path.clone(),
             file_format: "parquet".to_string(),
@@ -265,31 +265,13 @@ impl TopicWriter {
             sort_order_id: None,
         };
 
-        // Create new snapshot
-        let snapshot = Snapshot {
-            snapshot_id: rand::thread_rng().gen::<i64>().abs(),
-            parent_snapshot_id: None,
-            sequence_number: 1,
-            timestamp_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64,
-            manifest_list: format!("{}/manifests/manifest-{}.avro", file_path, Uuid::new_v4()),
-            summary: HashMap::new(),
-            schema_id: 0,
-        };
-
-        // Update table metadata with new snapshot
+        // Load current table metadata
         let mut table_metadata_guard = self.table_metadata.write().await;
         if let Some(ref mut metadata) = *table_metadata_guard {
-            metadata.snapshots.push(snapshot.clone());
-            metadata.current_snapshot_id = Some(snapshot.snapshot_id);
-            metadata.last_updated_ms = snapshot.timestamp_ms;
-
-            // Update table in catalog
+            // Perform REST commit add-files
             let updated_metadata = self
                 .catalog
-                .update_table("danube", &self.topic_name, metadata, metadata)
+                .commit_add_files("danube", &self.topic_name, metadata, vec![data_file])
                 .await?;
 
             *metadata = updated_metadata;
@@ -302,8 +284,8 @@ impl TopicWriter {
 
         info!(
             topic = %self.topic_name,
-            snapshot_id = snapshot.snapshot_id,
-            "Flushed batch to Iceberg"
+            file = %file_path,
+            "Committed batch to Iceberg"
         );
 
         Ok(())
