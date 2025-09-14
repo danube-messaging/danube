@@ -28,6 +28,9 @@ members = [
 
     # -- Danube persistent storage
     "danube-persistent-storage",
+
+    # -- Danube Iceberg storage
+    "danube-iceberg-storage",
 ]
 
 [workspace.dependencies]

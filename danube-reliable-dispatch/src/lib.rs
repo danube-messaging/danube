@@ -1,6 +1,6 @@
 mod topic_storage;
 mod topic_storage_test;
-pub use storage_backend::create_message_storage;
+pub use storage_backend::{create_message_storage, create_persistent_storage_adapter};
 use topic_storage::TopicStore;
 mod errors;
 pub use errors::ReliableDispatchError;
@@ -12,7 +12,9 @@ mod storage_backend;
 mod topic_cache;
 pub use topic_cache::TopicCache;
 
-use danube_core::{dispatch_strategy::ReliableOptions, message::StreamMessage};
+use danube_core::{
+    dispatch_strategy::ReliableOptions, message::StreamMessage, storage::PersistentStorage,
+};
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
@@ -51,6 +53,26 @@ impl ReliableDispatch {
             subscriptions,
             shutdown_tx,
         }
+    }
+
+    /// Create a new ReliableDispatch with PersistentStorage backend
+    /// This is the modern constructor for cloud-native storage backends
+    pub async fn new_with_persistent_storage(
+        topic_name: &str,
+        reliable_options: ReliableOptions,
+        persistent_storage: Arc<dyn PersistentStorage>,
+    ) -> Result<Self> {
+        // Create topic in persistent storage if it doesn't exist
+        persistent_storage
+            .create_topic(topic_name)
+            .await
+            .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
+
+        // Create adapter to bridge between PersistentStorage and legacy TopicCache
+        let storage_backend = create_persistent_storage_adapter(persistent_storage);
+        let topic_cache = TopicCache::new(Arc::from(storage_backend), 1000, 3600); // Default cache settings
+
+        Ok(Self::new(topic_name, reliable_options, topic_cache))
     }
 
     pub async fn new_subscription_dispatch(

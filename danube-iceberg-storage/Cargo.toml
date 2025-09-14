@@ -1,0 +1,51 @@
+[package]
+name = "danube-iceberg-storage"
+version = "0.1.0"
+description = "Apache Iceberg-based storage backend for Danube messaging"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+documentation = "https://docs.rs/danube-iceberg-storage"
+readme = "README.md"
+license = "Apache-2.0"
+edition = "2021"
+
+[dependencies]
+danube-core = { path = "../danube-core" }
+danube-metadata-store = { path = "../danube-metadata-store" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Iceberg and Arrow ecosystem
+iceberg = "0.6.0"
+arrow = "56.1.0"
+parquet = "56.1.0"
+object_store = { version = "0.12.3", features = ["aws"] }
+
+# HTTP client for REST catalog
+reqwest = { version = "0.11", features = ["json"] }
+# AWS SDK for Glue catalog
+aws-config = "1.0"
+aws-sdk-glue = "1.0"
+# URL parsing
+url = "2.4"
+
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+# Additional dependencies
+uuid = { version = "1.0", features = ["v4"] }
+bytes = "1.10.0"
+bincode = "1.3.3"
+crc32fast = "1.4.2"
+rand = "0.8"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[lints]
+workspace = true

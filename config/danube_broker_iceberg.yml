@@ -1,0 +1,60 @@
+# Danube Broker Configuration with Iceberg Storage
+cluster_name: "danube-cluster"
+broker_host: "0.0.0.0"
+broker_port: 6650
+admin_port: 8080
+prom_port: 9090
+meta_store_host: "localhost"
+meta_store_port: 2379
+
+# Bootstrap namespaces created on startup
+bootstrap_namespaces:
+  - "default"
+  - "public"
+
+# Broker policies
+policies:
+  max_producers_per_topic: 100
+  max_consumers_per_topic: 100
+  max_consumers_per_subscription: 100
+  max_unacked_messages_per_consumer: 50000
+  max_unacked_messages_per_subscription: 200000
+  max_unacked_messages_per_broker: 0
+  max_subscriptions_per_topic: 100
+  max_topics_per_namespace: 0
+
+# Iceberg Storage Configuration
+storage:
+  type: "iceberg"
+  iceberg_config:
+    # Catalog configuration
+    catalog_type: "rest"
+    catalog_uri: "http://localhost:8181"
+    warehouse_path: "s3://danube-warehouse/"
+    
+    # Object store configuration
+    object_store_type: "s3"
+    bucket_name: "danube-messages"
+    region: "us-east-1"
+    endpoint: null  # Use default AWS S3 endpoint
+    local_path: null  # Not used for S3
+    
+    # WAL configuration
+    wal_path: "/var/lib/danube/wal"
+    wal_segment_size: 67108864  # 64MB
+    wal_sync_mode: "periodic"
+    
+    # Writer configuration
+    writer_batch_size: 1000
+    writer_flush_interval_ms: 5000
+    writer_max_memory_bytes: 134217728  # 128MB
+    
+    # Reader configuration
+    reader_poll_interval_ms: 1000
+    reader_prefetch_batches: 2
+
+# Authentication configuration
+auth:
+  enabled: false
+  jwt_secret: "your-secret-key"
+  token_expiry_hours: 24

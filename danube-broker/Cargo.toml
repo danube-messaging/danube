@@ -10,7 +10,7 @@ danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
 danube-metadata-store = {path = "../danube-metadata-store"}
 danube-reliable-dispatch = {path = "../danube-reliable-dispatch"}
-
+danube-iceberg-storage = {path = "../danube-iceberg-storage"}
 dashmap = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
