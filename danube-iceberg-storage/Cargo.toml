@@ -16,8 +16,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Iceberg and Arrow ecosystem
 iceberg = { version = "0.6.0", features = ["storage-s3", "storage-gcs", "storage-memory", "storage-fs"] }
-arrow = "56.1.0"
-parquet = "56.1.0"
+# Align Arrow crates to the versions used by iceberg 0.6.0 to avoid type mismatches
+arrow-array = "55.2.0"
+arrow-schema = "55.2.0"
 
 # Official Iceberg catalog implementations
 iceberg-catalog-rest = "0.6.0"
