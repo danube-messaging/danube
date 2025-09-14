@@ -42,6 +42,8 @@ pub enum CatalogConfig {
         #[serde(default)]
         properties: HashMap<String, String>,
     },
+    #[serde(rename = "memory")]
+    Memory {},
 }
 
 /// Object store configuration
@@ -174,6 +176,9 @@ impl Display for CatalogConfig {
             }
             CatalogConfig::Rest { uri, .. } => {
                 write!(f, "REST ({})", uri)
+            }
+            CatalogConfig::Memory {} => {
+                write!(f, "Memory")
             }
         }
     }

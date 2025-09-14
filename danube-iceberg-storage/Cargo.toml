@@ -15,17 +15,16 @@ danube-metadata-store = { path = "../danube-metadata-store" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Iceberg and Arrow ecosystem
-iceberg = "0.6.0"
-arrow = "56.1.0"
-parquet = "56.1.0"
-object_store = { version = "0.12.3", features = ["aws"] }
+iceberg = { version = "0.6.0", features = ["storage-s3", "storage-gcs", "storage-memory", "storage-fs"] }
+# Align Arrow crates to the versions used by iceberg 0.6.0 to avoid type mismatches
+arrow-array = "55.2.0"
+arrow-schema = "55.2.0"
 
-# HTTP client for REST catalog
-reqwest = { version = "0.11", features = ["json"] }
-# AWS SDK for Glue catalog
-aws-config = "1.0"
-aws-sdk-glue = "1.0"
-# URL parsing
+# Official Iceberg catalog implementations
+iceberg-catalog-rest = "0.6.0"
+iceberg-catalog-glue = "0.6.0"
+
+# URL parsing (may be removable once custom REST catalog code is deleted)
 url = "2.4"
 
 # Workspace dependencies

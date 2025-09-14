@@ -339,20 +339,6 @@ impl WalReader {
     }
 }
 
-/// Sanitize topic name for use as directory name
-fn sanitize_topic_name(topic_name: &str) -> String {
-    topic_name
-        .replace('/', "_")
-        .replace('\\', "_")
-        .replace(':', "_")
-        .replace('*', "_")
-        .replace('?', "_")
-        .replace('"', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

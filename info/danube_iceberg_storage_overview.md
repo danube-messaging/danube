@@ -1,95 +1,177 @@
-# Danube Iceberg Storage: Architecture Overview
+# Danube Iceberg Storage — How It Works (User Guide)
 
-## 1) Role of the crate in Danube messaging
+This guide explains how Danube’s Iceberg-backed storage works from a user’s point of view. It focuses on:
 
-`danube-iceberg-storage` is the persistent storage backend for Danube topics. It provides:
+- The Write Path (what happens when producers send messages)
+- The Read Path (how consumers receive messages)
+- Multiple subscriptions to the same topic (fan-out and progress)
 
-- Durable, scalable storage for messages using Apache Iceberg tables stored in an object store (S3/MinIO/local).
-- Low-latency producer acknowledgments via a local Write-Ahead Log (WAL), decoupling ingestion from cloud latency.
-- Asynchronous background processing that batches messages into Parquet and commits them atomically as Iceberg snapshots.
-- Streaming reads that follow Iceberg snapshots and enumerate exactly which data files were added, enabling precise, incremental consumption.
+If you want a lower-level, API-centric view, see the code and comments in:
+- `danube-iceberg-storage/src/iceberg_storage.rs`
+- `danube-iceberg-storage/src/topic_writer.rs`
+- `danube-iceberg-storage/src/topic_reader.rs`
 
-This crate implements the `PersistentStorage` trait from `danube-core/src/storage.rs` and integrates with the broker to provide topic lifecycle, produce, and consume flows.
+## What is danube-iceberg-storage?
 
-Key components and files:
-- WAL: `danube-iceberg-storage/src/wal.rs`
-- Catalog (REST/Glue): `danube-iceberg-storage/src/catalog.rs`, `catalog/rest_catalog.rs`, `catalog/glue_catalog.rs`
-- Topic Writer: `danube-iceberg-storage/src/topic_writer.rs`
-- Topic Reader: `danube-iceberg-storage/src/topic_reader.rs`
-- Storage facade: `danube-iceberg-storage/src/iceberg_storage.rs`
+`danube-iceberg-storage` is the persistent storage backend for Danube topics. It stores messages in Apache Iceberg tables on your chosen warehouse (local filesystem or cloud object storage like S3). Iceberg provides ACID snapshots, schema evolution, and interoperability with analytics engines.
 
+## Why Apache Iceberg?
 
-## 2) Technical architecture and technology choices
+- Snapshots give you point-in-time views and safe, atomic commits.
+- Manifests and metadata let us read only what changed since the last snapshot.
+- Tables live in your warehouse (S3 or FS), so data is accessible to other tools (Spark, Trino, etc.).
 
-Why these technologies and how they interact:
+---
 
-- Apache Iceberg (metadata and table format)
-  - Why: Iceberg provides an open table format with ACID commits, snapshots, manifests, and schema evolution. This enables safe concurrent writers, versioned history, and analytics interoperability.
-  - How we use it: We integrate with an Iceberg catalog. For production-grade correctness we use the REST Catalog for commits and scan planning. Writers commit Parquet files as new snapshots; readers use scan planning to enumerate added files between snapshots.
-  - Where in code: `catalog/` and calls from `topic_writer.rs` and `topic_reader.rs`.
+## The Write Path (Producer ▶ WAL ▶ Iceberg)
 
-- Apache Arrow (in-memory) and Parquet (on-disk)
-  - Why: Arrow is an efficient in-memory columnar format; Parquet is a columnar file format optimized for storage and analytics. Together they provide great compression and fast reads/writes, while keeping data queryable by external engines.
-  - How we use them:
-    - Writer converts batches of `StreamMessage` into Arrow `RecordBatch` and writes Parquet.
-    - Reader opens Parquet, reads Arrow batches, and reconstructs `StreamMessage`.
-  - Where in code: Arrow/Parquet conversion logic resides in `topic_writer.rs` and `topic_reader.rs`.
+High level: we decouple producer latency from cloud storage latency by writing to a local Write-Ahead Log (WAL) first, then asynchronously batch and commit to Iceberg in the background.
 
-- object_store (unified IO over S3/MinIO/local)
-  - Why: A common abstraction to read/write bytes regardless of the backing store (S3, MinIO, local FS). This keeps the code portable and testable.
-  - How we use it:
-    - Writer uploads newly created Parquet files to `{warehouse}/{topic}/...`.
-    - Reader downloads Parquet files identified by Iceberg scan planning to decode into messages.
-  - Where in code: Object store is created in `iceberg_storage.rs`, used by `topic_writer.rs` and `topic_reader.rs`.
+Step-by-step when `store_messages()` is called:
 
-- Write-Ahead Log (WAL)
-  - Why: To acknowledge producers immediately without waiting on object storage and Iceberg commit latency.
-  - How we use it: Producers append to the WAL; a background writer drains the WAL, batches messages, and flushes to Parquet + Iceberg commit.
-  - Where in code: `wal.rs` and consumed by `topic_writer.rs`.
+1) WAL append (fast acknowledgment)
+- Messages are appended to the local WAL (`wal.rs`) with checksums.
+- Producers get quick acks without waiting for cloud I/O.
 
-- Catalog (REST or Glue)
-  - Why: The catalog is the source of truth for Iceberg metadata (table location, snapshots, manifests). REST provides the standardized commit and scan APIs we rely on for ACID semantics and precise incrementals.
-  - How we use it:
-    - Commits: `commit_add_files` via REST to atomically add Parquet files as a new snapshot.
-    - Reads: `plan_scan(from_snapshot_id, to_snapshot_id)` via REST to get the exact set of added/deleted files.
-  - Where in code: `catalog/rest_catalog.rs` implements these endpoints. `catalog/glue_catalog.rs` provides basic table management; commit/scan are intentionally marked as not implemented.
+2) Background batching (TopicWriter)
+- A background task per topic (`TopicWriter`) reads entries from the WAL.
+- Messages are grouped into Arrow `RecordBatch`es according to `WriterConfig` (batch size, flush interval, memory caps).
 
-Interaction summary:
-- Writer path: WAL -> Arrow batch -> Parquet file (object_store) -> Iceberg REST commit -> new snapshot.
-- Reader path: Iceberg REST scan plan -> object_store Parquet reads -> Arrow batch -> `StreamMessage`.
+3) Parquet file creation
+- For each batch, the writer uses Iceberg’s Parquet writers to produce one or more Parquet data files under the topic’s table location.
+- We rely on the table’s `FileIO` (provided by the Iceberg table) for actual I/O.
 
+4) Atomic commit as a new snapshot
+- The writer opens an Iceberg transaction and does a “fast append” of the produced data files.
+- On `commit`, the catalog atomically publishes a new snapshot visible to readers.
 
-## 3) Detailed workflows and component roles
+What this buys you
+- Sub-millisecond producer acks (bounded by local storage), with strong durability guarantees set by your WAL sync mode.
+- Efficient, columnar Parquet storage in your warehouse for downstream analytics.
 
-Writer workflow (TopicWriter)
-- Source: The Writer reads from the WAL (`wal.rs`).
-- Batching: Accumulates messages based on `WriterConfig` (batch size, flush interval, memory cap).
-- Conversion: Converts messages to Arrow `RecordBatch` and writes a Parquet file to the configured object store.
-- Commit: Calls the catalog’s `commit_add_files` to atomically publish the new Parquet file(s) as an Iceberg snapshot.
-- Files/paths: `topic_writer.rs` (writer state machine), `catalog/*.rs` for commits, object store configured in `iceberg_storage.rs`.
+---
 
-Reader workflow (TopicReader)
-- Polling: Periodically loads table metadata to detect a new `current_snapshot_id`.
-- Planning: Uses `plan_scan(from_snapshot_id, to_snapshot_id)` to enumerate precisely the added data files for the new snapshot.
-- Reading: Fetches Parquet files from the object store, decodes to Arrow `RecordBatch`, converts rows to `StreamMessage`.
-- Delivery: Pushes messages into a per-topic broadcast channel so multiple subscribers can consume independently.
-- Concurrency/prefetch: Uses a semaphore to control `max_concurrent_reads` and a bounded prefetch queue (`prefetch_size`).
-- Files/paths: `topic_reader.rs` reads and publishes; broadcast wiring lives in `iceberg_storage.rs`.
+## The Read Path (Iceberg ▶ Stream)
 
-Multiple subscriptions to the same topic
-- Fan-out via broadcast:
-  - `iceberg_storage.rs` creates a `tokio::sync::broadcast::Sender<StreamMessage>` per topic.
+High level: consumers follow Iceberg snapshots. When a new snapshot appears for a topic’s table, we read exactly the newly added data files and stream those messages.
+
+Step-by-step when you create a message stream:
+
+1) Start the TopicReader
+- A background task per topic (`TopicReader`) periodically polls the Iceberg catalog for the table’s `current_snapshot_id`.
+
+2) Detect new snapshots
+- If the `current_snapshot_id` changes, it means the writer committed new data files.
+
+3) Plan the scan (precise incrementals)
+- We build a table scan for the specific snapshot and ask Iceberg to plan file tasks.
+- The plan returns the set of data files that comprise that snapshot (or delta), so we read only what’s needed.
+
+4) Stream Arrow batches
+- We use Iceberg’s Arrow reader to stream `RecordBatch`es from the planned files.
+- Batches are converted back into `StreamMessage` and published to a per-topic broadcast channel.
+
+What this buys you
+- Consumers see new data as soon as the commit is visible.
+- Only newly added files are read, minimizing I/O.
+
+---
+
+## Multiple Subscriptions to the Same Topic (Fan-out)
+
+Danube supports multiple subscribers on the same topic. Each subscriber gets the same stream independently.
+
+How this works in practice:
+
+- Per-topic broadcast
+  - `IcebergStorage` creates a `tokio::sync::broadcast::Sender<StreamMessage>` per topic.
   - `TopicReader` publishes decoded messages into this broadcast.
-  - Each subscription obtains its own `broadcast::Receiver`, which is then bridged to an `mpsc::Receiver<StreamMessage>` for consumer APIs.
-- Backpressure & buffering:
-  - The reader’s prefetch queue is bounded to contain memory usage.
-  - Slow subscribers can lag independently; the broadcast layer isolates them.
-- Subscription progress (planned wiring via broker):
-  - Storage exposes helpers to persist per-subscription progress in etcd under `/persistent_storage/iceberg/subscriptions/{subscription}/{namespace}/{topic}` (see `iceberg_storage.rs`).
-  - The broker can call these helpers on ack/resume to achieve precise restarts. This design avoids modifying existing metadata paths.
 
-End-to-end view
-- Producers write to WAL and get fast acks.
-- Background writer converts WAL to Parquet and commits a new Iceberg snapshot.
-- Reader detects the new snapshot, plans the scan, and streams messages to subscribers.
-- Subscribers can be many per topic, each with independent progress tracking.
+- Per-subscriber receiver
+  - Each subscriber gets a fresh broadcast receiver which we bridge to an `mpsc::Receiver<StreamMessage>`.
+  - Subscribers can run at different speeds without blocking each other.
+
+- Progress tracking (optional)
+  - Storage exposes helpers to record per-subscription progress (e.g., last snapshot/file/offset) in an external metadata store (like etcd).
+  - This enables precise restarts without changing the on-disk table layout or producer semantics.
+
+---
+
+## Quickstart Configuration (YAML fragment)
+
+REST + filesystem (local dev)
+
+```yaml
+storage:
+  type: iceberg
+  iceberg_config:
+    catalog:
+      type: rest
+      uri: "http://localhost:8181"
+    warehouse: "file:///var/lib/danube/warehouse"
+    wal:
+      base_path: "/var/lib/danube/wal"
+      max_file_size: 104857600
+      sync_mode: Always
+    writer:
+      batch_size: 1000
+      flush_interval_ms: 1000
+      max_memory_bytes: 67108864
+    reader:
+      poll_interval_ms: 500
+      max_concurrent_reads: 5
+      prefetch_size: 3
+```
+
+Glue + S3 (cloud)
+
+```yaml
+storage:
+  type: iceberg
+  iceberg_config:
+    catalog:
+      type: glue
+    warehouse: "s3://danube-warehouse"
+    wal:
+      base_path: "/var/lib/danube/wal"
+      max_file_size: 104857600
+      sync_mode: Always
+```
+
+Notes
+- Use REST for the strongest guarantees with standardized commit/scan APIs.
+- MemoryCatalog is available for lightweight testing.
+
+---
+
+## Operational Tips
+
+- Batching: tune `writer.batch_size` and `flush_interval_ms` to balance latency and throughput.
+- Reader polling: `reader.poll_interval_ms` controls how quickly new snapshots are detected.
+- Warehouse path: choose `file://` for local setups or `s3://` for cloud. Iceberg Table `FileIO` abstracts the I/O for you.
+
+---
+
+## FAQ
+
+- Can I query the data outside Danube?
+  - Yes. The data lives in Iceberg tables in your warehouse. You can query with Spark, Trino, etc.
+
+- What guarantees do I get on commit?
+  - Iceberg commits are atomic. A snapshot either appears fully or not at all.
+
+- What happens if the writer crashes mid-batch?
+  - Uncommitted Parquet files are not visible to readers. On restart, the writer resumes WAL draining and attempts the commit again.
+
+- How do multiple consumers read independently?
+  - Each subscription has its own broadcast receiver and optional persisted progress state.
+
+---
+
+## References
+
+- Catalog trait: https://docs.rs/iceberg/latest/iceberg/trait.Catalog.html
+- REST Catalog crate: https://docs.rs/iceberg-catalog-rest/latest/iceberg_catalog_rest/
+- Glue Catalog crate: https://docs.rs/iceberg-catalog-glue/latest/iceberg_catalog_glue/
+- Iceberg Arrow utilities: https://docs.rs/iceberg/latest/iceberg/arrow/index.html
+- Writer API: https://docs.rs/iceberg/latest/iceberg/writer/index.html

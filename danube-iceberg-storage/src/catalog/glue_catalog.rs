@@ -1,35 +1,49 @@
 use crate::errors::{IcebergStorageError, Result};
 use async_trait::async_trait;
-use aws_sdk_glue::types::{DatabaseInput, SerDeInfo, StorageDescriptor, TableInput};
-use aws_sdk_glue::Client;
-use uuid::Uuid;
 
 // Import the types from the parent catalog module
-use super::{
-    create_danube_schema, DataFile, IcebergCatalog, PlannedFile, TableMetadata, TableSchema,
-};
+use super::IcebergCatalog;
 
-/// AWS Glue catalog implementation
+// Official Iceberg crates
+use iceberg::spec::Schema as IcebergSchema;
+use iceberg::transaction::Transaction;
+use iceberg::NamespaceIdent;
+use iceberg::{table::Table, Catalog as IcebergCatalogTrait, TableIdent};
+use iceberg_catalog_glue as glue;
+use std::collections::HashMap;
+
+/// AWS Glue catalog wrapper using official Iceberg Glue catalog
 #[derive(Debug)]
 pub struct GlueCatalog {
-    client: Client,
-    database: String,
+    inner: glue::GlueCatalog,
     warehouse: String,
 }
 
 impl GlueCatalog {
-    pub async fn new(region: &str, database: &str, warehouse: &str) -> Result<Self> {
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await;
-
-        let client = Client::new(&config);
-
+    pub async fn new(_region: &str, _database: &str, warehouse: &str) -> Result<Self> {
+        // Build config using builder per docs; region/account are discovered via AWS SDK env/config
+        let cfg = glue::GlueCatalogConfig::builder()
+            .warehouse(warehouse.to_string())
+            .build()
+            .map_err(|e| {
+                IcebergStorageError::Catalog(format!("Failed to build Glue catalog config: {}", e))
+            })?;
+        let inner = glue::GlueCatalog::new(cfg).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Failed to create Glue catalog: {}", e))
+        })?;
         Ok(Self {
-            client,
-            database: database.to_string(),
+            inner,
             warehouse: warehouse.to_string(),
+        })
+    }
+
+    fn to_namespace(ns: &str) -> NamespaceIdent {
+        NamespaceIdent::from_strs(vec![ns.to_string()]).expect("namespace ident")
+    }
+
+    fn to_ident(ns: &str, table: &str) -> Result<TableIdent> {
+        TableIdent::from_strs(vec![ns.to_string(), table.to_string()]).map_err(|e| {
+            IcebergStorageError::Catalog(format!("Invalid table ident: {}.{} ({})", ns, table, e))
         })
     }
 }
@@ -38,232 +52,84 @@ impl GlueCatalog {
 impl IcebergCatalog for GlueCatalog {
     async fn create_table(
         &self,
-        _namespace: &str,
+        namespace: &str,
         table_name: &str,
-        schema: &TableSchema,
+        schema: &IcebergSchema,
         location: &str,
-    ) -> Result<TableMetadata> {
-        let serde_info = SerDeInfo::builder()
-            .serialization_library("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe")
-            .build();
-
-        let storage_descriptor = StorageDescriptor::builder()
-            .location(location)
-            .input_format("org.apache.hadoop.mapred.TextInputFormat")
-            .output_format("org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat")
-            .serde_info(serde_info)
-            .build();
-
-        let table_input = TableInput::builder()
-            .name(table_name)
-            .storage_descriptor(storage_descriptor)
-            .build();
-
-        self.client
-            .create_table()
-            .database_name(&self.database)
-            .table_input(table_input.expect("Failed to build TableInput"))
-            .send()
-            .await
+    ) -> Result<()> {
+        use iceberg::TableCreation;
+        let ns = Self::to_namespace(namespace);
+        let creation = TableCreation::builder()
+            .name(table_name.to_string())
+            .schema(schema.clone())
+            .location(location.to_string())
+            .build()
             .map_err(|e| {
                 IcebergStorageError::Catalog(format!("Glue create table failed: {}", e))
             })?;
-
-        // Return a basic metadata structure
-        Ok(TableMetadata {
-            format_version: 2,
-            table_uuid: Uuid::new_v4().to_string(),
-            location: location.to_string(),
-            last_sequence_number: 0,
-            last_updated_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64,
-            schema: schema.clone(),
-            current_schema_id: schema.schema_id,
-            snapshots: vec![],
-            current_snapshot_id: None,
-        })
-    }
-
-    async fn load_table(&self, _namespace: &str, table_name: &str) -> Result<TableMetadata> {
-        let response = self
-            .client
-            .get_table()
-            .database_name(&self.database)
-            .name(table_name)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("Glue get table failed: {}", e)))?;
-
-        let table = response.table().ok_or_else(|| {
-            IcebergStorageError::Catalog("Table not found in Glue response".to_string())
+        self.inner.create_table(&ns, creation).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Glue create table failed: {}", e))
         })?;
-
-        // Convert Glue table to Iceberg metadata
-        let location = table
-            .storage_descriptor()
-            .and_then(|sd| sd.location())
-            .unwrap_or("")
-            .to_string();
-
-        Ok(TableMetadata {
-            format_version: 2,
-            table_uuid: Uuid::new_v4().to_string(),
-            location,
-            last_sequence_number: 0,
-            last_updated_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64,
-            schema: create_danube_schema(),
-            current_schema_id: 0,
-            snapshots: vec![],
-            current_snapshot_id: None,
-        })
+        Ok(())
     }
 
-    async fn update_table(
-        &self,
-        _namespace: &str,
-        table_name: &str,
-        _current_metadata: &TableMetadata,
-        new_metadata: &TableMetadata,
-    ) -> Result<TableMetadata> {
-        let serde_info = SerDeInfo::builder()
-            .serialization_library("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe")
-            .build();
+    async fn table_exists(&self, namespace: &str, table_name: &str) -> Result<bool> {
+        let ident = Self::to_ident(namespace, table_name)?;
+        let exists = self.inner.table_exists(&ident).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Glue table_exists failed: {}", e))
+        })?;
+        Ok(exists)
+    }
 
-        let storage_descriptor = StorageDescriptor::builder()
-            .location(&new_metadata.location)
-            .input_format("org.apache.hadoop.mapred.TextInputFormat")
-            .output_format("org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat")
-            .serde_info(serde_info)
-            .build();
-
-        let table_input = TableInput::builder()
-            .name(table_name)
-            .storage_descriptor(storage_descriptor)
-            .build();
-
-        self.client
-            .update_table()
-            .database_name(&self.database)
-            .table_input(table_input.expect("Failed to build TableInput"))
-            .send()
-            .await
-            .map_err(|e| {
-                IcebergStorageError::Catalog(format!("Glue update table failed: {}", e))
+    async fn list_tables(&self, namespace: &str) -> Result<Vec<String>> {
+        let ns = Self::to_namespace(namespace);
+        let idents =
+            self.inner.list_tables(&ns).await.map_err(|e| {
+                IcebergStorageError::Catalog(format!("Glue list tables failed: {}", e))
             })?;
-
-        Ok(new_metadata.clone())
+        Ok(idents.into_iter().map(|ti| ti.name().to_string()).collect())
     }
 
-    async fn table_exists(&self, _namespace: &str, table_name: &str) -> Result<bool> {
-        match self
-            .client
-            .get_table()
-            .database_name(&self.database)
-            .name(table_name)
-            .send()
+    async fn drop_table(&self, namespace: &str, table_name: &str) -> Result<()> {
+        let ident = Self::to_ident(namespace, table_name)?;
+        self.inner
+            .drop_table(&ident)
             .await
-        {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-
-    async fn list_tables(&self, _namespace: &str) -> Result<Vec<String>> {
-        let response = self
-            .client
-            .get_tables()
-            .database_name(&self.database)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("Glue list tables failed: {}", e)))?;
-
-        let table_names = response
-            .table_list()
-            .iter()
-            .filter_map(|table| Some(table.name()))
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-
-        Ok(table_names)
-    }
-
-    async fn drop_table(&self, _namespace: &str, table_name: &str) -> Result<()> {
-        self.client
-            .delete_table()
-            .database_name(&self.database)
-            .name(table_name)
-            .send()
-            .await
-            .map_err(|e| {
-                IcebergStorageError::Catalog(format!("Glue delete table failed: {}", e))
-            })?;
-
+            .map_err(|e| IcebergStorageError::Catalog(format!("Glue drop table failed: {}", e)))?;
         Ok(())
     }
 
     async fn create_namespace(&self, namespace: &str) -> Result<()> {
-        let database_input = DatabaseInput::builder()
-            .name(namespace)
-            .description("Danube messaging namespace")
-            .build();
-
-        self.client
-            .create_database()
-            .database_input(database_input.expect("Failed to build DatabaseInput"))
-            .send()
+        let ns = Self::to_namespace(namespace);
+        self.inner
+            .create_namespace(&ns, HashMap::new())
             .await
             .map_err(|e| {
-                IcebergStorageError::Catalog(format!("Glue create database failed: {}", e))
+                IcebergStorageError::Catalog(format!("Glue create namespace failed: {}", e))
             })?;
-
         Ok(())
     }
 
     async fn list_namespaces(&self) -> Result<Vec<String>> {
-        let response = self.client.get_databases().send().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Glue list databases failed: {}", e))
+        let ns = self.inner.list_namespaces(None).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Glue list namespaces failed: {}", e))
         })?;
-
-        let database_names = response
-            .database_list()
-            .iter()
-            .filter_map(|db| Some(db.name()))
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-
-        Ok(database_names)
+        Ok(ns.into_iter().map(|n| n.to_string()).collect())
     }
 
-    async fn commit_add_files(
-        &self,
-        _namespace: &str,
-        _table_name: &str,
-        _current_metadata: &TableMetadata,
-        _data_files: Vec<DataFile>,
-    ) -> Result<TableMetadata> {
-        // For AWS Glue direct integration, a proper Iceberg commit requires an Iceberg-aware service.
-        // For now, return the current metadata unchanged to keep compatibility.
-        Err(IcebergStorageError::Catalog(
-            "Glue commit_add_files not implemented; use REST catalog for commits".to_string(),
-        ))
+    async fn load_table_handle(&self, namespace: &str, table_name: &str) -> Result<Table> {
+        let ident = Self::to_ident(namespace, table_name)?;
+        let table = self.inner.load_table(&ident).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("Glue load table handle failed: {}", e))
+        })?;
+        Ok(table)
     }
 
-    async fn plan_scan(
-        &self,
-        _namespace: &str,
-        _table_name: &str,
-        _from_snapshot_id: Option<i64>,
-        _to_snapshot_id: Option<i64>,
-    ) -> Result<Vec<PlannedFile>> {
-        // Glue catalog does not expose Iceberg REST scan planning.
-        // Suggest using REST catalog for precise planning; return an explicit error.
-        Err(IcebergStorageError::Catalog(
-            "Glue plan_scan not implemented; use REST catalog for scan planning".to_string(),
-        ))
+    async fn commit_transaction(&self, tx: Transaction) -> Result<Table> {
+        let table = tx
+            .commit(&self.inner)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+        Ok(table)
     }
 }

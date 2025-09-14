@@ -1,4 +1,4 @@
-use crate::catalog::{create_catalog, IcebergCatalog};
+use crate::catalog::create_catalog;
 use crate::config::{CatalogConfig, IcebergConfig};
 use crate::errors::Result;
 use crate::topic_reader::TopicReader;
@@ -8,9 +8,7 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError};
 use danube_metadata_store::MetadataStore; // bring trait into scope for get/put
 use danube_metadata_store::{MetaOptions, MetadataStorage};
-use object_store::aws::AmazonS3Builder;
-use object_store::local::LocalFileSystem;
-use object_store::ObjectStore;
+use iceberg::{Catalog as IcebergCatalog, NamespaceIdent, TableIdent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -27,19 +25,15 @@ pub struct IcebergStorage {
     config: IcebergConfig,
     /// Write-Ahead Log for fast writes
     wal: Arc<WriteAheadLog>,
-    /// Object store for Parquet files
-    object_store: Arc<dyn ObjectStore>,
     /// Iceberg catalog
     catalog: Arc<dyn IcebergCatalog>,
     /// Topic writers for background processing
     topic_writers: Arc<tokio::sync::RwLock<HashMap<String, JoinHandle<()>>>>,
     /// Topic readers for streaming
     topic_readers: Arc<tokio::sync::RwLock<HashMap<String, JoinHandle<()>>>>,
-    /// Message broadcasters per topic (fan-out to multiple subscribers)
+    /// Message broadcasters per topic (fan-out per topic)
     message_senders:
         Arc<tokio::sync::RwLock<HashMap<String, tokio::sync::broadcast::Sender<StreamMessage>>>>,
-    /// Shutdown signal
-    shutdown_tx: Option<mpsc::Sender<()>>,
     /// Optional metadata store for subscription progress (etcd or memory)
     metadata_store: Option<MetadataStorage>,
 }
@@ -55,65 +49,24 @@ impl IcebergStorage {
         // Create Write-Ahead Log
         let wal = Arc::new(WriteAheadLog::new(&config.wal).await?);
 
-        // Create object store
-        let object_store = Self::create_object_store(&config).await?;
-
-        // Optional metadata store (for subscription progress)
-        // Use DANUBE_METADATA_ENDPOINT env var if present; otherwise leave None to avoid broker changes
-        let metadata_store = match std::env::var("DANUBE_METADATA_ENDPOINT") {
-            Ok(endpoint) => match danube_metadata_store::EtcdStore::new(endpoint).await {
-                Ok(etcd) => Some(MetadataStorage::Etcd(etcd)),
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialize etcd metadata store; continuing without subscription progress store");
-                    None
-                }
-            },
-            Err(_) => None,
-        };
-
         Ok(Self {
             config,
             wal,
-            object_store,
             catalog,
             topic_writers: Arc::new(RwLock::new(HashMap::new())),
             topic_readers: Arc::new(RwLock::new(HashMap::new())),
             message_senders: Arc::new(RwLock::new(HashMap::new())),
-            shutdown_tx: None,
-            metadata_store,
+            metadata_store: match std::env::var("DANUBE_METADATA_ENDPOINT") {
+                Ok(endpoint) => match danube_metadata_store::EtcdStore::new(endpoint).await {
+                    Ok(etcd) => Some(MetadataStorage::Etcd(etcd)),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to initialize etcd metadata store; continuing without subscription progress store");
+                        None
+                    }
+                },
+                Err(_) => None,
+            },
         })
-    }
-
-    /// Create object store based on configuration
-    async fn create_object_store(config: &IcebergConfig) -> Result<Arc<dyn ObjectStore>> {
-        match &config.object_store {
-            crate::config::ObjectStoreConfig::Local { path } => {
-                let local_store = LocalFileSystem::new_with_prefix(path)?;
-                Ok(Arc::new(local_store))
-            }
-            crate::config::ObjectStoreConfig::S3 {
-                bucket,
-                region,
-                endpoint,
-                path_style,
-                ..
-            } => {
-                let mut builder = AmazonS3Builder::new()
-                    .with_bucket_name(bucket)
-                    .with_region(region);
-
-                if let Some(endpoint) = endpoint {
-                    builder = builder.with_endpoint(endpoint);
-                }
-
-                if *path_style {
-                    builder = builder.with_virtual_hosted_style_request(false);
-                }
-
-                let s3_store = builder.build()?;
-                Ok(Arc::new(s3_store))
-            }
-        }
     }
 
     /// Start background tasks for a topic
@@ -141,8 +94,8 @@ impl IcebergStorage {
         let (message_tx, _message_rx) = tokio::sync::broadcast::channel(1024);
 
         // Create shutdown channels
-        let (writer_shutdown_tx, writer_shutdown_rx) = mpsc::channel(1);
-        let (reader_shutdown_tx, reader_shutdown_rx) = mpsc::channel(1);
+        let (_writer_shutdown_tx, writer_shutdown_rx) = mpsc::channel(1);
+        let (_reader_shutdown_tx, reader_shutdown_rx) = mpsc::channel(1);
 
         // Create WAL reader
         let wal_reader = Arc::new(tokio::sync::Mutex::new(self.wal.create_reader()));
@@ -156,7 +109,6 @@ impl IcebergStorage {
             topic_name_owned.clone(),
             wal_reader,
             self.catalog.clone(),
-            self.object_store.clone(),
             writer_shutdown_rx,
             &self.config.writer,
             &self.config.warehouse,
@@ -173,7 +125,6 @@ impl IcebergStorage {
         let reader = TopicReader::new(
             topic_name_for_reader.clone(),
             self.catalog.clone(),
-            self.object_store.clone(),
             &self.config.reader,
             message_tx.clone(),
             reader_shutdown_rx,
@@ -330,8 +281,10 @@ impl PersistentStorage for IcebergStorage {
     ) -> std::result::Result<u64, PersistentStorageError> {
         // Derive committed position from Iceberg table's current snapshot
         // Namespace is fixed to "danube" for now
-        match self.catalog.load_table("danube", topic_name).await {
-            Ok(meta) => Ok(meta.current_snapshot_id.unwrap_or(0) as u64),
+        let ident = TableIdent::from_strs(["danube", topic_name])
+            .map_err(|e| PersistentStorageError::Catalog(e.to_string()))?;
+        match self.catalog.load_table(&ident).await {
+            Ok(table) => Ok(table.metadata().current_snapshot_id().unwrap_or(0) as u64),
             Err(e) => Err(PersistentStorageError::Catalog(e.to_string())),
         }
     }
@@ -378,12 +331,14 @@ impl PersistentStorage for IcebergStorage {
     async fn list_topics(&self) -> std::result::Result<Vec<String>, PersistentStorageError> {
         // List topics from Iceberg catalog
         let catalog = self.catalog.clone();
-        let topics = catalog
-            .list_tables("danube")
+        let ns = NamespaceIdent::from_strs(["danube"])
+            .map_err(|e| PersistentStorageError::Catalog(e.to_string()))?;
+        let idents = catalog
+            .list_tables(&ns)
             .await
             .map_err(|e| PersistentStorageError::Catalog(e.to_string()))?;
-
-        Ok(topics)
+        let names = idents.into_iter().map(|ti| ti.name().to_string()).collect();
+        Ok(names)
     }
 
     async fn shutdown(&self) -> std::result::Result<(), PersistentStorageError> {

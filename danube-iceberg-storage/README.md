@@ -8,37 +8,38 @@ This crate provides a cloud-native storage solution for Danube using Apache Iceb
 
 For a deeper architecture overview, see: `info/danube_iceberg_storage_overview.md`.
 
-## Architecture
+## Architecture (Updated)
 
-The Iceberg storage backend consists of several key components:
+- **Official Iceberg Catalog**: Uses `Arc<dyn iceberg::Catalog>` via `iceberg-catalog-rest`, `iceberg-catalog-glue`, or `MemoryCatalog`.
+- **Transactions and Snapshots**: Writer commits batches as new snapshots; Reader scans and streams new data per snapshot.
+- **Arrow + Parquet**: Writer converts messages to Arrow `RecordBatch` and writes Parquet via Iceberg writer APIs. Reader streams Arrow record batches via Iceberg Arrow utilities.
+- **Dependency alignment**: Arrow crates aligned with Iceberg 0.6.0 transitive deps to avoid type mismatches.
 
 ### Write-Ahead Log (WAL)
-- **Fast, durable writes**: Messages are first written to a local WAL for immediate producer acknowledgment
-- **File rotation**: WAL files are rotated based on size limits to prevent unbounded growth
-- **Checksums**: CRC32 checksums ensure data integrity
-- **Configurable sync modes**: Balance between durability and performance
+- Fast, durable writes (local WAL)
+- File rotation and CRC32 checksums
+- Configurable sync modes (Always/Periodic/None)
 
 ### TopicWriter
-- **Asynchronous processing**: Background task that reads from WAL and writes to Iceberg
-- **Batching**: Messages are batched for efficient Parquet file creation
-- **Arrow integration**: Messages are converted to Arrow RecordBatch format
-- **Object storage**: Parquet files are written to S3/MinIO/local storage
-- **REST commit**: Uses Iceberg REST `commit` to atomically add Parquet files as a new snapshot
+- Batches messages into Arrow `RecordBatch`
+- Loads `Table` via `catalog.load_table(&TableIdent)`
+- Builds Parquet data files via `ParquetWriterBuilder` + `DataFileWriterBuilder`
+- Commits via Iceberg transactions: `Transaction::new(&table) -> fast_append().add_data_files(...).apply(tx) -> tx.commit(&*catalog).await?`
 
 ### TopicReader
-- **Snapshot polling**: Continuously polls Iceberg catalog for new snapshots
-- **Precise incrementals**: Uses Iceberg REST `scan` planning to enumerate added files between snapshots
-- **Streaming**: Converts Parquet data back to StreamMessages for consumers
-- **Concurrency & prefetch**: Bounded prefetch queue and semaphore-limited file reads
+- Polls `table.metadata().current_snapshot_id()`
+- Plans scan for a snapshot: `table.scan().select_all().snapshot_id(...).build()?.plan_files().await?`
+- Streams Arrow batches: `table.reader_builder().build().read(tasks).await?`
+- Publishes `StreamMessage` via per-topic broadcast channel
 
 ### IcebergStorage
-- **PersistentStorage trait**: Implements `danube-core` PersistentStorage
-- **Task management**: Manages TopicWriter and TopicReader tasks per topic
-- **Fan-out**: Per-topic broadcast so multiple subscribers receive the same stream independently
-- **Subscription progress (scaffold)**: Optional etcd-backed helpers for per-subscription progress
-- **Configuration**: Comprehensive configuration for all components
+- Implements `danube-core` `PersistentStorage`
+- Manages topic writers/readers and per-topic broadcast
+- Optional etcd-backed helpers for subscription progress
 
 ## Configuration
+
+Example REST + S3/FS configuration (YAML fragment):
 
 ```yaml
 storage:
@@ -47,22 +48,35 @@ storage:
     catalog:
       type: rest
       uri: "http://localhost:8181"
-    object_store:
-      type: s3
-      bucket: "danube-data"
-      region: "us-west-2"
+    # Warehouse points to FS or S3
+    warehouse: "file:///var/lib/danube/warehouse" # or s3://my-bucket/prefix
     wal:
       base_path: "/var/lib/danube/wal"
-      max_file_size: 67108864  # 64MB
-      sync_mode: periodic
+      max_file_size: 104857600
+      sync_mode: Always
     writer:
       batch_size: 1000
-      flush_interval_ms: 5000
-      max_memory_bytes: 134217728  # 128MB
+      flush_interval_ms: 1000
+      max_memory_bytes: 67108864
     reader:
-      poll_interval_ms: 1000
-      max_concurrent_reads: 10
-      prefetch_size: 5
+      poll_interval_ms: 500
+      max_concurrent_reads: 5
+      prefetch_size: 3
+```
+
+Glue example (the SDK/env provides region/credentials):
+
+```yaml
+storage:
+  type: iceberg
+  iceberg_config:
+    catalog:
+      type: glue
+    warehouse: "s3://danube-warehouse"
+    wal:
+      base_path: "/var/lib/danube/wal"
+      max_file_size: 104857600
+      sync_mode: Always
 ```
 
 ## Features
@@ -120,7 +134,6 @@ The crate implements the core WAL, writer/reader, and REST catalog flows. Curren
 - ✅ Optional etcd progress helpers (storage-side scaffolding)
 
 ### In Progress / Limitations
-- ⚠️ AWS Glue catalog: basic CRUD only; commit and scan planning are not implemented in Glue. Use REST catalog for ACID commits and precise reads.
 - ⚠️ Broker wiring for per-subscription etcd progress is pending (helpers available in storage).
 
 ### Planned
@@ -130,15 +143,3 @@ The crate implements the core WAL, writer/reader, and REST catalog flows. Curren
 - 📋 Schema evolution support
 - 📋 Integration tests (local + MinIO/REST) and performance benchmarks
 
-## Dependencies
-
-- **iceberg**: Apache Iceberg Rust SDK
-- **arrow**: In-memory columnar data representation
-- **parquet**: Parquet file format support
-- **object_store**: Unified object storage API
-- **danube-metadata-store**: Optional etcd-backed metadata helpers (subscription progress)
-- **tokio**: Async runtime
-
-## License
-
-Licensed under the Apache License, Version 2.0.

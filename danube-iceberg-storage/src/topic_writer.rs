@@ -1,24 +1,27 @@
-use crate::catalog::{create_danube_schema, DataFile, IcebergCatalog, TableMetadata};
+use crate::catalog::create_danube_schema;
+use crate::config::WriterConfig;
 use crate::errors::{IcebergStorageError, Result};
 use crate::wal::WalReader;
-use arrow::array::{
-    ArrayRef, BinaryArray, Int64Array, StringArray, TimestampMillisecondArray, UInt64Array,
+use arrow_array::{
+    ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    UInt64Array,
 };
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
-use bytes::Bytes;
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use danube_core::message::StreamMessage;
-use object_store::{path::Path, ObjectStore};
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
-use std::collections::HashMap;
+use iceberg::transaction::{ApplyTransactionAction, Transaction};
+use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
+use iceberg::writer::file_writer::location_generator::{
+    DefaultFileNameGenerator, DefaultLocationGenerator,
+};
+use iceberg::writer::file_writer::ParquetWriterBuilder;
+use iceberg::writer::IcebergWriter;
+use iceberg::writer::IcebergWriterBuilder;
+use iceberg::{Catalog as IcebergCatalog, NamespaceIdent, TableCreation, TableIdent};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use std::time::{Duration, SystemTime};
+use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, error, info};
-
-use crate::config::WriterConfig;
 
 /// TopicWriter handles asynchronous flushing from WAL to Iceberg tables
 pub struct TopicWriter {
@@ -26,10 +29,8 @@ pub struct TopicWriter {
     topic_name: String,
     /// WAL reader for reading entries
     wal_reader: Arc<tokio::sync::Mutex<WalReader>>,
-    /// Iceberg catalog
+    /// Iceberg catalog (official trait)
     catalog: Arc<dyn IcebergCatalog>,
-    /// Object store for writing Parquet files
-    object_store: Arc<dyn ObjectStore>,
     /// Current batch of messages
     current_batch: Vec<StreamMessage>,
     /// Batch size threshold
@@ -40,9 +41,7 @@ pub struct TopicWriter {
     last_flush: SystemTime,
     /// Shutdown signal
     shutdown_rx: mpsc::Receiver<()>,
-    /// Table metadata cache
-    table_metadata: Arc<RwLock<Option<TableMetadata>>>,
-    /// Warehouse base location (e.g., s3://bucket/prefix)
+    /// Warehouse base location (e.g., s3://bucket/prefix or fs path)
     warehouse: String,
     /// Max memory budget for in-flight batch (bytes)
     max_memory_bytes: u64,
@@ -56,7 +55,6 @@ impl TopicWriter {
         topic_name: String,
         wal_reader: Arc<tokio::sync::Mutex<WalReader>>,
         catalog: Arc<dyn IcebergCatalog>,
-        object_store: Arc<dyn ObjectStore>,
         shutdown_rx: mpsc::Receiver<()>,
         writer_cfg: &WriterConfig,
         warehouse: &str,
@@ -65,13 +63,11 @@ impl TopicWriter {
             topic_name,
             wal_reader,
             catalog,
-            object_store,
             current_batch: Vec::new(),
             batch_size: writer_cfg.batch_size,
             batch_timeout: Duration::from_millis(writer_cfg.flush_interval_ms),
             last_flush: SystemTime::now(),
             shutdown_rx,
-            table_metadata: Arc::new(RwLock::new(None)),
             warehouse: warehouse.to_string(),
             max_memory_bytes: writer_cfg.max_memory_bytes,
             current_batch_bytes: 0,
@@ -188,22 +184,24 @@ impl TopicWriter {
         let namespace = "danube";
 
         // Check if table already exists
+        let ident = TableIdent::from_strs([namespace, &self.topic_name])
+            .map_err(|e| IcebergStorageError::Catalog(format!("Invalid ident: {}", e)))?;
         if self
             .catalog
-            .table_exists(namespace, &self.topic_name)
-            .await?
+            .table_exists(&ident)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?
         {
-            // Load existing metadata
-            let metadata = self.catalog.load_table(namespace, &self.topic_name).await?;
-            let mut table_metadata = self.table_metadata.write().await;
-            *table_metadata = Some(metadata);
             return Ok(());
         }
 
-        // Create namespace if it doesn't exist
-        if let Err(_) = self.catalog.create_namespace(namespace).await {
-            // Namespace might already exist, continue
-        }
+        // Create namespace if it doesn't exist (ignore errors if already exists)
+        let ns = NamespaceIdent::from_strs([namespace.to_string()])
+            .map_err(|e| IcebergStorageError::Catalog(format!("Invalid namespace: {}", e)))?;
+        let _ = self
+            .catalog
+            .create_namespace(&ns, std::collections::HashMap::new())
+            .await;
 
         // Create table
         let schema = create_danube_schema();
@@ -213,13 +211,16 @@ impl TopicWriter {
             self.topic_name
         );
 
-        let metadata = self
-            .catalog
-            .create_table(namespace, &self.topic_name, &schema, &location)
-            .await?;
+        let creation = TableCreation::builder()
+            .name(self.topic_name.clone())
+            .schema(schema)
+            .location(location)
+            .build();
 
-        let mut table_metadata = self.table_metadata.write().await;
-        *table_metadata = Some(metadata);
+        self.catalog
+            .create_table(&ns, creation)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
 
         info!(topic = %self.topic_name, "Created Iceberg table");
         Ok(())
@@ -240,51 +241,68 @@ impl TopicWriter {
         // Convert messages to Arrow RecordBatch
         let record_batch = self.messages_to_record_batch(&self.current_batch)?;
 
-        // Write to Parquet file
-        let file_path = self.write_parquet_file(&record_batch).await?;
+        // Load table handle
+        let table_ident = TableIdent::from_strs(["danube", &self.topic_name])
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+        let table = self
+            .catalog
+            .load_table(&table_ident)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
 
-        // Create data file metadata for commit
-        let data_file = DataFile {
-            content: "data".to_string(),
-            file_path: file_path.clone(),
-            file_format: "parquet".to_string(),
-            partition: HashMap::new(),
-            record_count: self.current_batch.len() as i64,
-            file_size_in_bytes: 0, // TODO: Get actual file size
-            column_sizes: HashMap::new(),
-            value_counts: HashMap::new(),
-            null_value_counts: HashMap::new(),
-            nan_value_counts: HashMap::new(),
-            lower_bounds: HashMap::new(),
-            upper_bounds: HashMap::new(),
-            key_metadata: None,
-            split_offsets: vec![],
-            equality_ids: vec![],
-            sort_order_id: None,
-        };
+        // Build Iceberg Parquet DataFile writer (uses table metadata + IO)
+        let location_gen = DefaultLocationGenerator::new(table.metadata().clone())
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+        let file_name_gen = DefaultFileNameGenerator::new(
+            self.topic_name.clone(),
+            None,
+            iceberg::spec::DataFileFormat::Parquet,
+        );
 
-        // Load current table metadata
-        let mut table_metadata_guard = self.table_metadata.write().await;
-        if let Some(ref mut metadata) = *table_metadata_guard {
-            // Perform REST commit add-files
-            let updated_metadata = self
-                .catalog
-                .commit_add_files("danube", &self.topic_name, metadata, vec![data_file])
-                .await?;
+        let parquet_writer_builder = ParquetWriterBuilder::new(
+            Default::default(),
+            table.metadata().current_schema().clone(),
+            table.file_io().clone(),
+            location_gen.clone(),
+            file_name_gen.clone(),
+        );
+        let data_file_writer_builder = DataFileWriterBuilder::new(parquet_writer_builder, None, 0);
+        let mut data_file_writer = data_file_writer_builder
+            .build()
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
 
-            *metadata = updated_metadata;
-        }
+        // Write the batch to a new Iceberg data file
+        data_file_writer
+            .write(record_batch)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+
+        // Close writer and get produced data files
+        let data_files = data_file_writer
+            .close()
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+
+        // Create a transaction and apply fast-append with our data files
+        let tx = Transaction::new(&table);
+        let action = tx.fast_append().add_data_files(data_files);
+        let tx = action
+            .apply(tx)
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
+
+        // Commit the transaction against the official catalog trait
+        let _updated_table = tx
+            .commit(&*self.catalog)
+            .await
+            .map_err(|e| IcebergStorageError::Catalog(e.to_string()))?;
 
         // Clear the batch
         self.current_batch.clear();
         self.current_batch_bytes = 0;
         self.last_flush = SystemTime::now();
 
-        info!(
-            topic = %self.topic_name,
-            file = %file_path,
-            "Committed batch to Iceberg"
-        );
+        info!(topic = %self.topic_name, "Committed batch to Iceberg");
 
         Ok(())
     }
@@ -379,39 +397,5 @@ impl TopicWriter {
         .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
 
         Ok(record_batch)
-    }
-
-    /// Write RecordBatch to Parquet file
-    async fn write_parquet_file(&self, record_batch: &RecordBatch) -> Result<String> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-
-        let file_name = format!("data-{}-{}.parquet", self.topic_name, timestamp);
-        // Store under per-topic prefix within the bucket/prefix
-        let file_path = Path::from(format!("{}/data/{}", self.topic_name, file_name));
-
-        // Create in-memory buffer
-        let mut buffer = Vec::new();
-
-        // Write to Parquet
-        let props = WriterProperties::builder().build();
-        let mut writer = ArrowWriter::try_new(&mut buffer, record_batch.schema(), Some(props))
-            .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
-
-        writer
-            .write(record_batch)
-            .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
-
-        writer
-            .close()
-            .map_err(|e| IcebergStorageError::Arrow(e.to_string()))?;
-
-        // Upload to object store
-        let bytes = Bytes::from(buffer);
-        self.object_store.put(&file_path, bytes.into()).await?;
-
-        Ok(file_path.to_string())
     }
 }

@@ -14,10 +14,7 @@ pub mod topic_reader;
 pub mod topic_writer;
 pub mod wal;
 
-pub use catalog::{
-    create_catalog, create_danube_schema, DataFile, GlueCatalog, IcebergCatalog, NestedField,
-    RestCatalog, Snapshot, TableMetadata, TableSchema,
-};
+pub use catalog::{create_catalog, create_danube_schema};
 pub use config::IcebergConfig;
 pub use errors::{IcebergStorageError, Result};
 pub use iceberg_storage::IcebergStorage;
