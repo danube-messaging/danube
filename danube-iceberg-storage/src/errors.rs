@@ -46,12 +46,6 @@ impl From<iceberg::Error> for IcebergStorageError {
     }
 }
 
-impl From<object_store::Error> for IcebergStorageError {
-    fn from(err: object_store::Error) -> Self {
-        IcebergStorageError::ObjectStore(err.to_string())
-    }
-}
-
 impl From<arrow::error::ArrowError> for IcebergStorageError {
     fn from(err: arrow::error::ArrowError) -> Self {
         IcebergStorageError::Arrow(err.to_string())

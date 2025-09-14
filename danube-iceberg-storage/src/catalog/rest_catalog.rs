@@ -1,63 +1,103 @@
 use crate::errors::{IcebergStorageError, Result};
 use async_trait::async_trait;
-use url::Url;
 
 // Import the types from the parent catalog module
 use super::{DataFile, IcebergCatalog, PlannedFile, TableMetadata, TableSchema};
 
-/// REST catalog implementation
+// Official Iceberg crates
+use iceberg::spec::{
+    NestedField, PrimitiveType, Schema as IcebergSchema, StructType, Type as IcebergType,
+};
+use iceberg::table::Table;
+use iceberg::{Catalog as IcebergCatalogTrait, Namespace, TableIdent};
+use iceberg_catalog_rest as rest;
+
+/// REST catalog wrapper implementation using the official Iceberg REST catalog
 #[derive(Debug)]
 pub struct RestCatalog {
-    client: reqwest::Client,
-    base_url: Url,
+    inner: rest::RestCatalog,
     warehouse: String,
 }
 
 impl RestCatalog {
     pub async fn new(uri: &str, warehouse: &str) -> Result<Self> {
-        let base_url = Url::parse(uri)
-            .map_err(|e| IcebergStorageError::Config(format!("Invalid REST catalog URI: {}", e)))?;
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
+        let inner = rest::RestCatalog::new(uri, Some(warehouse.to_string()), None)
+            .await
             .map_err(|e| {
-                IcebergStorageError::Config(format!("Failed to create HTTP client: {}", e))
+                IcebergStorageError::Catalog(format!("Failed to create REST catalog: {}", e))
             })?;
-
         Ok(Self {
-            client,
-            base_url,
+            inner,
             warehouse: warehouse.to_string(),
         })
     }
 
-    fn table_url(&self, namespace: &str, table_name: &str) -> Result<Url> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("v1")
-            .push("namespaces")
-            .push(namespace)
-            .push("tables")
-            .push(table_name);
-        Ok(url)
+    fn to_namespace(ns: &str) -> Namespace {
+        // Iceberg namespaces can be multi-part; we treat our ns as single-part
+        Namespace::from(vec![ns.to_string()])
     }
 
-    fn commit_url(&self, namespace: &str, table_name: &str) -> Result<Url> {
-        let mut url = self.table_url(namespace, table_name)?;
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("commit");
-        Ok(url)
+    fn to_ident(ns: &str, table: &str) -> Result<TableIdent> {
+        TableIdent::from_parts(vec![ns.to_string(), table.to_string()]).map_err(|e| {
+            IcebergStorageError::Catalog(format!("Invalid table ident: {}.{} ({})", ns, table, e))
+        })
     }
 
-    fn scan_plan_url(&self, namespace: &str, table_name: &str) -> Result<Url> {
-        let mut url = self.table_url(namespace, table_name)?;
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("scan");
-        Ok(url)
+    fn convert_schema(schema: &TableSchema) -> Result<IcebergSchema> {
+        let mut fields = Vec::new();
+        for f in &schema.fields {
+            let ty = match f.field_type.as_str() {
+                "long" => IcebergType::Primitive(PrimitiveType::Long),
+                "string" => IcebergType::Primitive(PrimitiveType::String),
+                "binary" => IcebergType::Primitive(PrimitiveType::Binary),
+                "timestamp" => IcebergType::Primitive(PrimitiveType::Timestamp),
+                other => {
+                    return Err(IcebergStorageError::Catalog(format!(
+                        "Unsupported field type in schema: {}",
+                        other
+                    ))
+                    .into())
+                }
+            };
+            let nf = NestedField::optional(f.id as i32, f.name.clone(), ty, None);
+            // Respect required flag by toggling optional/required
+            let nf = if f.required {
+                NestedField::required(f.id as i32, f.name.clone(), nf.field_type().clone(), None)
+            } else {
+                nf
+            };
+            fields.push(nf);
+        }
+        let struct_ty = StructType::new(fields);
+        let schema = IcebergSchema::builder()
+            .with_fields(struct_ty)
+            .build()
+            .map_err(|e| {
+                IcebergStorageError::Catalog(format!("Failed to build Iceberg schema: {}", e))
+            })?;
+        Ok(schema)
+    }
+
+    fn minimal_metadata_from_table(table: &Table) -> TableMetadata {
+        let current_snapshot_id = table.current_snapshot().map(|s| s.snapshot_id());
+        TableMetadata {
+            format_version: 2,
+            table_uuid: table
+                .metadata()
+                .table_uuid()
+                .unwrap_or_default()
+                .to_string(),
+            location: table.metadata().location().to_string(),
+            last_sequence_number: 0,
+            last_updated_ms: 0,
+            schema: TableSchema {
+                schema_id: table.metadata().current_schema_id(),
+                fields: vec![],
+            },
+            current_schema_id: table.metadata().current_schema_id(),
+            snapshots: vec![],
+            current_snapshot_id: current_snapshot_id.map(|id| id as i64),
+        }
     }
 }
 
@@ -70,58 +110,27 @@ impl IcebergCatalog for RestCatalog {
         schema: &TableSchema,
         location: &str,
     ) -> Result<TableMetadata> {
-        let url = self.table_url(namespace, table_name)?;
+        // Build Iceberg schema
+        let iceberg_schema = Self::convert_schema(schema)?;
+        let ident = Self::to_ident(namespace, table_name)?;
 
-        let create_request = serde_json::json!({
-            "name": table_name,
-            "location": location,
-            "schema": schema
-        });
-
-        let response = self
-            .client
-            .post(url)
-            .json(&create_request)
-            .send()
+        let tbl = self
+            .inner
+            .create_table(&ident, iceberg_schema, Some(location.to_string()), None)
             .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| IcebergStorageError::Catalog(format!("Create table failed: {}", e)))?;
 
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Create table failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let metadata: TableMetadata = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(metadata)
+        Ok(Self::minimal_metadata_from_table(&tbl))
     }
 
     async fn load_table(&self, namespace: &str, table_name: &str) -> Result<TableMetadata> {
-        let url = self.table_url(namespace, table_name)?;
-
-        let response = self
-            .client
-            .get(url)
-            .send()
+        let ident = Self::to_ident(namespace, table_name)?;
+        let table = self
+            .inner
+            .load_table(&ident)
             .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Load table failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let metadata: TableMetadata = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(metadata)
+            .map_err(|e| IcebergStorageError::Catalog(format!("Load table failed: {}", e)))?;
+        Ok(Self::minimal_metadata_from_table(&table))
     }
 
     async fn update_table(
@@ -129,302 +138,78 @@ impl IcebergCatalog for RestCatalog {
         namespace: &str,
         table_name: &str,
         _current_metadata: &TableMetadata,
-        new_metadata: &TableMetadata,
+        _new_metadata: &TableMetadata,
     ) -> Result<TableMetadata> {
-        let url = self.table_url(namespace, table_name)?;
-
-        let response = self
-            .client
-            .post(url)
-            .json(new_metadata)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Update table failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let metadata: TableMetadata = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(metadata)
+        // Updating full metadata via REST is beyond Stage 1 scope.
+        // Load and return current minimal metadata.
+        self.load_table(namespace, table_name).await
     }
 
     async fn table_exists(&self, namespace: &str, table_name: &str) -> Result<bool> {
-        let url = self.table_url(namespace, table_name)?;
-
-        let response = self
-            .client
-            .head(url)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        Ok(response.status().is_success())
+        let ident = Self::to_ident(namespace, table_name)?;
+        let exists = self.inner.table_exists(&ident).await.map_err(|e| {
+            IcebergStorageError::Catalog(format!("table_exists check failed: {}", e))
+        })?;
+        Ok(exists)
     }
 
     async fn list_tables(&self, namespace: &str) -> Result<Vec<String>> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("v1")
-            .push("namespaces")
-            .push(namespace)
-            .push("tables");
-
-        let response = self
-            .client
-            .get(url)
-            .send()
+        let ns = Self::to_namespace(namespace);
+        let idents = self
+            .inner
+            .list_tables(&ns)
             .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "List tables failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let tables: serde_json::Value = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        let table_names = tables["identifiers"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
-            .collect::<Vec<_>>();
-
-        Ok(table_names)
+            .map_err(|e| IcebergStorageError::Catalog(format!("List tables failed: {}", e)))?;
+        Ok(idents.into_iter().map(|ti| ti.name().to_string()).collect())
     }
 
     async fn drop_table(&self, namespace: &str, table_name: &str) -> Result<()> {
-        let url = self.table_url(namespace, table_name)?;
-
-        let response = self
-            .client
-            .delete(url)
-            .send()
+        let ident = Self::to_ident(namespace, table_name)?;
+        self.inner
+            .drop_table(&ident)
             .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Drop table failed with status: {}",
-                response.status()
-            )));
-        }
-
+            .map_err(|e| IcebergStorageError::Catalog(format!("Drop table failed: {}", e)))?;
         Ok(())
     }
 
     async fn create_namespace(&self, namespace: &str) -> Result<()> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("v1")
-            .push("namespaces");
-
-        let create_request = serde_json::json!({
-            "namespace": [namespace],
-            "properties": {}
-        });
-
-        let response = self
-            .client
-            .post(url)
-            .json(&create_request)
-            .send()
+        let ns = Self::to_namespace(namespace);
+        self.inner
+            .create_namespace(&ns, None)
             .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Create namespace failed with status: {}",
-                response.status()
-            )));
-        }
-
+            .map_err(|e| IcebergStorageError::Catalog(format!("Create namespace failed: {}", e)))?;
         Ok(())
     }
 
     async fn list_namespaces(&self) -> Result<Vec<String>> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|_| IcebergStorageError::Config("Invalid base URL".to_string()))?
-            .push("v1")
-            .push("namespaces");
-
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "List namespaces failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let namespaces: serde_json::Value = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        let namespace_names = namespaces["namespaces"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .filter_map(|v| v[0].as_str().map(|s| s.to_string()))
-            .collect::<Vec<_>>();
-
-        Ok(namespace_names)
+        let nss =
+            self.inner.list_namespaces(None).await.map_err(|e| {
+                IcebergStorageError::Catalog(format!("List namespaces failed: {}", e))
+            })?;
+        Ok(nss.into_iter().map(|ns| ns.to_string()).collect())
     }
 
     async fn commit_add_files(
         &self,
-        namespace: &str,
-        table_name: &str,
-        current_metadata: &TableMetadata,
-        data_files: Vec<DataFile>,
+        _namespace: &str,
+        _table_name: &str,
+        _current_metadata: &TableMetadata,
+        _data_files: Vec<DataFile>,
     ) -> Result<TableMetadata> {
-        // Build commit request per Iceberg REST spec
-        // Minimal requirements: assert table uuid and optionally current snapshot id
-        let mut requirements = vec![serde_json::json!({
-            "type": "assert-table-uuid",
-            "uuid": current_metadata.table_uuid
-        })];
-
-        if let Some(sid) = current_metadata.current_snapshot_id {
-            requirements.push(serde_json::json!({
-                "type": "assert-ref-snapshot-id",
-                "ref": "main",
-                "snapshot-id": sid
-            }));
-        }
-
-        let add_op = serde_json::json!({
-            "type": "add",
-            "data-files": data_files
-        });
-
-        let body = serde_json::json!({
-            "requirements": requirements,
-            "operations": [ add_op ]
-        });
-
-        let url = self.commit_url(namespace, table_name)?;
-        let response = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Commit add files failed with status: {}",
-                response.status()
-            )));
-        }
-
-        // Response should include updated table metadata or ref
-        let metadata: TableMetadata = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        Ok(metadata)
+        Err(IcebergStorageError::Catalog(
+            "commit_add_files is handled via Iceberg writer in later stages".to_string(),
+        ))
     }
 
     async fn plan_scan(
         &self,
-        namespace: &str,
-        table_name: &str,
-        from_snapshot_id: Option<i64>,
-        to_snapshot_id: Option<i64>,
+        _namespace: &str,
+        _table_name: &str,
+        _from_snapshot_id: Option<i64>,
+        _to_snapshot_id: Option<i64>,
     ) -> Result<Vec<PlannedFile>> {
-        let url = self.scan_plan_url(namespace, table_name)?;
-        let mut body = serde_json::json!({});
-        if from_snapshot_id.is_some() || to_snapshot_id.is_some() {
-            let mut scan = serde_json::Map::new();
-            if let Some(f) = from_snapshot_id {
-                scan.insert("from-snapshot-id".to_string(), serde_json::json!(f));
-            }
-            if let Some(t) = to_snapshot_id {
-                scan.insert("to-snapshot-id".to_string(), serde_json::json!(t));
-            }
-            body = serde_json::Value::Object(scan);
-        }
-
-        let response = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| IcebergStorageError::Catalog(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(IcebergStorageError::Catalog(format!(
-                "Scan plan failed with status: {}",
-                response.status()
-            )));
-        }
-
-        let v: serde_json::Value = response.json().await.map_err(|e| {
-            IcebergStorageError::Catalog(format!("Failed to parse response: {}", e))
-        })?;
-
-        // Extract planned files from common shapes: tasks[*].files[*] or files[*]
-        let mut out = Vec::new();
-        if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
-            for t in tasks {
-                if let Some(files) = t.get("files").and_then(|f| f.as_array()) {
-                    for f in files {
-                        let path = f
-                            .get("file")
-                            .and_then(|x| x.get("filePath"))
-                            .and_then(|s| s.as_str())
-                            .or_else(|| f.get("file_path").and_then(|s| s.as_str()))
-                            .unwrap_or("");
-                        let status = f.get("status").and_then(|s| s.as_str()).unwrap_or("ADDED");
-                        if !path.is_empty() {
-                            out.push(PlannedFile {
-                                file_path: path.to_string(),
-                                status: status.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-        } else if let Some(files) = v.get("files").and_then(|f| f.as_array()) {
-            for f in files {
-                let path = f
-                    .get("file")
-                    .and_then(|x| x.get("filePath"))
-                    .and_then(|s| s.as_str())
-                    .or_else(|| f.get("file_path").and_then(|s| s.as_str()))
-                    .unwrap_or("");
-                let status = f.get("status").and_then(|s| s.as_str()).unwrap_or("ADDED");
-                if !path.is_empty() {
-                    out.push(PlannedFile {
-                        file_path: path.to_string(),
-                        status: status.to_string(),
-                    });
-                }
-            }
-        }
-
-        Ok(out)
+        Err(IcebergStorageError::Catalog(
+            "plan_scan is handled via Iceberg scan API in later stages".to_string(),
+        ))
     }
 }

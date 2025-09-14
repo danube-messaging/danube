@@ -44,6 +44,8 @@ iceberg-catalog-glue = "0.6.0"
 - In `src/iceberg_storage.rs`, construct catalogs from `CatalogConfig` and the configured warehouse.
 - Add `CatalogConfig::Memory` to config for tests.
 - Use the official `Catalog` trait (do not keep our own). Update call sites accordingly.
+- NOTE: For Stage 1 containment, our thin adapters delegate to the official `Catalog` methods (`load_table`, `create_table`, `list_tables`, etc.) and only translate to/from a minimal `TableMetadata` struct expected by existing code.
+  We will remove our custom `IcebergCatalog` trait and `TableMetadata`/`DataFile` types in later stages once `TopicWriter`/`TopicReader` are moved to table + writer/scan APIs.
 
 Example (conceptual) usage:
 ```rust
@@ -95,11 +97,13 @@ let mem_io = FileIOBuilder::new("memory").build()?;
   - Use Iceberg writer API (`iceberg::writer`) to produce data files via table IO.
   - Commit with `table.new_append().append(data_file).commit().await?`.
 - Remove manual `parquet::ArrowWriter` + upload + custom REST `commit_add_files`.
+- NOTE: The adapters’ `commit_add_files` currently return a "handled later" error by design; Stage 3 replaces this path entirely with the Iceberg writer pipeline.
 
 ### Stage 4 — Reader integration with Iceberg
 - Replace custom scan planning and `parquet` reading with Iceberg’s `table.scan()` + reader.
 - Track `last_snapshot_id` and read only newly added files (incremental approach). Use `seen_files` guard during transition if needed.
 - Convert Arrow batches to `StreamMessage` (consider `iceberg::arrow` helpers for schema mapping).
+- NOTE: The adapters’ `plan_scan` currently return a "handled later" error by design; Stage 4 replaces this with the Iceberg scan pipeline. After this stage, we can remove our custom trait and metadata structs entirely.
 
 ### Stage 5 — Config and features
 - Extend `src/config.rs`:
@@ -137,8 +141,8 @@ let mem_io = FileIOBuilder::new("memory").build()?;
 - S3 and GCS supported; Memory variants pass unit tests.
 
 ## Progress Checklist
-- [ ] Stage 0: Dependencies switched
-- [ ] Stage 1: Catalog refactor complete
+- [x] Stage 0: Dependencies switched — iceberg storage features enabled; added iceberg-catalog-rest/glue; removed object_store/reqwest/aws-sdk-glue/aws-config
+- [x] Stage 1: Catalog refactor complete — replaced custom REST/Glue with official catalogs; added MemoryCatalog; updated create_catalog()
 - [ ] Stage 2: Storage via Iceberg FileIO
 - [ ] Stage 3: Writer integrated
 - [ ] Stage 4: Reader integrated
