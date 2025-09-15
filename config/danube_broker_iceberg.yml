@@ -30,14 +30,15 @@ storage:
     # Catalog configuration
     catalog_type: "rest"
     catalog_uri: "http://localhost:8181"
-    warehouse_path: "s3://danube-warehouse/"
+    warehouse_path: "s3://danube-messages/warehouse/"
     
     # Object store configuration
     object_store_type: "s3"
-    bucket_name: "danube-messages"
     region: "us-east-1"
-    endpoint: null  # Use default AWS S3 endpoint
-    local_path: null  # Not used for S3
+    endpoint: null  # Use default AWS S3 endpoint, or set to MinIO/LocalStack URL
+    path_style: false  # Set to true for MinIO compatibility
+    profile: null  # AWS profile name, uses default if not specified
+    allow_anonymous: false  # Set to true for public bucket access
     
     # WAL configuration
     wal_path: "/var/lib/danube/wal"

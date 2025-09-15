@@ -44,7 +44,8 @@ impl IcebergStorage {
         info!("Initializing IcebergStorage");
 
         // Create catalog
-        let catalog = create_catalog(&config.catalog, &config.warehouse).await?;
+        let catalog =
+            create_catalog(&config.catalog, &config.object_store, &config.warehouse).await?;
 
         // Create Write-Ahead Log
         let wal = Arc::new(WriteAheadLog::new(&config.wal).await?);

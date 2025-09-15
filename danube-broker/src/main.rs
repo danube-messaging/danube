@@ -216,11 +216,12 @@ async fn create_message_storage_from_config(storage_config: &StorageConfig) -> R
                 },
                 object_store: match iceberg_config.object_store_type.as_str() {
                     "s3" => danube_iceberg_storage::config::ObjectStoreConfig::S3 {
-                        bucket: iceberg_config.bucket_name.clone().unwrap_or_default(),
                         region: iceberg_config.region.clone().unwrap_or_default(),
-                        profile: None,
                         endpoint: iceberg_config.endpoint.clone(),
-                        path_style: false,
+                        path_style: iceberg_config.path_style.unwrap_or(false),
+                        profile: iceberg_config.profile.clone(),
+                        allow_anonymous: iceberg_config.allow_anonymous.unwrap_or(false),
+                        properties: std::collections::HashMap::new(),
                     },
                     "local" => danube_iceberg_storage::config::ObjectStoreConfig::Local {
                         path: iceberg_config

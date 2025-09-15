@@ -3,10 +3,9 @@ use crate::config::WriterConfig;
 use crate::errors::{IcebergStorageError, Result};
 use crate::wal::WalReader;
 use arrow_array::{
-    ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
-    UInt64Array,
+    ArrayRef, Int64Array, LargeBinaryArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, TimeUnit};
 use danube_core::message::StreamMessage;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
@@ -183,6 +182,31 @@ impl TopicWriter {
     async fn ensure_table_exists(&self) -> Result<()> {
         let namespace = "danube";
 
+        // Create namespace if it doesn't exist
+        let ns = NamespaceIdent::from_strs([namespace])
+            .map_err(|e| IcebergStorageError::Catalog(format!("Invalid namespace: {}", e)))?;
+
+        // Try to create namespace, ignore error if it already exists
+        match self
+            .catalog
+            .create_namespace(&ns, std::collections::HashMap::new())
+            .await
+        {
+            Ok(_) => info!("Created namespace: {}", namespace),
+            Err(e) => {
+                // Check if it's a "namespace already exists" error, which is fine
+                let error_msg = e.to_string();
+                if error_msg.contains("AlreadyExists") || error_msg.contains("already exists") {
+                    debug!("Namespace {} already exists", namespace);
+                } else {
+                    return Err(IcebergStorageError::Catalog(format!(
+                        "Failed to create namespace: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
         // Check if table already exists
         let ident = TableIdent::from_strs([namespace, &self.topic_name])
             .map_err(|e| IcebergStorageError::Catalog(format!("Invalid ident: {}", e)))?;
@@ -194,14 +218,6 @@ impl TopicWriter {
         {
             return Ok(());
         }
-
-        // Create namespace if it doesn't exist (ignore errors if already exists)
-        let ns = NamespaceIdent::from_strs([namespace.to_string()])
-            .map_err(|e| IcebergStorageError::Catalog(format!("Invalid namespace: {}", e)))?;
-        let _ = self
-            .catalog
-            .create_namespace(&ns, std::collections::HashMap::new())
-            .await;
 
         // Create table
         let schema = create_danube_schema();
@@ -309,78 +325,110 @@ impl TopicWriter {
 
     /// Convert messages to Arrow RecordBatch
     fn messages_to_record_batch(&self, messages: &[StreamMessage]) -> Result<RecordBatch> {
-        let _len = messages.len();
+        // Get the Iceberg schema and convert to Arrow schema
+        let iceberg_schema = create_danube_schema();
+        let arrow_schema =
+            iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(|e| {
+                IcebergStorageError::Arrow(format!(
+                    "Failed to convert Iceberg schema to Arrow: {}",
+                    e
+                ))
+            })?;
 
-        // Create arrays for each field
-        let request_ids: Vec<u64> = messages.iter().map(|m| m.request_id).collect();
+        // Extract field types from the Arrow schema to ensure type compatibility
+        let fields = arrow_schema.fields();
+
+        // Create arrays using the proper types from the schema
+        let request_ids: Vec<i64> = messages.iter().map(|m| m.request_id as i64).collect();
+        let request_id_array = Arc::new(Int64Array::from(request_ids)) as ArrayRef;
+
         let producer_ids: Vec<i64> = messages
             .iter()
             .map(|m| m.msg_id.producer_id as i64)
             .collect();
+        let producer_id_array = Arc::new(Int64Array::from(producer_ids)) as ArrayRef;
+
         let topic_names: Vec<String> = messages
             .iter()
             .map(|m| m.msg_id.topic_name.clone())
             .collect();
+        let topic_name_array = Arc::new(StringArray::from(topic_names)) as ArrayRef;
+
         let broker_addrs: Vec<String> = messages
             .iter()
             .map(|m| m.msg_id.broker_addr.clone())
             .collect();
+        let broker_addr_array = Arc::new(StringArray::from(broker_addrs)) as ArrayRef;
+
         let segment_ids: Vec<i64> = messages
             .iter()
             .map(|m| m.msg_id.segment_id as i64)
             .collect();
+        let segment_id_array = Arc::new(Int64Array::from(segment_ids)) as ArrayRef;
+
         let segment_offsets: Vec<i64> = messages
             .iter()
             .map(|m| m.msg_id.segment_offset as i64)
             .collect();
-        let payloads: Vec<Vec<u8>> = messages.iter().map(|m| m.payload.clone()).collect();
-        let publish_times: Vec<i64> = messages.iter().map(|m| m.publish_time as i64).collect();
-        let producer_names: Vec<String> =
-            messages.iter().map(|m| m.producer_name.clone()).collect();
-        let subscription_names: Vec<Option<String>> = messages
-            .iter()
-            .map(|m| m.subscription_name.clone())
-            .collect();
-
-        // Create Arrow arrays
-        let request_id_array = Arc::new(UInt64Array::from(request_ids)) as ArrayRef;
-        let producer_id_array = Arc::new(Int64Array::from(producer_ids)) as ArrayRef;
-        let topic_name_array = Arc::new(StringArray::from(topic_names)) as ArrayRef;
-        let broker_addr_array = Arc::new(StringArray::from(broker_addrs)) as ArrayRef;
-        let segment_id_array = Arc::new(Int64Array::from(segment_ids)) as ArrayRef;
         let segment_offset_array = Arc::new(Int64Array::from(segment_offsets)) as ArrayRef;
-        let payload_array = Arc::new(BinaryArray::from(
+
+        let payloads: Vec<Vec<u8>> = messages.iter().map(|m| m.payload.clone()).collect();
+        let payload_array = Arc::new(LargeBinaryArray::from(
             payloads
                 .iter()
                 .map(|p| p.as_slice())
                 .collect::<Vec<&[u8]>>(),
         )) as ArrayRef;
+
+        let publish_times: Vec<i64> = messages.iter().map(|m| m.publish_time as i64).collect();
         let publish_time_array =
-            Arc::new(TimestampMillisecondArray::from(publish_times)) as ArrayRef;
+            Arc::new(TimestampMicrosecondArray::from(publish_times)) as ArrayRef;
+
+        let producer_names: Vec<String> =
+            messages.iter().map(|m| m.producer_name.clone()).collect();
         let producer_name_array = Arc::new(StringArray::from(producer_names)) as ArrayRef;
+
+        let subscription_names: Vec<Option<String>> = messages
+            .iter()
+            .map(|m| m.subscription_name.clone())
+            .collect();
         let subscription_name_array = Arc::new(StringArray::from(subscription_names)) as ArrayRef;
 
-        // Create schema
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("request_id", DataType::UInt64, false),
-            Field::new("producer_id", DataType::Int64, false),
-            Field::new("topic_name", DataType::Utf8, false),
-            Field::new("broker_addr", DataType::Utf8, false),
-            Field::new("segment_id", DataType::Int64, false),
-            Field::new("segment_offset", DataType::Int64, false),
-            Field::new("payload", DataType::Binary, false),
-            Field::new(
-                "publish_time",
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                false,
-            ),
-            Field::new("producer_name", DataType::Utf8, false),
-            Field::new("subscription_name", DataType::Utf8, true),
-        ]));
+        // Validate that our arrays match the expected schema types
+        for (i, field) in fields.iter().enumerate() {
+            let expected_type = field.data_type();
+            let actual_type = match i {
+                0 => &DataType::Int64,                                  // request_id
+                1 => &DataType::Int64,                                  // producer_id
+                2 => &DataType::Utf8,                                   // topic_name
+                3 => &DataType::Utf8,                                   // broker_addr
+                4 => &DataType::Int64,                                  // segment_id
+                5 => &DataType::Int64,                                  // segment_offset
+                6 => &DataType::LargeBinary,                            // payload
+                7 => &DataType::Timestamp(TimeUnit::Microsecond, None), // publish_time
+                8 => &DataType::Utf8,                                   // producer_name
+                9 => &DataType::Utf8,                                   // subscription_name
+                _ => {
+                    return Err(IcebergStorageError::Arrow(format!(
+                        "Unexpected field index: {}",
+                        i
+                    )))
+                }
+            };
 
-        // Create record batch
+            if expected_type != actual_type {
+                return Err(IcebergStorageError::Arrow(format!(
+                    "Type mismatch for field '{}': expected {:?}, got {:?}",
+                    field.name(),
+                    expected_type,
+                    actual_type
+                )));
+            }
+        }
+
+        // Create record batch with the proper schema
         let record_batch = RecordBatch::try_new(
-            schema,
+            Arc::new(arrow_schema),
             vec![
                 request_id_array,
                 producer_id_array,

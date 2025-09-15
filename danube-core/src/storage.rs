@@ -202,11 +202,13 @@ pub struct IcebergStorageConfig {
     pub warehouse_path: String,
 
     /// Object store configuration
-    pub object_store_type: String, // "s3", "local", etc.
-    pub bucket_name: Option<String>,
+    pub object_store_type: String, // "s3", "gcs", "local", "memory"
     pub region: Option<String>,
     pub endpoint: Option<String>,
-    pub local_path: Option<String>,
+    pub path_style: Option<bool>,
+    pub profile: Option<String>,
+    pub allow_anonymous: Option<bool>,
+    pub local_path: Option<String>, // For local storage type
 
     /// WAL configuration
     pub wal_path: String,
