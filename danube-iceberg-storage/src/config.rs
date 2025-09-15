@@ -52,22 +52,50 @@ pub enum CatalogConfig {
 pub enum ObjectStoreConfig {
     #[serde(rename = "s3")]
     S3 {
-        /// S3 bucket name
-        bucket: String,
-        /// AWS region
+        /// AWS region (required)
         region: String,
-        /// Optional AWS profile
-        profile: Option<String>,
-        /// Optional endpoint for S3-compatible stores (MinIO)
+        /// Optional endpoint for S3-compatible stores (MinIO, LocalStack)
         endpoint: Option<String>,
         /// Path-style access (for MinIO compatibility)
         #[serde(default)]
         path_style: bool,
+        /// AWS profile name (optional, falls back to default)
+        profile: Option<String>,
+        /// Allow anonymous access (for public buckets)
+        #[serde(default)]
+        allow_anonymous: bool,
+        /// Additional S3 properties (advanced configuration)
+        /// Common keys: s3.access-key-id, s3.secret-access-key, s3.session-token,
+        /// s3.sse.type, s3.sse.key, s3.assume-role.arn, etc.
+        /// Most credentials should come from environment variables or AWS config
+        #[serde(default)]
+        properties: HashMap<String, String>,
+    },
+    #[serde(rename = "gcs")]
+    Gcs {
+        /// Google Cloud project ID (required)
+        project_id: String,
+        /// Optional service endpoint (for testing/emulators)
+        endpoint: Option<String>,
+        /// Allow anonymous access (for public buckets)
+        #[serde(default)]
+        allow_anonymous: bool,
+        /// Additional GCS properties (advanced configuration)
+        /// Common keys: gcs.credentials-json, gcs.token, gcs.user-project,
+        /// gcs.disable-vm-metadata, gcs.disable-config-load, etc.
+        /// Credentials should typically come from environment variables
+        #[serde(default)]
+        properties: HashMap<String, String>,
     },
     #[serde(rename = "local")]
     Local {
-        /// Local filesystem path
+        /// Local filesystem base path
         path: String,
+    },
+    #[serde(rename = "memory")]
+    Memory {
+        /// Optional memory storage identifier (for testing)
+        name: Option<String>,
     },
 }
 
@@ -187,11 +215,17 @@ impl Display for CatalogConfig {
 impl Display for ObjectStoreConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ObjectStoreConfig::S3 { bucket, region, .. } => {
-                write!(f, "S3 ({}/{})", region, bucket)
+            ObjectStoreConfig::S3 { region, .. } => {
+                write!(f, "S3 ({})", region)
+            }
+            ObjectStoreConfig::Gcs { project_id, .. } => {
+                write!(f, "GCS ({})", project_id)
             }
             ObjectStoreConfig::Local { path } => {
                 write!(f, "Local ({})", path)
+            }
+            ObjectStoreConfig::Memory { name } => {
+                write!(f, "Memory ({:?})", name)
             }
         }
     }

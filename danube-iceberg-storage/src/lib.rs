@@ -13,6 +13,10 @@ pub mod iceberg_storage;
 pub mod topic_reader;
 pub mod topic_writer;
 pub mod wal;
+pub mod warehouse;
+
+#[cfg(test)]
+mod iceberg_storage_test;
 
 pub use catalog::{create_catalog, create_danube_schema};
 pub use config::IcebergConfig;

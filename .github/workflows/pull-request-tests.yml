@@ -138,6 +138,7 @@ jobs:
           cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
+          cargo test --lib -p danube-iceberg-storage
 
       - name: Stop and remove broker1
         run: |
