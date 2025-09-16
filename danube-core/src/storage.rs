@@ -37,12 +37,13 @@ pub trait PersistentStorage: Send + Sync + std::fmt::Debug + 'static {
         messages: Vec<StreamMessage>,
     ) -> Result<(), PersistentStorageError>;
 
-    /// Create a message stream for consuming from a topic
-    /// Returns a receiver that streams messages from the persistent storage
-    async fn create_message_stream(
+    /// Create a subscription-scoped message stream for consuming from a topic
+    /// Returns a receiver that streams messages for the given subscription
+    async fn create_subscription_stream(
         &self,
+        namespace: &str,
         topic_name: &str,
-        start_position: Option<u64>,
+        subscription: &str,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamMessage>, PersistentStorageError>;
 
     /// Get the current write position for a topic

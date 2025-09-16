@@ -8,6 +8,7 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError};
 use danube_metadata_store::MetadataStore; // bring trait into scope for get/put
 use danube_metadata_store::{MetaOptions, MetadataStorage};
+use futures::StreamExt;
 use iceberg::{Catalog as IcebergCatalog, NamespaceIdent, TableIdent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
 /// IcebergStorage implements persistent storage using Apache Iceberg
@@ -36,6 +38,10 @@ pub struct IcebergStorage {
         Arc<tokio::sync::RwLock<HashMap<String, tokio::sync::broadcast::Sender<StreamMessage>>>>,
     /// Optional metadata store for subscription progress (etcd or memory)
     metadata_store: Option<MetadataStorage>,
+    /// Buffered per-subscription cursors to flush periodically to metadata store
+    progress_buffer: Arc<RwLock<std::collections::HashMap<String, SubscriptionProgress>>>,
+    /// Background task handle for periodic cursor flushing
+    progress_flush_task: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl IcebergStorage {
@@ -50,7 +56,7 @@ impl IcebergStorage {
         // Create Write-Ahead Log
         let wal = Arc::new(WriteAheadLog::new(&config.wal).await?);
 
-        Ok(Self {
+        let storage = Self {
             config,
             wal,
             catalog,
@@ -67,7 +73,47 @@ impl IcebergStorage {
                 },
                 Err(_) => None,
             },
-        })
+            progress_buffer: Arc::new(RwLock::new(HashMap::new())),
+            progress_flush_task: Arc::new(RwLock::new(None)),
+        };
+
+        // Start periodic progress flusher if metadata store is enabled
+        if storage.metadata_store.is_some() {
+            let buffer = storage.progress_buffer.clone();
+            let store = storage.metadata_store.clone();
+            let flush_every_ms: u64 = std::env::var("DANUBE_SUB_CURSOR_FLUSH_MS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(10_000);
+            let handle = tokio::spawn(async move {
+                let mut ticker = interval(Duration::from_millis(flush_every_ms));
+                loop {
+                    ticker.tick().await;
+                    // If metadata store went away, skip
+                    let Some(store) = &store else { continue };
+                    // Snapshot current buffer to reduce lock time
+                    let snapshot: Vec<(String, SubscriptionProgress)> = {
+                        let guard = buffer.read().await;
+                        guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                    };
+                    for (key, progress) in snapshot {
+                        if let Err(e) = store
+                            .put(
+                                &key,
+                                serde_json::to_value(&progress).unwrap_or_default(),
+                                MetaOptions::None,
+                            )
+                            .await
+                        {
+                            warn!(key = %key, error = %e, "Failed to flush subscription cursor to metadata store");
+                        }
+                    }
+                }
+            });
+            *storage.progress_flush_task.write().await = Some(handle);
+        }
+
+        Ok(storage)
     }
 
     /// Start background tasks for a topic
@@ -174,6 +220,7 @@ impl IcebergStorage {
         file_path: Option<String>,
         offset_in_file: Option<u64>,
     ) {
+        // Immediate write (legacy behavior) retained for compatibility
         if let Some(store) = &self.metadata_store {
             let key = self.subscription_progress_path(namespace, topic, subscription);
             let value = json!({
@@ -186,6 +233,37 @@ impl IcebergStorage {
                 warn!(key = %key, error = %e, "Failed to persist subscription progress");
             }
         }
+        // Also stage into buffered cursor for periodic flushes
+        self.update_subscription_cursor(
+            namespace,
+            topic,
+            subscription,
+            snapshot_id,
+            file_path,
+            offset_in_file,
+        )
+        .await;
+    }
+
+    /// Update in-memory cursor for a subscription; periodically flushed to etcd by background task
+    pub async fn update_subscription_cursor(
+        &self,
+        namespace: &str,
+        topic: &str,
+        subscription: &str,
+        snapshot_id: i64,
+        file_path: Option<String>,
+        offset_in_file: Option<u64>,
+    ) {
+        let key = self.subscription_progress_path(namespace, topic, subscription);
+        let progress = SubscriptionProgress {
+            snapshot_id,
+            file_path,
+            offset_in_file,
+            updated_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        let mut guard = self.progress_buffer.write().await;
+        guard.insert(key, progress);
     }
 
     /// Fetch a subscription's last processed position from metadata store (if configured)
@@ -204,6 +282,106 @@ impl IcebergStorage {
         } else {
             None
         }
+    }
+
+    /// Create a message stream seeded from a stored subscription cursor in etcd.
+    /// This performs a one-off backfill from the recorded snapshot (and file/offset when supported),
+    /// then attaches to the live broadcast for ongoing messages.
+    pub async fn create_subscription_stream(
+        &self,
+        namespace: &str,
+        topic_name: &str,
+        subscription: &str,
+    ) -> std::result::Result<tokio::sync::mpsc::Receiver<StreamMessage>, PersistentStorageError>
+    {
+        // Ensure background tasks for the topic are running
+        self.start_topic_tasks(topic_name)
+            .await
+            .map_err(|e| PersistentStorageError::Wal(e.to_string()))?;
+
+        // Prepare output channel
+        let (tx, rx) = mpsc::channel(1024);
+
+        // Fetch stored cursor (if any)
+        let cursor = self
+            .get_subscription_progress(namespace, topic_name, subscription)
+            .await;
+
+        // Clone handles for async task
+        let topic = topic_name.to_string();
+        let catalog = self.catalog.clone();
+
+        // Backfill task: read from snapshot_id if present, then attach to live broadcast
+        let sender_guard = self.message_senders.read().await;
+        let broadcaster = sender_guard
+            .get(topic_name)
+            .ok_or_else(|| {
+                PersistentStorageError::Wal(format!("Topic {} not initialized", topic_name))
+            })?
+            .clone();
+        drop(sender_guard);
+
+        tokio::spawn(async move {
+            // Backfill from snapshot if we have a cursor
+            if let Some(progress) = cursor {
+                if let Some(snapshot_id) = Some(progress.snapshot_id).filter(|id| *id > 0) {
+                    // Load table and plan tasks for the specific snapshot
+                    let ident = match TableIdent::from_strs(["danube", &topic]) {
+                        Ok(i) => i,
+                        Err(_) => {
+                            // If ident fails, skip backfill and continue to live
+                            let mut brx = broadcaster.subscribe();
+                            while let Ok(msg) = brx.recv().await {
+                                if tx.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+                    };
+
+                    if let Ok(table) = catalog.load_table(&ident).await {
+                        let reader = table.reader_builder().build();
+                        if let Ok(scan) = table.scan().select_all().snapshot_id(snapshot_id).build()
+                        {
+                            if let Ok(tasks) = scan.plan_files().await {
+                                if let Ok(mut batch_stream) = reader.read(tasks).await {
+                                    while let Some(batch_res) = batch_stream.next().await {
+                                        match batch_res {
+                                            Ok(batch) => {
+                                                match TopicReader::record_batch_to_messages(
+                                                    &batch, &topic,
+                                                ) {
+                                                    Ok(mut msgs) => {
+                                                        for msg in msgs.drain(..) {
+                                                            if tx.send(msg).await.is_err() {
+                                                                return;
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(_) => { /* skip on decode error */ }
+                                                }
+                                            }
+                                            Err(_) => { /* skip on read error */ }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Attach to live broadcast
+            let mut brx = broadcaster.subscribe();
+            while let Ok(msg) = brx.recv().await {
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 
@@ -230,42 +408,15 @@ impl PersistentStorage for IcebergStorage {
         Ok(())
     }
 
-    async fn create_message_stream(
+    async fn create_subscription_stream(
         &self,
+        namespace: &str,
         topic_name: &str,
-        _start_position: Option<u64>,
+        subscription: &str,
     ) -> std::result::Result<tokio::sync::mpsc::Receiver<StreamMessage>, PersistentStorageError>
     {
-        self.start_topic_tasks(topic_name)
+        self.create_subscription_stream(namespace, topic_name, subscription)
             .await
-            .map_err(|e| PersistentStorageError::Wal(e.to_string()))?;
-
-        // Subscribe to the topic broadcast and bridge into an mpsc receiver for the caller
-        let sender_guard = self.message_senders.read().await;
-        let broadcaster = sender_guard
-            .get(topic_name)
-            .ok_or_else(|| {
-                PersistentStorageError::Wal(format!("Topic {} not initialized", topic_name))
-            })?
-            .clone();
-        drop(sender_guard);
-
-        let mut broadcast_rx = broadcaster.subscribe();
-        let (tx, rx) = mpsc::channel(1024);
-
-        // Spawn a forwarder task to translate broadcast to per-subscriber mpsc
-        let topic = topic_name.to_string();
-        tokio::spawn(async move {
-            while let Ok(msg) = broadcast_rx.recv().await {
-                if tx.send(msg).await.is_err() {
-                    // subscriber dropped; stop forwarding
-                    break;
-                }
-            }
-            info!(topic = %topic, "Broadcast->mpsc forwarder exited");
-        });
-
-        Ok(rx)
     }
 
     async fn get_write_position(
@@ -368,6 +519,11 @@ impl PersistentStorage for IcebergStorage {
             .shutdown()
             .await
             .map_err(|e| PersistentStorageError::Wal(e.to_string()))?;
+
+        // Stop progress flusher
+        if let Some(handle) = self.progress_flush_task.write().await.take() {
+            handle.abort();
+        }
 
         info!("IcebergStorage shutdown complete");
 

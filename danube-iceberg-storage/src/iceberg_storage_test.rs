@@ -230,7 +230,7 @@ async fn test_iceberg_storage_happy_path() {
 
     // Step 3: Create message stream and verify TopicReader streams messages
     let mut message_receiver = storage
-        .create_message_stream(topic_name, Some(0))
+        .create_subscription_stream("danube", topic_name, "test-sub")
         .await
         .expect("Failed to create message stream");
 
@@ -400,7 +400,7 @@ async fn test_iceberg_storage_multiple_topics() {
     // Verify each topic can be read independently
     for topic in &topics {
         let mut receiver = storage
-            .create_message_stream(topic, Some(0))
+            .create_subscription_stream("danube", topic, "test-sub")
             .await
             .expect("Failed to create stream");
         let mut count = 0;
@@ -489,7 +489,7 @@ async fn test_iceberg_storage_resume_from_position() {
 
     // Read from position 5
     let mut receiver = storage
-        .create_message_stream(topic_name, Some(5))
+        .create_subscription_stream("danube", topic_name, "test-sub")
         .await
         .expect("Failed to create stream");
     let mut received_count = 0;

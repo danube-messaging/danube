@@ -184,7 +184,7 @@ impl TopicReader {
     }
 
     /// Convert Arrow RecordBatch to StreamMessage vector for the Danube schema
-    fn record_batch_to_messages(
+    pub(crate) fn record_batch_to_messages(
         batch: &RecordBatch,
         default_topic: &str,
     ) -> Result<Vec<StreamMessage>> {
