@@ -7,65 +7,87 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
 - [~] In progress
 - [x] Done
 
-## Milestones (Phases)
-- [ ] Phase A: Introduce WAL alongside existing storage (hot path uses WAL + TopicStore::create_reader stream)
-  - Outcome: Sub-second dispatch via local WAL and WALCache; legacy segment code remains compiled but unused by default.
-- [ ] Phase B: Cloud uploader via `opendal` (S3/GCS/fs/memory) with ETCD metadata
-  - Outcome: Batches from WAL are persisted to cloud; recovery/leader resume verified.
-- [ ] Phase C: Historical reads via CloudReader behind TopicStore
-  - Outcome: Catch-up consumers read beyond WAL retention seamlessly; TopicCache acts as thin shim over WALCache or is removed.
-- [ ] Phase D: Remove remote GRPC storage and finalize configuration/docs
-  - Outcome: `managed_storage.rs` removed; segment-based code paths deprecated; new storage is default.
+## Phased Implementation Plan
 
-## Immediate Next Steps (Actionable)
-- [ ] Refactor existing crate: `danube-persistent-storage` to host the new design and opendal integration:
-   - [ ] `Wal`: append, fsync batching, rotation, checkpoints, CRC; async tail reader; integrated `WALCache`
-   - [ ] `Uploader`: 10s/size-triggered batching; multipart upload; ETCD txn updates; retries; session resume/abort
-   - [ ] `CloudStore`: `opendal` Operator factory for `s3`/`gcs`/`fs`/`memory`
-   - [ ] `CloudReader`: ranged reads guided by ETCD manifest
-   - [ ] `EtcdMetadata`: schemas, CAS ops, leases/locks for leader-only uploads and ownership
-- [ ] Update `danube-core/src/storage.rs` with WAL-capable trait (`PersistentStorage`) and adapter for current `StorageBackend`
-- [ ] Wire `danube-reliable-dispatch/src/topic_storage.rs` to use WAL for append/tail read and expose `create_reader` as async Stream
-- [ ] Deprecate/remove segment-based code paths in `danube-reliable-dispatch/src/dispatch.rs`; replace with offset-based `TopicStream`
-- [ ] Migrate `danube-reliable-dispatch/src/topic_cache.rs` to a thin adapter to `WALCache` (or remove if feasible)
-- [ ] Add configuration surface in `config/danube_broker.yml` with `opendal` backends (s3/gcs/fs/memory)
-- [ ] Add metrics (WAL latency, upload stats, ETCD latency, consumer lag)
-- [ ] Write docs/readme for new storage and migration notes
+- [ ] Phase A: WAL + TopicStore streaming hot path
+  - Objectives:
+    - Introduce per-topic `WAL` with integrated `WALCache` for sub-ms appends and tail reads.
+    - Expose `TopicStore::create_reader(topic, start: StartPosition)` returning an async stream; dispatch consumes `TopicStream` (no segments on hot path).
+    - Implement `StartPosition` enum: `Latest` | `Offset(u64)`; `SubscriptionDispatch` selects start, `TopicStore` materializes it.
+  - Scope & Tasks:
+    - [ ] danube-core: Define `PersistentStorage` trait (append/create_reader/ack_checkpoint/flush) and temporary adapter for legacy `StorageBackend`.
+    - [ ] danube-reliable-dispatch: Introduce `StartPosition` and update callsites to use `create_reader(topic, start)`.
+    - [ ] danube-persistent-storage: Implement `WAL` (append, fsync batching, rotation, checkpoints, CRC32C) and `WALCache` (ring buffer, eviction).
+    - [ ] danube-reliable-dispatch: Wire `topic_storage.rs` to use WAL for append and tail; `dispatch.rs` consumes `TopicStream` and tracks offsets.
+    - [ ] Optional: Make `topic_cache.rs` a thin shim over `WALCache` or deprecate it if redundant.
+    - [ ] Metrics: wal.append_latency_ms, wal.fsync_latency_ms, walcache.hit_ratio.
+  - Exit Criteria:
+    - [ ] Producers publish -> offsets returned from WAL.
+    - [ ] Consumers read from `TopicStore::create_reader(topic, start)` backed by WAL tail with stable latency.
+    - [ ] Segment-based code still compiles but is not on the hot path.
 
-## Work Breakdown by Crate/Module
-- danube-core
-  - [ ] Define `PersistentStorage` trait (append/create_reader/ack_checkpoint/flush) and use it as the sole storage interface
-  - [ ] Deprecate `StorageBackend` and provide a temporary compatibility adapter for legacy callers
-  - [ ] Remove `StorageBackend` usages once migration is complete
-- danube-reliable-dispatch
-  - [ ] Switch hot path to WAL append
-  - [ ] Replace segment-based consumption with offset-based `TopicStream` in `dispatch.rs`
-  - [ ] `topic_storage.rs` exposes async Stream via `create_reader`; optional historical fetch via `CloudReader`
-  - [ ] `topic_cache.rs` shims to `WALCache` or is removed
-- danube-persistent-storage
-  - [ ] Refactor to implement (`WAL` + `WALCache` + `Uploader` + `CloudStore` + `CloudReader` + `EtcdMetadata`) within this crate.
-  - [ ] Remove `managed_storage.rs`.
-- Config and docs
-  - [ ] Add new storage config examples and migration notes.
+- [ ] Phase B: Background Uploader + ETCD manifests (S3/GCS/fs/memory via opendal)
+  - Objectives:
+    - Persist batched WAL entries to rolling cloud objects using `opendal`.
+    - Maintain object manifest and upload session metadata in ETCD with leader-only ownership.
+    - Adopt key-per-object manifest schema with zero-padded `start_offset` to avoid large ETCD values.
+  - Scope & Tasks:
+    - [ ] danube-persistent-storage: `CloudStore` (opendal operator factory for s3/gcs/fs/memory).
+    - [ ] danube-persistent-storage: `Uploader` (timer/size triggers; multipart; retries; throttling; checksums).
+    - [ ] danube-persistent-storage: `EtcdMetadata` using key-per-object paths: `/storage/topics/{ns}/{topic}/objects/{start_offset_padded}`; optional `/objects/cur` pointer.
+    - [ ] Write WAL `CheckpointEntry` with last committed offset and session info; recovery scan/truncate to last valid entry.
+    - [ ] Config: Add `storage.mode: wal_cloud`, WAL/uploader/cloud settings to `config/danube_broker.yml`.
+    - [ ] Metrics: upload.batch_bytes, upload.latency_ms, manifest.txn_latency_ms, session.resume/abort.
+  - Exit Criteria:
+    - [ ] Batches uploaded to cloud with rolling objects and ETCD per-object descriptors updated via CAS.
+    - [ ] Crash/restart resumes or rotates MPU safely using ETCD `/upload/session` and WAL checkpoint.
 
-## ETCD Keys and Transactions
-- [ ] Implement key layout under `/danube/storage/...` and `/danube/subscriptions/...`
-- [ ] Implement CAS operations for manifest advancement and subscription progress
-- [ ] Implement lease/lock mechanism for single-writer uploads per topic
+- [ ] Phase C: CloudReader for historical catch-up behind TopicStore + ChainingStream handoff
+  - Objectives:
+    - Support consumers starting behind the WAL retention window to read historical data from cloud and then switch to WAL tail seamlessly.
+    - Implement `ChainingStream` adapter for transparent Cloud→WAL handoff without gaps or duplicates.
+  - Scope & Tasks:
+    - [ ] danube-persistent-storage: `CloudReader` (prefix/range scans of `/objects/` keys ordered by zero-padded `start_offset`; integrity checks using ETag/CRC when available).
+    - [ ] danube-reliable-dispatch: `TopicStore::create_reader` to return `ChainingStream` that computes watermark H and switches to WAL at `H`.
+    - [ ] Optional: finalize deprecation of `topic_cache.rs` if fully superseded by `WALCache`.
+    - [ ] Metrics: consumer lag, cloud read latency/bytes.
+  - Exit Criteria:
+    - [ ] A consumer starting before WAL retention can fully catch up using cloud objects and then tail from WAL without manual intervention; ordering and at-least-once guarantees preserved.
 
-## Testing & Benchmarks
-- [ ] Unit tests: WAL (append/read/rotate/checkpoint/CRC)
-- [ ] Integration tests: `opendal` memory and fs backends
-- [ ] E2E tests: S3 and GCS behind feature flags
-- [ ] Failure injection: cloud outages, WAL corruption, unclean shutdown, leader change
-- [ ] Benchmarks: publish latency, throughput, upload BW, consumer catch-up time
+- [ ] Phase D: Integration polish, configuration, and legacy removal
+  - Objectives:
+    - Make the new storage the default path; remove deprecated remote GRPC storage and segment-based code paths.
+    - Finalize configuration with WAL retention-floor knobs.
+  - Scope & Tasks:
+    - [ ] Remove `managed_storage.rs` (remote GRPC) and related configuration.
+    - [ ] Deprecate/remove segment APIs and usages in `dispatch.rs` and related modules.
+    - [ ] Configuration: ensure presence of WAL retention floor knobs:
+      - `wal.retention.min_minutes`, `wal.retention.min_bytes`, `wal.retention.active_subscription_grace_seconds`.
+    - [ ] Observability: dashboards/alerts for WAL growth, uploader lag, split-brain guardrails.
+    - [ ] Documentation: update samples and runbooks to reflect StartPosition API, key-per-object manifest, and ChainingStream handoff.
+  - Exit Criteria:
+    - [ ] Broker runs with `wal_cloud` as default; legacy storage removed from production builds.
+    - [ ] Documentation updated; samples and README reflect the new architecture.
 
-## Risks and Mitigations
-- [ ] MPU/session expiration: rotate to new object; track in ETCD; resume on restart
-- [ ] WAL growth under outage: enforce retention floors sized to outage budget; pressure metrics/alerts
-- [ ] Split-brain uploads: ETCD lease/lock and broker epoch checks
-- [ ] Strict single-file-per-topic requirement: consider compose/multipart-copy strategy if needed
+- [ ] Phase E: Testing, benchmarks, and hardening
+  - Objectives:
+    - Validate correctness, performance, and resilience across backends and failure modes.
+  - Scope & Tasks:
+    - [ ] Unit tests: WAL append/read/rotate/checkpoint/CRC; uploader session lifecycle; CloudReader range reads; ChainingStream watermark selection and duplicate defense.
+    - [ ] Integration: opendal `memory` and `fs` backends; feature-flag E2E for S3 and GCS.
+    - [ ] Failure injection: cloud outages, WAL corruption, unclean shutdown, leader change/rebalance, inactive subscription scenarios (retention-floor behavior).
+    - [ ] Benchmarks: publish latency/throughput, upload bandwidth, consumer catch-up time; enforce retention/outage budgets.
+  - Exit Criteria:
+    - [ ] CI green across unit/integration suites; baseline performance targets met; failure scenarios recover automatically.
+
+## ETCD Keys & Transactions (reference)
+- [ ] Implement key-per-object layout under `/storage/topics/{ns}/{topic}/objects/{start_offset_padded}` and optional `/objects/cur` pointer.
+- [ ] Implement CAS operations on the per-object descriptor to advance `end_offset` and commit parts.
+- [ ] Implement lease/lock mechanism for single-writer uploads per topic; include broker epoch/lease in compare-and-swap.
+- [ ] CloudReader: prefix/range scans over zero-padded keys, with pagination where necessary.
 
 ## Decision Log
-- [ ] Phase 1 uses rolling objects per topic with offset ranges to simplify MPU handling and recovery
-- [ ] WAL retention targets: configurable minutes/bytes to absorb outages
+- [ ] Phase A uses rolling objects per topic with offset ranges to simplify MPU handling and recovery.
+- [ ] WAL retention targets: configurable minutes/bytes to absorb outages and bound disk growth; inactive subs catch up from cloud.
+- [ ] Subscription start policy: `SubscriptionDispatch` selects `StartPosition::{Latest, Offset(S)}`; `TopicStore` materializes the requested stream.
+- [ ] Cloud→WAL handoff via `ChainingStream` with watermark `H = max(W0, Oend+1)`.

@@ -6,8 +6,8 @@
 
 ## Goals
 - Replace segment-based storage with a WAL-first architecture.
-- Persist data to cloud object storage using `opendal` (S3 or GCS). Local disk only for single-broker, Memory for tests.
-- Maintain subscription progress and object metadata in ETCD (already in use for cluster coordination).
+- Persist data to cloud object storage using `opendal` (S3, GCS and local disk for single-broker). Memory for tests.
+- Maintain subscription progress and object metadata in ETCD (ETCD is already in use for cluster coordination).
 - Keep dispatch path sub-second by serving from in-memory/WAL cache.
 - Batch uploads every ~10 seconds (tunable) from WAL to per-topic objects in cloud.
 - Deprecate remote GRPC storage (`managed_storage.rs`).
@@ -42,9 +42,12 @@
 Key components:
 - SubscriptionDispatch (per-subscription):
   - Coordinates delivery, flow control, retries; consumes an async `TopicStream`.
+  - Chooses the start position for each subscription:
+    - New subscription: start at the latest WAL offset (tail) to receive only recent messages.
+    - Existing subscription: resume from the last committed offset recorded in ETCD (At-Least-Once semantics).
   - No direct storage or ETCD writes; emits delivery events to `ProgressUpdater`.
 - TopicStore (per-topic facade):
-  - Provides append and `create_reader(from_offset) -> TopicStream`.
+  - Provides append and `create_reader(start: StartPosition) -> TopicStream`.
   - Hides source selection (WAL tail vs CloudReader) and uses hot cache transparently.
 - WAL with WALCache (per-topic):
   - Durable append-only log on local disk for sub-ms writes.
@@ -63,7 +66,7 @@ Key components:
 - ETCD Metadata:
   - Object manifests/upload session and per-subscription progress; leader changes and recovery.
 - Reader Path:
-  - `TopicStore::create_reader(from_offset)` returns an async Stream.
+  - `TopicStore::create_reader(topic, start)` returns an async Stream.
   - Yields from WAL tail (via WALCache) when within retention; otherwise uses CloudReader to catch up, then switches to WAL.
 - Backends Selection:
   - All cloud/local backends via `opendal` Operator: `s3`, `gcs`, and `fs` (local filesystem).
@@ -77,12 +80,17 @@ Key components:
 ### TopicStore::create_reader
 - Returns an async stream of messages with backpressure, abstracting WAL tail vs CloudReader.
 - Suggested Rust signature:
-  - `fn create_reader(&self, topic: &TopicRef, from_offset: u64) -> Result<Pin<Box<dyn futures_core::Stream<Item = Result<StreamMessage>> + Send>>>`
+  - `fn create_reader(&self, topic: &TopicRef, start: StartPosition) -> Result<TopicStream>` where `StartPosition` is:
+    ```rust
+    enum StartPosition { Latest, Offset(u64) }
+    ```
   - Alternatively, return a concrete `TopicStream` type that implements `Stream<Item = Result<StreamMessage>>`.
 - Semantics:
-  - Start at `from_offset`.
+  - Start at `start` (latest or a concrete offset).
   - Yield from WAL tail when within retention; if behind retention, fetch historical ranges via CloudReader using ETCD manifest, then switch to WAL when caught up.
   - Backpressure via bounded internal queues; stream only yields when polled.
+- ChainingStream adapter:
+  - `TopicStore::create_reader` returns a stateful adapter ("ChainingStream") that first polls from `CloudReader` and, once exhausted up to a computed watermark, seamlessly switches to polling the WAL tailing stream. The handoff is transparent to callers and guarantees in-order, no-duplication delivery across the boundary.
 
 ### WAL and WALCache
 - Integrate a hot in-memory ring buffer (WALCache) inside WAL implementation to minimize disk reads and simplify caching.
@@ -99,7 +107,7 @@ Key components:
 - Performs ranged reads of historical objects via `opendal`, guided by ETCD manifest.
 - Streams messages back to `TopicStore` which feeds the unified `TopicStream`.
 
-### ETCD Write Ownership (Option A confirmed)
+### ETCD Write Ownership
 - `BackgroundUploader` owns object manifest and session updates.
 - `ProgressUpdater` owns subscription progress updates with time/delta-based flushing.
 - Both guarded by ETCD lease/lock for leader-only writes.
@@ -107,7 +115,7 @@ Key components:
 ### Suggested Minimal Interfaces
 - TopicStore:
   - `fn append(&self, topic: &TopicRef, msg: StreamMessage) -> Result<u64>`
-  - `fn create_reader(&self, topic: &TopicRef, from_offset: u64) -> Result<TopicStream>`
+  - `fn create_reader(&self, topic: &TopicRef, start: StartPosition) -> Result<TopicStream>`
 - TopicStream:
   - Implements `Stream<Item = Result<StreamMessage>>`
 - WAL:
@@ -149,10 +157,13 @@ Key components:
   - `ProgressUpdater` (per-topic/group, in `danube-reliable-dispatch`): rate-limited ETCD writer for subscription progress.
 
 - Flow per subscription:
-  1) On start/rebalance, read last flushed progress from ETCD key `/danube/subscriptions/{tenant}/{ns}/{topic}/{sub}/progress` to get start offset S.
-  2) Call `TopicStore::create_reader(topic, S)`:
-     - If S within WAL tail window: return WAL-backed tailing stream (fast path).
-     - Else: resolve S.. via ETCD object manifest `/danube/storage/topics/{...}/objects/list`, fetch with `CloudReader`, fill `TopicCache`, stream to dispatch, then switch to WAL when caught up.
+  1) SubscriptionDispatch determines the start position:
+     - New subscription: `StartPosition::Latest` (begin at current WAL tail; no historical replay).
+     - Existing subscription: read last flushed progress from ETCD key `/danube/subscriptions/{tenant}/{ns}/{topic}/{sub}/progress` to get start offset `S`, using At-Least-Once semantics (resume at the next undelivered offset).
+  2) Call `TopicStore::create_reader(topic, start)`:
+     - If `start` is `Latest`: return WAL-backed tailing stream immediately (fast path; no CloudReader).
+     - If `start` is `Offset(S)` and S within WAL tail window: return WAL-backed tailing stream (fast path).
+     - Else (including when S falls before the retention floor due to inactivity): resolve `S..` by prefix/range scanning ETCD object descriptors under `/danube/storage/topics/{...}/objects/` (key-per-object, ordered by zero-padded `start_offset`), fetch with `CloudReader`, fill `TopicCache`, stream to dispatch, then switch to WAL when caught up via the ChainingStream adapter.
   3) `SubscriptionDispatch` delivers messages, and on delivery events enqueues `ProgressUpdater.record(sub, offset)` (no immediate ETCD write).
   4) `ProgressUpdater` flushes on timer/delta (e.g., every 5–10s or ≥N messages/bytes) using ETCD CAS to update progress.
   5) Slow subscriptions may trigger more `CloudReader` fetches; fast ones stay on WAL tail. Isolation is maintained per subscription.
@@ -166,11 +177,11 @@ Key components:
   1) Producer publish -> broker -> `TopicStore.append` -> `WAL.append` returns offset.
   2) Periodically (e.g., 10s) or on size threshold, `BackgroundUploader` reads new WAL entries, batches, uploads rolling objects (S3/GCS multipart).
   3) On success, ETCD updates (CAS):
-     - `/danube/storage/topics/{...}/objects/list` entries {object_id, start_offset, end_offset, etag, completed}
+     - `/danube/storage/topics/{...}/objects/{start_offset_padded}` -> object descriptor JSON {object_id, start_offset, end_offset, etag, completed, ...}
      - `/danube/storage/topics/{...}/upload/session` state transitions
   4) Write WAL checkpoint with last committed offset; prune old WAL once all subscription progress > segment end and objects committed.
 
-### ETCD Write Ownership (Option A: chosen)
+### ETCD Write Ownership
 - Separation of concerns to avoid overloading ETCD and to isolate failures:
   - `BackgroundUploader`: owns object manifest/session updates only.
   - `ProgressUpdater`: owns subscription progress updates only, with rate limiting.
@@ -204,8 +215,14 @@ storage:
     dir: /var/lib/danube/wal
     fsync_interval_ms: 5
     retention:
+      # Retention floor to bound disk growth even if some subscriptions stall.
+      # Segments can be pruned only if (1) uploaded+committed to ETCD, (2) all ACTIVE subs advanced past them,
+      # and (3) they are older than min_minutes (and overall WAL size above min_bytes when applicable).
       min_minutes: 60
       min_bytes: 107374182400   # 100 GiB
+      # A subscription is considered ACTIVE if it has progressed or heartbeated within this grace window.
+      # Subscriptions inactive beyond this window do not block pruning and will catch up from cloud on resume.
+      active_subscription_grace_seconds: 300
   uploader:
     interval_seconds: 10
     max_batch_bytes: 8388608    # 8 MiB
@@ -223,20 +240,20 @@ storage:
     gcs:
       bucket: my-bucket
       credential_file: ${GOOGLE_APPLICATION_CREDENTIALS}
-  etcd:
-    endpoints:
-      - http://127.0.0.1:2379
-    namespace: /danube
 ```
 
 `opendal` Operator construction will map from `cloud` config to appropriate scheme and options.
+
+- Retention knobs:
+  - `wal.retention.min_minutes`, `wal.retention.min_bytes` define the floor that bounds local disk growth even if a subscription is stalled.
+  - `wal.retention.active_subscription_grace_seconds` defines the inactivity window for classifying a subscription as active for pruning decisions. Inactive subs will transparently catch up via `CloudReader` when they resume.
 
 ---
 
 ## Dispatch Path Changes
 - `danube-reliable-dispatch/src/topic_storage.rs` updated to:
   - Append to WAL for new messages.
-  - Expose `create_reader(from_offset)` returning an async Stream that sources WAL tail vs CloudReader transparently.
+  - Expose `create_reader(start: StartPosition)` returning an async Stream that sources WAL tail vs CloudReader transparently.
 - `topic_cache.rs` becomes a thin shim over WALCache (or is deprecated).
 - `dispatch.rs` refactored to remove Segment usage; consume `TopicStream` and track offsets.
 - Delivery latency improves since no remote GRPC write is in hot path.
@@ -244,7 +261,7 @@ storage:
 ---
 
 ## Data and File Model
-- Per-topic object key namespace: `topics/{tenant}/{namespace}/{topic}/data`.
+- Per-topic object key namespace: `persistent/{namespace}/{topic}/data`.
 - Phase 1 options:
   1) Single logical object per topic with ongoing multipart upload (MPU) and periodic `CompleteMultipartUpload` for committed parts; on rotation create a new object with a monotonically increasing suffix.
   2) Rolling objects per topic (e.g., N-minute or size-based shards): `.../data-<epoch>-<start_offset>-<end_offset>.parquet` or `.bin`.
@@ -261,7 +278,7 @@ Trade-offs:
 ---
 
 ## WAL Design
-- Per-topic WAL on local disk, directory: `wal/{tenant}/{namespace}/{topic}/`. Files: `wal.log`, with rotation: `wal.log.<seq>`.
+- Per-topic WAL on local disk, directory: `danube/{namespace}/{topic}/`. Files: `wal.log`, with rotation: `wal.log.<seq>`.
 - WAL Entry types:
   - MessageEntry { offset, timestamp, key, headers, payload, crc }
   - CheckpointEntry { last_committed_offset, upload_session_id, crc }
@@ -271,8 +288,13 @@ Trade-offs:
 - Reader:
   - Supports tailing and replay from offset.
   - Exposes async stream to dispatch.
-- Retention:
-  - Keep at least X minutes/GB in WAL to absorb cloud delays and enable fast catch-up. Older segments pruned once all subscriptions progress > segment end and cloud upload committed.
+- Retention and pruning:
+  - Maintain time/size-based retention floors to bound disk growth: `wal.retention.min_minutes`, `wal.retention.min_bytes`.
+  - A WAL segment is eligible for pruning only when ALL of the following hold:
+    1) It has been successfully uploaded to cloud and committed in ETCD manifest.
+    2) All active subscriptions have progressed beyond the segment end offset (inactive/stale subscriptions do not block pruning).
+    3) The segment age exceeds the configured retention floor (min_minutes) and, where applicable, overall WAL size is above `min_bytes` thresholds.
+  - Inactive subscriptions that resume after the retention window will transparently read historical data from cloud via `CloudReader`.
 
 - Writer model and ordering:
   - Single-writer per topic; appends are strictly ordered.
@@ -294,7 +316,7 @@ Trade-offs:
 
 - WALCache integration:
   - In-memory ring buffer capacity by bytes/time; tail reader prefers cache and falls back to tail files.
-  - Evict ranges only after upload commit and sufficient subscriber advancement.
+  - Evict ranges only after upload commit and after active subscribers have advanced beyond the range, and in alignment with the retention floor policy above.
 
 - Concurrency and backpressure:
   - Append path non-blocking until cache/queue limits; then apply backpressure or reject per policy.
@@ -313,13 +335,32 @@ References:
 
 ---
 
+## ChainingStream (Cloud → WAL handoff)
+- Purpose: Provide a single continuous `Stream<Item = Result<StreamMessage>>` that first sources from `CloudReader` and then from the WAL tail without gaps or duplicates.
+- Watermark (handoff point):
+  - Compute `H` when the reader is initialized or when CloudReader scan begins:
+    - Let `W0` be the minimum offset currently available in WAL (i.e., first non-pruned WAL offset).
+    - Let `Oend` be the end_offset of the last COMPLETED cloud object covering the requested range.
+    - Set `H = max(W0, Oend + 1)`. CloudReader emits messages in `[S, H-1]`. WAL tail starts at `H`.
+  - If there is an active rolling (incomplete) object overlapping `W0`, prefer `H = W0` to avoid racing partial reads; remaining data is read from WAL.
+- Operation:
+  - Phase 1: Poll `CloudReader` until it returns `None` (i.e., delivered up to `H-1`). The adapter tracks the last delivered offset `L`.
+  - Phase 2: Switch to WAL tail with `from_offset = max(H, L+1)`. Since offsets are monotonic and contiguous, no duplication occurs.
+  - Concurrency: Producers may continue appending to WAL; the WAL tailing stream naturally carries on from `H`.
+- Idempotence and ordering:
+  - Offsets are strictly increasing per topic. The adapter enforces `next_offset = last_offset + 1` across the boundary and can drop any duplicate that violates this invariant (defensive check).
+- Backpressure and errors:
+  - Backpressure is applied uniformly by the adapter; transient CloudReader/WAL errors are surfaced to the caller with retry semantics governed by the higher layer.
+
+---
+
 ## Background Uploader (Flusher)
 - Triggered by timer (default 10s) or size threshold (e.g., 8MB).
 - Reads WAL entries since last uploaded offset.
 - Batches messages into a rolling object writer for the topic.
 - Uses `opendal` Writer with multipart semantics for S3/GCS.
 - On successful upload of a batch:
-  - Update ETCD with new object manifest or extend end_offset of current object.
+  - Update ETCD by writing/overwriting the per-object descriptor at key `/.../objects/{start_offset_padded}` to create or advance `end_offset` of the current rolling object.
   - Write WAL CheckpointEntry with the last committed offset and upload session id.
 - On failure:
   - Retry with exponential backoff.
@@ -336,7 +377,7 @@ References:
   - On crash/restart: list parts (if supported) and reconcile with session, then complete or abort and rotate.
 - Consistency and atomicity:
   - Treat an ETCD manifest update + WAL checkpoint as a logical commit unit.
-  - Use ETCD Txn (CAS on previous end_offset and broker epoch) to append/extend object entries.
+  - Use ETCD Txn (CAS on the object descriptor at `/.../objects/{start_offset_padded}` and broker epoch) to append/extend object entries.
   - Only after ETCD commit, advance in-memory last_uploaded_offset.
 - Backpressure and bandwidth control:
   - Limit concurrent in-flight parts and throttle throughput (configurable) to avoid saturating egress.
@@ -357,11 +398,11 @@ References:
 
 ## ETCD Metadata Schema
 Key prefixes (all keys are examples; actual paths configurable):
-- Topic ownership & leader (existing): `/danube/brokers/...`
-- Topic object manifests:
-  - `/danube/storage/topics/{tenant}/{ns}/{topic}/objects/cur` -> current rolling object id
-  - `/danube/storage/topics/{tenant}/{ns}/{topic}/objects/list` -> list of object descriptors
-  - Object descriptor value:
+- Topic object manifests (key-per-object model):
+  - Namespace prefix: `/storage/topics/{ns}/{topic}/objects/`
+  - Per-object descriptor key: `/storage/topics/{ns}/{topic}/objects/{start_offset_padded}`
+    - `start_offset_padded` is a zero-padded decimal representation of `start_offset` such that lexicographic order == numeric order (e.g., width 20: `00000000000000001000`).
+  - Object descriptor value (JSON):
     ```json
     {
       "object_id": "data-1695000000-1000-2000.bin",
@@ -375,30 +416,18 @@ Key prefixes (all keys are examples; actual paths configurable):
       "backend": "s3|gcs|local|memory"
     }
     ```
+  - Optional convenience key for current rolling object id: `/storage/topics/{ns}/{topic}/objects/cur` -> `start_offset_padded`
+  - Reader logic: CloudReader performs a prefix scan on `/storage/topics/{ns}/{topic}/objects/` with an optional key range to fetch only relevant descriptors for `[from_offset, to_hint]`.
 - Upload session state:
-  - `/danube/storage/topics/{tenant}/{ns}/{topic}/upload/session` -> { object_id, upload_id, last_part, last_committed_offset }
+  - `/storage/topics/{ns}/{topic}/upload/session` -> { object_id, upload_id, last_part, last_committed_offset }
 - Subscription progress:
-  - `/danube/subscriptions/{tenant}/{ns}/{topic}/{subscription}/progress` -> { offset, timestamp }
+  - `/subscriptions/{ns}/{topic}/{subscription}/progress` -> { offset, timestamp }
 - WAL checkpoints metadata (optional if contained in WAL file):
-  - `/danube/storage/topics/{tenant}/{ns}/{topic}/wal/last_checkpoint` -> { offset, file_seq, file_pos }
+  - `/storage/topics/{ns}/{topic}/wal/last_checkpoint` -> { offset, file_seq, file_pos }
 
 Atomicity:
-- Use ETCD transactions (compare-and-swap) to atomically advance object manifest and subscription progress when needed.
+- Use ETCD transactions (compare-and-swap) to atomically write or update the per-object descriptor and subscription progress as needed.
 - Include broker epoch/lease to prevent split-brain writers.
-
----
-
-## Failure Handling and Recovery
-- Broker crash during upload:
-  - On restart, consult ETCD upload session; resume or finalize MPU if possible; else start new object and mark previous as aborted.
-- WAL corruption:
-  - Detect via CRC; truncate to last valid checkpoint.
-- Cloud transient failures:
-  - Exponential backoff with jitter; keep WAL retention to absorb outages.
-- Leader change:
-  - Only leader broker for a topic writes uploads. Use ETCD lease/lock to guard. New leader reads latest ETCD state and WAL checkpoints to resume.
-- Consumer rebalancing:
-  - Subscription offsets in ETCD keep progress consistent across consumers.
 
 ---
 
@@ -425,3 +454,5 @@ Phase C: Historical reads behind TopicStore via CloudReader
 Phase D: Remove remote GRPC storage and finalize configuration/docs
 - Remove `managed_storage.rs` and related config.
 - Deprecate segment-based code paths in dispatch; update samples and docs.
+
+---
