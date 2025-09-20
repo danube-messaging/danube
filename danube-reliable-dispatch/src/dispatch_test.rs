@@ -302,18 +302,16 @@ async fn test_wal_replay_from_offset() {
 
     // Use an explicit WAL for deterministic behavior
     let tmp = tempfile::tempdir().unwrap();
-    let wal = tokio::runtime::Handle::current().block_on(async {
-        Wal::with_config(WalConfig {
-            dir: Some(tmp.path().to_path_buf()),
-            file_name: Some("wal.log".to_string()),
-            cache_capacity: Some(1024),
-            fsync_interval_ms: Some(1),
-            max_batch_bytes: Some(1),
-            ..Default::default()
-        })
-        .await
-        .expect("create wal")
-    });
+    let wal = Wal::with_config(WalConfig {
+        dir: Some(tmp.path().to_path_buf()),
+        file_name: Some("wal.log".to_string()),
+        cache_capacity: Some(1024),
+        fsync_interval_ms: Some(1),
+        max_batch_bytes: Some(1),
+        ..Default::default()
+    })
+    .await
+    .expect("create wal");
     let wal_storage = WalStorage::from_wal(wal);
     let dispatch = ReliableDispatch::new_with_persistent(
         topic_name,
@@ -365,18 +363,16 @@ async fn test_wal_stream_latest() {
 
     // Use an explicit WAL for deterministic behavior
     let tmp = tempfile::tempdir().unwrap();
-    let wal = tokio::runtime::Handle::current().block_on(async {
-        Wal::with_config(WalConfig {
-            dir: Some(tmp.path().to_path_buf()),
-            file_name: Some("wal.log".to_string()),
-            cache_capacity: Some(1024),
-            fsync_interval_ms: Some(1),
-            max_batch_bytes: Some(1),
-            ..Default::default()
-        })
-        .await
-        .expect("create wal")
-    });
+    let wal = Wal::with_config(WalConfig {
+        dir: Some(tmp.path().to_path_buf()),
+        file_name: Some("wal.log".to_string()),
+        cache_capacity: Some(1024),
+        fsync_interval_ms: Some(1),
+        max_batch_bytes: Some(1),
+        ..Default::default()
+    })
+    .await
+    .expect("create wal");
     let wal_storage = WalStorage::from_wal(wal);
     let dispatch = ReliableDispatch::new_with_persistent(
         topic_name,
