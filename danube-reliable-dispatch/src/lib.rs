@@ -44,8 +44,14 @@ impl ReliableDispatch {
 
         let retention_policy = reliable_options.retention_policy.clone();
         let mut topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
-        // Enable WAL-first persistent storage (in-memory scaffold for Phase A)
-        topic_store.use_persistent_storage(WalStorage::new());
+        // Enable WAL-first persistent storage only when explicitly requested via env flag.
+        // This keeps broker tests on the legacy segment path while WAL integration is completed.
+        if std::env::var("DANUBE_ENABLE_WAL")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            topic_store.use_persistent_storage(WalStorage::new());
+        }
         // Start the lifecycle management task
         topic_store.start_lifecycle_management_task(
             shutdown_rx,
