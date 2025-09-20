@@ -15,10 +15,10 @@ mod wal_storage;
 pub use wal_storage::WalStorage;
 
 mod cloud_store;
-pub use cloud_store::{CloudBackend, CloudConfig, CloudStore};
+pub use cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
 
 mod uploader;
-pub use uploader::Uploader;
+pub use uploader::{Uploader, UploaderConfig};
 
 mod etcd_metadata;
-pub use etcd_metadata::EtcdMetadata;
+pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};

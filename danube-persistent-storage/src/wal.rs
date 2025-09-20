@@ -77,6 +77,13 @@ struct WalCheckpoint {
     file_path: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UploaderCheckpoint {
+    pub last_committed_offset: u64,
+    pub last_object_id: Option<String>,
+    pub updated_at: u64,
+}
+
 impl Default for Wal {
     fn default() -> Self {
         let (tx, _rx) = broadcast::channel(1024);
@@ -448,5 +455,71 @@ impl Wal {
             .await
             .map_err(|e| PersistentStorageError::Io(format!("flush checkpoint failed: {}", e)))?;
         Ok(())
+    }
+
+    /// Compute the uploader checkpoint path if WAL checkpoints are enabled.
+    async fn uploader_checkpoint_path(&self) -> Option<PathBuf> {
+        let ckpt = self.inner.checkpoint_path.clone()?;
+        let parent = ckpt.parent()?.to_path_buf();
+        Some(parent.join("uploader.ckpt"))
+    }
+
+    /// Persist uploader checkpoint as JSON to `uploader.ckpt`.
+    pub async fn write_uploader_checkpoint(
+        &self,
+        ckpt: &UploaderCheckpoint,
+    ) -> Result<(), PersistentStorageError> {
+        let path = match self.uploader_checkpoint_path().await {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let bytes = serde_json::to_vec(ckpt).map_err(|e| {
+            PersistentStorageError::Io(format!("uploader ckpt serialize failed: {}", e))
+        })?;
+        // Write atomically via temp + rename
+        let tmp = path.with_extension("ckpt.tmp");
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)
+            .await
+            .map_err(|e| {
+                PersistentStorageError::Io(format!("open uploader ckpt tmp failed: {}", e))
+            })?;
+        use tokio::io::AsyncWriteExt as _;
+        f.write_all(&bytes).await.map_err(|e| {
+            PersistentStorageError::Io(format!("write uploader ckpt failed: {}", e))
+        })?;
+        f.flush().await.map_err(|e| {
+            PersistentStorageError::Io(format!("flush uploader ckpt failed: {}", e))
+        })?;
+        tokio::fs::rename(&tmp, &path).await.map_err(|e| {
+            PersistentStorageError::Io(format!("rename uploader ckpt failed: {}", e))
+        })?;
+        Ok(())
+    }
+
+    /// Read uploader checkpoint from `uploader.ckpt` if present.
+    pub async fn read_uploader_checkpoint(
+        &self,
+    ) -> Result<Option<UploaderCheckpoint>, PersistentStorageError> {
+        let path = match self.uploader_checkpoint_path().await {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                let ckpt: UploaderCheckpoint = serde_json::from_slice(&bytes).map_err(|e| {
+                    PersistentStorageError::Io(format!("uploader ckpt parse failed: {}", e))
+                })?;
+                Ok(Some(ckpt))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(PersistentStorageError::Io(format!(
+                "read uploader ckpt failed: {}",
+                e
+            ))),
+        }
     }
 }
