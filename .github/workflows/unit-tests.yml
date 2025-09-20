@@ -11,22 +11,26 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Protobuf Compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run broker tests
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run broker unit tests (bin)
         run: cargo test --bin danube-broker
 
-      - name: Run library tests
+      - name: Run library unit tests
         run: |
+          cargo test --lib -p danube-core
           cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
+          cargo test --lib -p danube-persistent-storage

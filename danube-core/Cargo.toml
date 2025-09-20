@@ -16,7 +16,7 @@ prost = { workspace = true }
 tonic = { workspace = true }
 thiserror = {workspace = true }
 tokio = { version = "1.42.0", features = ["sync"] }
-
+futures-core = "0.3"
 
 [build-dependencies]
 tonic-build = "0.12.3"
