@@ -28,6 +28,9 @@ pub enum ReliableDispatchError {
 
     #[error("Max retries exceeded")]
     MaxRetriesExceeded,
+
+    #[error("Unsupported operation: {0}")]
+    UnsupportedOperation(String),
 }
 
 impl From<StorageBackendError> for ReliableDispatchError {

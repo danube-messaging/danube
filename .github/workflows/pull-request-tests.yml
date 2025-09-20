@@ -21,34 +21,20 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install Protobuf Compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      
-      - name: Install Netcat
-        run: sudo apt-get install -y netcat-openbsd
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Cache Docker layers
-        uses: actions/cache@v3
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.ref }}-cache
-          restore-keys: |
-            ${{ runner.os }}-buildx-${{ github.ref }}-
-            ${{ runner.os }}-buildx-
-            ${{ runner.os }}-
-      
-      - name: Build Docker image
+      - name: Install dependencies
         run: |
-          docker buildx build \
-            --cache-from=type=local,src=/tmp/.buildx-cache \
-            --cache-to=type=local,dest=/tmp/.buildx-cache \
-            --tag danube_broker_image:latest \
-            --load .
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler netcat-openbsd
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Wait for etcd to be Ready
         run: |
@@ -72,62 +58,54 @@ jobs:
           printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
           printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
-      - name: Run Broker 1
+      - name: Build broker and CLI
         env:
-          RUST_LOG: danube_broker=trace
+          RUST_BACKTRACE: 1
         run: |
-            docker run --network host -d --name broker1 \
-              -v $PWD/cert:/cert \
-              danube_broker_image:latest \
-              --config-file "/etc/danube_broker.yml" \
-              --broker-addr "0.0.0.0:6650" \
-              --admin-addr "0.0.0.0:50051" \
-              --prom-exporter "0.0.0.0:3000"
-  
-      - name: Run Broker 2
+          cargo build --release -p danube-broker -p danube-admin-cli
+
+      - name: Start 3 Brokers in background
         env:
-          RUST_LOG: danube_broker=trace  
+          RUST_LOG: info
         run: |
-            docker run --network host -d --name broker2 \
-              -v $PWD/cert:/cert \
-              danube_broker_image:latest \
-              --config-file "/etc/danube_broker.yml" \
-              --broker-addr "0.0.0.0:6651" \
-              --admin-addr "0.0.0.0:50052" \
-              --prom-exporter "0.0.0.0:3001"
+          mkdir -p temp
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --prom-exporter 0.0.0.0:3000 \
+            > temp/broker_6650.log 2>&1 &
+
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6651 \
+            --admin-addr 0.0.0.0:50052 \
+            --prom-exporter 0.0.0.0:3001 \
+            > temp/broker_6651.log 2>&1 &
+
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6652 \
+            --admin-addr 0.0.0.0:50053 \
+            --prom-exporter 0.0.0.0:3002 \
+            > temp/broker_6652.log 2>&1 &
+          sleep 5
 
       - name: Wait for Brokers to be Ready
         run: |
-          for i in {1..5}; do
-            if nc -zv 127.0.0.1 6650; then
-              echo "Broker 1 is ready."
-              break
-            elif [ $i -eq 5 ]; then
-              echo "Broker 1 failed to start."
-              docker logs broker1
-              exit 1
-            fi
-            echo "Waiting for Broker 1 to start..."
-            sleep 10
+          for port in 6650 6651 6652; do
+            for i in {1..6}; do
+              if nc -zv 127.0.0.1 $port; then
+                echo "Broker on port $port is ready."
+                break
+              elif [ $i -eq 6 ]; then
+                echo "Broker on port $port failed to start."
+                exit 1
+              fi
+              echo "Waiting for broker on port $port to start..."
+              sleep 5
+            done
           done
-          for i in {1..5}; do
-            if nc -zv 127.0.0.1 6651; then
-              echo "Broker 2 is ready."
-              break
-            elif [ $i -eq 5 ]; then
-              echo "Broker 2 failed to start."
-              docker logs broker2
-              exit 1
-            fi
-            echo "Waiting for Broker 2 to start..."
-            sleep 10
-          done
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
 
       - name: Run integration tests
         env:
@@ -135,16 +113,25 @@ jobs:
         run: |
           # Run broker integration tests serially to avoid flakiness in timing-sensitive tests
           cargo test --release -p danube-broker --tests -- --test-threads=1 --nocapture
+          # Run danube-persistent-storage integration tests
+          cargo test -p danube-persistent-storage --tests -- --nocapture
+          # Run library unit tests
           cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
+          cargo test --lib -p danube-persistent-storage
 
-      - name: Stop and remove broker1
+      - name: Print broker logs on failure
+        if: failure()
         run: |
-          docker stop broker1
-          docker rm broker1
+          echo '--- broker_6650.log ---'
+          sed -n '1,200p' temp/broker_6650.log || true
+          echo '--- broker_6651.log ---'
+          sed -n '1,200p' temp/broker_6651.log || true
+          echo '--- broker_6652.log ---'
+          sed -n '1,200p' temp/broker_6652.log || true
 
-      - name: Stop and remove broker2
+      - name: Stop brokers
+        if: always()
         run: |
-          docker stop broker2
-          docker rm broker2
+          pkill -f danube-broker || true

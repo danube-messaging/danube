@@ -12,7 +12,12 @@ mod storage_backend;
 mod topic_cache;
 pub use topic_cache::TopicCache;
 
-use danube_core::{dispatch_strategy::ReliableOptions, message::StreamMessage};
+use danube_core::{
+    dispatch_strategy::ReliableOptions,
+    message::StreamMessage,
+    storage::{StartPosition, TopicStream},
+};
+use danube_persistent_storage::WalStorage;
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
@@ -38,8 +43,43 @@ impl ReliableDispatch {
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
         let retention_policy = reliable_options.retention_policy.clone();
-        let topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
+        let mut topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
+        // Enable WAL-first persistent storage only when explicitly requested via env flag.
+        // This keeps broker tests on the legacy segment path while WAL integration is completed.
+        if std::env::var("DANUBE_ENABLE_WAL")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            topic_store.use_persistent_storage(WalStorage::new());
+        }
         // Start the lifecycle management task
+        topic_store.start_lifecycle_management_task(
+            shutdown_rx,
+            subscriptions_cloned,
+            retention_policy,
+        );
+
+        Self {
+            topic_store,
+            subscriptions,
+            shutdown_tx,
+        }
+    }
+
+    /// Construct a ReliableDispatch using a pre-configured persistent storage (e.g., WAL with WalConfig).
+    pub fn new_with_persistent(
+        topic_name: &str,
+        reliable_options: ReliableOptions,
+        topic_cache: TopicCache,
+        wal_storage: danube_persistent_storage::WalStorage,
+    ) -> Self {
+        let subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>> = Arc::new(DashMap::new());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
+        let subscriptions_cloned = Arc::clone(&subscriptions);
+
+        let retention_policy = reliable_options.retention_policy.clone();
+        let mut topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
+        topic_store.use_persistent_storage(wal_storage);
         topic_store.start_lifecycle_management_task(
             shutdown_rx,
             subscriptions_cloned,
@@ -90,6 +130,15 @@ impl ReliableDispatch {
                 "Subscription not found".to_string(),
             )),
         }
+    }
+
+    /// Create a TopicStream for this topic starting from the Latest position.
+    /// This is backed by the new WAL path when enabled; otherwise it will be empty.
+    pub async fn create_stream_latest(&self) -> Result<TopicStream> {
+        self.topic_store
+            .create_reader(StartPosition::Latest)
+            .await
+            .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))
     }
 }
 

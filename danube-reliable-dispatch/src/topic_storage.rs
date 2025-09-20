@@ -1,7 +1,7 @@
 use danube_core::{
     dispatch_strategy::{ReliableOptions, RetentionPolicy},
     message::StreamMessage,
-    storage::Segment,
+    storage::{PersistentStorage, PersistentStorageError, Segment, StartPosition, TopicStream},
 };
 use dashmap::DashMap;
 use std::sync::{atomic::AtomicUsize, Arc};
@@ -12,6 +12,7 @@ use crate::{
     errors::{ReliableDispatchError, Result},
     topic_cache::TopicCache,
 };
+use danube_persistent_storage::WalStorage;
 
 // TopicStore is used only for reliable messaging
 // It stores the segments in memory until are acknowledged by every subscription
@@ -30,6 +31,8 @@ pub(crate) struct TopicStore {
     pub(crate) current_segment_id: Arc<RwLock<usize>>,
     // Cached segment, used to avoid expensive call to storage while storing a message
     cached_segment: Arc<Mutex<Option<Arc<RwLock<Segment>>>>>,
+    // Optional persistent storage (WAL-first). When present, read path uses it.
+    persistent: Option<WalStorage>,
 }
 
 impl TopicStore {
@@ -48,10 +51,20 @@ impl TopicStore {
             retention_period: reliable_options.retention_period,
             current_segment_id: Arc::new(RwLock::new(0)),
             cached_segment: Arc::new(Mutex::new(None)),
+            persistent: None,
         }
     }
 
     pub(crate) async fn store_message(&self, message: StreamMessage) -> Result<()> {
+        // If WAL-backed persistent storage is enabled, use it for the write path
+        if let Some(persistent) = &self.persistent {
+            persistent
+                .append_message(&self.topic_name, message)
+                .await
+                .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
+            return Ok(());
+        }
+        // Fallback to legacy segment-based storage path
         let segment_id = *self.current_segment_id.write().await;
         let segment = self.get_or_create_segment(segment_id).await?;
 
@@ -313,5 +326,30 @@ impl TopicStore {
         }
 
         index.retain(|(id, _)| !expired_segments.contains(id));
+    }
+
+    /// Enable WAL-first persistent storage for this topic store.
+    pub(crate) fn use_persistent_storage(&mut self, storage: WalStorage) {
+        self.persistent = Some(storage);
+    }
+
+    /// Create a streaming reader starting from the given position.
+    ///
+    /// Placeholder during WAL migration: will be wired to WAL tail and later to CloudReader handoff.
+    pub(crate) async fn create_reader(
+        &self,
+        _start: StartPosition,
+    ) -> std::result::Result<TopicStream, ReliableDispatchError> {
+        if let Some(persistent) = &self.persistent {
+            // Delegate to PersistentStorage (WAL) when enabled
+            let stream = persistent
+                .create_reader(&self.topic_name, _start)
+                .await
+                .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
+            return Ok(stream);
+        }
+        // Fallback: empty stream placeholder
+        let s = tokio_stream::empty::<std::result::Result<StreamMessage, PersistentStorageError>>();
+        Ok(Box::pin(s))
     }
 }
