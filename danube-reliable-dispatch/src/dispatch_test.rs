@@ -31,6 +31,12 @@ use crate::ReliableDispatch;
 #[cfg(test)]
 use danube_core::storage::StartPosition;
 
+#[cfg(test)]
+use danube_persistent_storage::{
+    wal::{Wal, WalConfig},
+    WalStorage,
+};
+
 /// Test helper to create a TopicStore with default settings
 #[cfg(test)]
 fn create_test_topic_store(topic_name: &str) -> TopicStore {
@@ -282,6 +288,11 @@ async fn test_validate_segment() {
 /// Why: Consumers may start from an older offset; the system should replay historical entries
 /// (from WAL cache/file) and then seamlessly continue with live messages without duplicates.
 /// Expected: Starting from offset 3 returns payloads [3], [4], then subsequent appends appear.
+///
+/// NOTE: Temporary explicit WAL wiring via `ReliableDispatch::new_with_persistent` is used here
+/// while the WAL path is opt-in. Once implementation reaches Phase D (legacy removal and
+/// WAL-first default), revert these tests to use `ReliableDispatch::new(...)` and remove the
+/// explicit Wal/WalStorage setup.
 #[tokio::test]
 async fn test_wal_replay_from_offset() {
     let topic_name = "/default/wal-replay";
@@ -289,7 +300,27 @@ async fn test_wal_replay_from_offset() {
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
     let topic_cache = TopicCache::new(storage.clone(), 100, 10);
 
-    let dispatch = ReliableDispatch::new(topic_name, reliable_options, topic_cache);
+    // Use an explicit WAL for deterministic behavior
+    let tmp = tempfile::tempdir().unwrap();
+    let wal = tokio::runtime::Handle::current().block_on(async {
+        Wal::with_config(WalConfig {
+            dir: Some(tmp.path().to_path_buf()),
+            file_name: Some("wal.log".to_string()),
+            cache_capacity: Some(1024),
+            fsync_interval_ms: Some(1),
+            max_batch_bytes: Some(1),
+            ..Default::default()
+        })
+        .await
+        .expect("create wal")
+    });
+    let wal_storage = WalStorage::from_wal(wal);
+    let dispatch = ReliableDispatch::new_with_persistent(
+        topic_name,
+        reliable_options,
+        topic_cache,
+        wal_storage,
+    );
 
     // Append 5 messages before creating reader
     for i in 0..5u8 {
@@ -320,6 +351,11 @@ async fn test_wal_replay_from_offset() {
 /// Why: A consumer starting at Latest should only see messages appended after the subscription
 /// starts, with stable latency, backed by the WAL broadcast path.
 /// Expected: Messages appended after `create_stream_latest()` are delivered in order.
+///
+/// NOTE: Temporary explicit WAL wiring via `ReliableDispatch::new_with_persistent` is used here
+/// while the WAL path is opt-in. Once implementation reaches Phase D (legacy removal and
+/// WAL-first default), revert these tests to use `ReliableDispatch::new(...)` and remove the
+/// explicit Wal/WalStorage setup.
 #[tokio::test]
 async fn test_wal_stream_latest() {
     let topic_name = "/default/wal-latest";
@@ -327,7 +363,27 @@ async fn test_wal_stream_latest() {
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
     let topic_cache = TopicCache::new(storage.clone(), 100, 10);
 
-    let dispatch = ReliableDispatch::new(topic_name, reliable_options, topic_cache);
+    // Use an explicit WAL for deterministic behavior
+    let tmp = tempfile::tempdir().unwrap();
+    let wal = tokio::runtime::Handle::current().block_on(async {
+        Wal::with_config(WalConfig {
+            dir: Some(tmp.path().to_path_buf()),
+            file_name: Some("wal.log".to_string()),
+            cache_capacity: Some(1024),
+            fsync_interval_ms: Some(1),
+            max_batch_bytes: Some(1),
+            ..Default::default()
+        })
+        .await
+        .expect("create wal")
+    });
+    let wal_storage = WalStorage::from_wal(wal);
+    let dispatch = ReliableDispatch::new_with_persistent(
+        topic_name,
+        reliable_options,
+        topic_cache,
+        wal_storage,
+    );
 
     // Start stream at Latest
     let mut stream = dispatch
