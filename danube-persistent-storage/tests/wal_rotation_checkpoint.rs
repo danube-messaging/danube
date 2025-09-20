@@ -1,3 +1,18 @@
+//! Test: wal_rotation_checkpoint
+//!
+//! Purpose
+//! - Validate WAL rotation by size/time triggers and checkpoint persistence of the last flushed offset.
+//! - Ensure that after rotation and flush, a checkpoint file reflects the most recent offset.
+//!
+//! Inputs
+//! - WAL configured with small `max_batch_bytes` and low `fsync_interval_ms` to force frequent flushes.
+//! - Optional rotation configuration via `rotate_max_bytes`/`rotate_max_seconds` depending on test.
+//! - Append a sequence of messages to exceed rotation/flush thresholds.
+//!
+//! Expected Behavior
+//! - WAL rotates according to configuration (new `wal.<seq>.log` created) when thresholds are crossed.
+//! - `wal.ckpt` exists and contains the last flushed offset greater than or equal to the last appended offset at flush time.
+
 use danube_core::message::{MessageID, StreamMessage};
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use serde::Deserialize;

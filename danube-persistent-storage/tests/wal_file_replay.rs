@@ -1,3 +1,19 @@
+//! Tests: WAL file replay and replay-from-offset
+//!
+//! Purpose
+//! - Validate that WAL persisted frames can be replayed on a new reader process.
+//! - Validate that `tail_reader(from_offset)` replays cached/persisted messages with offsets >= `from_offset`,
+//!   then switches to live tailing.
+//!
+//! Inputs
+//! - Writer appends N messages into a WAL configured with file persistence.
+//! - Reader is started over the same WAL directory.
+//! - For replay-from-offset: `from_offset = 3` applied.
+//!
+//! Expected Behavior
+//! - Full replay: reader returns all previously persisted payloads in order.
+//! - Replay-from-offset: reader returns only messages with offsets >= `from_offset` before switching to live.
+
 use danube_core::message::{MessageID, StreamMessage};
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use tokio_stream::StreamExt;

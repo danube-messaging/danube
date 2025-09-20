@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 
 use crate::cloud_store::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
-use crate::wal::Wal;
+use crate::wal::{UploaderCheckpoint, Wal};
 
 #[derive(Debug, Clone)]
 pub struct UploaderConfig {
@@ -56,6 +56,18 @@ impl Uploader {
     /// No leader lease logic; assumes single broker owns the topic.
     pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
         tokio::spawn(async move {
+            // On start, try to resume from uploader checkpoint if present.
+            if let Ok(Some(ckpt)) = self.wal.read_uploader_checkpoint().await {
+                self.last_uploaded_offset
+                    .store(ckpt.last_committed_offset, Ordering::Release);
+                tracing::info!(
+                    target = "uploader",
+                    last_committed_offset = ckpt.last_committed_offset,
+                    last_object_id = ckpt.last_object_id.as_deref().unwrap_or(""),
+                    "resumed uploader from checkpoint"
+                );
+            }
+
             let mut ticker =
                 tokio::time::interval(std::time::Duration::from_secs(self.cfg.interval_seconds));
             loop {
@@ -77,13 +89,15 @@ impl Uploader {
 
                 // Object name convention: data-<start>-<end>.bin
                 let object_id = format!("data-{}-{}.bin", start_offset, end_offset);
+                // Store under a stable namespace relative to the CloudStore root
+                // Final key will be <cloud_root>/<root_prefix>/storage/topics/<topic_path>/objects/<object_id>
                 let object_path = format!(
-                    "{}/storage/topics/{}/objects/{}",
-                    self.cfg.root_prefix, self.cfg.topic_path, object_id
+                    "storage/topics/{}/objects/{}",
+                    self.cfg.topic_path, object_id
                 );
 
                 // Upload to cloud (stub)
-                self.cloud.put_object(&object_path, &bytes).await?;
+                let meta = self.cloud.put_object_meta(&object_path, &bytes).await?;
 
                 // Write descriptor to ETCD (no CAS/lease; single-writer assumption)
                 let desc = ObjectDescriptor {
@@ -91,7 +105,7 @@ impl Uploader {
                     start_offset,
                     end_offset,
                     size: bytes.len() as u64,
-                    etag: None,
+                    etag: meta.etag().map(|s| s.to_string()),
                     created_at: chrono::Utc::now().timestamp() as u64,
                     completed: true,
                 };
@@ -99,6 +113,22 @@ impl Uploader {
                 self.etcd
                     .put_object_descriptor(&self.cfg.topic_path, &start_padded, &desc)
                     .await?;
+
+                // Optionally advance current pointer for convenience
+                let _ = self
+                    .etcd
+                    .put_current_pointer(&self.cfg.topic_path, &start_padded)
+                    .await;
+
+                // Persist uploader checkpoint after successful commit
+                let _ = self
+                    .wal
+                    .write_uploader_checkpoint(&UploaderCheckpoint {
+                        last_committed_offset: end_offset,
+                        last_object_id: Some(object_id.clone()),
+                        updated_at: chrono::Utc::now().timestamp() as u64,
+                    })
+                    .await;
 
                 // Advance watermark
                 self.last_uploaded_offset
