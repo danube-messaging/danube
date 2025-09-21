@@ -40,23 +40,32 @@ impl DispatcherReliableMultipleConsumers {
             let index_consumer = AtomicUsize::new(0);
 
             loop {
-                // Wait for a notification or a control command
+                // Wait for a notification or a periodic tick
+                trace!("dispatcher_reliable_mc: waiting for notify/tick");
                 notify_dispatch_clone.notified().await;
+                trace!("dispatcher_reliable_mc: woke up");
 
                 // Process control commands first
+                trace!("dispatcher_reliable_mc: processing control commands");
                 while let Ok(command) = control_rx.try_recv() {
                     match command {
                         DispatcherCommand::AddConsumer(consumer) => {
                             consumers.push(consumer);
-                            trace!("Consumer added. Total consumers: {}", consumers.len());
+                            trace!(
+                                "dispatcher_reliable_mc: consumer added; total={}",
+                                consumers.len()
+                            );
                         }
                         DispatcherCommand::RemoveConsumer(consumer_id) => {
                             consumers.retain(|c| c.consumer_id != consumer_id);
-                            trace!("Consumer removed. Total consumers: {}", consumers.len());
+                            trace!(
+                                "dispatcher_reliable_mc: consumer removed; total={}",
+                                consumers.len()
+                            );
                         }
                         DispatcherCommand::DisconnectAllConsumers => {
                             consumers.clear();
-                            trace!("All consumers disconnected.");
+                            trace!("dispatcher_reliable_mc: all consumers disconnected");
                         }
                         DispatcherCommand::DispatchMessage(_) => {
                             unreachable!(
@@ -68,6 +77,9 @@ impl DispatcherReliableMultipleConsumers {
                             if let Some(active_idx) =
                                 Self::get_next_active_consumer(&consumers, &index_consumer).await
                             {
+                                trace!(
+                                    "dispatcher_reliable_mc: ack received; fetching next message"
+                                );
                                 if let Ok(Some(next_message)) = subscription_dispatch
                                     .handle_message_acked(request_id, msg_id)
                                     .await
@@ -89,20 +101,31 @@ impl DispatcherReliableMultipleConsumers {
                 if let Some(active_idx) =
                     Self::get_next_active_consumer(&consumers, &index_consumer).await
                 {
+                    trace!("dispatcher_reliable_mc: polling next from stream");
                     match subscription_dispatch.poll_next().await {
                         Ok(msg) => {
+                            trace!(
+                                "dispatcher_reliable_mc: got message; sending to consumer {}",
+                                active_idx
+                            );
                             if let Err(e) = consumers[active_idx].send_message(msg).await {
                                 warn!("Failed to dispatch message: {}", e);
                             }
                         }
                         Err(e) => match e {
-                            ReliableDispatchError::NoMessagesAvailable => continue,
+                            ReliableDispatchError::NoMessagesAvailable => {
+                                trace!("dispatcher_reliable_mc: no messages available");
+                                continue;
+                            }
                             err => warn!("Error polling next message from stream: {}", err),
                         },
                     };
                 }
             }
         });
+
+        // Prime the loop to avoid waiting for the first external notify
+        notify_dispatch.notify_one();
 
         DispatcherReliableMultipleConsumers {
             control_tx,
