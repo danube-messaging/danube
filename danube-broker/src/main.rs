@@ -32,14 +32,18 @@ use crate::{
     broker_service::BrokerService,
     danube_service::{DanubeService, LeaderElection, LoadManager, LocalCache, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
-    service_configuration::{LoadConfiguration, ServiceConfiguration},
+    service_configuration::{CloudConfig, LoadConfiguration, ServiceConfiguration},
 };
 
 use anyhow::{Context, Result};
 use danube_metadata_store::{EtcdStore, MetadataStorage};
-use danube_reliable_dispatch::create_message_storage;
+use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_persistent_storage::{
+    BackendConfig, CloudBackend, CloudStore, EtcdMetadata, LocalBackend,
+};
+use std::collections::HashMap;
 use std::net::SocketAddr;
- 
+
 use tracing::info;
 use tracing_subscriber;
 
@@ -102,12 +106,102 @@ async fn main() -> Result<()> {
     let metadata_store: MetadataStorage =
         MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
 
-    // initialize the message storage layer for Danube Broker
-    info!(
-        "Initializing {} for message persistence",
-        service_config.storage
-    );
-    let message_storage = create_message_storage(&service_config.storage).await;
+    // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
+    let wal_cfg = service_config
+        .wal_cloud
+        .as_ref()
+        .cloned()
+        .expect("wal_cloud configuration is required in Phase D");
+
+    // Build Wal
+    let wal = Wal::with_config(WalConfig {
+        dir: wal_cfg.wal.dir.as_ref().map(|d| d.into()),
+        cache_capacity: wal_cfg.wal.cache_capacity,
+        // rotation and retention mapping can be extended inside Wal as needed
+        ..Default::default()
+    })
+    .await
+    .expect("Failed to initialize WAL from wal_cloud.wal config");
+
+    // Build CloudStore from config
+    let cloud_backend = match wal_cfg.cloud {
+        CloudConfig::Memory { ref root } => BackendConfig::Local {
+            backend: LocalBackend::Memory,
+            root: root.clone(),
+        },
+        CloudConfig::Fs { ref root } => BackendConfig::Local {
+            backend: LocalBackend::Fs,
+            root: root.clone(),
+        },
+        CloudConfig::S3 {
+            ref root,
+            ref region,
+            ref endpoint,
+            ref access_key,
+            ref secret_key,
+            ref profile,
+            ref role_arn,
+            ref session_token,
+            anonymous,
+        } => {
+            let mut options: HashMap<String, String> = HashMap::new();
+            if let Some(v) = region {
+                options.insert("region".into(), v.clone());
+            }
+            if let Some(v) = endpoint {
+                options.insert("endpoint".into(), v.clone());
+            }
+            if let Some(v) = access_key {
+                options.insert("access_key".into(), v.clone());
+            }
+            if let Some(v) = secret_key {
+                options.insert("secret_key".into(), v.clone());
+            }
+            if let Some(v) = profile {
+                options.insert("profile".into(), v.clone());
+            }
+            if let Some(v) = role_arn {
+                options.insert("role_arn".into(), v.clone());
+            }
+            if let Some(v) = session_token {
+                options.insert("session_token".into(), v.clone());
+            }
+            if let Some(v) = anonymous {
+                options.insert("anonymous".into(), v.to_string());
+            }
+            BackendConfig::Cloud {
+                backend: CloudBackend::S3,
+                root: root.clone(),
+                options,
+            }
+        }
+        CloudConfig::Gcs {
+            ref root,
+            ref project,
+            ref credentials_json,
+            ref credentials_path,
+        } => {
+            let mut options: HashMap<String, String> = HashMap::new();
+            if let Some(v) = project {
+                options.insert("project".into(), v.clone());
+            }
+            if let Some(v) = credentials_json {
+                options.insert("credentials_json".into(), v.clone());
+            }
+            if let Some(v) = credentials_path {
+                options.insert("credentials_path".into(), v.clone());
+            }
+            BackendConfig::Cloud {
+                backend: CloudBackend::Gcs,
+                root: root.clone(),
+                options,
+            }
+        }
+    };
+    let cloud_store = CloudStore::new(cloud_backend).expect("init cloud store");
+
+    // Wrap Metadata storage for object descriptors
+    let etcd_meta = EtcdMetadata::new(metadata_store.clone(), "/danube".to_string());
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store
     let local_cache = LocalCache::new(metadata_store.clone());
@@ -121,7 +215,7 @@ async fn main() -> Result<()> {
     let syncroniser = Syncronizer::new();
 
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
-    let broker_service = BrokerService::new(resources.clone(), message_storage);
+    let broker_service = BrokerService::new(resources.clone(), wal, cloud_store, etcd_meta);
     let broker_id = broker_service.broker_id;
 
     // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.

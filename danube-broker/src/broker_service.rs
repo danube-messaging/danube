@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
-use danube_reliable_dispatch::TopicCache;
+use danube_persistent_storage::{CloudStore, EtcdMetadata, Wal, WalStorage};
 use dashmap::DashMap;
 use metrics::gauge;
 use std::sync::Arc;
@@ -30,7 +30,9 @@ use crate::{
 pub(crate) struct BrokerService {
     // Read-only fields (no mutex needed)
     pub(crate) broker_id: u64,
-    pub(crate) storage_backend: TopicCache,
+    pub(crate) base_wal: Wal,
+    pub(crate) cloud_store: CloudStore,
+    pub(crate) etcd_meta: EtcdMetadata,
 
     // Already thread-safe (no mutex needed)
     pub(crate) producer_index: Arc<DashMap<u64, String>>,
@@ -42,11 +44,18 @@ pub(crate) struct BrokerService {
 }
 
 impl BrokerService {
-    pub(crate) fn new(resources: Resources, storage_backend: TopicCache) -> Self {
+    pub(crate) fn new(
+        resources: Resources,
+        base_wal: Wal,
+        cloud_store: CloudStore,
+        etcd_meta: EtcdMetadata,
+    ) -> Self {
         let broker_id = get_random_id();
         BrokerService {
             broker_id,
-            storage_backend,
+            base_wal,
+            cloud_store,
+            etcd_meta,
             producer_index: Arc::new(DashMap::new()),
             consumer_index: Arc::new(DashMap::new()),
             topic_worker_pool: Arc::new(TopicWorkerPool::new(None)),
@@ -251,16 +260,10 @@ impl BrokerService {
         // Load Manager will decide which broker is going to serve the new created topic
         // so it will not be added to local list, yet.
         let mut resources = self.resources.lock().await;
-        resources
-            .cluster
-            .new_unassigned_topic(topic_name)
-            .await?;
+        resources.cluster.new_unassigned_topic(topic_name).await?;
 
         // store the new topic to namespace path: /namespaces/{namespace}/topics/
-        resources
-            .namespace
-            .create_new_topic(topic_name)
-            .await?;
+        resources.namespace.create_new_topic(topic_name).await?;
 
         // store new topic retention strategy: /topics/{namespace}/{topic}/retention
         let dispatch_strategy: ConfigDispatchStrategy = dispatch_strategy.into();
@@ -290,7 +293,14 @@ impl BrokerService {
     pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
         // find the broker owning the topic
 
-        let broker_id = match self.resources.lock().await.cluster.get_broker_for_topic(topic_name).await {
+        let broker_id = match self
+            .resources
+            .lock()
+            .await
+            .cluster
+            .get_broker_for_topic(topic_name)
+            .await
+        {
             Some(broker_id) => broker_id,
             None => return Err(anyhow!("Unable to find topic")),
         };
@@ -342,11 +352,17 @@ impl BrokerService {
 
         let dispatch_strategy = dispatch_strategy.unwrap();
 
-        // create the topic,
+        // Build per-topic WalStorage with Cloud handoff enabled
+        let wal_storage = WalStorage::from_wal(self.base_wal.clone()).with_cloud(
+            self.cloud_store.clone(),
+            self.etcd_meta.clone(),
+            topic_name.to_string(),
+        );
+
         let mut new_topic = Topic::new(
             topic_name,
             dispatch_strategy.clone(),
-            self.storage_backend.clone(),
+            wal_storage,
             Some({
                 let resources = self.resources.lock().await;
                 resources.topic.clone()
@@ -444,12 +460,25 @@ impl BrokerService {
         }
 
         // if not search in Local Metadata for the broker that serve the topic
-        let broker_id = match self.resources.lock().await.cluster.get_broker_for_topic(topic_name).await {
+        let broker_id = match self
+            .resources
+            .lock()
+            .await
+            .cluster
+            .get_broker_for_topic(topic_name)
+            .await
+        {
             Some(broker_id) => broker_id,
             None => return None,
         };
 
-        if let Some(broker_addr) = self.resources.lock().await.cluster.get_broker_addr(&broker_id) {
+        if let Some(broker_addr) = self
+            .resources
+            .lock()
+            .await
+            .cluster
+            .get_broker_addr(&broker_id)
+        {
             return Some((false, broker_addr));
         }
 
@@ -466,7 +495,9 @@ impl BrokerService {
         // if true, means that it is not a partitioned topic
         match {
             let resources = self.resources.lock().await;
-            resources.namespace.check_if_topic_exist(ns_name, topic_name)
+            resources
+                .namespace
+                .check_if_topic_exist(ns_name, topic_name)
         } {
             true => {
                 topics.push(topic_name.to_owned());

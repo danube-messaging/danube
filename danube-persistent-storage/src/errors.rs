@@ -1,4 +1,3 @@
-use danube_core::storage::StorageBackendError;
 use thiserror::Error;
 use tonic::codegen::http::uri;
 use tonic::Status;
@@ -21,15 +20,9 @@ pub enum PersistentStorageError {
     Status(#[from] Status),
 }
 
-impl From<PersistentStorageError> for StorageBackendError {
+// Phase D: legacy StorageBackendError removed. Provide a convenient conversion to tonic::Status.
+impl From<PersistentStorageError> for Status {
     fn from(err: PersistentStorageError) -> Self {
-        match err {
-            PersistentStorageError::Io(e) => StorageBackendError::Disk(e.to_string()),
-            PersistentStorageError::InvalidPath(e) => StorageBackendError::Disk(e),
-            PersistentStorageError::Bincode(e) => StorageBackendError::Disk(e.to_string()),
-            PersistentStorageError::Transport(e) => StorageBackendError::Managed(e.to_string()),
-            PersistentStorageError::UrlParseError(e) => StorageBackendError::Managed(e.to_string()),
-            PersistentStorageError::Status(e) => StorageBackendError::Managed(e.to_string()),
-        }
+        Status::internal(err.to_string())
     }
 }

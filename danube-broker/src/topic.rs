@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
-use danube_reliable_dispatch::{ReliableDispatch, TopicCache};
+use danube_persistent_storage::WalStorage;
+use danube_reliable_dispatch::ReliableDispatch;
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
@@ -50,13 +51,13 @@ impl Topic {
     pub(crate) fn new(
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
-        storage_backend: TopicCache,
+        wal_storage: WalStorage,
         resources_topic: Option<TopicResources>,
     ) -> Self {
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
             ConfigDispatchStrategy::Reliable(reliable_options) => DispatchStrategy::Reliable(
-                ReliableDispatch::new(topic_name, reliable_options, storage_backend),
+                ReliableDispatch::new(topic_name, reliable_options, wal_storage),
             ),
         };
 

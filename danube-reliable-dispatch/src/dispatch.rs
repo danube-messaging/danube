@@ -1,9 +1,7 @@
 use danube_core::message::{MessageID, StreamMessage};
-use danube_core::storage::Segment;
+use danube_core::storage::{StartPosition, TopicStream};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
 use tracing::trace;
 
 use crate::{
@@ -11,21 +9,13 @@ use crate::{
     topic_storage::TopicStore,
 };
 
-/// SubscriptionDispatch is holding information about consumers and the messages within a segment
+/// SubscriptionDispatch is holding information about consumers and the messages within a stream
 /// It is used to dispatch messages to consumers and to track the progress of the consumer
-#[derive(Debug)]
 pub struct SubscriptionDispatch {
-    // topic store is the store of segments
-    // topic store is used to get the next segment to be sent to the consumer
+    // Topic store used to create a streaming reader from persistent storage (WAL + Cloud)
     pub(crate) topic_store: TopicStore,
-    // last acked segment is the last segment that has all messages acknowledged by the consumer
-    // it is used to track the progress of the subscription
-    pub(crate) last_acked_segment: Arc<AtomicUsize>,
-    // segment holds the messages to be sent to the consumer
-    // segment is replaced when the consumer is done with the segment and if there is another available segment
-    pub(crate) segment: Option<Arc<RwLock<Segment>>>,
-    // Cached segment ID to avoid frequent locks
-    pub(crate) current_segment_id: Option<usize>,
+    // Streaming reader from persistent storage
+    pub(crate) stream: Option<TopicStream>,
     // single message awaiting acknowledgment from the consumer
     pub(crate) pending_ack_message: Option<(u64, MessageID)>,
     // maps MessageID to request_id of segment acknowledged messages
@@ -36,12 +26,10 @@ pub struct SubscriptionDispatch {
 }
 
 impl SubscriptionDispatch {
-    pub(crate) fn new(topic_store: TopicStore, last_acked_segment: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(topic_store: TopicStore) -> Self {
         Self {
             topic_store,
-            last_acked_segment,
-            segment: None,
-            current_segment_id: None,
+            stream: None,
             pending_ack_message: None,
             acked_messages: HashMap::new(),
             retry_count: 0,
@@ -49,23 +37,16 @@ impl SubscriptionDispatch {
         }
     }
 
-    /// Process the current segment and send the messages to the consumer
-    pub async fn process_current_segment(&mut self) -> Result<StreamMessage> {
-        // If we have a current segment, validate it
-        if let Some(segment) = self.segment.as_ref() {
-            let segment_id = self.current_segment_id.ok_or_else(|| {
-                ReliableDispatchError::InvalidState(
-                    "Segment ID not cached while processing segment".to_string(),
-                )
-            })?;
-
-            // Validate current segment state
-            if self.validate_segment_state(segment_id, segment).await? {
-                self.move_to_next_segment().await?;
-            }
-        } else {
-            // No current segment, move to next
-            self.move_to_next_segment().await?;
+    /// Poll next message from the persistent stream (WAL + Cloud handoff as needed)
+    pub async fn poll_next(&mut self) -> Result<StreamMessage> {
+        // Ensure a stream exists; start from Latest by default
+        if self.stream.is_none() {
+            let s = self
+                .topic_store
+                .create_reader(StartPosition::Latest)
+                .await
+                .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
+            self.stream = Some(s);
         }
 
         // Process the next message - continue even if no messages available
@@ -76,77 +57,6 @@ impl SubscriptionDispatch {
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// Validates the current segment. Returns `true` if the segment was invalidated or closed.
-    pub(crate) async fn validate_segment_state(
-        &self,
-        segment_id: usize,
-        segment: &Arc<RwLock<Segment>>,
-    ) -> Result<bool> {
-        // Check if the segment still exists
-        if !self.topic_store.contains_segment(segment_id).await? {
-            tracing::trace!(
-                "Segment {} no longer exists, moving to next segment",
-                segment_id
-            );
-            return Ok(true);
-        }
-
-        // Check if the segment is closed and all messages are acknowledged
-        let segment_data = segment.read().await;
-
-        // The conditions to move to the next segment are:
-        // 1. The segment is closed
-        // 2. All messages in the segment are acknowledged
-        // 3. There is no pending ack message
-        if segment_data.close_time > 0
-            && self.acked_messages.len() == segment_data.messages.len()
-            && self.pending_ack_message.is_none()
-        {
-            trace!("The subscription dispatcher id moving to the next segment, the current segment is closed and all messages consumed");
-            return Ok(true);
-        }
-
-        Ok(false)
-    }
-
-    /// Moves to the next segment in the `TopicStore`.
-    pub(crate) async fn move_to_next_segment(&mut self) -> Result<()> {
-        // Update the last acknowledged segment
-        if let Some(current_segment_id) = self.current_segment_id {
-            self.last_acked_segment
-                .store(current_segment_id, std::sync::atomic::Ordering::Release);
-        }
-
-        let next_segment = self
-            .topic_store
-            .get_next_segment(self.current_segment_id)
-            .await?;
-
-        if let Some(next_segment) = next_segment {
-            let next_segment_id = {
-                let segment_data = next_segment.read().await;
-                segment_data.id
-            };
-
-            // Clear acknowledgments before switching to a new segment
-            self.acked_messages.clear();
-
-            self.segment = Some(next_segment);
-            self.current_segment_id = Some(next_segment_id);
-        } else {
-            self.clear_current_segment();
-        }
-
-        Ok(())
-    }
-
-    /// Clear the current segment and cached segment_id
-    pub(crate) fn clear_current_segment(&mut self) {
-        self.segment = None;
-        self.current_segment_id = None;
-        self.acked_messages.clear();
     }
 
     /// Processes the next unacknowledged message in the current segment.
@@ -181,28 +91,27 @@ impl SubscriptionDispatch {
     }
 
     async fn send_message(&mut self) -> Result<StreamMessage> {
-        if let Some(segment) = &self.segment {
-            let next_message = {
-                let segment_data = segment.read().await;
-                segment_data
-                    .messages
-                    .iter()
-                    .find(|msg| !self.acked_messages.contains_key(&msg.msg_id))
-                    .cloned()
-            };
+        // Ensure the stream exists
+        if self.stream.is_none() {
+            let s = self
+                .topic_store
+                .create_reader(StartPosition::Latest)
+                .await
+                .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
+            self.stream = Some(s);
+        }
 
-            match next_message {
-                Some(msg) => {
-                    trace!("Sending message with id {:?}", msg.msg_id);
-                    self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
-                    Ok(msg)
-                }
-                None => Err(ReliableDispatchError::NoMessagesAvailable),
+        let stream = self.stream.as_mut().unwrap();
+        match stream.next().await {
+            Some(Ok(msg)) => {
+                trace!("Sending message with id {:?}", msg.msg_id);
+                self.pending_ack_message = Some((msg.request_id, msg.msg_id.clone()));
+                Ok(msg)
             }
-        } else {
-            Err(ReliableDispatchError::SegmentError(
-                "No segment available".to_string(),
-            ))
+            Some(Err(_e)) => Err(ReliableDispatchError::StorageError(
+                "stream error".to_string(),
+            )),
+            None => Err(ReliableDispatchError::NoMessagesAvailable),
         }
     }
 
@@ -212,17 +121,6 @@ impl SubscriptionDispatch {
         request_id: u64,
         msg_id: MessageID,
     ) -> Result<Option<StreamMessage>> {
-        // Validate that the message belongs to current segment
-        // Not sure if needed
-        // if !self.segment.as_ref().map_or(false, |seg| {
-        //     seg.read()
-        //         .map_or(false, |s| s.messages.iter().any(|m| m.msg_id == msg_id))
-        // }) {
-        //     return Err(ReliableDispatchError::AcknowledgmentError(
-        //         "Acked message does not belong to current segment".to_string(),
-        //     ));
-        // }
-
         if let Some((pending_request_id, pending_msg_id)) = &self.pending_ack_message {
             if *pending_request_id == request_id && *pending_msg_id == msg_id {
                 self.pending_ack_message = None;
@@ -235,7 +133,7 @@ impl SubscriptionDispatch {
                 self.retry_count = 0;
 
                 // Try to fetch the next message after acknowledgment
-                match self.process_current_segment().await {
+                match self.process_next_message().await {
                     Ok(message) => {
                         return Ok(Some(message));
                     }
@@ -243,10 +141,7 @@ impl SubscriptionDispatch {
                         return Ok(None);
                     }
                     Err(e) => {
-                        trace!(
-                            "Error processing current segment after acknowledgment: {}",
-                            e
-                        );
+                        trace!("Error processing next message after acknowledgment: {}", e);
 
                         return Ok(None);
                     }
@@ -269,10 +164,6 @@ impl SubscriptionDispatch {
             return Err(ReliableDispatchError::AcknowledgmentError(
                 "No pending message to acknowledge".to_string(),
             ));
-            // Handle stray acknowledgments (when there is no pending message) ?
-            // self.acked_messages.insert(msg_id.clone(), request_id);
-            // No pending message to process; return None
-            //return Ok(None);
         }
     }
 }

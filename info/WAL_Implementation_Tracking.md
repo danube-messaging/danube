@@ -65,33 +65,39 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
   - Exit Criteria:
     - [x] A consumer starting before WAL retention can fully catch up using cloud objects and then tail from WAL without manual intervention; ordering and at-least-once guarantees preserved.
 
-- [ ] Phase D: Integration polish, configuration, optional robustness, and legacy removal
-  - Objectives:
-    - Make the new storage the default path; remove deprecated remote GRPC storage and segment-based code paths.
-    - Finalize configuration with WAL retention-floor knobs.
-  - Scope & Tasks:
-    - [ ] Remove `managed_storage.rs` (remote GRPC) and related configuration.
-    - [ ] Deprecate/remove segment APIs and usages in `dispatch.rs` and related modules.
-    - [ ] Configuration: ensure presence of WAL retention floor knobs:
-      - `wal.retention.min_minutes`, `wal.retention.min_bytes`, `wal.retention.active_subscription_grace_seconds`.
-    - [ ] Config: Add `storage.mode: wal_cloud`, and provide `wal/uploader/cloud` sections in `config/danube_broker.yml`.
-    - [ ] Wire `WalStorage.with_cloud(...)` in broker path with config mapping (cloud, etcd, topic_path) to enable end-to-end historical reads.
-    - [ ] Broker-level validation and graceful fallback when cloud/etcd unavailable.
-    - [ ] Docs and sample config updates.
-    - [ ] Optional robustness: enable opendal layers (RetryLayer, TimeoutLayer, ConcurrencyLimitLayer, MetricsLayer/TracingLayer) with sensible defaults; expose knobs via config.
-    - [ ] Optional integrity metadata: compute/store checksum (e.g., CRC32) when backend ETag is unavailable (fs/memory), or rely on `Metadata::etag()` when provided.
-    - [ ] Observability: dashboards/alerts for WAL growth, uploader lag, split-brain guardrails.
-    - [ ] Documentation: update samples and runbooks to reflect StartPosition API, key-per-object manifest, and ChainingStream handoff.
-  - Exit Criteria:
-    - [ ] Broker runs with `wal_cloud` as default; legacy storage removed from production builds.
-    - [ ] Documentation updated; samples and README reflect the new architecture.
+- [x] Phase D: Remove legacy storage (segments/StorageBackend) and wire wal_cloud end-to-end
+   - Objectives:
+     - Eliminate segment-based storage and the legacy `StorageBackend` API across the workspace.
+     - Standardize on WAL + CloudReader (`WalStorage.with_cloud(...)`) for all reads/writes.
+     - Update broker configuration to a single `wal_cloud` mode and wire config → runtime objects.
+   - Scope & Tasks:
+     - Core API (danube-core):
+       - [x] Delete `StorageBackend` trait and `StorageBackendError` from `danube-core/src/storage.rs`.
+       - [x] Delete segment model (`Segment`) and legacy storage config types (`DiskConfig`, `RemoteStorageConfig`, `CacheConfig`, `StorageConfig`).
+       - [x] Keep only `PersistentStorage` primitives (StartPosition, PersistentStorageError, TopicStream, PersistentStorage).
+     - Persistent storage (danube-persistent-storage):
+       - [x] Remove `managed_storage.rs` (remote gRPC) and `local_disk.rs` (segment/disk path).
+       - [x] Remove `connection.rs` (legacy RPC helper for remote storage).
+       - [x] Update `src/lib.rs` to export only WAL + Cloud components (Wal, WalStorage, CloudStore, EtcdMetadata, Uploader, CloudReader).
+       - [x] Ensure tests cover WAL, uploader, cloud reader, and handoff only; delete/refactor any legacy tests.
+     - Reliable dispatch (danube-reliable-dispatch):
+       - [x] Remove `src/storage_backend.rs` and any references to `StorageBackend`/segments.
+       - [x] Ensure wiring uses only WAL path: `ReliableDispatch::new(topic, opts, WalStorage)` and `TopicStore::create_reader()` delegates to `PersistentStorage`.
+       - [x] Refactor `SubscriptionDispatch` to stream from `TopicStream` (WAL + Cloud) instead of segment logic.
+     - Broker config and wiring:
+       - [x] Add `wal_cloud` with sections for `wal`, `uploader`, `cloud`, `metadata` in `config/danube_broker.yml`.
+       - [x] Wire `WalStorage::from_wal(...).with_cloud(cloud_store, etcd, topic_path)` in broker startup.
+       - [x] Update README/docs and provide a local memory/fs sample config.
+   - Exit Criteria:
+     - [x] Workspace compiles with no references to `StorageBackend`, segments, or legacy Disk/Remote storage.
+     - [x] Broker runs in `wal_cloud` mode; end-to-end publish/consume works with local memory/fs backends.
+     - [x] Test suites pass in persistent-storage and reliable-dispatch.
 
 - [ ] Phase E: Metrics and Observability
   - Objectives:
     - Validate correctness, performance, and resilience across backends and failure modes.
   - Scope & Tasks:
-    - [ ] Add basic metrics scaffolding for cloud read latency/bytes and consumer lag.
-    - [ ] Tracing improvements around CloudReader and WAL handoff events (watermark H, object boundaries).
+    - [ ] Add metrics scaffolding for cloud read latency/bytes and consumer lag (now that Phase D is complete).
     - [~] Unit/integration tests: WAL append/read (file replay), rotation/checkpoint (added), CRC; uploader session lifecycle; CloudReader range reads; ChainingStream watermark selection and duplicate defense.
     - [~] Integration: opendal `memory` and `fs` backends (added tests). Feature-flag E2E for S3 and GCS pending.
     - [ ] Failure injection: cloud outages, WAL corruption, unclean shutdown, leader change/rebalance, inactive subscription scenarios (retention-floor behavior).
@@ -99,6 +105,28 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
   - Exit Criteria:
     - [ ] CI green across unit/integration suites; baseline performance targets met; failure scenarios recover automatically.
 
+
+## Next PR: Concrete Tasks
+- Multipart/retries/throttling/checksums in `Uploader`; align rotation window with WAL files; validate etag/checksum recording.
+- Expose S3/GCS cloud settings in broker wal_cloud config (region, endpoint, credentials) mapped into `CloudStore::Cloud` options.
+- Adopt Writer API.
+- Clean up examples and tests to the WAL-only world:
+  - [x] Reliable-dispatch: renamed `process_current_segment()` to `poll_next()` and removed old method.
+  - [x] Removed lifecycle task scaffolding and `retention_period` from `TopicStore`.
+  - [x] Removed legacy segment-based tests; added WAL replay/tail tests.
+  - [x] Update `danube-reliable-dispatch/examples/wal_wiring.rs` to drop `TopicCache`/`StorageConfig` and use only WAL wiring.
+
+### Completed in this iteration
+- Broker config now uses a tagged enum `CloudConfig` for `wal_cloud.cloud` with variants: `memory`, `fs`, `s3`, `gcs`.
+- Broker startup (`danube-broker/src/main.rs`) maps `CloudConfig` to `BackendConfig::{Local, Cloud}` with options for S3/GCS.
+- `config/danube_broker.yml` updated: default `backend: memory` and appended commented examples for `fs`, `s3`, `gcs`.
+
+## Current Status
+- [x] Phase D complete and build is clean across broker, reliable-dispatch, and persistent-storage.
+- [x] Broker uses `wal_cloud` only; legacy storage removed.
+- [x] Reliable-dispatch is WAL-only; streaming via `TopicStream` with `poll_next()` API.
+- [x] Persistent-storage exports only WAL/Cloud types; legacy files removed.
+- [x] S3/GCS options exposed in broker config and mapped to `CloudStore::Cloud`.
 
 ## Decision Log
 - [x] Phase A uses WAL with in-memory cache, CRC32C frames, batched fsync, file replay, rotation, and checkpoints.

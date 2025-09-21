@@ -75,7 +75,7 @@ impl DispatcherReliableMultipleConsumers {
                 if let Some(active_idx) =
                     Self::get_next_active_consumer(&consumers, &index_consumer).await
                 {
-                    match subscription_dispatch.process_current_segment().await {
+                    match subscription_dispatch.poll_next().await {
                         Ok(msg) => {
                             if let Err(e) = consumers[active_idx].send_message(msg).await {
                                 warn!("Failed to dispatch message: {}", e);
@@ -83,7 +83,7 @@ impl DispatcherReliableMultipleConsumers {
                         }
                         Err(e) => match e {
                             ReliableDispatchError::NoMessagesAvailable => continue,
-                            err => warn!("Error processing current segment: {}", err),
+                            err => warn!("Error polling next message from stream: {}", err),
                         },
                     };
                 }

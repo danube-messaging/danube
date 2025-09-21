@@ -1,7 +1,7 @@
 use crate::{auth::AuthConfig, policies::Policies};
 
 use anyhow::{Context, Result};
-use danube_core::storage::StorageConfig;
+// Legacy StorageConfig removed in Phase D
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -26,8 +26,8 @@ pub(crate) struct LoadConfiguration {
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
-    /// Storage message configuration
-    pub(crate) storage: StorageConfig,
+    /// Optional: new wal_cloud configuration (Phase D)
+    pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
 }
@@ -52,8 +52,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
-    /// Storage message configuration
-    pub(crate) storage: StorageConfig,
+    /// Optional: new wal_cloud configuration (Phase D)
+    pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
 }
@@ -97,8 +97,80 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             meta_store_addr,
             bootstrap_namespaces: config.bootstrap_namespaces,
             policies: config.policies,
-            storage: config.storage,
+            wal_cloud: config.wal_cloud,
             auth: config.auth,
         })
     }
+}
+
+/// wal_cloud configuration (WAL + Cloud + Metadata)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalCloudConfig {
+    pub(crate) wal: WalNode,
+    pub(crate) uploader: UploaderNode,
+    pub(crate) cloud: CloudConfig,
+    pub(crate) metadata: MetadataNode,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalNode {
+    pub(crate) dir: Option<String>,
+    pub(crate) cache_capacity: Option<usize>,
+    pub(crate) rotation: Option<WalRotationNode>,
+    pub(crate) retention: Option<WalRetentionNode>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalRotationNode {
+    pub(crate) max_bytes: Option<u64>,
+    pub(crate) max_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalRetentionNode {
+    pub(crate) min_minutes: Option<u64>,
+    pub(crate) min_bytes: Option<u64>,
+    pub(crate) active_subscription_grace_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct UploaderNode {
+    pub(crate) interval_seconds: u64,
+    pub(crate) max_batch_bytes: u64,
+}
+
+/// Cloud configuration enum (tagged by `backend`)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "backend")]
+pub(crate) enum CloudConfig {
+    #[serde(rename = "memory")]
+    Memory { root: String },
+    #[serde(rename = "fs")]
+    Fs { root: String },
+    #[serde(rename = "s3")]
+    S3 {
+        root: String,
+        region: Option<String>,
+        endpoint: Option<String>,
+        access_key: Option<String>,
+        secret_key: Option<String>,
+        profile: Option<String>,
+        role_arn: Option<String>,
+        session_token: Option<String>,
+        anonymous: Option<bool>,
+    },
+    #[serde(rename = "gcs")]
+    Gcs {
+        root: String,
+        project: Option<String>,
+        credentials_json: Option<String>,
+        credentials_path: Option<String>,
+    },
+}
+
+/// Metadata configuration node
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct MetadataNode {
+    pub(crate) etcd_endpoint: Option<String>,
+    pub(crate) in_memory: Option<bool>,
 }
