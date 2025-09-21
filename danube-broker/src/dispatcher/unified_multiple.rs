@@ -102,8 +102,13 @@ impl UnifiedMultipleDispatcher {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut pending = false; // strict ack-gating across the subscription
 
-            // Initialize stream to Latest by default
-            if let Err(e) = engine.lock().await.init_stream_latest().await {
+            // Initialize stream from persisted progress if available, otherwise Latest
+            if let Err(e) = engine
+                .lock()
+                .await
+                .init_stream_from_progress_or_latest()
+                .await
+            {
                 warn!("Reliable multi dispatcher failed to init stream: {}", e);
             }
 

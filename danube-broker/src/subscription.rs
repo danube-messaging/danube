@@ -4,6 +4,7 @@ use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::time::Duration;
 use tracing::trace;
 
 use crate::{
@@ -15,6 +16,7 @@ use crate::{
         Dispatcher,
     },
     message::AckMessage,
+    resources::TopicResources,
     topic::TopicStore,
     utils::get_random_id,
 };
@@ -122,6 +124,8 @@ impl Subscription {
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
         topic_store: Option<TopicStore>,
+        progress_resources: Option<TopicResources>,
+        sub_progress_flush_interval: Option<Duration>,
     ) -> Result<Option<Arc<Notify>>> {
         let (new_dispatcher, notifier) = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
@@ -156,14 +160,24 @@ impl Subscription {
                 match options.subscription_type {
                     // Exclusive
                     0 => {
-                        let engine =
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
                                 Arc::new(ts.clone())
                                     as Arc<
                                         dyn crate::dispatcher::subscription_engine::TopicStoreLike,
                                     >,
-                            );
+                            )
+                        };
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
@@ -174,14 +188,24 @@ impl Subscription {
 
                     // Shared
                     1 => {
-                        let engine =
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
                                 Arc::new(ts.clone())
                                     as Arc<
                                         dyn crate::dispatcher::subscription_engine::TopicStoreLike,
                                     >,
-                            );
+                            )
+                        };
                         let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
@@ -192,14 +216,24 @@ impl Subscription {
 
                     // Failover (treat as single active consumer)
                     2 => {
-                        let engine =
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
                                 Arc::new(ts.clone())
                                     as Arc<
                                         dyn crate::dispatcher::subscription_engine::TopicStoreLike,
                                     >,
-                            );
+                            )
+                        };
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (

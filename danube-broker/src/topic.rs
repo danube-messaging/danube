@@ -9,6 +9,7 @@ use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
@@ -268,6 +269,8 @@ impl Topic {
                         options.clone(),
                         &self.dispatch_strategy,
                         Some(self.topic_store.clone()),
+                        self.resources_topic.clone(),
+                        Some(Duration::from_secs(10)),
                     )
                     .await?;
 
@@ -276,7 +279,13 @@ impl Topic {
                 }
             } else {
                 let _ = new_subscription
-                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy, None)
+                    .create_new_dispatcher(
+                        options.clone(),
+                        &self.dispatch_strategy,
+                        None,
+                        None,
+                        None,
+                    )
                     .await?;
             }
 

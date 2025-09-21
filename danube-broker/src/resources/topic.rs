@@ -195,4 +195,43 @@ impl TopicResources {
 
         subscriptions
     }
+
+    // Cursor helpers
+    pub(crate) async fn set_subscription_cursor(
+        &mut self,
+        subscription_name: &str,
+        topic_name: &str,
+        offset: u64,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let value = Value::from(offset);
+        self.create(&path, value).await
+    }
+
+    pub(crate) async fn get_subscription_cursor(
+        &mut self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<u64>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let maybe = self.store.get(&path, MetaOptions::None).await?;
+        if let Some(val) = maybe {
+            if let Some(off) = val.as_u64() {
+                return Ok(Some(off));
+            }
+        }
+        Ok(None)
+    }
 }

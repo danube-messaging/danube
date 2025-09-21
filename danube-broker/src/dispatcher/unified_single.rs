@@ -97,9 +97,14 @@ impl UnifiedSingleDispatcher {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut active_consumer: Option<Consumer> = None;
             let mut pending = false; // strict ack-gating
-                                     // Initialize stream to Latest by default
+                                     // Initialize stream from persisted progress if available, otherwise Latest
             {
-                if let Err(e) = engine.lock().await.init_stream_latest().await {
+                if let Err(e) = engine
+                    .lock()
+                    .await
+                    .init_stream_from_progress_or_latest()
+                    .await
+                {
                     warn!("Reliable single dispatcher failed to init stream: {}", e);
                 }
             }
