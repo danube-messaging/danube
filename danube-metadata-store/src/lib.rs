@@ -89,7 +89,7 @@ impl MetadataStorage {
     pub async fn get_bulk(&self, prefix: &str) -> Result<Vec<KeyValueVersion>> {
         match self {
             MetadataStorage::Etcd(store) => store.get_bulk(prefix).await,
-            _ => Err(MetadataError::UnsupportedOperation.into()),
+            MetadataStorage::InMemory(store) => store.get_bulk(prefix).await,
         }
     }
 }

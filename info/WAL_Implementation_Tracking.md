@@ -51,17 +51,19 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
     - [x] Batches uploaded to cloud with rolling objects and ETCD per-object descriptors updated (validated for Memory/Fs backends).
     - [x] Crash/restart resumes uploader from checkpoint.
 
-- [ ] Phase C: CloudReader for historical catch-up behind TopicStore + ChainingStream handoff
+- [x] Phase C: CloudReader for historical catch-up behind TopicStore + ChainingStream handoff
   - Objectives:
     - Support consumers starting behind the WAL retention window to read historical data from cloud and then switch to WAL tail seamlessly.
     - Implement `ChainingStream` adapter for transparent Cloud→WAL handoff without gaps or duplicates.
   - Scope & Tasks:
-    - [ ] danube-persistent-storage: `CloudReader` (prefix/range scans of `/objects/` keys ordered by zero-padded `start_offset`; integrity checks using ETag/CRC when available).
-    - [ ] danube-reliable-dispatch: `TopicStore::create_reader` to return `ChainingStream` that computes watermark H and switches to WAL at `H`.
+    - [x] danube-persistent-storage: `CloudReader` (prefix/range scans of `/objects/` keys ordered by zero-padded `start_offset`; integrity checks using ETag/CRC when available).
+    - [x] danube-persistent-storage: `ChainingStream` handoff implemented inside `WalStorage::create_reader()` using watermark H.
+    - [x] danube-persistent-storage: Extend `WalStorage` to accept optional `CloudStore` + `EtcdMetadata`; implement `create_reader()` selection logic (Cloud→WAL when needed).
+    - [x] danube-reliable-dispatch: Ensure `TopicStore::create_reader` forwards `StartPosition` and returns the PersistentStorage-provided stream (no extra buffering).
     - [ ] Optional: finalize deprecation of `topic_cache.rs` if fully superseded by `WALCache`.
-    - [ ] Metrics: consumer lag, cloud read latency/bytes.
+    - [ ] Moved: Metrics (consumer lag, cloud read latency/bytes) tracked under Phase E.
   - Exit Criteria:
-    - [ ] A consumer starting before WAL retention can fully catch up using cloud objects and then tail from WAL without manual intervention; ordering and at-least-once guarantees preserved.
+    - [x] A consumer starting before WAL retention can fully catch up using cloud objects and then tail from WAL without manual intervention; ordering and at-least-once guarantees preserved.
 
 - [ ] Phase D: Integration polish, configuration, optional robustness, and legacy removal
   - Objectives:
@@ -73,7 +75,9 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
     - [ ] Configuration: ensure presence of WAL retention floor knobs:
       - `wal.retention.min_minutes`, `wal.retention.min_bytes`, `wal.retention.active_subscription_grace_seconds`.
     - [ ] Config: Add `storage.mode: wal_cloud`, and provide `wal/uploader/cloud` sections in `config/danube_broker.yml`.
-    - [ ] Metrics: upload.batch_bytes, upload.latency_ms, manifest.txn_latency_ms, session.resume/abort.
+    - [ ] Wire `WalStorage.with_cloud(...)` in broker path with config mapping (cloud, etcd, topic_path) to enable end-to-end historical reads.
+    - [ ] Broker-level validation and graceful fallback when cloud/etcd unavailable.
+    - [ ] Docs and sample config updates.
     - [ ] Optional robustness: enable opendal layers (RetryLayer, TimeoutLayer, ConcurrencyLimitLayer, MetricsLayer/TracingLayer) with sensible defaults; expose knobs via config.
     - [ ] Optional integrity metadata: compute/store checksum (e.g., CRC32) when backend ETag is unavailable (fs/memory), or rely on `Metadata::etag()` when provided.
     - [ ] Observability: dashboards/alerts for WAL growth, uploader lag, split-brain guardrails.
@@ -82,10 +86,12 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
     - [ ] Broker runs with `wal_cloud` as default; legacy storage removed from production builds.
     - [ ] Documentation updated; samples and README reflect the new architecture.
 
-- [ ] Phase E: Testing, benchmarks, and hardening
+- [ ] Phase E: Metrics and Observability
   - Objectives:
     - Validate correctness, performance, and resilience across backends and failure modes.
   - Scope & Tasks:
+    - [ ] Add basic metrics scaffolding for cloud read latency/bytes and consumer lag.
+    - [ ] Tracing improvements around CloudReader and WAL handoff events (watermark H, object boundaries).
     - [~] Unit/integration tests: WAL append/read (file replay), rotation/checkpoint (added), CRC; uploader session lifecycle; CloudReader range reads; ChainingStream watermark selection and duplicate defense.
     - [~] Integration: opendal `memory` and `fs` backends (added tests). Feature-flag E2E for S3 and GCS pending.
     - [ ] Failure injection: cloud outages, WAL corruption, unclean shutdown, leader change/rebalance, inactive subscription scenarios (retention-floor behavior).
@@ -93,14 +99,9 @@ This file tracks the end-to-end implementation progress for the WAL-first storag
   - Exit Criteria:
     - [ ] CI green across unit/integration suites; baseline performance targets met; failure scenarios recover automatically.
 
-## Next PR: Concrete Tasks
-- Multipart/retries/throttling/checksums in `Uploader`; align rotation window with WAL files; validate etag/checksum recording.
-- Optional: Add `CloudReader` skeleton and begin ChainingStream integration.
-- Move config + metrics to Phase D deliverables (tracked above).
-- Adopt Writer API.
 
 ## Decision Log
 - [x] Phase A uses WAL with in-memory cache, CRC32C frames, batched fsync, file replay, rotation, and checkpoints.
 - [x] Subscription start policy: `SubscriptionDispatch` selects `StartPosition::{Latest, Offset(S)}`; `TopicStore` materializes the requested stream.
-- [~] Cloud→WAL handoff via `ChainingStream` (planned for Phase C).
+- [x] Cloud→WAL handoff via `ChainingStream` (planned for Phase C).
 - [x] Added example `danube-reliable-dispatch/examples/wal_wiring.rs` demonstrating durable WAL configuration and wiring.

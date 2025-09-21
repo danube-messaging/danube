@@ -22,3 +22,6 @@ pub use uploader::{Uploader, UploaderConfig};
 
 mod etcd_metadata;
 pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
+
+mod cloud_reader;
+pub use cloud_reader::CloudReader;

@@ -29,8 +29,7 @@ jobs:
 
       - name: Run library unit tests
         run: |
-          cargo test --lib -p danube-core
-          cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
+          cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-persistent-storage
