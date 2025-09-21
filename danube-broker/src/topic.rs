@@ -6,7 +6,7 @@ use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tracing::{info, trace, warn};
+use tracing::{info, warn};
 
 use crate::{
     broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
@@ -158,13 +158,7 @@ impl Topic {
                 reliable_dispatch.store_message(stream_message).await?;
 
                 let notifier_guard = self.notifiers.lock().await;
-                trace!(
-                    topic = %self.topic_name,
-                    notifiers = notifier_guard.len(),
-                    "Producer stored message to WAL; notifying dispatchers"
-                );
-                for (i, notifier) in notifier_guard.iter().enumerate() {
-                    trace!(topic = %self.topic_name, idx = i, "Notify dispatcher");
+                for notifier in notifier_guard.iter() {
                     notifier.notify_one();
                 }
                 Ok(())
@@ -268,11 +262,6 @@ impl Topic {
                     .await?;
 
                 if let Some(notifier) = notifier {
-                    trace!(
-                        topic = %self.topic_name,
-                        subscription = %new_subscription.subscription_name,
-                        "Registering dispatcher notifier for reliable subscription"
-                    );
                     self.notifiers.lock().await.push(notifier);
                 }
             } else {
