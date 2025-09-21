@@ -1,6 +1,5 @@
 mod topic_storage;
 mod topic_storage_test;
-pub use storage_backend::create_message_storage;
 use topic_storage::TopicStore;
 mod errors;
 pub use errors::ReliableDispatchError;
@@ -8,9 +7,6 @@ use errors::Result;
 mod dispatch;
 mod dispatch_test;
 pub use dispatch::SubscriptionDispatch;
-mod storage_backend;
-mod topic_cache;
-pub use topic_cache::TopicCache;
 
 use danube_core::{
     dispatch_strategy::ReliableOptions,
@@ -33,32 +29,18 @@ pub struct ReliableDispatch {
 }
 
 impl ReliableDispatch {
+    /// Construct a ReliableDispatch using a provided WalStorage (WAL + Cloud path).
     pub fn new(
         topic_name: &str,
         reliable_options: ReliableOptions,
-        topic_cache: TopicCache,
+        wal_storage: WalStorage,
     ) -> Self {
         let subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>> = Arc::new(DashMap::new());
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
         let subscriptions_cloned = Arc::clone(&subscriptions);
 
-        let retention_policy = reliable_options.retention_policy.clone();
-        let mut topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
-        // Enable WAL-first persistent storage only when explicitly requested via env flag.
-        // This keeps broker tests on the legacy segment path while WAL integration is completed.
-        if std::env::var("DANUBE_ENABLE_WAL")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-        {
-            topic_store.use_persistent_storage(WalStorage::new());
-        }
-        // Start the lifecycle management task
-        topic_store.start_lifecycle_management_task(
-            shutdown_rx,
-            subscriptions_cloned,
-            retention_policy,
-        );
-
+        let topic_store = TopicStore::new(&topic_name, reliable_options, wal_storage);
+        // Lifecycle management task removed in WAL-only path
         Self {
             topic_store,
             subscriptions,
@@ -66,43 +48,22 @@ impl ReliableDispatch {
         }
     }
 
-    /// Construct a ReliableDispatch using a pre-configured persistent storage (e.g., WAL with WalConfig).
+    /// Backward-compat alias to construct with an explicitly provided WalStorage
     pub fn new_with_persistent(
         topic_name: &str,
         reliable_options: ReliableOptions,
-        topic_cache: TopicCache,
-        wal_storage: danube_persistent_storage::WalStorage,
+        wal_storage: WalStorage,
     ) -> Self {
-        let subscriptions: Arc<DashMap<String, Arc<AtomicUsize>>> = Arc::new(DashMap::new());
-        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
-        let subscriptions_cloned = Arc::clone(&subscriptions);
-
-        let retention_policy = reliable_options.retention_policy.clone();
-        let mut topic_store = TopicStore::new(&topic_name, topic_cache, reliable_options);
-        topic_store.use_persistent_storage(wal_storage);
-        topic_store.start_lifecycle_management_task(
-            shutdown_rx,
-            subscriptions_cloned,
-            retention_policy,
-        );
-
-        Self {
-            topic_store,
-            subscriptions,
-            shutdown_tx,
-        }
+        Self::new(topic_name, reliable_options, wal_storage)
     }
 
     pub async fn new_subscription_dispatch(
         &self,
         subscription_name: &str,
     ) -> Result<SubscriptionDispatch> {
-        let sub_last_acked_segment = self
-            .get_last_acknowledged_segment(subscription_name)
-            .await?;
-
-        let subscription_dispatch =
-            SubscriptionDispatch::new(self.topic_store.clone(), sub_last_acked_segment);
+        // For WAL-only streaming, we no longer need the last_acked_segment here.
+        // SubscriptionDispatch maintains its own pending ack state while streaming.
+        let subscription_dispatch = SubscriptionDispatch::new(self.topic_store.clone());
 
         //self.subscription_dispatch.insert(subscription_name.to_string(), subscription_name.to_string());
 

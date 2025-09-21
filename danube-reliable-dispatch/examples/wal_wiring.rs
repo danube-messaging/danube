@@ -4,7 +4,7 @@
 // hot path.
 // What it shows:
 // - Creating a WAL with file-backed durability (batched fsync, CRC frames)
-// - Wiring WAL into ReliableDispatch alongside a TopicCache built from StorageConfig::InMemory
+// - Wiring WAL into ReliableDispatch in WAL-only mode (no legacy TopicCache/StorageConfig)
 // - Creating a stream at Latest and verifying that only messages appended after subscription arrive
 // Expected behavior:
 // - After create_stream_latest(), messages appended are delivered in order over the WAL-backed path
@@ -12,11 +12,9 @@
 
 use danube_core::dispatch_strategy::{ReliableOptions, RetentionPolicy};
 use danube_core::message::{MessageID, StreamMessage};
-use danube_core::storage::{CacheConfig, StorageConfig};
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
-use danube_reliable_dispatch::create_message_storage;
-use danube_reliable_dispatch::{ReliableDispatch, TopicCache};
+use danube_reliable_dispatch::ReliableDispatch;
 use tokio_stream::StreamExt;
 
 fn make_msg(
@@ -60,25 +58,11 @@ async fn main() {
 
     let wal_storage = WalStorage::from_wal(wal);
 
-    // ReliableDispatch wiring with pre-configured WAL
+    // ReliableDispatch wiring with pre-configured WAL (WAL-only)
     let topic_name = "/default/wal-example";
     let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
 
-    // Build a TopicCache using the public factory and in-memory storage config
-    let storage_cfg = StorageConfig::InMemory {
-        cache: CacheConfig {
-            max_capacity: 100,
-            time_to_idle: 10,
-        },
-    };
-    let topic_cache: TopicCache = create_message_storage(&storage_cfg).await;
-
-    let dispatch = ReliableDispatch::new_with_persistent(
-        topic_name,
-        reliable_options,
-        topic_cache,
-        wal_storage,
-    );
+    let dispatch = ReliableDispatch::new_with_persistent(topic_name, reliable_options, wal_storage);
 
     // Create a stream starting at Latest (will yield messages appended after this point)
     let mut stream = dispatch

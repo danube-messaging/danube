@@ -1,4 +1,3 @@
-use danube_core::storage::StorageBackendError;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, ReliableDispatchError>;
@@ -31,10 +30,4 @@ pub enum ReliableDispatchError {
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
-}
-
-impl From<StorageBackendError> for ReliableDispatchError {
-    fn from(error: StorageBackendError) -> Self {
-        ReliableDispatchError::StorageError(error.to_string())
-    }
 }

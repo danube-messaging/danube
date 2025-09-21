@@ -36,29 +36,27 @@ auth:
     issuer: "danube-auth"
     expiration_time: 3600 # in seconds
 
-# Messsage Storage Configuration
-storage:
-  # Valid options: local, remote
-  # the "inmemory" should be used only for local testing !
-  type: "inmemory"
-
-  # Cache configuration
-  # if the segment is not found in the cache, it will be loaded from the storage
-  cache:
-    max_capacity: 100 # number of segment entries in the cache
-    # A cached entry will be expired after the specified duration past from get or insert.
-    time_to_idle: 10 # in minutes
-
-  # Disk storage configuration
-  local_config:
-    path: "./your_directory"
-
-  # Managed storage configuration, connect to external grpc storage layer
-  remote_config:
-    endpoint: "grpc://0.0.0.0:50060"
-    use_tls: false
-    ca_file: "ca-cert.pem"
-    connection_timeout: 5000
+# wal_cloud configuration
+wal_cloud:
+  wal:
+    dir: "./data/wal"
+    cache_capacity: 1024
+    rotation:
+      max_bytes: 10485760      # 10 MB
+      max_seconds: 60          # rotate every 60s (if implemented)
+    retention:
+      min_minutes: 60
+      min_bytes: 104857600     # 100 MB
+      active_subscription_grace_seconds: 300
+  uploader:
+    interval_seconds: 1
+    max_batch_bytes: 8388608   # 8 MB
+  cloud:
+    backend: "memory"         # options: memory | fs | s3 | gcs
+    root: "mem-prefix"        # when backend: memory, this is a namespace prefix (ignored by some backends)
+  metadata:
+    etcd_endpoint: "127.0.0.1:2379"
+    in_memory: false
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:
@@ -93,3 +91,35 @@ policies:
   # Limits the maximum size of a single message that can be published to the topic.
   # Default is 10 MB
   max_message_size: 10485760 # in bytes which means 10 MB
+
+#
+# --- Cloud backend examples ---
+#
+# Example: Local filesystem backend
+#wal_cloud:
+#  cloud:
+#    backend: "fs"
+#    root: "./object_root"     # directory where object data will be stored
+
+# Example: Amazon S3 backend
+#wal_cloud:
+#  cloud:
+#    backend: "s3"
+#    root: "s3://my-bucket/prefix"  # bucket and optional prefix
+#    region: "us-east-1"
+#    endpoint: "https://s3.us-east-1.amazonaws.com"   # optional custom endpoint
+#    access_key: "${AWS_ACCESS_KEY_ID}"               # or omit and rely on env/instance profile
+#    secret_key: "${AWS_SECRET_ACCESS_KEY}"
+#    profile: null                                      # optional AWS profile name
+#    role_arn: null                                     # optional role to assume
+#    session_token: null                                # optional session token
+#    anonymous: false                                   # true to use anonymous access for public buckets
+
+# Example: Google Cloud Storage backend
+#wal_cloud:
+#  cloud:
+#    backend: "gcs"
+#    root: "gcs://my-bucket/prefix"
+#    project: "my-gcp-project"
+#    credentials_json: null                             # inline JSON (string)
+#    credentials_path: "/path/to/creds.json"          # or a path to credentials file
