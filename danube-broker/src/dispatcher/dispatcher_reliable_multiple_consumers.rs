@@ -3,6 +3,7 @@ use danube_reliable_dispatch::{ReliableDispatchError, SubscriptionDispatch};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify};
+use tokio::time::{interval, Duration};
 use tracing::{trace, warn};
 
 use crate::{consumer::Consumer, dispatcher::DispatcherCommand, message::AckMessage};
@@ -15,10 +16,23 @@ pub(crate) struct DispatcherReliableMultipleConsumers {
 }
 
 impl DispatcherReliableMultipleConsumers {
+    fn start_periodic_wakeup(notify: Arc<Notify>) {
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_millis(50));
+            loop {
+                tick.tick().await;
+                notify.notify_one();
+            }
+        });
+    }
+
     pub(crate) fn new(mut subscription_dispatch: SubscriptionDispatch) -> Self {
         let (control_tx, mut control_rx) = mpsc::channel(16);
         let notify_dispatch = Arc::new(Notify::new());
         let notify_dispatch_clone = notify_dispatch.clone();
+
+        // Start periodic wakeups to avoid stalling when no acks/control arrive
+        Self::start_periodic_wakeup(notify_dispatch.clone());
 
         // Spawn dispatcher task
         tokio::spawn(async move {
