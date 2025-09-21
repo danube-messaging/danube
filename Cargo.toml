@@ -11,9 +11,6 @@ members = [
     # -- Danube messaging core types and traits
     "danube-core", 
 
-    # -- Danube Reliable Dispatch lib 
-    "danube-reliable-dispatch",
-
     # -- Danube Metadata Store lib
     "danube-metadata-store", 
 
