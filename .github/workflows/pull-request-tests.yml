@@ -116,7 +116,6 @@ jobs:
           # Run danube-persistent-storage integration tests
           cargo test -p danube-persistent-storage --tests -- --nocapture
           # Run library unit tests
-          cargo test --lib -p danube-reliable-dispatch
           cargo test --lib -p danube-client
           cargo test --lib -p danube-metadata-store
           cargo test --lib -p danube-persistent-storage
