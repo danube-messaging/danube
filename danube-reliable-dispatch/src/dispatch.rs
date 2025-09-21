@@ -39,11 +39,11 @@ impl SubscriptionDispatch {
 
     /// Poll next message from the persistent stream (WAL + Cloud handoff as needed)
     pub async fn poll_next(&mut self) -> Result<StreamMessage> {
-        // Ensure a stream exists; start from Latest by default
+        // Ensure a stream exists; start from beginning (offset 0) to read all messages
         if self.stream.is_none() {
             let s = self
                 .topic_store
-                .create_reader(StartPosition::Latest)
+                .create_reader(StartPosition::Offset(0))
                 .await
                 .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
             self.stream = Some(s);
@@ -95,7 +95,7 @@ impl SubscriptionDispatch {
         if self.stream.is_none() {
             let s = self
                 .topic_store
-                .create_reader(StartPosition::Latest)
+                .create_reader(StartPosition::Offset(0))
                 .await
                 .map_err(|e| ReliableDispatchError::StorageError(e.to_string()))?;
             self.stream = Some(s);
