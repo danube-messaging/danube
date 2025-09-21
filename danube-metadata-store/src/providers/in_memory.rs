@@ -2,7 +2,7 @@ use crate::{
     errors::Result,
     store::{MetaOptions, MetadataStore},
     watch::WatchStream,
-    MetadataError,
+    KeyValueVersion, MetadataError,
 };
 
 use async_trait::async_trait;
@@ -26,14 +26,17 @@ impl MemoryStore {
         })
     }
 
-    fn get_map(&self, path: &str) -> Result<RefMut<String, BTreeMap<String, Value>>> {
+    fn get_map(&self, path: &str) -> Result<RefMut<'_, String, BTreeMap<String, Value>>> {
         let parts: Vec<&str> = path.split('/').take(3).collect();
-        
+
         // Validate that path has at least 3 parts (empty, namespace, category)
         if parts.len() < 3 {
-            return Err(MetadataError::InvalidArguments(format!("Path must have at least 3 segments: {}", path)));
+            return Err(MetadataError::InvalidArguments(format!(
+                "Path must have at least 3 segments: {}",
+                path
+            )));
         }
-        
+
         let key = parts.join("/");
         let bmap = self.inner.entry(key.to_owned()).or_insert(BTreeMap::new());
 
@@ -94,7 +97,10 @@ impl MetadataStore for MemoryStore {
 
         // Validate that there's actually a key to store (path must have more than 3 parts)
         if key.is_empty() {
-            return Err(MetadataError::InvalidArguments(format!("Path must have a key component: {}", path)));
+            return Err(MetadataError::InvalidArguments(format!(
+                "Path must have a key component: {}",
+                path
+            )));
         }
 
         bmap.insert(key, value);
@@ -146,6 +152,38 @@ impl MemoryStore {
         }
 
         Ok(())
+    }
+
+    /// Return all key/value/version entries under a given prefix, similar to Etcd `get_bulk`.
+    /// Keys are returned as full paths and values are JSON-serialized bytes of the stored Value.
+    pub async fn get_bulk(&self, prefix: &str) -> Result<Vec<KeyValueVersion>> {
+        // Determine map key (first 3 path segments) and the suffix to match inside the map.
+        let map_parts: Vec<&str> = prefix.split('/').take(3).collect();
+        if map_parts.len() < 3 {
+            return Err(MetadataError::InvalidArguments(format!(
+                "Prefix must have at least 3 segments: {}",
+                prefix
+            )));
+        }
+        let map_prefix = map_parts.join("/");
+        let suffix_parts: Vec<&str> = prefix.split('/').skip(3).collect();
+        let suffix = suffix_parts.join("/");
+
+        let mut out: Vec<KeyValueVersion> = Vec::new();
+        if let Some(bmap_ref) = self.inner.get(&map_prefix) {
+            for (k, v) in bmap_ref.iter() {
+                if k.starts_with(&suffix) {
+                    let full_key = format!("{}/{}", map_prefix, k);
+                    let value_bytes = serde_json::to_vec(v)?;
+                    out.push(KeyValueVersion {
+                        key: full_key,
+                        value: value_bytes,
+                        version: 0, // in-memory backend doesn't track versions
+                    });
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -337,6 +375,52 @@ mod tests {
 
         // Assert that no paths are found
         assert!(paths.is_empty());
+
+        Ok(())
+    }
+
+    /// Tests get_bulk API for in-memory backend
+    /// Purpose: Ensures MemoryStore::get_bulk returns full paths and serialized values like Etcd
+    /// Expected: Returns all keys under the given prefix with JSON-serialized values
+    #[tokio::test]
+    async fn test_get_bulk() -> Result<()> {
+        let store = MemoryStore::new().await?;
+
+        // Seed data
+        store
+            .put(
+                "/danube/storage/topics/tenant/ns/topic/objects/00000000000000000010",
+                serde_json::json!({"object_id":"data-10-20.dnb1","start_offset":10}),
+                MetaOptions::None,
+            )
+            .await?;
+        store
+            .put(
+                "/danube/storage/topics/tenant/ns/topic/objects/00000000000000000030",
+                serde_json::json!({"object_id":"data-30-40.dnb1","start_offset":30}),
+                MetaOptions::None,
+            )
+            .await?;
+
+        // Call get_bulk on the directory prefix
+        let prefix = "/danube/storage/topics/tenant/ns/topic/objects/";
+        let kvs = store.get_bulk(prefix).await?;
+
+        // Should return two entries with full paths and JSON bytes
+        assert_eq!(kvs.len(), 2);
+        let keys: std::collections::HashSet<String> = kvs.iter().map(|kv| kv.key.clone()).collect();
+        assert!(
+            keys.contains("/danube/storage/topics/tenant/ns/topic/objects/00000000000000000010")
+        );
+        assert!(
+            keys.contains("/danube/storage/topics/tenant/ns/topic/objects/00000000000000000030")
+        );
+
+        // Validate values are valid JSON
+        for kv in kvs {
+            let _v: serde_json::Value =
+                serde_json::from_slice(&kv.value).expect("valid json bytes");
+        }
 
         Ok(())
     }

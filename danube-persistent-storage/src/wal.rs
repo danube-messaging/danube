@@ -289,7 +289,7 @@ impl Wal {
         Ok(Box::pin(stream))
     }
 
-    /// Snapshot cached messages with offset strictly greater than `after_offset`.
+    /// Snapshot cached messages with offset greater than or equal to `after_offset`.
     /// Returns the collected items and the highest offset observed (watermark).
     pub async fn read_cached_since(
         &self,
@@ -299,7 +299,7 @@ impl Wal {
         let mut items = Vec::new();
         let mut watermark = after_offset;
         for (off, msg) in cache.iter() {
-            if *off > after_offset {
+            if *off >= after_offset {
                 items.push((*off, msg.clone()));
                 if *off > watermark {
                     watermark = *off;

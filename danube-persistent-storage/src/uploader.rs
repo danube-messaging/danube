@@ -6,6 +6,7 @@ use tokio::task::JoinHandle;
 use crate::cloud_store::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 use crate::wal::{UploaderCheckpoint, Wal};
+use bincode;
 
 #[derive(Debug, Clone)]
 pub struct UploaderConfig {
@@ -73,22 +74,51 @@ impl Uploader {
             loop {
                 ticker.tick().await;
 
-                let after = self.last_uploaded_offset.load(Ordering::Acquire);
-                let (items, watermark) = self.wal.read_cached_since(after).await?;
+                // Determine the start offset for this batch.
+                // First run (no prior commit): start at 0 (inclusive) so offset 0 is included.
+                // Subsequent runs: start strictly after the last committed offset to avoid duplicates.
+                let last_committed = self.last_uploaded_offset.load(Ordering::Acquire);
+                let start_from = if last_committed == 0 {
+                    0
+                } else {
+                    last_committed.saturating_add(1)
+                };
+                let (items, watermark) = self.wal.read_cached_since(start_from).await?;
                 if items.is_empty() {
                     continue;
                 }
 
-                // Build a simple binary blob of payloads for now
+                // Build a self-describing framed object so CloudReader can reconstruct messages.
+                // Format v1 (DNB1):
+                //   magic: 4 bytes = "DNB1"
+                //   version: u8 = 1
+                //   record_count: u32
+                //   repeated records:
+                //     [u64 offset][u32 len][bytes bincode(StreamMessage)]
                 let mut bytes = Vec::new();
-                let start_offset = items.first().map(|(o, _)| *o).unwrap_or(after + 1);
-                let end_offset = items.last().map(|(o, _)| *o).unwrap_or(after);
-                for (_off, msg) in &items {
-                    bytes.extend_from_slice(&msg.payload);
+                let start_offset = items.first().map(|(o, _)| *o).unwrap_or(last_committed);
+                let end_offset = items.last().map(|(o, _)| *o).unwrap_or(last_committed);
+                // header
+                bytes.extend_from_slice(b"DNB1");
+                bytes.push(1u8); // version
+                let count = items.len() as u32;
+                bytes.extend_from_slice(&count.to_le_bytes());
+                // records
+                for (off, msg) in &items {
+                    bytes.extend_from_slice(&off.to_le_bytes());
+                    let rec = bincode::serialize(msg).map_err(|e| {
+                        PersistentStorageError::Other(format!(
+                            "uploader: serialize StreamMessage failed: {}",
+                            e
+                        ))
+                    })?;
+                    let len = rec.len() as u32;
+                    bytes.extend_from_slice(&len.to_le_bytes());
+                    bytes.extend_from_slice(&rec);
                 }
 
-                // Object name convention: data-<start>-<end>.bin
-                let object_id = format!("data-{}-{}.bin", start_offset, end_offset);
+                // Object name convention: data-<start>-<end>.dnb1
+                let object_id = format!("data-{}-{}.dnb1", start_offset, end_offset);
                 // Store under a stable namespace relative to the CloudStore root
                 // Final key will be <cloud_root>/<root_prefix>/storage/topics/<topic_path>/objects/<object_id>
                 let object_path = format!(
