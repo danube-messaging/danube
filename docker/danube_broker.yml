@@ -1,0 +1,94 @@
+# Danube Broker Configuration for Docker Compose with MinIO S3 Storage
+# Optimized for cloud-ready deployment with AWS S3 compatibility
+
+# Danube cluster name
+cluster_name: "DANUBE_DOCKER_CLUSTER"
+
+# Danube Broker hostname
+# Using 0.0.0.0 to bind to all interfaces within container
+broker_host: "0.0.0.0"
+
+# Ports for the Danube broker services
+# Port for gRPC communication with the broker
+broker_port: 6650
+# Port for the Admin API
+admin_port: 50051
+# Port for Prometheus exporter
+prom_port: 9040
+
+# Metadata Persistent Store address (ETCD)
+# Using container hostname for service discovery
+meta_store_host: "etcd"
+# Port for etcd
+meta_store_port: 2379
+
+# Namespaces to be created on boot
+bootstrap_namespaces:
+  - "default"
+  - "examples"
+  - "testing"
+
+# Security Configuration - Disabled for development
+auth:
+  mode: none # Options: none, tls, tlswithjwt
+
+# WAL and Cloud Storage Configuration
+# Configured for MinIO S3-compatible storage
+wal_cloud:
+  # Write-Ahead Log configuration
+  wal:
+    dir: "/data/wal"
+    cache_capacity: 2048
+    rotation:
+      max_bytes: 52428800      # 50 MB - larger for better performance
+      max_seconds: 300         # rotate every 5 minutes
+    retention:
+      min_minutes: 120         # keep WAL for 2 hours
+      min_bytes: 209715200     # 200 MB minimum retention
+      active_subscription_grace_seconds: 600  # 10 minutes grace period
+
+  # Uploader configuration for background S3 uploads
+  uploader:
+    interval_seconds: 5        # upload every 5 seconds
+    max_batch_bytes: 16777216  # 16 MB batches
+
+  # Cloud storage backend - MinIO S3 configuration
+  cloud:
+    backend: "s3"
+    root: "s3://danube-messages/cluster-data"  # S3 bucket and prefix
+    region: "us-east-1"
+    endpoint: "http://minio:9000"              # MinIO endpoint within Docker network
+    access_key: "${AWS_ACCESS_KEY_ID}"         # From environment variable
+    secret_key: "${AWS_SECRET_ACCESS_KEY}"     # From environment variable
+    anonymous: false
+
+  # Metadata configuration
+  metadata:
+    etcd_endpoint: "etcd:2379"
+    in_memory: false
+
+# Broker policies optimized for development and testing
+policies:
+  # Allow unlimited producers for testing
+  max_producers_per_topic: 0
+
+  # Allow unlimited subscriptions for testing
+  max_subscriptions_per_topic: 0
+
+  # Allow unlimited consumers for testing
+  max_consumers_per_topic: 0
+
+  # Allow unlimited consumers per subscription for testing
+  max_consumers_per_subscription: 0
+
+  # Allow high publish rate for performance testing
+  max_publish_rate: 0
+
+  # Allow high dispatch rate for performance testing
+  max_dispatch_rate: 0
+
+  # Allow high subscription dispatch rate for performance testing
+  max_subscription_dispatch_rate: 0
+
+  # Allow larger messages for testing (50 MB)
+  max_message_size: 52428800
