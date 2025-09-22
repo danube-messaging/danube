@@ -9,7 +9,6 @@ edition = "2021"
 danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
 danube-metadata-store = {path = "../danube-metadata-store"}
-danube-reliable-dispatch = {path = "../danube-reliable-dispatch"}
 danube-persistent-storage = {path = "../danube-persistent-storage"}
 dashmap = { workspace = true }
 futures = { workspace = true }

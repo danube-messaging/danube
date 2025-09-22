@@ -270,13 +270,21 @@ impl Wal {
             None => from_offset,
         };
 
-        let replay_stream = tokio_stream::iter(replay_items.into_iter().map(|(_, msg)| Ok(msg)));
+        // Inject WAL offset into MessageID.segment_offset for replayed items
+        let replay_stream = tokio_stream::iter(replay_items.into_iter().map(|(off, mut msg)| {
+            msg.msg_id.segment_offset = off;
+            Ok(msg)
+        }));
 
         // Live tailing from broadcast, starting after last_replayed if any replay happened,
         // otherwise start exactly at from_offset to include the very next append.
         let rx = self.inner.tx.subscribe();
+        // Inject WAL offset into MessageID.segment_offset for live items
         let live_stream = BroadcastStream::new(rx).filter_map(move |item| match item {
-            Ok((off, msg)) if off >= start_from_live => Some(Ok(msg)),
+            Ok((off, mut msg)) if off >= start_from_live => {
+                msg.msg_id.segment_offset = off;
+                Some(Ok(msg))
+            }
             Ok(_) => None, // skip older
             Err(e) => Some(Err(PersistentStorageError::Other(format!(
                 "broadcast error: {}",

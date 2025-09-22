@@ -4,6 +4,7 @@ use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::time::Duration;
 use tracing::trace;
 
 use crate::{
@@ -11,12 +12,12 @@ use crate::{
     consumer::Consumer,
     dispatch_strategy::DispatchStrategy,
     dispatcher::{
-        dispatcher_multiple_consumers::DispatcherMultipleConsumers,
-        dispatcher_reliable_multiple_consumers::DispatcherReliableMultipleConsumers,
-        dispatcher_reliable_single_consumer::DispatcherReliableSingleConsumer,
-        dispatcher_single_consumer::DispatcherSingleConsumer, Dispatcher,
+        unified_multiple::UnifiedMultipleDispatcher, unified_single::UnifiedSingleDispatcher,
+        Dispatcher,
     },
     message::AckMessage,
+    resources::TopicResources,
+    topic::TopicStore,
     utils::get_random_id,
 };
 
@@ -122,24 +123,29 @@ impl Subscription {
         &mut self,
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
+        topic_store: Option<TopicStore>,
+        progress_resources: Option<TopicResources>,
+        sub_progress_flush_interval: Option<Duration>,
     ) -> Result<Option<Arc<Notify>>> {
         let (new_dispatcher, notifier) = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
                 0 => (
-                    Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                    Dispatcher::UnifiedOneConsumer(UnifiedSingleDispatcher::new_non_reliable()),
                     None,
                 ),
 
                 // Shared
                 1 => (
-                    Dispatcher::MultipleConsumers(DispatcherMultipleConsumers::new()),
+                    Dispatcher::UnifiedMultipleConsumers(
+                        UnifiedMultipleDispatcher::new_non_reliable(),
+                    ),
                     None,
                 ),
 
                 // Failover
                 2 => (
-                    Dispatcher::OneConsumer(DispatcherSingleConsumer::new()),
+                    Dispatcher::UnifiedOneConsumer(UnifiedSingleDispatcher::new_non_reliable()),
                     None,
                 ),
 
@@ -147,41 +153,91 @@ impl Subscription {
                     return Err(anyhow!("Should not get here"));
                 }
             },
-            DispatchStrategy::Reliable(reliable_dispatcher) => {
-                let subscription_dispatch = reliable_dispatcher
-                    .new_subscription_dispatch(&options.subscription_name)
-                    .await?;
-
+            DispatchStrategy::Reliable => {
+                // Use unified reliable dispatchers with ack-gating via SubscriptionEngine over TopicStore
+                let ts = topic_store
+                    .ok_or_else(|| anyhow!("TopicStore not provided for reliable dispatcher"))?;
                 match options.subscription_type {
                     // Exclusive
                     0 => {
-                        let new_dispatcher =
-                            DispatcherReliableSingleConsumer::new(subscription_dispatch);
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
+                                options.subscription_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<
+                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
+                                    >,
+                            )
+                        };
+                        let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
-                            Dispatcher::ReliableOneConsumer(new_dispatcher),
+                            Dispatcher::UnifiedOneConsumer(new_dispatcher),
                             Some(notifier),
                         )
                     }
 
                     // Shared
                     1 => {
-                        let new_dispatcher =
-                            DispatcherReliableMultipleConsumers::new(subscription_dispatch);
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
+                                options.subscription_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<
+                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
+                                    >,
+                            )
+                        };
+                        let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
-                            Dispatcher::ReliableMultipleConsumers(new_dispatcher),
+                            Dispatcher::UnifiedMultipleConsumers(new_dispatcher),
                             Some(notifier),
                         )
                     }
 
-                    // Failover
+                    // Failover (treat as single active consumer)
                     2 => {
-                        let new_dispatcher =
-                            DispatcherReliableSingleConsumer::new(subscription_dispatch);
+                        let engine = if let Some(pr) = progress_resources.clone() {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
+                                options.subscription_name.clone(),
+                                self.topic_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                pr,
+                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            )
+                        } else {
+                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
+                                options.subscription_name.clone(),
+                                Arc::new(ts.clone())
+                                    as Arc<
+                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
+                                    >,
+                            )
+                        };
+                        let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
-                            Dispatcher::ReliableOneConsumer(new_dispatcher),
+                            Dispatcher::UnifiedOneConsumer(new_dispatcher),
                             Some(notifier),
                         )
                     }

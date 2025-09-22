@@ -1,16 +1,21 @@
 use anyhow::{anyhow, Result};
-use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
+use danube_core::{
+    dispatch_strategy::ConfigDispatchStrategy,
+    message::StreamMessage,
+    storage::{PersistentStorage, StartPosition, TopicStream},
+};
 use danube_persistent_storage::WalStorage;
-use danube_reliable_dispatch::ReliableDispatch;
 use metrics::counter;
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
     broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
     dispatch_strategy::DispatchStrategy,
+    dispatcher::subscription_engine::TopicStoreLike,
     message::AckMessage,
     policies::Policies,
     producer::Producer,
@@ -18,6 +23,10 @@ use crate::{
     schema::Schema,
     subscription::{Subscription, SubscriptionOptions},
 };
+
+#[cfg(test)]
+#[path = "topic_tests.rs"]
+mod topic_tests;
 
 pub(crate) static SYSTEM_TOPIC: &str = "/system/_events_topic";
 
@@ -45,6 +54,8 @@ pub(crate) struct Topic {
     notifiers: Mutex<Vec<Arc<Notify>>>,
     // handle to metadata topic resources for cleanup operations
     resources_topic: Option<TopicResources>,
+    // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
+    topic_store: TopicStore,
 }
 
 impl Topic {
@@ -54,11 +65,10 @@ impl Topic {
         wal_storage: WalStorage,
         resources_topic: Option<TopicResources>,
     ) -> Self {
+        let topic_store = TopicStore::new(topic_name.to_string(), wal_storage.clone());
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
-            ConfigDispatchStrategy::Reliable(reliable_options) => DispatchStrategy::Reliable(
-                ReliableDispatch::new(topic_name, reliable_options, wal_storage),
-            ),
+            ConfigDispatchStrategy::Reliable(_reliable_options) => DispatchStrategy::Reliable,
         };
 
         Topic {
@@ -70,6 +80,7 @@ impl Topic {
             dispatch_strategy,
             notifiers: Mutex::new(Vec::new()),
             resources_topic,
+            topic_store,
         }
     }
 
@@ -153,9 +164,9 @@ impl Topic {
             DispatchStrategy::NonReliable => {
                 self.dispatch_to_subscriptions_async(stream_message).await
             }
-            DispatchStrategy::Reliable(reliable_dispatch) => {
-                // Reliable: persist first, notify only on success
-                reliable_dispatch.store_message(stream_message).await?;
+            DispatchStrategy::Reliable => {
+                // Reliable: persist first, notify only on success (WAL append)
+                self.topic_store.store_message(stream_message).await?;
 
                 let notifier_guard = self.notifiers.lock().await;
                 for notifier in notifier_guard.iter() {
@@ -252,13 +263,15 @@ impl Topic {
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
 
             // Handle additional logic for reliable storage
-            if let DispatchStrategy::Reliable(reliable_dispatch) = &self.dispatch_strategy {
-                reliable_dispatch
-                    .add_subscription(&new_subscription.subscription_name)
-                    .await?;
-
+            if let DispatchStrategy::Reliable = &self.dispatch_strategy {
                 let notifier = new_subscription
-                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
+                    .create_new_dispatcher(
+                        options.clone(),
+                        &self.dispatch_strategy,
+                        Some(self.topic_store.clone()),
+                        self.resources_topic.clone(),
+                        Some(Duration::from_secs(10)),
+                    )
                     .await?;
 
                 if let Some(notifier) = notifier {
@@ -266,7 +279,13 @@ impl Topic {
                 }
             } else {
                 let _ = new_subscription
-                    .create_new_dispatcher(options.clone(), &self.dispatch_strategy)
+                    .create_new_dispatcher(
+                        options.clone(),
+                        &self.dispatch_strategy,
+                        None,
+                        None,
+                        None,
+                    )
                     .await?;
             }
 
@@ -353,5 +372,49 @@ impl Topic {
     #[allow(dead_code)]
     pub(crate) fn delete_schema(&self, _schema: Schema) -> Result<()> {
         todo!()
+    }
+}
+
+// TopicStore is a thin facade over PersistentStorage (WalStorage) scoped to a single topic.
+// It provides a simple API for appending messages and creating readers starting at a given position.
+#[derive(Debug, Clone)]
+pub(crate) struct TopicStore {
+    topic_name: String,
+    storage: WalStorage,
+}
+
+impl TopicStore {
+    pub(crate) fn new(topic_name: String, storage: WalStorage) -> Self {
+        Self {
+            topic_name,
+            storage,
+        }
+    }
+
+    /// Append a message to the WAL and return its offset.
+    pub(crate) async fn store_message(&self, message: StreamMessage) -> anyhow::Result<u64> {
+        let off = self
+            .storage
+            .append_message(&self.topic_name, message)
+            .await?;
+        Ok(off)
+    }
+
+    /// Create a stream reader starting at `start` using WAL tail or CloudReader handoff.
+    pub(crate) async fn create_reader(&self, start: StartPosition) -> anyhow::Result<TopicStream> {
+        let stream = self.storage.create_reader(&self.topic_name, start).await?;
+        Ok(stream)
+    }
+}
+
+// Implement the minimal trait expected by SubscriptionEngine to decouple module layout.
+impl TopicStoreLike for TopicStore {
+    fn create_reader(
+        &self,
+        start: StartPosition,
+    ) -> core::pin::Pin<
+        Box<dyn core::future::Future<Output = anyhow::Result<TopicStream>> + Send + '_>,
+    > {
+        Box::pin(async move { self.create_reader(start).await })
     }
 }
