@@ -1,173 +1,126 @@
 # ![D from Danube](Danube_logo_2.png) Danube
 
-Danube is an open-source distributed Messaging Broker platform (inspired by Apache Pulsar).
+**A lightweight and scalable Cloud-Native Messaging Platform with S3-Compatible Storage**
 
-Danube aims to be a simple yet powerful, secure, flexible and scalable messaging platform, suitable for event-driven applications. It supports both message queueing and fan-out pub-sub systems, making it versatile for various use cases.
+Danube is an open-source distributed messaging broker platform inspired by Apache Pulsar, designed to be cloud-native and cost-effective. Built with a Write-Ahead Log (WAL) architecture and persistent object storage integration, Danube delivers sub-second dispatch with cloud economics.
 
-Check-out [the Docs](https://danube-docs.dev-state.com/) for more details of the Danube Architecture and the supported concepts.
+[![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
+[![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
+[![Rust](https://img.shields.io/badge/🦀-Rust-000000)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/📜-Apache%202.0-green)](LICENSE)
 
-## Core Capabilities of the Danube messaging Platform
+## 🚀 Get Started with Danube
 
-* [**Topics**](https://danube-docs.dev-state.com/architecture/topics/): A unit of storage that organizes messages into a stream.
-  * **Non-partitioned topics**: One topic that is served by a single broker from the cluster.
-  * **Partitioned topics**: Divided into partitions, served by different brokers from the cluster, enhancing scalability and fault tolerance.
-* [**Message Dispatch**](https://danube-docs.dev-state.com/architecture/dispatch_strategy/):
-  * **Non-reliable Message Dispatch**: Messages reside in memory and are promptly distributed to consumers, ideal for scenarios where speed is crucial. The acknowledgement mechanism is ignored.
-  * **Reliable Message Dispatch**: The acknowledgement mechanism is used to ensure message delivery. Supports configurable storage options as `Local Disk` and `GRPC connected storages`, ensuring message persistence and durability.
-* [**Subscription Types:**](https://danube-docs.dev-state.com/architecture/subscriptions/):
-  * Supports various subscription types (**Exclusive**, **Shared**, **Failover**) enabling different messaging patterns such as message queueing and pub-sub.
-* **Flexible Message Schemas**
-  * Supports multiple message schemas (**Bytes**, **String**, **Int64**, **JSON**) providing flexibility in message format and structure.
-
-## Clients
-
-Allows single or multiple Producers to publish on the Topic and multiple Subscriptions to consume the messages from the Topic.
-
-![Producers  Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
-
-You can combine the [Subscription Type mechanisms](https://danube-docs.dev-state.com/architecture/Queuing_PubSub_messaging/) in order to obtain message queueing or fan-out pub-sub messaging systems.
-
-Currently, the Danube client libraries are written in:
-
-* [Rust Client](https://crates.io/crates/danube-client) - the Rust [examples](danube-client/examples/) on how to create and use the Producers / Consumers
-* [Go Client](https://pkg.go.dev/github.com/danrusei/danube-go) - the Go [examples](https://github.com/danrusei/danube-go/tree/main/examples) on how to create and use the Producers / Consumers
-
-### Community supported clients
-
-Contributions in other languages, such as Python, Java, etc., are also greatly appreciated. If there are any I'll add in this section.
-
-## Danube CLIs
-
-* **Command-Line Interfaces (CLI)**
-  * [**Danube CLI**](https://github.com/danube-messaging/danube/tree/main/danube-cli): For handling message publishing and consumption.
-  * [**Danube Admin CLI**](https://github.com/danube-messaging/danube/tree/main/danube-admin-cli): For managing and interacting with the Danube cluster, including broker, namespace, and topic management.
-
-## Getting Started
-
-To run Danube Broker on your local machine, follow the steps below:
-
-### Run Metadata Store (ETCD)
-
-Danube stores **Metadata** in an external database, in order to offer high availability and scalability, currently supported by [ETCD](https://etcd.io/).
+**Quick Start with Docker Compose** - Deploy a cluster in seconds:
 
 ```bash
-docker run -d --name etcd-danube -p 2379:2379 quay.io/coreos/etcd:latest etcd --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379
+# Clone and start the cluster
+git clone https://github.com/danube-messaging/danube.git
+cd danube/docker
+docker-compose up -d
 ```
 
+This launches a complete Danube cluster with:
+- **2 High-Availability Brokers** for topics failover
+- **ETCD** for distributed metadata management  
+- **MinIO S3-Compatible Storage** for cloud-ready persistence
+- **Automatic bucket creation** and configuration
+
+**Test the setup:**
 ```bash
-$ docker ps
-CONTAINER ID   IMAGE                        COMMAND                  CREATED          STATUS          PORTS                                                 NAMES
-27792bce6077   quay.io/coreos/etcd:latest   "etcd --advertise-cl…"   35 seconds ago   Up 34 seconds   0.0.0.0:2379->2379/tcp, :::2379->2379/tcp, 2380/tcp   etcd-danube
+# Build the CLI
+cd ../danube-cli && cargo build --release
+
+# Produce messages with reliable delivery
+../target/release/danube-cli produce \
+  --service-addr http://localhost:6650 \
+  --topic "/default/test-topic" \
+  --count 100 --message "Hello Danube!" --reliable
+
+# Consume messages from the topic
+../target/release/danube-cli consume \
+  --service-addr http://localhost:6650 \
+  --topic "/default/test-topic" \
+  --subscription "my-sub"
 ```
 
-### Run Danube Broker on the Local Machine
+📖 **[Complete Docker Setup Guide →](docker/README.md)**
 
-Create a local config file with the contents from the [sample config file](https://github.com/danube-messaging/danube/blob/main/config/danube_broker.yml).
+## Architecture
 
-```bash
-touch danube_broker.yml
+**Cloud-Native by Design** - Danube's architecture separates compute from storage, enabling:
+
+### 🌩️ **Write-Ahead Log + Cloud Persistence**
+- **Sub-millisecond producer acknowledgments** via local WAL
+- **Asynchronous background uploads** to S3/GCS/Azure object storage
+- **Automatic failover** with shared cloud state
+- **Infinite retention** without local disk constraints
+
+### ⚡ **Performance & Scalability**
+- **Hot path optimization**: Messages served from in-memory WAL cache
+- **Horizontal scaling**: Add brokers in seconds
+- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob (soon), MinIO
+
+### 🔄 **Intelligent Data Management**
+- **Automatic tiering**: Hot data in WAL, cold data in object storage
+- **Background compaction**: Efficient storage utilization
+- **Stream per topic**: WAL + cloud storage from selected offset 
+- **Cross-region replication**: Built-in disaster recovery
+
+
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│  Producers  │───▶│ Danube WAL   │───▶│ Object Storage  │
+└─────────────┘    │ (Sub-ms ACK) │    │ (S3/GCS/Azure)  │
+                   └──────────────┘    └─────────────────┘
+                          │                      ▲
+                          ▼                      │
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│  Consumers  │◀───│ Stream Reader│◀───│ Background      │
+└─────────────┘    │ (WAL + Cloud)│    │ Uploader        │
+                   └──────────────┘    └─────────────────┘
 ```
 
-and use your editor of choice to edit the file, by adding the sample  config file contents.
+## Core Capabilities
 
-Download the latest Danube Broker binary from the [releases](https://github.com/danube-messaging/danube/releases) page and run it:
+### 📨 **Message Delivery**
+- **[Topics](https://danube-docs.dev-state.com/architecture/topics/)**: Partitioned and non-partitioned with automatic load balancing
+- **[Reliable Dispatch](https://danube-docs.dev-state.com/architecture/dispatch_strategy/)**: At-least-once delivery with configurable storage backends
+- **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
+- **Flexible Schemas**: Bytes, String, Int64, JSON with automatic serialization
 
-```bash
-touch broker.log
-```
+### 🔄 **Subscription Models**
+- **[Exclusive](https://danube-docs.dev-state.com/architecture/subscriptions/)**: Single consumer per subscription
+- **Shared**: Load-balanced message distribution across consumers
+- **Failover**: Automatic consumer failover with ordered delivery
 
-```bash
-RUST_LOG=info ./danube-broker-linux --config-file danube_broker.yml --broker-addr "0.0.0.0:6650" --admin-addr "0.0.0.0:50051" > broker.log 2>&1 &
-```
+### 🛠️ **Developer Experience**
+- **Multi-language clients**: [Rust](https://crates.io/crates/danube-client), [Go](https://pkg.go.dev/github.com/danrusei/danube-go)
+- **[CLI Tools](danube-cli/)**: Message publishing and consumption
+- **[Admin CLI](danube-admin-cli/)**: Cluster, namespace, and topic management
 
-Check the logs:
+![Producers Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
 
-```bash
-tail -n 100 -f broker.log
-```
+## Community & Clients
 
-```bash
-2025-02-23T05:45:14.019650Z  INFO danube_broker::broker_metrics: Initializing metrics exporter
-2025-02-23T05:45:14.021220Z  INFO danube_broker: Initializing ETCD as metadata persistent store
-2025-02-23T05:45:14.021658Z  INFO danube_broker: Initializing In-Memory Storage (Cache entries: 100, TTL: 10min) for message persistence
-2025-02-23T05:45:14.022061Z  INFO danube_broker: Initializing Danube Message Broker service on 0.0.0.0:6650
-2025-02-23T05:45:14.022095Z  INFO danube_broker::danube_service: Initializing Danube cluster 'MY_CLUSTER'
-2025-02-23T05:45:14.028492Z  INFO danube_broker::danube_service::local_cache: Initial cache populated
-2025-02-23T05:45:14.032731Z  INFO danube_broker::danube_service: Local Cache service initialized and ready
-2025-02-23T05:45:14.039726Z  INFO danube_broker::danube_service::broker_register: Broker 15789098141031633884 registered in the cluster
-2025-02-23T05:45:14.055625Z  INFO danube_broker::danube_service: Namespace default already exists.
-2025-02-23T05:45:14.055672Z  INFO danube_broker::danube_service: Cluster metadata initialization completed successfully
-2025-02-23T05:45:14.057516Z  INFO danube_broker::danube_service: Broker gRPC server listening on 0.0.0.0:6650
-2025-02-23T05:45:14.057652Z  INFO danube_broker::danube_service: Leader Election service initialized and ready
-2025-02-23T05:45:14.068276Z  INFO danube_broker::danube_service: Load Manager service initialized and ready
-2025-02-23T05:45:14.072362Z  INFO danube_broker::danube_service: Admin gRPC server listening on 0.0.0.0:50051
-```
+### Official Clients
+- **[Rust Client](https://crates.io/crates/danube-client)** - Full-featured async client with [examples](danube-client/examples/)
+- **[Go Client](https://pkg.go.dev/github.com/danrusei/danube-go)** - Production-ready client with [examples](https://github.com/danrusei/danube-go/tree/main/examples)
 
-### Use Danube CLI to Publish and Consume Messages
+### Community Contributions
+Contributions in **Python**, **Java**, **JavaScript**, and other languages are welcome! Join our growing ecosystem.
 
-Download the latest Danube CLI binary from the [releases](https://github.com/danube-messaging/danube/releases) page and run it:
+## Development & Contribution
 
-```bash
-./danube-cli-linux produce -s http://127.0.0.1:6650 -t /default/demo_topic -c 1000 -m "Hello, Danube!"
-```
+**Get involved** - Danube is actively developed with new features added regularly.
 
-```bash
-Message sent successfully with ID: 9
-Message sent successfully with ID: 10
-Message sent successfully with ID: 11
-Message sent successfully with ID: 12
-```
+**[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** | **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** | **[📖 Development Guide](https://danube-docs.dev-state.com/development/dev_environment/)**
 
-Open a new terminal and run the following command to consume the messages:
+### Project Structure
+- **[danube-broker](danube-broker/)** - Core messaging platform
+- **[danube-persistent-storage](danube-persistent-storage/)** - WAL and cloud storage integration
+- **[danube-client](danube-client/)** - Async Rust client library  
+- **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
+- **[danube-admin-cli](danube-admin-cli/)** - Cluster management utilities
 
-```bash
-./danube-cli-linux consume -s http://127.0.0.1:6650 -t /default/demo_topic -m my_subscription
-```
-
-```bash
-Received bytes message: 9, with payload: Hello, Danube!
-Received bytes message: 10, with payload: Hello, Danube!
-Received bytes message: 11, with payload: Hello, Danube!
-Received bytes message: 12, with payload: Hello, Danube!
-```
-
-For detailed instructions on how to run Danube Broker on different platforms, please refer to the [documentation](https://danube-docs.dev-state.com/).
-
-### Tear Down
-
-Stop the Danube Broker and the ETCD container:
-
-```bash
-pkill danube-broker
-```
-
-```bash
-docker stop etcd-danube
-```
-
-```bash
-docker rm -f etcd-danube
-```
-
-```bash
-ps aux | grep danube-broker
-docker ps | grep etcd-danube
-```
-
-## Development environment
-
-Continuously working on enhancing and adding new features.
-
-**Contributions are welcome**, check [the open issues](https://github.com/danube-messaging/danube/issues) or report a bug you encountered or a needed feature.
-
-**The crates part of the Danube workspace**:
-
-* danube-broker - The main crate, danube pubsub platform
-  * danube-reliable-dispatch - Responsible of reliable dispatching, that stores and forward the messages to the subscribers
-  * danube-persistent-storage - Responsible of persistent storage, supports `Local Disk` or `GRPC connected storages`
-  * danube-metadata-store - Responsibile of Metadata storage, that stores and syncronizes the metadata across the Danube cluster
-* danube-client - An async Rust client library for interacting with Danube Pub/Sub messaging platform
-* danube-cli - Client CLI to handle message publishing and consumption
-* danube-admin-cli - Admin CLI designed for interacting with and managing the Danube cluster
-
-[Follow the instructions](https://danube-docs.dev-state.com/development/dev_environment/) on how to setup the development environment.
+---
