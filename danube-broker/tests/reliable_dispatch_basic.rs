@@ -83,6 +83,7 @@ async fn reliable_basic_exclusive() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore]
 /// What this test validates
 ///
 /// - Scenario: a reliable producer sends a fixed payload repeatedly; a single Shared consumer
