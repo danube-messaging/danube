@@ -12,6 +12,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tracing::{info, warn};
 
 /// Minimal WAL with in-memory replay cache, CRC32C-protected frames, batched fsync, file replay,
 /// rotation and checkpoints.
@@ -131,8 +132,14 @@ impl Wal {
                 .open(&path)
                 .await
                 .map_err(|e| PersistentStorageError::Io(format!("open wal file failed: {}", e)))?;
+            info!(
+                target = "wal",
+                wal_file = %path.display(),
+                "initialized WAL file"
+            );
             (Some(f), Some(path))
         } else {
+            warn!(target = "wal", "WAL configured without a directory: operating in memory-only mode (no durability)");
             (None, None)
         };
 
@@ -145,6 +152,29 @@ impl Wal {
             d.push("wal.ckpt");
             d
         });
+
+        // Log effective configuration for visibility
+        if let Some(dir) = cfg.wal_dir() {
+            info!(
+                target = "wal",
+                wal_dir = %dir.display(),
+                cache_capacity = capacity,
+                fsync_interval_ms,
+                max_batch_bytes,
+                rotate_max_bytes = rotate_max_bytes.unwrap_or(0),
+                rotate_max_seconds = rotate_max_seconds.unwrap_or(0),
+                checkpoint = %checkpoint_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".to_string()),
+                "WAL configuration applied"
+            );
+        } else {
+            info!(
+                target = "wal",
+                cache_capacity = capacity,
+                fsync_interval_ms,
+                max_batch_bytes,
+                "WAL configuration applied (no dir)"
+            );
+        }
 
         Ok(Self {
             inner: Arc::new(WalInner {

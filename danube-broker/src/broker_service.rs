@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
-use danube_persistent_storage::{CloudStore, EtcdMetadata, Wal, WalStorage};
+use danube_persistent_storage::WalStorageFactory;
 use dashmap::DashMap;
 use metrics::gauge;
 use std::sync::Arc;
@@ -30,9 +30,7 @@ use crate::{
 pub(crate) struct BrokerService {
     // Read-only fields (no mutex needed)
     pub(crate) broker_id: u64,
-    pub(crate) base_wal: Wal,
-    pub(crate) cloud_store: CloudStore,
-    pub(crate) etcd_meta: EtcdMetadata,
+    pub(crate) wal_factory: WalStorageFactory,
 
     // Already thread-safe (no mutex needed)
     pub(crate) producer_index: Arc<DashMap<u64, String>>,
@@ -44,18 +42,11 @@ pub(crate) struct BrokerService {
 }
 
 impl BrokerService {
-    pub(crate) fn new(
-        resources: Resources,
-        base_wal: Wal,
-        cloud_store: CloudStore,
-        etcd_meta: EtcdMetadata,
-    ) -> Self {
+    pub(crate) fn new(resources: Resources, wal_factory: WalStorageFactory) -> Self {
         let broker_id = get_random_id();
         BrokerService {
             broker_id,
-            base_wal,
-            cloud_store,
-            etcd_meta,
+            wal_factory,
             producer_index: Arc::new(DashMap::new()),
             consumer_index: Arc::new(DashMap::new()),
             topic_worker_pool: Arc::new(TopicWorkerPool::new(None)),
@@ -352,12 +343,8 @@ impl BrokerService {
 
         let dispatch_strategy = dispatch_strategy.unwrap();
 
-        // Build per-topic WalStorage with Cloud handoff enabled
-        let wal_storage = WalStorage::from_wal(self.base_wal.clone()).with_cloud(
-            self.cloud_store.clone(),
-            self.etcd_meta.clone(),
-            topic_name.to_string(),
-        );
+        // Build per-topic WalStorage with Cloud handoff via the factory
+        let wal_storage = self.wal_factory.for_topic(topic_name);
 
         let mut new_topic = Topic::new(
             topic_name,

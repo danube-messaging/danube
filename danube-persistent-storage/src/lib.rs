@@ -19,3 +19,7 @@ pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 
 mod cloud_reader;
 pub use cloud_reader::CloudReader;
+
+// WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
+mod wal_factory;
+pub use wal_factory::WalStorageFactory;
