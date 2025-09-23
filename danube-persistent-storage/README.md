@@ -7,8 +7,10 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
   - Optional file-backed durability with CRC32 framing
   - Batched fsync with configurable batch size and flush interval
   - File replay to serve offsets not in cache
-- A `PersistentStorage` implementation (`WalStorage`) that integrates with `danube-reliable-dispatch`
-- Phase B scaffolding for background upload to cloud and ETCD manifests
+- A `PersistentStorage` implementation (`WalStorage`) used by the broker’s `TopicStore`
+- A `WalStorageFactory` that encapsulates all storage internals and returns per-topic `WalStorage`:
+  - Per-topic WAL instances under `<wal_root>/<ns>/<topic>/`
+  - Per-topic background `Uploader` writing objects to cloud and descriptors to metadata
 
 ## Features
 
@@ -19,79 +21,94 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
   - `fsync_interval_ms`: max interval before flushing the write buffer
   - `max_batch_bytes`: max batched bytes before forcing a flush
   - `dir`, `file_name`: enable file-backed WAL
+- `WalStorageFactory`:
+  - `new_with_backend(WalConfig, BackendConfig, MetadataStorage, etcd_root) -> WalStorageFactory`
+  - `for_topic("/ns/topic") -> WalStorage` (starts per-topic uploader once)
 
 ## Usage
 
-### Constructing a WAL with durability
+### Broker wiring via WalStorageFactory (recommended)
 
 ```rust
-use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_persistent_storage::wal::WalConfig;
+use danube_persistent_storage::{BackendConfig, LocalBackend, WalStorageFactory};
+use danube_metadata_store::MetadataStorage;
 
-let wal = Wal::with_config(WalConfig {
-    dir: Some(std::path::PathBuf::from("/tmp/wal")),
-    file_name: Some("wal.log".into()),
+// Base WAL config: factory will create per-topic WALs under <wal_root>/<ns>/<topic>/
+let wal_base_cfg = WalConfig {
+    dir: Some(std::path::PathBuf::from("/var/lib/danube/wal")),
     cache_capacity: Some(1024),
-    fsync_interval_ms: Some(5),
-    max_batch_bytes: Some(8 * 1024),
-}).await?;
+    ..Default::default()
+};
+
+// Cloud backend for objects
+let backend = BackendConfig::Local { backend: LocalBackend::Fs, root: "/tmp/danube-cloud".to_string() };
+
+// Metadata storage for object descriptors (e.g., etcd or in-memory)
+let metadata_store: MetadataStorage = /* constructed in broker */;
+
+// Create factory (constructs CloudStore + EtcdMetadata internally)
+let factory = WalStorageFactory::new_with_backend(wal_base_cfg, backend, metadata_store.clone(), "/danube");
+
+// Per-topic storage used by TopicStore
+let topic_name = "/default/my-topic";
+let storage = factory.for_topic(topic_name);
 ```
 
-### Wiring with ReliableDispatch
-
-Use `WalStorage::from_wal(wal)` and `ReliableDispatch::new_with_persistent(...)`:
+### Per-topic append and reader
 
 ```rust
-use danube_persistent_storage::WalStorage;
-use danube_reliable_dispatch::{ReliableDispatch, TopicCache};
-use danube_reliable_dispatch::storage_backend::InMemoryStorage;
-use danube_core::dispatch_strategy::{ReliableOptions, RetentionPolicy};
+use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_core::message::{MessageID, StreamMessage};
 
-let wal_storage = WalStorage::from_wal(wal);
+let msg = StreamMessage {
+    request_id: 1,
+    msg_id: MessageID {
+        producer_id: 1,
+        topic_name: topic_name.to_string(),
+        broker_addr: "127.0.0.1:6650".into(),
+        segment_id: 0,
+        segment_offset: 0,
+    },
+    payload: b"hello".to_vec(),
+    publish_time: 0,
+    producer_name: "p1".into(),
+    subscription_name: None,
+    attributes: Default::default(),
+};
 
-let storage = std::sync::Arc::new(InMemoryStorage::new());
-let topic_cache = TopicCache::new(storage, 100, 10);
-let reliable_options = ReliableOptions::new(1, RetentionPolicy::RetainUntilAck, 60);
+// Append
+storage.append_message(topic_name, msg).await?;
 
-let dispatch = ReliableDispatch::new_with_persistent(
-    "/default/my-topic",
-    reliable_options,
-    topic_cache,
-    wal_storage,
-);
+// Reader from offset 0 (Cloud→WAL chaining if historical objects exist)
+let mut reader = storage.create_reader(topic_name, StartPosition::Offset(0)).await?;
+while let Some(item) = reader.next().await.transpose()? {
+    // process item.payload
+}
 ```
 
-See the runnable example: `danube-reliable-dispatch/examples/wal_wiring.rs`.
+## Components
 
-### Reading and Writing
+- `Wal`/`WalConfig`: per-topic WAL instances with optional file durability, replay cache, rotation, checkpoints
+- `WalStorage`: per-topic `PersistentStorage` implementing append and reader with Cloud→WAL chaining
+- `WalStorageFactory`: process-global facade that creates per-topic `WalStorage` and starts per-topic uploaders
+- `CloudStore`: backed by `opendal` with `S3`, `Gcs`, `Fs`, `Memory` implementations
+- `EtcdMetadata`: writes/reads per-object descriptors using `danube-metadata-store::MetadataStorage`
+- `Uploader`: periodic batches from WAL cache to cloud objects and descriptor updates (single-writer per topic)
 
-- Producer path (append): `ReliableDispatch::store_message(StreamMessage)`
-- Consumer path (tail): `ReliableDispatch::create_stream_latest()`
-- Consumer path (replay): `TopicStore::create_reader(StartPosition::Offset(n))`
+## Tests
 
-## Phase B Scaffolding
-
-- `CloudStore` (stubbed): backends for `S3`, `Gcs`, `Fs`, `Memory` with `put_object/get_object`
-- `EtcdMetadata`: uses `danube-metadata-store::MetadataStorage` to write/read per-object manifests
-- `Uploader`: periodic snapshot from WAL cache and write stub object + descriptor (single-writer assumption)
-
-These will be wired to `opendal` (cloud object storage) and extended with rolling object rotation and ETag checks.
-
-## Tests and Examples
-
-- Run unit/integration tests for this crate:
+Run unit/integration tests for this crate:
 
 ```bash
 cargo test -p danube-persistent-storage --tests
 ```
 
-- Run the WAL wiring example:
+## Tracing and Notes
 
-```bash
-cargo run -p danube-reliable-dispatch --example wal_wiring
-```
-
-## Notes
-
-- The current implementation provides durability with CRC-protected frames and batched fsync, with replay support from file.
-- File replay on partial/corrupted frames truncates at the first CRC mismatch as a safety measure.
-- Phase B will add object storage uploads and ETCD manifests using the existing metadata store; leader leases are not used (single-writer broker per topic).
+- Durability: CRC-protected frames and batched fsync; file replay truncates at first CRC mismatch for safety.
+- Tracing targets:
+  - `wal_factory`: per-topic WAL created/reused, uploader started, backend summary
+  - `wal_storage`: cloud handoff enabled; reader path (Cloud→WAL vs WAL-only)
+  - `wal`: WAL file initialized; effective configuration applied
+  - `uploader`: uploader started; resume-from-checkpoint
