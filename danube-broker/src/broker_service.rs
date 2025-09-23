@@ -344,7 +344,7 @@ impl BrokerService {
         let dispatch_strategy = dispatch_strategy.unwrap();
 
         // Build per-topic WalStorage with Cloud handoff via the factory
-        let wal_storage = self.wal_factory.for_topic(topic_name);
+        let wal_storage = self.wal_factory.for_topic(topic_name).await?;
 
         let mut new_topic = Topic::new(
             topic_name,

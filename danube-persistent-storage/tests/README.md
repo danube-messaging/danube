@@ -43,7 +43,6 @@ Each test focuses on a specific behavior. Use this map to quickly identify cover
 
 ## Notes
 
-- Tests that interact with `WalStorageFactory` use `#[tokio::test(flavor = "multi_thread")]` because the factory creates per-topic WALs via `block_in_place`.
 - Topic paths:
   - Broker-facing API uses `"/ns/topic"` (leading slash).
   - Cloud/ETCD paths use `"ns/topic"` (no leading slash).
