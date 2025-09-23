@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use tokio_stream::StreamExt;
+use tracing::{info, warn};
 
 use crate::cloud_reader::CloudReader;
 use crate::cloud_store::CloudStore;
@@ -41,6 +42,9 @@ impl WalStorage {
         self.cloud = Some(cloud);
         self.etcd = Some(etcd);
         self.topic_path = Some(topic_path);
+        if let Some(tp) = &self.topic_path {
+            info!(target = "wal_storage", topic = %tp, "cloud handoff enabled for topic");
+        }
         self
     }
 }
@@ -71,13 +75,27 @@ impl PersistentStorage for WalStorage {
                 StartPosition::Offset(o) => o,
             };
             // Determine the last completed object that intersects [start_off, ..]
-            let reader = CloudReader::new(cloud, etcd, topic_path);
+            let reader = CloudReader::new(cloud, etcd, topic_path.clone());
             // Fetch descriptors and compute Oend
             let from_padded = format!("{:020}", start_off);
             let descs = reader
                 .etcd()
                 .get_object_descriptors_range(reader.topic_path(), &from_padded, None)
                 .await?;
+            if descs.is_empty() {
+                // If cloud is configured but there are no descriptors at/after start,
+                // warn for visibility and fall back to WAL-only.
+                let cur = self.wal.current_offset();
+                if start_off < cur.saturating_sub(1) {
+                    warn!(
+                        target = "wal_storage",
+                        topic = %topic_path,
+                        start = start_off,
+                        wal_tip = cur,
+                        "no ETCD descriptors found for requested start; falling back to WAL-only"
+                    );
+                }
+            }
             let mut oend: Option<u64> = None;
             for d in descs.iter() {
                 if d.end_offset >= start_off {
@@ -92,13 +110,39 @@ impl PersistentStorage for WalStorage {
             };
 
             if oend.is_some() && h > start_off {
+                info!(
+                    target = "wal_storage",
+                    topic = %topic_path,
+                    start = start_off,
+                    handoff = h,
+                    "creating reader with Cloud->WAL chaining"
+                );
                 // Cloud path needed for [start_off, h-1], then switch to WAL at h
                 let cloud_stream = reader.read_range(start_off, Some(h - 1)).await?;
                 let wal_stream = self.wal.tail_reader(h).await?;
                 let chained = cloud_stream.chain(wal_stream);
                 return Ok(Box::pin(chained));
+            } else {
+                info!(
+                    target = "wal_storage",
+                    topic = %topic_path,
+                    start = start_off,
+                    "creating reader from WAL only (no cloud handoff needed)"
+                );
             }
             // else fall through to WAL tail only
+        } else {
+            // Cloud not configured for this topic storage
+            let from = match start {
+                StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
+                StartPosition::Offset(o) => o,
+            };
+            info!(
+                target = "wal_storage",
+                start = from,
+                "cloud disabled; creating reader from WAL only"
+            );
+            return self.wal.tail_reader(from).await;
         }
 
         let from = match start {

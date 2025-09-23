@@ -2,6 +2,7 @@ use danube_core::storage::PersistentStorageError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 use crate::cloud_store::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
@@ -57,6 +58,13 @@ impl Uploader {
     /// No leader lease logic; assumes single broker owns the topic.
     pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
         tokio::spawn(async move {
+            info!(
+                target = "uploader",
+                topic = %self.cfg.topic_path,
+                interval = self.cfg.interval_seconds,
+                max_batch_bytes = self.cfg.max_batch_bytes,
+                "uploader started"
+            );
             // On start, try to resume from uploader checkpoint if present.
             if let Ok(Some(ckpt)) = self.wal.read_uploader_checkpoint().await {
                 self.last_uploaded_offset
@@ -85,6 +93,7 @@ impl Uploader {
                 };
                 let (items, watermark) = self.wal.read_cached_since(start_from).await?;
                 if items.is_empty() {
+                    // idle tick, nothing to upload for this topic
                     continue;
                 }
 

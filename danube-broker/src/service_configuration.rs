@@ -4,6 +4,10 @@ use anyhow::{Context, Result};
 // Legacy StorageConfig removed in Phase D
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::collections::HashMap;
+
+// For converting CloudConfig -> BackendConfig
+use danube_persistent_storage::{BackendConfig, CloudBackend, LocalBackend};
 
 /// configuration settings loaded from the config file
 #[derive(Debug, Serialize, Deserialize)]
@@ -173,4 +177,84 @@ pub(crate) enum CloudConfig {
 pub(crate) struct MetadataNode {
     pub(crate) etcd_endpoint: Option<String>,
     pub(crate) in_memory: Option<bool>,
+}
+
+// Provide a conversion from broker CloudConfig to storage BackendConfig
+impl From<&CloudConfig> for BackendConfig {
+    fn from(cfg: &CloudConfig) -> Self {
+        match cfg {
+            CloudConfig::Memory { root } => BackendConfig::Local {
+                backend: LocalBackend::Memory,
+                root: root.clone(),
+            },
+            CloudConfig::Fs { root } => BackendConfig::Local {
+                backend: LocalBackend::Fs,
+                root: root.clone(),
+            },
+            CloudConfig::S3 {
+                root,
+                region,
+                endpoint,
+                access_key,
+                secret_key,
+                profile,
+                role_arn,
+                session_token,
+                anonymous,
+            } => {
+                let mut options: HashMap<String, String> = HashMap::new();
+                if let Some(v) = region {
+                    options.insert("region".into(), v.clone());
+                }
+                if let Some(v) = endpoint {
+                    options.insert("endpoint".into(), v.clone());
+                }
+                if let Some(v) = access_key {
+                    options.insert("access_key".into(), v.clone());
+                }
+                if let Some(v) = secret_key {
+                    options.insert("secret_key".into(), v.clone());
+                }
+                if let Some(v) = profile {
+                    options.insert("profile".into(), v.clone());
+                }
+                if let Some(v) = role_arn {
+                    options.insert("role_arn".into(), v.clone());
+                }
+                if let Some(v) = session_token {
+                    options.insert("session_token".into(), v.clone());
+                }
+                if let Some(v) = anonymous {
+                    options.insert("anonymous".into(), v.to_string());
+                }
+                BackendConfig::Cloud {
+                    backend: CloudBackend::S3,
+                    root: root.clone(),
+                    options,
+                }
+            }
+            CloudConfig::Gcs {
+                root,
+                project,
+                credentials_json,
+                credentials_path,
+            } => {
+                let mut options: HashMap<String, String> = HashMap::new();
+                if let Some(v) = project {
+                    options.insert("project".into(), v.clone());
+                }
+                if let Some(v) = credentials_json {
+                    options.insert("credentials_json".into(), v.clone());
+                }
+                if let Some(v) = credentials_path {
+                    options.insert("credentials_path".into(), v.clone());
+                }
+                BackendConfig::Cloud {
+                    backend: CloudBackend::Gcs,
+                    root: root.clone(),
+                    options,
+                }
+            }
+        }
+    }
 }
