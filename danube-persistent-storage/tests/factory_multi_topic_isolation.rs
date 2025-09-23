@@ -32,7 +32,7 @@ fn make_msg(topic: &str, i: u64) -> StreamMessage {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_factory_multi_topic_wal_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
@@ -52,8 +52,8 @@ async fn test_factory_multi_topic_wal_isolation() {
     let topic_a = "/default/topic-a";
     let topic_b = "/default/topic-b";
 
-    let storage_a = factory.for_topic(topic_a);
-    let storage_b = factory.for_topic(topic_b);
+    let storage_a = factory.for_topic(topic_a).await.expect("create storage_a");
+    let storage_b = factory.for_topic(topic_b).await.expect("create storage_b");
 
     // Append messages to each topic
     for i in 0..3u64 {
@@ -94,7 +94,7 @@ async fn test_factory_multi_topic_wal_isolation() {
     assert_eq!(got_b, vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_multi_topic_uploader_isolation() {
     // This test validates per-topic uploader isolation by starting two uploaders manually
     // over two independent per-topic WALs under the same root. We use memory cloud and

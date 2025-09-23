@@ -47,7 +47,7 @@ fn make_dnb1_object(records: &[(u64, StreamMessage)]) -> Vec<u8> {
     bytes
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_factory_cloud_wal_handoff_per_topic() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
@@ -101,7 +101,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         .expect("put desc");
 
     // Create per-topic storage via factory
-    let storage = factory.for_topic(topic_name);
+    let storage = factory.for_topic(topic_name).await.expect("create storage");
 
     // Create reader from offset 0 (should chain cloud [0..1] then tail WAL)
     let mut reader = storage

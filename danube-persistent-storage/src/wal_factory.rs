@@ -88,9 +88,9 @@ impl WalStorageFactory {
 
     /// Get or create a per-topic WAL configured under <wal_root>/<ns>/<topic>/ and return it
     /// together with the resolved directory path (if any) for logging.
-    fn get_or_create_wal(&self, topic_path: &str) -> (Wal, Option<std::path::PathBuf>) {
+    async fn get_or_create_wal(&self, topic_path: &str) -> Result<(Wal, Option<std::path::PathBuf>), PersistentStorageError> {
         if let Some(existing) = self.topics.get(topic_path) {
-            return (existing.clone(), None);
+            return Ok((existing.clone(), None));
         }
         // Build per-topic config by deriving dir from base root
         let mut cfg = self.base_cfg.clone();
@@ -105,21 +105,18 @@ impl WalStorageFactory {
             resolved_dir = Some(root.clone());
             cfg.dir = Some(root);
         }
-        // Create WAL synchronously by blocking on async fs ops
-        let wal = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(Wal::with_config(cfg))
-        })
-        .expect("failed to initialize per-topic WAL");
+        // Create WAL asynchronously without blocking
+        let wal = Wal::with_config(cfg).await?;
         self.topics.insert(topic_path.to_string(), wal.clone());
-        (wal, resolved_dir)
+        Ok((wal, resolved_dir))
     }
 
     /// Create (or reuse) a WalStorage bound to the provided topic name ("/ns/topic").
     /// Also starts the per-topic uploader if not already running.
-    pub fn for_topic(&self, topic_name: &str) -> WalStorage {
+    pub async fn for_topic(&self, topic_name: &str) -> Result<WalStorage, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         // Ensure per-topic WAL exists
-        let (topic_wal, resolved_dir) = self.get_or_create_wal(&topic_path);
+        let (topic_wal, resolved_dir) = self.get_or_create_wal(&topic_path).await?;
         if let Some(dir) = resolved_dir {
             info!(
                 target = "wal_factory",
@@ -152,8 +149,8 @@ impl WalStorageFactory {
             }
         }
 
-        WalStorage::from_wal(topic_wal)
-            .with_cloud(self.cloud.clone(), self.etcd.clone(), topic_path)
+        Ok(WalStorage::from_wal(topic_wal)
+            .with_cloud(self.cloud.clone(), self.etcd.clone(), topic_path))
     }
 
     /// Best-effort shutdown: currently does not signal tasks, just drops handles.
