@@ -146,7 +146,22 @@ impl Discovery for DanubeServerImpl {
         // we are interested on the first element, as in the partitioned topic, all partitions should use the same schema
         let result = service.topic_partitions(&req.topic).await;
 
-        let proto_schema = service.get_schema(result.get(0).unwrap());
+        // Check if the topic exists (has partitions)
+        let first_partition = match result.get(0) {
+            Some(partition) => partition,
+            None => {
+                let error_string = &format!("Unable to find the requested topic: {}", &req.topic);
+                let status = create_error_status(
+                    Code::NotFound,
+                    ErrorType::TopicNotFound,
+                    error_string,
+                    None,
+                );
+                return Err(status);
+            }
+        };
+
+        let proto_schema = service.get_schema(first_partition);
 
         // should I inform the client that the topic is not served by this broker ?
         // as the get_schema is local to this broker

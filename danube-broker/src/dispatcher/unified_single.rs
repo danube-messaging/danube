@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use danube_core::message::{MessageID, StreamMessage};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tracing::{trace, warn};
 
 use crate::consumer::Consumer;
@@ -26,7 +26,7 @@ enum DispatcherCommand {
     AddConsumer(Consumer),
     RemoveConsumer(u64),
     DisconnectAllConsumers,
-    DispatchMessage(StreamMessage),
+    DispatchMessage(StreamMessage, oneshot::Sender<Result<()>>),
     MessageAcked(u64, MessageID),
     // Reliable-only
     PollAndDispatch,
@@ -60,15 +60,26 @@ impl UnifiedSingleDispatcher {
                             consumers.clear();
                             active_consumer = None;
                         }
-                        DispatcherCommand::DispatchMessage(msg) => {
-                            if let Some(cons) = &mut active_consumer {
+                        DispatcherCommand::DispatchMessage(msg, response_tx) => {
+                            let result = if let Some(cons) = &mut active_consumer {
                                 if !cons.get_status().await {
-                                    continue;
+                                    Err(anyhow!("No active consumer available to dispatch message"))
+                                } else {
+                                    match cons.send_message(msg).await {
+                                        Ok(()) => {
+                                            trace!("Message dispatched to active consumer {}", cons.consumer_id);
+                                            Ok(())
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to dispatch to active consumer: {}", e);
+                                            Err(e)
+                                        }
+                                    }
                                 }
-                                if let Err(e) = cons.send_message(msg).await {
-                                    warn!("Failed to dispatch to active consumer: {}", e);
-                                }
-                            }
+                            } else {
+                                Err(anyhow!("No active consumer available to dispatch message"))
+                            };
+                            let _ = response_tx.send(result);
                         }
                         DispatcherCommand::MessageAcked(_, _) => {
                             // non-reliable ignores acks
@@ -144,7 +155,9 @@ impl UnifiedSingleDispatcher {
                                 // Immediately attempt next
                                 let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                             }
-                            DispatcherCommand::DispatchMessage(_) => { /* ignored in reliable */ }
+                            DispatcherCommand::DispatchMessage(_, response_tx) => { 
+                                let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
+                            }
                             DispatcherCommand::PollAndDispatch => {
                                 if pending { continue; }
                                 // Need an active consumer to send to
@@ -194,10 +207,15 @@ impl UnifiedSingleDispatcher {
 
     pub(crate) async fn dispatch_message(&self, message: StreamMessage) -> Result<()> {
         if let DispatchMode::NonReliable = self.mode {
+            let (response_tx, response_rx) = oneshot::channel();
             self.control_tx
-                .send(DispatcherCommand::DispatchMessage(message))
+                .send(DispatcherCommand::DispatchMessage(message, response_tx))
                 .await
-                .map_err(|e| anyhow!("Failed to dispatch message: {}", e))
+                .map_err(|e| anyhow!("Failed to send dispatch command: {}", e))?;
+            
+            response_rx
+                .await
+                .map_err(|e| anyhow!("Failed to receive dispatch response: {}", e))?
         } else {
             Err(anyhow!(
                 "Reliable single dispatcher is stream-driven, not push-per-message"
