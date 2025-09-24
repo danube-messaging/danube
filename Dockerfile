@@ -23,8 +23,8 @@ COPY . .
 # Build the project
 RUN cargo build --release
 
-# Final stage: use the same base image as the build stage
-FROM base
+# Broker stage: use the same base image as the build stage
+FROM base as broker
 
 # Install protobuf-compiler in the final image as well
 RUN apt-get update && apt-get install -y protobuf-compiler
@@ -41,3 +41,16 @@ EXPOSE 6650 6651
 # Define entrypoint and default command
 ENTRYPOINT ["/usr/local/bin/danube-broker"]
 CMD ["--config-file", "/etc/danube_broker.yml", "--broker-addr", "0.0.0.0:6650", "--advertised-addr", "0.0.0.0:6650"]
+
+# CLI stage: use the same base image as the build stage
+FROM base as cli
+
+# Install protobuf-compiler and curl for testing
+RUN apt-get update && apt-get install -y protobuf-compiler curl
+
+# Copy the compiled CLI binaries from the builder stage
+COPY --from=builder /app/target/release/danube-cli /usr/local/bin/danube-cli
+COPY --from=builder /app/target/release/danube-admin-cli /usr/local/bin/danube-admin-cli
+
+# No default entrypoint - users can call either binary directly
+ENTRYPOINT []

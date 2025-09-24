@@ -27,21 +27,26 @@ This launches a complete Danube cluster with:
 - **Automatic bucket creation** and configuration
 
 **Test the setup:**
+
+### Produce messages with reliable delivery
+
 ```bash
-# Build the CLI
-cd ../danube-cli && cargo build --release
+docker exec -it danube-cli danube-cli produce \
+  --service-addr http://broker1:6650 \
+  --topic "/default/persistent-topic" \
+  --count 100 \
+  --message "Persistent message" \
+  --reliable
+```
 
-# Produce messages with reliable delivery
-../target/release/danube-cli produce \
-  --service-addr http://localhost:6650 \
-  --topic "/default/test-topic" \
-  --count 100 --message "Hello Danube!" --reliable
+### Consume messages from the topic
 
-# Consume messages from the topic
-../target/release/danube-cli consume \
-  --service-addr http://localhost:6650 \
-  --topic "/default/test-topic" \
-  --subscription "my-sub"
+```bash
+docker exec -it danube-cli danube-cli consume \
+  --service-addr http://broker1:6650 \
+  --topic "/default/persistent-topic" \
+  --subscription "persistent-sub" \
+  --sub-type exclusive
 ```
 
 📖 **[Complete Docker Setup Guide →](docker/README.md)**
