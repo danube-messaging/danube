@@ -60,37 +60,32 @@ The setup includes:
 
 ## Testing with Danube CLI
 
-### Installation
+### Using the CLI Container
 
-First, build the Danube CLI from the project root:
+The Docker Compose setup includes a `danube-cli` container with both `danube-cli` and `danube-admin-cli` tools pre-installed. This eliminates the need to build or install Rust locally.
 
-```bash
-cd ../danube-cli
-cargo build --release
-```
-
-The binary will be available at `../target/release/danube-cli`.
+**No local installation required** - use the containerized CLI tools directly.
 
 ### Reliable Messaging with S3 Storage
 
 Test the cloud-ready persistent storage capabilities:
 
-Produce with reliable delivery and S3 persistence
+**Produce with reliable delivery and S3 persistence:**
 
 ```bash
-../target/release/danube-cli produce \
-  --service-addr http://localhost:6650 \
+docker exec -it danube-cli danube-cli produce \
+  --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
-  --count 100 \
+  --count 20 \
   --message "Persistent message" \
   --reliable
 ```
 
-Consume persistent messages
+**Consume persistent messages:**
 
 ```bash
-../target/release/danube-cli consume \
-  --service-addr http://localhost:6650 \
+docker exec -it danube-cli danube-cli consume \
+  --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --subscription "persistent-sub" \
   --sub-type exclusive
@@ -100,48 +95,67 @@ Consume persistent messages
 
 #### Basic string messages
 
-Produce basic string messages
+**Produce basic string messages:**
 
 ```bash
-../target/release/danube-cli produce \
-  --service-addr http://localhost:6650 \
+docker exec -it danube-cli danube-cli produce \
+  --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
-  --count 10 \
+  --count 20 \
   --message "Hello from Danube Docker!"
 ```
 
-Consume from shared subscription
+**Consume from shared subscription:**
 
 ```bash
-../target/release/danube-cli consume \
-  --service-addr http://localhost:6650 \
+docker exec -it danube-cli danube-cli consume \
+  --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
   --subscription "shared-sub" \
   --consumer "docker-consumer"
 ```
 
-#### 2. JSON schema messages
+#### JSON schema messages
 
-Produce JSON messages with schema
+**Produce JSON messages with schema:**
 
 ```bash
-../target/release/danube-cli produce \
-  --service-addr http://localhost:6650 \
+docker exec -it danube-cli danube-cli produce \
+  --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
-  --count 5 \
+  --count 20 \
   --schema json \
   --json-schema '{"type":"object","properties":{"message":{"type":"string"},"timestamp":{"type":"number"}}}' \
   --message '{"message":"Hello JSON","timestamp":1640995200}'
 ```
 
-Consume JSON messages
+**Consume JSON messages:**
 
 ```bash
-../target/release/danube-cli consume \
-  --service-addr http://localhost:6651 \
+docker exec -it danube-cli danube-cli consume \
+  --service-addr http://broker2:6650 \
   --topic "/default/json-topic" \
   --subscription "json-sub" \
   --consumer "json-consumer"
+```
+
+### Admin CLI Operations
+
+**Use danube-admin-cli for cluster management:**
+
+```bash
+# List all topics
+docker exec -it danube-cli danube-admin-cli topics list \
+  --service-addr http://broker1:6650
+
+# Get topic info
+docker exec -it danube-cli danube-admin-cli topics info \
+  --service-addr http://broker1:6650 \
+  --topic "/default/test-topic"
+
+# List namespaces
+docker exec -it danube-cli danube-admin-cli namespaces list \
+  --service-addr http://broker1:6650
 ```
 
 ## Monitoring and Observability
@@ -174,6 +188,9 @@ docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix "
 
 # Watch for changes
 docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 watch --prefix ""
+
+# Check broker registrations
+docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix "/cluster/register"
 ```
 
 ## Configuration

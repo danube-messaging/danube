@@ -87,6 +87,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      target: broker
     depends_on:
       etcd:
         condition: service_healthy
@@ -112,7 +113,8 @@ services:
       "--config-file", "/etc/danube_broker.yml",
       "--broker-addr", "0.0.0.0:6650",
       "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040"
+      "--prom-exporter", "0.0.0.0:9040",
+      "--advertised-addr", "broker1:6650"
     ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
@@ -127,6 +129,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      target: broker
     depends_on:
       etcd:
         condition: service_healthy
@@ -152,7 +155,8 @@ services:
       "--config-file", "/etc/danube_broker.yml",
       "--broker-addr", "0.0.0.0:6650",
       "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040"
+      "--prom-exporter", "0.0.0.0:9040",
+      "--advertised-addr", "broker2:6650"
     ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
@@ -160,6 +164,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # Danube CLI for testing within Docker network
+  danube-cli:
+    container_name: "danube-cli"
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      target: cli  # We'll need to add this target
+    depends_on:
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    networks:
+      - danube_net
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]  # Keep container running for interactive use
 
 networks:
   danube_net:
