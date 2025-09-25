@@ -144,18 +144,17 @@ docker exec -it danube-cli danube-cli consume \
 **Use danube-admin-cli for cluster management:**
 
 ```bash
-# List all topics
-docker exec -it danube-cli danube-admin-cli topics list \
-  --service-addr http://broker1:6650
+# List active brokers
+docker exec -it danube-cli danube-admin-cli brokers list
 
-# Get topic info
-docker exec -it danube-cli danube-admin-cli topics info \
-  --service-addr http://broker1:6650 \
-  --topic "/default/test-topic"
+# List namespaces in cluster
+docker exec -it danube-cli danube-admin-cli brokers namespaces
 
-# List namespaces
-docker exec -it danube-cli danube-admin-cli namespaces list \
-  --service-addr http://broker1:6650
+# List topics in a namespace
+docker exec -it danube-cli danube-admin-cli topics list default
+
+# List subscriptions on a topic
+docker exec -it danube-cli danube-admin-cli topics subscriptions /default/test-topic
 ```
 
 ## Monitoring and Observability

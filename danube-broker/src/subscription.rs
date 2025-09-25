@@ -2,9 +2,9 @@ use anyhow::{anyhow, Ok, Result};
 use danube_core::message::StreamMessage;
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, Notify};
-use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::{
@@ -39,6 +39,7 @@ pub(crate) struct ConsumerInfo {
     pub(crate) sub_options: SubscriptionOptions,
     pub(crate) status: Arc<Mutex<bool>>,
     pub(crate) rx_cons: Arc<Mutex<mpsc::Receiver<StreamMessage>>>,
+    pub(crate) cancellation_token: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl ConsumerInfo {
@@ -50,6 +51,15 @@ impl ConsumerInfo {
     }
     pub(crate) async fn set_status_true(&self) -> () {
         *self.status.lock().await = true
+    }
+    pub(crate) async fn cancel_existing_stream(&self) {
+        let mut token_guard = self.cancellation_token.lock().await;
+        if let Some(token) = token_guard.take() {
+            token.cancel();
+        }
+    }
+    pub(crate) async fn set_cancellation_token(&self, token: CancellationToken) {
+        *self.cancellation_token.lock().await = Some(token);
     }
 }
 
@@ -105,6 +115,7 @@ impl Subscription {
             sub_options: options,
             status: consumer_status,
             rx_cons: Arc::new(Mutex::new(rx_cons)),
+            cancellation_token: Arc::new(Mutex::new(None)),
         };
 
         // Insert the consumer into the subscription's consumer list

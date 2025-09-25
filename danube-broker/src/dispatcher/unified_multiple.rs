@@ -3,7 +3,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tracing::{trace, warn};
 
 use crate::consumer::Consumer;
@@ -29,7 +29,7 @@ enum DispatcherCommand {
     AddConsumer(Consumer),
     RemoveConsumer(u64),
     DisconnectAllConsumers,
-    DispatchMessage(StreamMessage),
+    DispatchMessage(StreamMessage, oneshot::Sender<Result<()>>),
     MessageAcked(u64, MessageID),
     // Reliable-only
     PollAndDispatch,
@@ -55,23 +55,46 @@ impl UnifiedMultipleDispatcher {
                         DispatcherCommand::DisconnectAllConsumers => {
                             consumers.clear();
                         }
-                        DispatcherCommand::DispatchMessage(msg) => {
-                            if consumers.is_empty() {
-                                continue;
-                            }
-                            let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
-                            if let Some(target) = consumers.get_mut(idx) {
-                                // Only send to healthy consumers
-                                if !target.get_status().await {
-                                    continue;
+                        DispatcherCommand::DispatchMessage(msg, response_tx) => {
+                            let result = if consumers.is_empty() {
+                                Err(anyhow!("No consumers available to dispatch the message"))
+                            } else {
+                                let num_consumers = consumers.len();
+                                let mut dispatched = false;
+                                
+                                for _ in 0..num_consumers {
+                                    let idx = rr_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % num_consumers;
+                                    if let Some(target) = consumers.get_mut(idx) {
+                                        // Only send to healthy consumers
+                                        if !target.get_status().await {
+                                            continue;
+                                        }
+                                        match target.send_message(msg.clone()).await {
+                                            Ok(()) => {
+                                                trace!(
+                                                    "Dispatcher sent the message to consumer: {}",
+                                                    target.consumer_id
+                                                );
+                                                dispatched = true;
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "Failed to dispatch to consumer {}: {}",
+                                                    target.consumer_id, e
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
-                                if let Err(e) = target.send_message(msg).await {
-                                    warn!(
-                                        "Failed to dispatch to consumer {}: {}",
-                                        target.consumer_id, e
-                                    );
+                                
+                                if dispatched {
+                                    Ok(())
+                                } else {
+                                    Err(anyhow!("No active consumers available to handle the message"))
                                 }
-                            }
+                            };
+                            let _ = response_tx.send(result);
                         }
                         DispatcherCommand::MessageAcked(_, _) => {
                             // non-reliable ignores acks
@@ -135,7 +158,9 @@ impl UnifiedMultipleDispatcher {
                                 pending = false;
                                 let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                             }
-                            DispatcherCommand::DispatchMessage(_) => { /* ignored in reliable */ }
+                            DispatcherCommand::DispatchMessage(_, response_tx) => { 
+                                let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
+                            }
                             DispatcherCommand::PollAndDispatch => {
                                 if pending { continue; }
                                 if consumers.is_empty() { continue; }
@@ -197,13 +222,18 @@ impl UnifiedMultipleDispatcher {
 
     pub(crate) async fn dispatch_message(&self, message: StreamMessage) -> Result<()> {
         if let DispatchMode::NonReliable = self.mode {
+            let (response_tx, response_rx) = oneshot::channel();
             self.control_tx
-                .send(DispatcherCommand::DispatchMessage(message))
+                .send(DispatcherCommand::DispatchMessage(message, response_tx))
                 .await
-                .map_err(|e| anyhow!("Failed to dispatch message: {}", e))
+                .map_err(|e| anyhow!("Failed to send dispatch command: {}", e))?;
+            
+            response_rx
+                .await
+                .map_err(|e| anyhow!("Failed to receive dispatch response: {}", e))?
         } else {
             Err(anyhow!(
-                "Reliable multi dispatcher is stream-driven, not push-per-message"
+                "Reliable multiple dispatcher is stream-driven, not push-per-message"
             ))
         }
     }

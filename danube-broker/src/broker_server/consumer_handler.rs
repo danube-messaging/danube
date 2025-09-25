@@ -9,6 +9,7 @@ use danube_core::proto::{
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, warn, Level};
 
@@ -124,28 +125,62 @@ impl ConsumerService for DanubeServerImpl {
             return Err(status);
         };
 
+        // Cancel any existing streaming task for this consumer
+        if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
+            consumer_info.cancel_existing_stream().await;
+            consumer_info.set_status_true().await; // Mark as active for new connection
+        }
+
         let rx_cloned = Arc::clone(&rx);
         let service_for_disconnect = self.service.clone();
+        
+        // Create a new cancellation token for this streaming session
+        let cancellation_token = CancellationToken::new();
+        let token_for_task = cancellation_token.clone();
+
+        // Store the cancellation token in the consumer info
+        if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
+            consumer_info.set_cancellation_token(cancellation_token).await;
+        }
 
         tokio::spawn(async move {
             let mut rx_guard = rx_cloned.lock().await;
 
-            while let Some(stream_message) = rx_guard.recv().await {
-                if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
-                    // Error handling for when the client disconnects
-                    warn!(
-                        "Client disconnected for consumer_id: {}, marking inactive",
-                        consumer_id
-                    );
-
-                    // Mark the consumer as inactive on disconnect
-                    if let Some(consumer_info) = service_for_disconnect
-                        .find_consumer_by_id(consumer_id)
-                        .await
-                    {
-                        consumer_info.set_status_false().await;
+            loop {
+                tokio::select! {
+                    // Check for cancellation
+                    _ = token_for_task.cancelled() => {
+                        trace!("Streaming task cancelled for consumer_id: {}", consumer_id);
+                        // Don't modify consumer status on cancellation - new connection might be active
+                        break;
                     }
-                    break;
+                    // Receive messages
+                    message = rx_guard.recv() => {
+                        match message {
+                            Some(stream_message) => {
+                                if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
+                                    // Error handling for when the client disconnects
+                                    warn!(
+                                        "Client disconnected for consumer_id: {}, marking inactive",
+                                        consumer_id
+                                    );
+
+                                    // Mark the consumer as inactive on disconnect
+                                    if let Some(consumer_info) = service_for_disconnect
+                                        .find_consumer_by_id(consumer_id)
+                                        .await
+                                    {
+                                        consumer_info.set_status_false().await;
+                                    }
+                                    break;
+                                }
+                            }
+                            None => {
+                                // Channel closed
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });
