@@ -57,7 +57,7 @@ Scope covers `danube-persistent-storage/src/wal.rs`, with integration touch poin
 
 ## Detailed Implementation Steps
 
-### Phase 1: Infrastructure and API preservation
+### Phase 1: Infrastructure and API preservation — STATUS: COMPLETED ✅
 - Add `LogCommand` enum:
   - `Write { offset: u64, msg: StreamMessage, bytes: Vec<u8> }`
   - `Flush`
@@ -67,12 +67,12 @@ Scope covers `danube-persistent-storage/src/wal.rs`, with integration touch poin
 - Introduce `BufWriter<File>` inside I/O task; policy: flush when either `max_batch_bytes` reached or `fsync_interval_ms` elapsed.
 - Keep `broadcast::Sender` as-is for live tailing.
 
-### Phase 2: Cache refactor
+### Phase 2: Cache refactor — STATUS: COMPLETED ✅
 - Replace `VecDeque<(u64, StreamMessage)>` with `BTreeMap<u64, StreamMessage>` in `WalInner`.
 - Update `append()` to insert into map and evict oldest while `len > capacity`.
 - Expose helper for reading a range from cache: `cache.range(from..)` when needed.
 
-### Phase 3: Reader stitching
+### Phase 3: Reader stitching — STATUS: COMPLETED ✅
 - Implement `read_file_range(path, from, to_exclusive)` in I/O/read module.
 - Update `tail_reader(from)`:
   - Determine `wal_path` once.
@@ -81,17 +81,28 @@ Scope covers `danube-persistent-storage/src/wal.rs`, with integration touch poin
   - Eliminate `HashSet` duplicate filtering and post-sort; ordering is intrinsic.
   - Maintain watermark and chain with live broadcast as today.
 
-### Phase 4: Checkpointing improvements
+### Phase 4: Checkpointing improvements — STATUS: COMPLETED ✅
 - Change `WalCheckpoint` and `UploaderCheckpoint` to `bincode` serialization.
 - Ensure atomic file replace (write tmp + rename) when writing checkpoints from I/O task.
 - Keep compatibility: no external tooling depends on JSON.
 
-### Phase 5: Code structure refactor
-- Create `danube-persistent-storage/src/wal/` and move components accordingly.
-- `wal.rs` becomes `wal/mod.rs` re-exporting types and acting as the constructor and public API.
-- Ensure `pub use crate::wal::Wal;` keeps external API stable.
+### Phase 4.1: Writer task ownership & shutdown — STATUS: COMPLETED ✅
+- Move writer-specific state out of `WalInner` and into `run_writer()` as an owned `WriterState` (no mutexes for writer path):
+  - `BufWriter<File>`, `write_buf`, `last_flush`, `current_file_bytes`, rotation counters.
+- Pass `LogCommand::Write { offset, bytes }` (or message) and let the writer manage buffering/flush/rotation.
+- Add graceful shutdown:
+  - Extend `LogCommand` with `Shutdown(oneshot::Sender<()>)`.
+  - On `Drop` of `Wal`, send `Shutdown` and await ack, performing final flush.
+- Benefits: clearer ownership model, zero locking in writer hot path, durable shutdown.
 
-### Phase 6: Integration and tests
+### Phase 5: Code structure refactor — STATUS: COMPLETED ✅
+- Created `danube-persistent-storage/src/wal/` and moved components accordingly.
+- Kept `danube-persistent-storage/src/wal.rs` as the module root (no `mod.rs`).
+- Added submodules: `writer.rs`, `reader.rs`, `cache.rs`, `checkpoints.rs`.
+- `wal.rs` declares `mod writer; mod reader; mod cache; mod checkpoints;`, wires writer::run, and re-exports `UploaderCheckpoint`.
+- Public API unchanged for callers: continue to use `Wal`; external import path `crate::wal::{Wal, UploaderCheckpoint}` works.
+
+### Phase 6: Integration and tests — STATUS: PENDING
 - Verify `WalStorage` and `WalFactory` need no signature changes.
 - Add tests/benchmarks:
   - Append throughput under contention (N tasks appending concurrently).
@@ -183,15 +194,18 @@ async fn run_writer(mut state: WriterState, mut rx: mpsc::Receiver<LogCommand>) 
 - All existing tests pass; new perf tests show expected improvement.
 
 
-## Work Breakdown Checklist
+## Work Breakdown Checklist (live)
 
-- [ ] Implement `LogCommand` and I/O task; wire `mpsc` in `Wal::with_config()`.
-- [ ] Remove hot-path file/buffer locks; migrate state to I/O task.
-- [ ] Replace cache with `BTreeMap` + eviction; unify cache locking in `append()`.
-- [ ] Implement `read_file_range(path, from, to_exclusive)` and update `tail_reader()` stitching.
-- [ ] Switch checkpoints to `bincode` and atomic write (tmp+rename) in I/O task.
-- [ ] Wrap WAL file in `BufWriter`; enforce flush policy.
-- [ ] Restructure files into `wal/` modules; keep public API stable.
+- [x] Implement `LogCommand` and I/O task; wire `mpsc` in `Wal::with_config()`.
+- [x] Remove hot-path file/buffer locks; migrate state to I/O task.
+- [x] Replace cache with `BTreeMap` + eviction; unify cache locking in `append()`.
+- [x] Implement `read_file_range(path, from, to_exclusive)` and update `tail_reader()` stitching.
+- [x] Switch checkpoints to `bincode` and atomic write (tmp+rename) in I/O task.
+- [x] Wrap WAL file in `BufWriter`; enforce flush policy.
+- [x] Move writer state into `WriterState` owned by `run_writer()`; remove writer-related mutex fields from `WalInner`.
+- [x] Implement graceful shutdown: `LogCommand::Shutdown(oneshot)`; flush and ack before exit.
+- [x] Log `broadcast` send errors in `append()` to detect slow/lagging consumers.
+- [x] Restructure files into `wal/` modules; keep public API stable.
 - [ ] Update/extend tests; add simple benchmarks.
 - [ ] Verify integration with `WalStorage` and `WalFactory`.
 
