@@ -199,6 +199,9 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         f.map(BufWriter::new)
     } else { None };
 
+    // Capture fields that may be moved so we can still log derived values
+    let has_file = init.wal_path.is_some();
+
     let mut state = WriterState {
         writer,
         write_buf: Vec::with_capacity(init.max_batch_bytes),
@@ -214,7 +217,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         rotate_max_seconds: init.rotate_max_seconds,
     };
 
-    debug!(target = "wal", has_file = init.wal_path.is_some(), fsync_ms = init.fsync_interval_ms, max_batch = init.max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
+    debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
     while let Some(cmd) = rx.recv().await {
         let res = match cmd {
             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
