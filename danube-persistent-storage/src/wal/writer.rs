@@ -2,13 +2,18 @@ use tokio::sync::oneshot;
 use tokio::sync::mpsc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tracing::warn;
+use tracing::{debug, warn};
 use std::path::PathBuf;
 use crc32fast;
 use bincode;
 use danube_core::storage::PersistentStorageError;
 use super::WalCheckpoint;
 
+/// Commands sent from `Wal::append()` (and friends) to the background writer task.
+///
+/// Rationale
+/// - Keep the hot path (`append`) non-blocking by enqueueing a lightweight command.
+/// - The writer task owns all I/O state and applies batching, fsync, rotation, and checkpoints.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum LogCommand {
@@ -21,6 +26,8 @@ pub(crate) enum LogCommand {
 }
 
 /// Init parameters for the writer task captured at WAL startup.
+///
+/// These are copied into `WriterState` and remain constant for the lifetime of the writer task.
 pub(crate) struct WriterInit {
     pub wal_path: Option<PathBuf>,
     pub checkpoint_path: Option<PathBuf>,
@@ -31,6 +38,11 @@ pub(crate) struct WriterInit {
 }
 
 /// Writer-owned state (no locking). Lives entirely inside the writer task.
+///
+/// Responsibilities
+/// - Buffer frames and periodically flush to disk according to `fsync_interval_ms` and `max_batch_bytes`.
+/// - Rotate WAL files based on size/time thresholds (`rotate_max_bytes` / `rotate_max_seconds`).
+/// - Persist `WalCheckpoint` atomically on flush to record `last_offset`, `file_seq`, and current file path.
 struct WriterState {
     writer: Option<BufWriter<tokio::fs::File>>,
     write_buf: Vec<u8>,
@@ -47,6 +59,8 @@ struct WriterState {
 }
 
 impl WriterState {
+    /// Handle a single `Write` command by framing and appending into the in-memory buffer;
+    /// flush (write + fsync) if batch/time thresholds are exceeded and write a checkpoint.
     async fn process_write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), PersistentStorageError> {
         self.rotate_if_needed().await?;
         if let Some(writer) = self.writer.as_mut() {
@@ -76,6 +90,7 @@ impl WriterState {
         Ok(())
     }
 
+    /// Force a flush of any buffered frames to disk and update internal timers.
     async fn process_flush(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(writer) = self.writer.as_mut() {
             if !self.write_buf.is_empty() {
@@ -92,6 +107,7 @@ impl WriterState {
         Ok(())
     }
 
+    /// Check rotate thresholds and rotate to a new `wal.<seq>.log` if needed.
     async fn rotate_if_needed(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(max_bytes) = self.rotate_max_bytes {
             if self.bytes_in_file >= max_bytes {
@@ -108,6 +124,7 @@ impl WriterState {
         Ok(())
     }
 
+    /// Open a new rotated file, update path, reset counters and timers.
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
         self.file_seq += 1;
         let new_name = format!("wal.{}.log", self.file_seq);
@@ -123,10 +140,14 @@ impl WriterState {
             self.wal_path = Some(dirp);
             self.bytes_in_file = 0;
             self.file_started = std::time::Instant::now();
+            if let Some(ref p) = self.wal_path {
+                debug!(target = "wal", seq = self.file_seq, file = %p.display(), "rotated wal file");
+            }
         }
         Ok(())
     }
 
+    /// Atomically write `WalCheckpoint` with `bincode` into `<dir>/wal.ckpt` via tmp+rename.
     async fn write_checkpoint(&self, last_offset: u64) -> Result<(), PersistentStorageError> {
         let ckpt_path = match &self.checkpoint_path {
             Some(p) => p.clone(),
@@ -162,11 +183,16 @@ impl WriterState {
         tokio::fs::rename(&tmp, &ckpt_path)
             .await
             .map_err(|e| PersistentStorageError::Io(format!("rename checkpoint failed: {}", e)))?;
+        debug!(target = "wal", last_offset, file_seq = self.file_seq, path = %ckpt_path.display(), "wrote wal checkpoint");
         Ok(())
     }
 }
 
-/// Background writer task entrypoint
+/// Background writer task entrypoint.
+///
+/// Lifecycle
+/// - Initializes `WriterState` from `WriterInit` (including opening the active file, if any).
+/// - Processes commands until `Shutdown`, flushing on demand and writing checkpoints.
 pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     let writer = if let Some(p) = &init.wal_path {
         let f = OpenOptions::new().create(true).append(true).open(p).await.ok();
@@ -188,14 +214,16 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         rotate_max_seconds: init.rotate_max_seconds,
     };
 
+    debug!(target = "wal", has_file = init.wal_path.is_some(), fsync_ms = init.fsync_interval_ms, max_batch = init.max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
     while let Some(cmd) = rx.recv().await {
         let res = match cmd {
             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
             LogCommand::Flush => state.process_flush().await,
             LogCommand::Rotate => state.rotate_if_needed().await,
             LogCommand::Shutdown(ack_tx) => {
-                let _ = state.process_flush().await;
+                if let Err(e) = state.process_flush().await { warn!(target = "wal", error = ?e, "flush on shutdown failed"); }
                 let _ = ack_tx.send(());
+                debug!(target = "wal", "writer task shutting down");
                 break;
             }
         };

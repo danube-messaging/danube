@@ -19,7 +19,14 @@ use writer::{LogCommand, WriterInit};
 // Re-export for external users: crate::wal::{Wal, UploaderCheckpoint}
 pub use checkpoints::UploaderCheckpoint;
 
-/// WAL with in-memory replay cache, CRC32C-protected frames, batched fsync, file replay,rotation and checkpoints.
+/// Write-Ahead Log (WAL) with:
+/// - In-memory ordered replay cache
+/// - CRC32-protected frames `[u64 offset][u32 len][u32 crc][bytes]`
+/// - Batched writes with periodic fsync
+/// - Optional rotation by size/time and durable checkpoints
+/// - Replay from file + cache and live tail via broadcast channel
+///
+/// Cloning `Wal` is cheap; all state is held in `Arc<WalInner>`.
 #[derive(Debug, Clone)]
 pub struct Wal {
     inner: Arc<WalInner>,
@@ -56,6 +63,7 @@ pub struct WalConfig {
 }
 
 impl WalConfig {
+    /// Resolve full path to the active WAL file (e.g., `<dir>/<file_name>`), if a directory is configured.
     fn wal_file_path(&self) -> Option<PathBuf> {
         let dir = self.dir.as_ref()?;
         let name = self
@@ -64,6 +72,7 @@ impl WalConfig {
             .unwrap_or_else(|| "wal.log".to_string());
         Some(dir.join(name))
     }
+    /// Return the configured WAL directory, if any.
     fn wal_dir(&self) -> Option<PathBuf> {
         self.dir.clone()
     }
@@ -117,6 +126,14 @@ impl Wal {
     }
 
     /// Create a WAL using an optional file for durability.
+    ///
+    /// Behavior
+    /// - If `cfg.dir` is set, ensures the directory exists and prepares the active file path.
+    /// - Spawns a background writer task (`writer::run`) that owns I/O state and services `LogCommand`s.
+    /// - Initializes in-memory cache and broadcast channel for live tailing.
+    ///
+    /// Returns
+    /// - `Ok(Wal)` ready for `append()` and `tail_reader()`; I/O happens in the background task.
     pub async fn with_config(cfg: WalConfig) -> Result<Self, PersistentStorageError> {
         let (tx, _rx) = broadcast::channel(1024);
         let (cmd_tx, cmd_rx) = mpsc::channel(8192);
@@ -206,8 +223,15 @@ impl Wal {
     }
 
     /// Append a message and return the assigned offset.
-    /// Live readers will be notified via broadcast. If a file is configured, append to it with
-    /// batched writes and periodic fsync. On-disk frame: [u64 offset][u32 len][u32 crc][bytes].
+    ///
+    /// What happens
+    /// - Atomically assigns the next offset and inserts the message into the in-memory cache (evicting if needed).
+    /// - Enqueues a `LogCommand::Write { offset, bytes }` to the background writer (non-blocking hot path).
+    /// - Broadcasts `(offset, message)` to live tailing readers.
+    ///
+    /// Durability
+    /// - The background writer batches frames and fsyncs periodically; rotation/checkpointing handled there.
+    /// - On-disk frame layout: `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 over `bytes`.
     pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
         let offset = self.inner.next_offset.fetch_add(1, Ordering::AcqRel);
         // Serialize the full message for durability and enqueue to background writer
@@ -244,8 +268,14 @@ impl Wal {
         Ok(offset)
     }
 
-    /// Create a reader stream starting from the given offset.
-    /// First yields any persisted (file) + cached messages with offset >= from_offset (deduped), then switches to live tailing.
+    /// Create a reader stream starting from a given offset.
+    ///
+    /// Replay semantics
+    /// - Replays any persisted (file) and cached messages with offsets `>= from_offset` (already ordered, no dedupe needed).
+    /// - Then switches to live tail using the internal broadcast channel.
+    ///
+    /// Implementation note
+    /// - This is a thin wrapper that snapshots inputs and delegates to `wal/reader.rs::build_tail_stream`.
     pub async fn tail_reader(
         &self,
         from_offset: u64,
@@ -263,8 +293,10 @@ impl Wal {
         reader::build_tail_stream(wal_path_opt, cache_snapshot, from_offset, rx).await
     }
 
-    /// Snapshot cached messages with offset greater than or equal to `after_offset`.
-    /// Returns the collected items and the highest offset observed (watermark).
+    /// Snapshot cached messages with offsets `>= after_offset`.
+    ///
+    /// Returns
+    /// - `(items, watermark)` where `items` are `(offset, message)` pairs and `watermark` is the highest offset seen.
     pub async fn read_cached_since(
         &self,
         after_offset: u64,
@@ -297,7 +329,7 @@ impl Wal {
         Some(parent.join("uploader.ckpt"))
     }
 
-    /// Persist uploader checkpoint as JSON to `uploader.ckpt`.
+    /// Persist uploader checkpoint to `uploader.ckpt`.
     pub async fn write_uploader_checkpoint(
         &self,
         ckpt: &UploaderCheckpoint,
@@ -322,7 +354,7 @@ impl Wal {
 
     // Writer task implemented in wal/writer.rs (spawned from with_config/default)
 
-    /// Graceful shutdown: flush pending buffered data and stop writer task
+    /// Graceful shutdown: flush pending buffered data and stop the background writer task.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         // Ignore send error if writer already stopped

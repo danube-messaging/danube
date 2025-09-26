@@ -7,8 +7,15 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tracing::{debug, warn};
 
-/// Read and decode WAL frames in [from_offset, to_exclusive) from file at `path`.
+/// Read and decode WAL frames in `[from_offset, to_exclusive)` from file at `path`.
+///
+/// Frame format
+/// - `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 over `bytes`.
+/// - Stops on EOF, CRC mismatch, or when `off >= to_exclusive`.
+///
+/// Returns ordered `(offset, StreamMessage)` pairs suitable for stitching with cache replay.
 pub(crate) async fn read_file_range(
     path: &PathBuf,
     from_offset: u64,
@@ -42,6 +49,7 @@ pub(crate) async fn read_file_range(
             .map_err(|e| PersistentStorageError::Io(format!("wal read frame failed: {}", e)))?;
         let actual_crc = crc32fast::hash(&buf);
         if actual_crc != crc {
+            warn!(target = "wal", path = %path.display(), offset = off, "CRC mismatch detected; stopping file replay");
             break; // treat CRC mismatch as logical end-of-log
         }
         if off >= to_exclusive {
@@ -60,9 +68,15 @@ pub(crate) async fn read_file_range(
 /// Build a combined replay+live stream starting from `from_offset` using the provided
 /// optional WAL file path, a snapshot of cache items, and a broadcast receiver for live items.
 ///
-/// Ordering guarantee: the `cache_snapshot` must be ordered ascending by offset. This holds
-/// because it is produced by `Cache::range_from()` over a `BTreeMap`, whose iterators yield
-/// keys in sorted order. Therefore no additional sorting is required here.
+/// Ordering guarantee
+/// - The `cache_snapshot` must be ordered ascending by offset. This holds because it is produced
+///   by `Cache::range_from()` over a `BTreeMap`, whose iterators yield keys in sorted order.
+///   Therefore no additional sorting is required here.
+///
+/// Replay strategy
+/// - If `from_offset < cache_start`, replay `[from_offset, cache_start)` from the file.
+/// - Then append cache items `>= max(from_offset, cache_start)`.
+/// - Finally switch to live tail (broadcast) starting after the last replayed offset.
 pub(crate) async fn build_tail_stream(
     wal_path_opt: Option<PathBuf>,
     cache_snapshot: Vec<(u64, StreamMessage)>,
@@ -77,6 +91,7 @@ pub(crate) async fn build_tail_stream(
     if let Some(path) = &wal_path_opt {
         if from_offset < cache_start {
             let mut file_part = read_file_range(path, from_offset, cache_start).await?;
+            debug!(target = "wal", from = from_offset, to_exclusive = cache_start, file = %path.display(), count = file_part.len(), "replayed frames from file");
             replay_items.append(&mut file_part);
         }
     }

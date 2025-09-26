@@ -96,7 +96,7 @@ services:
       mc:
         condition: service_started
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info,wal=debug
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
@@ -138,7 +138,7 @@ services:
       mc:
         condition: service_started
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info,wal=debug
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
