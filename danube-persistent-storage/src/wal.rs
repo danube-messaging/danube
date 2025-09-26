@@ -41,7 +41,7 @@ struct WalInner {
     cache: Mutex<Cache>,
     cache_capacity: usize,
     fsync_interval_ms: u64,
-    max_batch_bytes: usize,
+    fsync_max_batch_bytes: usize,
     // Rotation state
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
@@ -53,13 +53,49 @@ struct WalInner {
 
 #[derive(Debug, Clone, Default)]
 pub struct WalConfig {
+    /// Root directory for the WAL. When `None`, the WAL operates in memory-only mode
+    /// (no file durability and no checkpoint files).
+    ///
+    /// Default: `None` (in-memory only)
     pub dir: Option<PathBuf>,
-    pub file_name: Option<String>, // default: wal.log (used when no rotation)
-    pub cache_capacity: Option<usize>, // default: 1024
+
+    /// Base file name for the active WAL when rotation is disabled. Combined with `dir`
+    /// to form `<dir>/<file_name>`. Ignored for rotated files (which use `wal.<seq>.log`).
+    ///
+    /// Default when `None`: `"wal.log"`
+    pub file_name: Option<String>,
+
+    /// Maximum number of recent messages to retain in the in-memory replay cache.
+    /// The cache is ordered by offset and older entries are evicted first when capacity
+    /// is exceeded.
+    ///
+    /// Default when `None`: `1024` messages
+    pub cache_capacity: Option<usize>,
+
+    /// Maximum time between flushes (ms) for the background writer. A flush is triggered
+    /// if either this interval elapses or `fsync_max_batch_bytes` is reached, whichever comes first.
+    ///
+    /// Default when `None`: `1_000` ms (1 s)
     pub fsync_interval_ms: Option<u64>,
-    pub max_batch_bytes: Option<usize>,
-    pub rotate_max_bytes: Option<u64>, // when set, rotate file after this many bytes appended
-    pub rotate_max_seconds: Option<u64>, // when set, rotate file after this many seconds
+
+    /// Maximum buffered bytes in the writer before forcing a flush. This bounds write latency
+    /// and memory usage for the write buffer.
+    ///
+    /// Default when `None`: `10 * 1024 * 1024` bytes (10 MiB)
+    pub fsync_max_batch_bytes: Option<usize>,
+
+    /// Size-based rotation threshold in bytes. When set, the writer rotates to a new
+    /// `wal.<seq>.log` file after at least this many bytes have been written to the current file.
+    ///
+    /// Default when `None`: rotation by size is disabled
+    pub rotate_max_bytes: Option<u64>,
+
+    /// Time-based rotation threshold in seconds. When set, the writer rotates to a new
+    /// `wal.<seq>.log` if the current file has been open longer than this duration, even if
+    /// the size threshold hasn't been reached (useful for low-traffic topics and operational hygiene).
+    ///
+    /// Default when `None`: rotation by time is disabled
+    pub rotate_max_seconds: Option<u64>,
 }
 
 impl WalConfig {
@@ -96,8 +132,8 @@ impl Default for Wal {
                 wal_path: Mutex::new(None),
                 cache: Mutex::new(Cache::new()),
                 cache_capacity: 1024,
-                fsync_interval_ms: 5,
-                max_batch_bytes: 8 * 1024, // 8 KiB default batch
+                fsync_interval_ms: 1_000, // 1s default flush interval
+                fsync_max_batch_bytes: 10 * 1024 * 1024, // 10 MiB default batch
                 rotate_max_bytes: None,
                 rotate_max_seconds: None,
                 checkpoint_path: None,
@@ -109,7 +145,7 @@ impl Default for Wal {
             wal_path: None,
             checkpoint_path: None,
             fsync_interval_ms: wal.inner.fsync_interval_ms,
-            max_batch_bytes: wal.inner.max_batch_bytes,
+            fsync_max_batch_bytes: wal.inner.fsync_max_batch_bytes,
             rotate_max_bytes: wal.inner.rotate_max_bytes,
             rotate_max_seconds: wal.inner.rotate_max_seconds,
         };
@@ -159,8 +195,8 @@ impl Wal {
         };
 
         let capacity = cfg.cache_capacity.unwrap_or(1024);
-        let fsync_interval_ms = cfg.fsync_interval_ms.unwrap_or(5);
-        let max_batch_bytes = cfg.max_batch_bytes.unwrap_or(8 * 1024);
+        let fsync_interval_ms = cfg.fsync_interval_ms.unwrap_or(1_000); // 1s default
+        let fsync_max_batch_bytes = cfg.fsync_max_batch_bytes.unwrap_or(10 * 1024 * 1024); // 10 MiB default
         let rotate_max_bytes = cfg.rotate_max_bytes;
         let rotate_max_seconds = cfg.rotate_max_seconds;
         let checkpoint_path = cfg.wal_dir().map(|mut d| {
@@ -175,7 +211,7 @@ impl Wal {
                 wal_dir = %dir.display(),
                 cache_capacity = capacity,
                 fsync_interval_ms,
-                max_batch_bytes,
+                fsync_max_batch_bytes,
                 rotate_max_bytes = rotate_max_bytes.unwrap_or(0),
                 rotate_max_seconds = rotate_max_seconds.unwrap_or(0),
                 checkpoint = %checkpoint_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".to_string()),
@@ -186,7 +222,7 @@ impl Wal {
                 target = "wal",
                 cache_capacity = capacity,
                 fsync_interval_ms,
-                max_batch_bytes,
+                fsync_max_batch_bytes,
                 "WAL configuration applied (no dir)"
             );
         }
@@ -199,7 +235,7 @@ impl Wal {
                 cache: Mutex::new(Cache::new()),
                 cache_capacity: capacity,
                 fsync_interval_ms,
-                max_batch_bytes,
+                fsync_max_batch_bytes,
                 rotate_max_bytes,
                 rotate_max_seconds,
                 checkpoint_path,
@@ -212,7 +248,7 @@ impl Wal {
             wal_path: wal_path_for_init,
             checkpoint_path: wal.inner.checkpoint_path.clone(),
             fsync_interval_ms,
-            max_batch_bytes,
+            fsync_max_batch_bytes,
             rotate_max_bytes,
             rotate_max_seconds,
         };

@@ -40,14 +40,14 @@ auth:
 wal_cloud:
   wal:
     dir: "./data/wal"
+    file_name: "wal.log"
     cache_capacity: 1024
+    file_sync:
+      interval_ms: 1000         # 1s WAL flush interval (default)
+      max_batch_bytes: 10485760 # 10 MiB WAL writer batch (default)
     rotation:
-      max_bytes: 10485760      # 10 MB
-      max_seconds: 60          # rotate every 60s (if implemented)
-    retention:
-      min_minutes: 60
-      min_bytes: 104857600     # 100 MB
-      active_subscription_grace_seconds: 300
+      max_bytes: 10485760       # 10 MB (example)
+      max_seconds: 60           # rotate every 60s (optional)
   uploader:
     interval_seconds: 1
     max_batch_bytes: 8388608   # 8 MB

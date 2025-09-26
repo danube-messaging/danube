@@ -113,8 +113,20 @@ async fn main() -> Result<()> {
     // Prepare WalConfig (per-topic WALs will be created by the factory using this as base)
     let wal_base_cfg = WalConfig {
         dir: wal_cfg.wal.dir.as_ref().map(|d| d.into()),
+        file_name: wal_cfg.wal.file_name.clone(),
         cache_capacity: wal_cfg.wal.cache_capacity,
-        // rotation and retention mapping can be extended inside Wal as needed
+        fsync_interval_ms: wal_cfg
+            .wal
+            .file_sync
+            .as_ref()
+            .and_then(|f| f.interval_ms),
+        fsync_max_batch_bytes: wal_cfg
+            .wal
+            .file_sync
+            .as_ref()
+            .and_then(|f| f.max_batch_bytes),
+        rotate_max_bytes: wal_cfg.wal.rotation.as_ref().and_then(|r| r.max_bytes),
+        rotate_max_seconds: wal_cfg.wal.rotation.as_ref().and_then(|r| r.max_seconds),
         ..Default::default()
     };
 

@@ -1,13 +1,13 @@
-use tokio::sync::oneshot;
-use tokio::sync::mpsc;
+use super::WalCheckpoint;
+use bincode;
+use crc32fast;
+use danube_core::storage::PersistentStorageError;
+use std::path::PathBuf;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tracing::{debug, warn};
-use std::path::PathBuf;
-use crc32fast;
-use bincode;
-use danube_core::storage::PersistentStorageError;
-use super::WalCheckpoint;
 
 /// Commands sent from `Wal::append()` (and friends) to the background writer task.
 ///
@@ -17,12 +17,15 @@ use super::WalCheckpoint;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum LogCommand {
-    Write { offset: u64, bytes: Vec<u8> },
+    Write {
+        offset: u64,
+        bytes: Vec<u8>,
+    },
     #[allow(dead_code)]
     Flush,
     #[allow(dead_code)]
     Rotate,
-    Shutdown(oneshot::Sender<()>)
+    Shutdown(oneshot::Sender<()>),
 }
 
 /// Init parameters for the writer task captured at WAL startup.
@@ -32,7 +35,7 @@ pub(crate) struct WriterInit {
     pub wal_path: Option<PathBuf>,
     pub checkpoint_path: Option<PathBuf>,
     pub fsync_interval_ms: u64,
-    pub max_batch_bytes: usize,
+    pub fsync_max_batch_bytes: usize,
     pub rotate_max_bytes: Option<u64>,
     pub rotate_max_seconds: Option<u64>,
 }
@@ -53,7 +56,7 @@ struct WriterState {
     wal_path: Option<PathBuf>,
     checkpoint_path: Option<PathBuf>,
     fsync_interval_ms: u64,
-    max_batch_bytes: usize,
+    fsync_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
 }
@@ -61,7 +64,11 @@ struct WriterState {
 impl WriterState {
     /// Handle a single `Write` command by framing and appending into the in-memory buffer;
     /// flush (write + fsync) if batch/time thresholds are exceeded and write a checkpoint.
-    async fn process_write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), PersistentStorageError> {
+    async fn process_write(
+        &mut self,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<(), PersistentStorageError> {
         self.rotate_if_needed().await?;
         if let Some(writer) = self.writer.as_mut() {
             let len = bytes.len() as u32;
@@ -72,16 +79,18 @@ impl WriterState {
             self.write_buf.extend_from_slice(bytes);
 
             self.bytes_in_file += (8 + 4 + 4 + bytes.len()) as u64;
-            let should_flush_by_bytes = self.write_buf.len() >= self.max_batch_bytes;
+            let should_flush_by_bytes = self.write_buf.len() >= self.fsync_max_batch_bytes;
             let should_flush_by_time = self.last_flush.elapsed()
                 >= std::time::Duration::from_millis(self.fsync_interval_ms);
             if should_flush_by_bytes || should_flush_by_time {
-                writer.write_all(&self.write_buf).await.map_err(|e| {
-                    PersistentStorageError::Io(format!("wal write failed: {}", e))
-                })?;
-                writer.flush().await.map_err(|e| {
-                    PersistentStorageError::Io(format!("wal flush failed: {}", e))
-                })?;
+                writer
+                    .write_all(&self.write_buf)
+                    .await
+                    .map_err(|e| PersistentStorageError::Io(format!("wal write failed: {}", e)))?;
+                writer
+                    .flush()
+                    .await
+                    .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
                 self.write_checkpoint(offset).await.ok();
@@ -94,12 +103,14 @@ impl WriterState {
     async fn process_flush(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(writer) = self.writer.as_mut() {
             if !self.write_buf.is_empty() {
-                writer.write_all(&self.write_buf).await.map_err(|e| {
-                    PersistentStorageError::Io(format!("wal write failed: {}", e))
-                })?;
-                writer.flush().await.map_err(|e| {
-                    PersistentStorageError::Io(format!("wal flush failed: {}", e))
-                })?;
+                writer
+                    .write_all(&self.write_buf)
+                    .await
+                    .map_err(|e| PersistentStorageError::Io(format!("wal write failed: {}", e)))?;
+                writer
+                    .flush()
+                    .await
+                    .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
             }
@@ -128,14 +139,20 @@ impl WriterState {
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
         self.file_seq += 1;
         let new_name = format!("wal.{}.log", self.file_seq);
-        if let Some(mut dirp) = self.wal_path.as_ref().and_then(|p| p.parent().map(|pp| pp.to_path_buf())) {
+        if let Some(mut dirp) = self
+            .wal_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
+        {
             dirp.push(&new_name);
             let f = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&dirp)
                 .await
-                .map_err(|e| PersistentStorageError::Io(format!("open rotated wal file failed: {}", e)))?;
+                .map_err(|e| {
+                    PersistentStorageError::Io(format!("open rotated wal file failed: {}", e))
+                })?;
             self.writer = Some(BufWriter::new(f));
             self.wal_path = Some(dirp);
             self.bytes_in_file = 0;
@@ -173,7 +190,9 @@ impl WriterState {
             .truncate(true)
             .open(&tmp)
             .await
-            .map_err(|e| PersistentStorageError::Io(format!("open checkpoint tmp failed: {}", e)))?;
+            .map_err(|e| {
+                PersistentStorageError::Io(format!("open checkpoint tmp failed: {}", e))
+            })?;
         f.write_all(&bytes)
             .await
             .map_err(|e| PersistentStorageError::Io(format!("write checkpoint failed: {}", e)))?;
@@ -195,16 +214,23 @@ impl WriterState {
 /// - Processes commands until `Shutdown`, flushing on demand and writing checkpoints.
 pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     let writer = if let Some(p) = &init.wal_path {
-        let f = OpenOptions::new().create(true).append(true).open(p).await.ok();
+        let f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .await
+            .ok();
         f.map(BufWriter::new)
-    } else { None };
+    } else {
+        None
+    };
 
     // Capture fields that may be moved so we can still log derived values
     let has_file = init.wal_path.is_some();
 
     let mut state = WriterState {
         writer,
-        write_buf: Vec::with_capacity(init.max_batch_bytes),
+        write_buf: Vec::with_capacity(init.fsync_max_batch_bytes),
         last_flush: std::time::Instant::now(),
         bytes_in_file: 0,
         file_started: std::time::Instant::now(),
@@ -212,19 +238,21 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         wal_path: init.wal_path,
         checkpoint_path: init.checkpoint_path,
         fsync_interval_ms: init.fsync_interval_ms,
-        max_batch_bytes: init.max_batch_bytes,
+        fsync_max_batch_bytes: init.fsync_max_batch_bytes,
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
     };
 
-    debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
+    debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
     while let Some(cmd) = rx.recv().await {
         let res = match cmd {
             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
             LogCommand::Flush => state.process_flush().await,
             LogCommand::Rotate => state.rotate_if_needed().await,
             LogCommand::Shutdown(ack_tx) => {
-                if let Err(e) = state.process_flush().await { warn!(target = "wal", error = ?e, "flush on shutdown failed"); }
+                if let Err(e) = state.process_flush().await {
+                    warn!(target = "wal", error = ?e, "flush on shutdown failed");
+                }
                 let _ = ack_tx.send(());
                 debug!(target = "wal", "writer task shutting down");
                 break;

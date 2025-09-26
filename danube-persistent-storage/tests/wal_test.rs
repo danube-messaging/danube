@@ -107,7 +107,7 @@ async fn make_wal_with_dir(
         file_name: Some("wal.log".to_string()),
         cache_capacity: Some(1024),
         fsync_interval_ms: Some(1),
-        max_batch_bytes: Some(1024),
+        fsync_max_batch_bytes: Some(1024),
         rotate_max_bytes,
         rotate_max_seconds: None,
     };
