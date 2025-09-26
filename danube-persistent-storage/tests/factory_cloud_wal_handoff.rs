@@ -71,6 +71,19 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         etcd.clone(),
     );
 
+    // Ensure per-topic WAL file exists at <root>/ns/topic/wal.log to avoid open errors on reader startup.
+    let per_topic_dir = wal_root.join("default").join("topic-hand");
+    tokio::fs::create_dir_all(&per_topic_dir)
+        .await
+        .expect("create per-topic wal dir");
+    let wal_file = per_topic_dir.join("wal.log");
+    if tokio::fs::metadata(&wal_file).await.is_err() {
+        // create empty file; writer task will use/create as needed later
+        let _ = tokio::fs::File::create(&wal_file)
+            .await
+            .expect("create wal.log");
+    }
+
     let topic_name = "/default/topic-hand";
     let topic_path = "default/topic-hand"; // for cloud/etcd
 

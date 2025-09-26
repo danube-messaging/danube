@@ -190,8 +190,9 @@ impl Wal {
             }),
         };
         // Spawn background writer task
+        let wal_path_for_init = wal.inner.wal_path.lock().await.clone();
         let init = WriterInit {
-            wal_path: wal.inner.wal_path.blocking_lock().clone(),
+            wal_path: wal_path_for_init,
             checkpoint_path: wal.inner.checkpoint_path.clone(),
             fsync_interval_ms,
             max_batch_bytes,

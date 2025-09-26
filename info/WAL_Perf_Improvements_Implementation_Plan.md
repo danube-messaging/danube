@@ -102,13 +102,19 @@ Scope covers `danube-persistent-storage/src/wal.rs`, with integration touch poin
 - `wal.rs` declares `mod writer; mod reader; mod cache; mod checkpoints;`, wires writer::run, and re-exports `UploaderCheckpoint`.
 - Public API unchanged for callers: continue to use `Wal`; external import path `crate::wal::{Wal, UploaderCheckpoint}` works.
 
-### Phase 6: Integration and tests — STATUS: PENDING
-- Verify `WalStorage` and `WalFactory` need no signature changes.
-- Add tests/benchmarks:
-  - Append throughput under contention (N tasks appending concurrently).
-  - Tail latency measurement (time from append to reader receive).
-  - Reader catch-up from offset far behind cache (file+cache stitch correctness).
-  - Rotation + checkpoint correctness with I/O task.
+### Phase 6: Integration and tests — STATUS: IN PROGRESS
+- Verify `WalStorage` and `WalFactory` need no signature changes. ✅ (Factory-based handoff test re-enabled and passing)
+- Consolidate WAL tests in `danube-persistent-storage/tests/wal_test.rs`. ✅
+  - `test_wal_file_replay_all`: fresh reader replays frames written by a previous instance.
+  - `test_wal_file_replay_from_offset`: `tail_reader(from)` replays only offsets >= from.
+  - `test_append_and_tail_from_zero`: end-to-end ordered read from offset 0 with correct `segment_offset`.
+  - `test_rotation_and_tail_from_offset`: size-based rotation + stitched replay (file+cache) from offset.
+- Factory/cloud integration:
+  - `tests/factory_cloud_wal_handoff.rs` re-enabled; ensures per-topic `<root>/ns/topic/wal.log` exists before reader startup. ✅
+- Remaining (benchmarks and perf-focused tests):
+  - Append throughput under contention (N tasks appending concurrently). ⏳
+  - Tail latency measurement (time from append to reader receive). ⏳
+  - Reader catch-up from offset far behind cache (very small cache; deep file replay). ⏳
 
 
 ## I/O Task Sketch
