@@ -119,22 +119,22 @@ pub(crate) struct WalCloudConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalNode {
     pub(crate) dir: Option<String>,
+    pub(crate) file_name: Option<String>,
     pub(crate) cache_capacity: Option<usize>,
+    pub(crate) file_sync: Option<WalFlushNode>,
     pub(crate) rotation: Option<WalRotationNode>,
-    pub(crate) retention: Option<WalRetentionNode>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalFlushNode {
+    pub(crate) interval_ms: Option<u64>,
+    pub(crate) max_batch_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalRotationNode {
     pub(crate) max_bytes: Option<u64>,
     pub(crate) max_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct WalRetentionNode {
-    pub(crate) min_minutes: Option<u64>,
-    pub(crate) min_bytes: Option<u64>,
-    pub(crate) active_subscription_grace_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

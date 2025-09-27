@@ -3,15 +3,15 @@
 This directory contains integration and unit tests covering the WAL + Cloud + Metadata stack.
 Each test focuses on a specific behavior. Use this map to quickly identify coverage areas.
 
-## Test Map
+## Test Map (current)
 
-- wal_file_replay.rs
-  - Purpose: Validate WAL file-backed replay and replay-from-offset behavior.
-  - Coverage: `Wal::with_config`, on-disk frames, `tail_reader(from)` replays persisted records then tails live.
-
-- wal_rotation_checkpoint.rs
-  - Purpose: Validate WAL rotation (size/time) and checkpoint creation.
-  - Coverage: rotation thresholds, `wal.ckpt` content, sequential file naming.
+- wal_test.rs (consolidated WAL tests)
+  - Purpose: End-to-end WAL behavior covering append, replay, rotation, and ordered reads.
+  - Coverage:
+    - `test_wal_file_replay_all`: fresh reader replays frames written by previous instance over same dir.
+    - `test_wal_file_replay_from_offset`: `tail_reader(from)` replays only offsets >= from before live.
+    - `test_append_and_tail_from_zero`: append N and verify ordered tail from 0 with correct `segment_offset`.
+    - `test_rotation_and_tail_from_offset`: size-based rotation + stitched replay (file+cache) from offset.
 
 - cloud_reader_memory.rs
   - Purpose: Validate `CloudReader` range reads and DNB1 object parsing using an in-memory cloud.

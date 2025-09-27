@@ -52,7 +52,7 @@ let factory = WalStorageFactory::new_with_backend(wal_base_cfg, backend, metadat
 
 // Per-topic storage used by TopicStore
 let topic_name = "/default/my-topic";
-let storage = factory.for_topic(topic_name);
+let storage = factory.for_topic(topic_name).await?;
 ```
 
 ### Per-topic append and reader
@@ -86,6 +86,54 @@ while let Some(item) = reader.next().await.transpose()? {
     // process item.payload
 }
 ```
+
+## Recommended usage (summary)
+
+- Use `WalStorageFactory` at the broker level to provision per-topic `WalStorage` on demand.
+- Configure a base `WalConfig` with a root directory (e.g. `/var/lib/danube/wal`); the factory will create
+  per-topic directories `<root>/<ns>/<topic>/` automatically.
+- Keep the writer path hot: `Wal::append()` is non-blocking and offloads I/O to a background task.
+- For observability, start with `RUST_LOG=info` and raise to `wal=debug` when troubleshooting WAL flows.
+
+## WAL architecture (overview)
+
+```
+Writer hot path (append)                             Background writer task (I/O)
+------------------------------------------------     -----------------------------------------------
+Producer -> Wal::append(msg) ->
+  - assign offset
+  - insert into in-memory Cache (bounded)
+  - enqueue LogCommand::Write {offset, bytes}  --->  [Buf]
+                                                     | accumulate framed entries until:
+                                                     | - batch size reached OR
+                                                     | - fsync interval elapsed
+                                                     v
+                                                write()/flush() -> fsync
+                                                     |
+                                                     | rotate if size/time thresholds met
+                                                     v
+                                                wal.<seq>.log (CRC-framed)
+                                                     |
+                                                     v
+                                                write wal.ckpt (bincode) atomically
+```
+
+```
+Reader path (catch-up + live tail)
+----------------------------------
+Wal::tail_reader(from) ->
+  - snapshot cache (ordered)
+  - if from < cache_start:
+      read_file_range(<file>, [from, cache_start))
+  - append cache items >= max(from, cache_start)
+  - inject WAL offsets into MessageID.segment_offset
+  - chain with live broadcast for new appends
+```
+
+Key details
+- Frame format: `[u64 offset][u32 len][u32 crc][bincode(StreamMessage)]`; CRC mismatch is treated as end-of-log.
+- Cache is ordered (BTreeMap), so replay stitching requires no extra sorting.
+- Rotation policy is optional (size/time); checkpoints record `last_offset`, `file_seq`, and current file path.
 
 ## Components
 
