@@ -44,4 +44,10 @@ impl Cache {
     pub(crate) fn range_from(&self, from: u64) -> impl Iterator<Item = (u64, StreamMessage)> + '_ {
         self.map.range(from..).map(|(k, v)| (*k, v.clone()))
     }
+
+    /// Test helper: get item by exact offset.
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, offset: u64) -> Option<(u64, StreamMessage)> {
+        self.map.get(&offset).cloned().map(|m| (offset, m))
+    }
 }

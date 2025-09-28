@@ -45,7 +45,7 @@ fn make_msg(i: u64, topic: &str, tag: &str) -> StreamMessage {
 
 #[tokio::test]
 async fn chaining_stream_handoff_memory() {
-    let topic_path = "tenant/ns/topic-handoff";
+    let topic_path = "ns/topic-handoff";
 
     // WAL minimal config
     let wal = Wal::with_config(WalConfig {

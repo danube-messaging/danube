@@ -13,7 +13,7 @@ use bincode;
 pub struct UploaderConfig {
     pub interval_seconds: u64,
     pub max_batch_bytes: usize,
-    pub topic_path: String,  // e.g., "tenant/ns/topic"
+    pub topic_path: String,  // e.g., "ns/topic"
     pub root_prefix: String, // e.g., "/danube"
 }
 
@@ -22,7 +22,7 @@ impl Default for UploaderConfig {
         Self {
             interval_seconds: 10,
             max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
-            topic_path: "default/default/topic".to_string(),
+            topic_path: "default/topic".to_string(),
             root_prefix: "/danube".to_string(),
         }
     }
@@ -174,5 +174,17 @@ impl Uploader {
                     .store(watermark, Ordering::Release);
             }
         })
+    }
+
+    /// Test-only: expose configuration for unit tests within this crate.
+    #[cfg(test)]
+    pub(crate) fn test_cfg(&self) -> &UploaderConfig {
+        &self.cfg
+    }
+
+    /// Test-only: expose last uploaded offset watermark for assertions.
+    #[cfg(test)]
+    pub(crate) fn test_last_uploaded_offset(&self) -> u64 {
+        self.last_uploaded_offset.load(Ordering::Acquire)
     }
 }

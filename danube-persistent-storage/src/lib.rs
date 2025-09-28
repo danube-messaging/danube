@@ -23,3 +23,13 @@ pub use cloud_reader::CloudReader;
 // WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
 mod wal_factory;
 pub use wal_factory::WalStorageFactory;
+
+// Unit tests
+#[cfg(test)]
+mod wal_test;
+#[cfg(test)]
+mod cloud_reader_test;
+#[cfg(test)]
+mod cloud_store_test;
+#[cfg(test)]
+mod uploader_test;

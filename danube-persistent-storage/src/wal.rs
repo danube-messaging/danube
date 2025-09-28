@@ -399,3 +399,13 @@ impl Wal {
         let _ = rx.await;
     }
 }
+
+// Unit tests for WAL submodules
+#[cfg(test)]
+mod cache_test;
+#[cfg(test)]
+mod checkpoints_test;
+#[cfg(test)]
+mod reader_test;
+#[cfg(test)]
+mod writer_test;

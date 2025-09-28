@@ -47,6 +47,14 @@ impl WalStorage {
         }
         self
     }
+
+    /// Convenience: append a message directly to the underlying WAL.
+    ///
+    /// Note: Integration tests use `storage.append(&msg)`; this helper forwards to `Wal::append`.
+    #[allow(dead_code)]
+    pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
+        self.wal.append(msg).await
+    }
 }
 
 #[async_trait]
