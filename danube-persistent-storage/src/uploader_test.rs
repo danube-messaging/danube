@@ -1,10 +1,30 @@
+use tokio::time::Duration;
+
+// Simple async wait helper: polls condition up to timeout_ms
+    async fn wait_for_condition<F, Fut>(mut f: F, timeout_ms: u64, interval_ms: u64) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let mut waited = 0u64;
+        while waited <= timeout_ms {
+            if f().await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+            waited += interval_ms;
+        }
+        false
+    }
 #[cfg(test)]
 mod tests {
+    use super::wait_for_condition;
     use crate::{Uploader, UploaderConfig};
     use crate::wal::{Wal, WalConfig, UploaderCheckpoint};
     use crate::{BackendConfig, CloudStore, EtcdMetadata, LocalBackend};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use danube_metadata_store::MetadataStore; // bring trait into scope for MemoryStore methods
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -142,10 +162,18 @@ mod tests {
         };
 
         let uploader = Arc::new(Uploader::new(config, wal, cloud.clone(), meta).expect("uploader"));
-        let handle = uploader.start();
+        let handle = uploader.clone().start();
 
-        // Wait for upload
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Wait for upload deterministically
+        let ok = wait_for_condition(
+            || {
+                let uploader = uploader.clone();
+                async move { uploader.test_last_uploaded_offset() >= 2 }
+            },
+            5000,
+            50,
+        ).await;
+        assert!(ok, "uploader did not advance offset in time");
         handle.abort();
 
         // Verify object was created with correct format
@@ -224,15 +252,22 @@ mod tests {
         // Verify uploader starts from correct offset
         assert_eq!(uploader.test_last_uploaded_offset(), 0);
         
-        let handle = uploader.start();
+        let handle = uploader.clone().start();
 
         // Wait for upload
         tokio::time::sleep(Duration::from_millis(1200)).await;
         handle.abort();
 
         // Verify uploader advanced past checkpoint
-        let final_offset = uploader.test_last_uploaded_offset();
-        assert!(final_offset >= 8, "Should have processed messages after checkpoint");
+        let ok = wait_for_condition(
+            || {
+                let uploader = uploader.clone();
+                async move { uploader.test_last_uploaded_offset() >= 8 }
+            },
+            5000,
+            50,
+        ).await;
+        assert!(ok, "Should have processed messages after checkpoint");
     }
 
     /// Test: Uploader batch size limit handling
@@ -281,7 +316,7 @@ mod tests {
         };
 
         let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
-        let handle = uploader.start();
+        let handle = uploader.clone().start();
 
         // Wait for upload
         tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -320,7 +355,7 @@ mod tests {
         };
 
         let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
-        let handle = uploader.start();
+        let handle = uploader.clone().start();
 
         // Wait for tick
         tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -366,7 +401,7 @@ mod tests {
         };
 
         let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
-        let handle = uploader.start();
+        let handle = uploader.clone().start();
 
         // Wait for upload
         tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -392,8 +427,9 @@ mod tests {
         // Object ID should follow pattern: data-<start>-<end>.dnb1
         assert!(desc.object_id.starts_with("data-"));
         assert!(desc.object_id.ends_with(".dnb1"));
-        assert!(desc.object_id.contains("-10-")); // Should contain start offset
-        assert!(desc.object_id.contains("-12")); // Should contain end offset
+        // Use parsed offsets to avoid brittle substring checks
+        assert_eq!(desc.start_offset, 10);
+        assert_eq!(desc.end_offset, 12);
     }
 
     /// Test: UploaderConfig clone functionality

@@ -162,64 +162,66 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Test: split_bucket_prefix() table-driven coverage
+    ///
+    /// Purpose
+    /// - Consolidate multiple parsing cases for bucket/prefix URIs
+    /// - Ensure both S3/GCS schemes and scheme-less inputs are handled
+    ///
+    /// Flow
+    /// - Iterate through a table of (input, expected or error)
+    /// - Assert parsed (bucket, prefix) or error accordingly
+    ///
+    /// Expected
+    /// - Correct bucket/prefix pairs for valid inputs
+    /// - Error for invalid inputs (e.g., empty bucket)
     #[test]
-    fn test_split_bucket_prefix_s3() {
-        let result = crate::cloud_store::split_bucket_prefix("s3://my-bucket/some/prefix");
-        assert!(result.is_ok());
-        let (bucket, prefix) = result.unwrap();
-        assert_eq!(bucket, "my-bucket");
-        assert_eq!(prefix, "some/prefix");
+    fn test_split_bucket_prefix_table() {
+        let cases: Vec<(&str, Option<(&str, &str)>)> = vec![
+            ("s3://my-bucket/some/prefix", Some(("my-bucket", "some/prefix"))),
+            ("s3://my-bucket",              Some(("my-bucket", ""))),
+            ("gcs://another-bucket/deep/nested/prefix", Some(("another-bucket", "deep/nested/prefix"))),
+            ("just-bucket-name",            Some(("just-bucket-name", ""))),
+            ("s3:///prefix",                None),
+        ];
+
+        for (input, expected) in cases {
+            let res = crate::cloud_store::split_bucket_prefix(input);
+            match expected {
+                Some((eb, ep)) => {
+                    let (b, p) = res.expect("expected Ok");
+                    assert_eq!(b, eb);
+                    assert_eq!(p, ep);
+                }
+                None => {
+                    assert!(res.is_err(), "expected Err for input: {}", input);
+                }
+            }
+        }
     }
 
+    /// Test: split_fs_root() table-driven coverage
+    ///
+    /// Purpose
+    /// - Consolidate filesystem root parsing cases (with/without file://)
+    ///
+    /// Flow
+    /// - Iterate through a table of (input, expected_root, expected_prefix)
+    ///
+    /// Expected
+    /// - Correct absolute root path and empty prefix for supported inputs
     #[test]
-    fn test_split_bucket_prefix_no_prefix() {
-        let result = crate::cloud_store::split_bucket_prefix("s3://my-bucket");
-        assert!(result.is_ok());
-        let (bucket, prefix) = result.unwrap();
-        assert_eq!(bucket, "my-bucket");
-        assert_eq!(prefix, "");
-    }
+    fn test_split_fs_root_table() {
+        let cases: Vec<(&str, &str, &str)> = vec![
+            ("file:///tmp/danube/storage", "/tmp/danube/storage", ""),
+            ("/var/lib/danube",            "/var/lib/danube",     ""),
+        ];
 
-    #[test]
-    fn test_split_bucket_prefix_gcs() {
-        let result = crate::cloud_store::split_bucket_prefix("gcs://another-bucket/deep/nested/prefix");
-        assert!(result.is_ok());
-        let (bucket, prefix) = result.unwrap();
-        assert_eq!(bucket, "another-bucket");
-        assert_eq!(prefix, "deep/nested/prefix");
-    }
-
-    #[test]
-    fn test_split_bucket_prefix_no_scheme() {
-        let result = crate::cloud_store::split_bucket_prefix("just-bucket-name");
-        assert!(result.is_ok());
-        let (bucket, prefix) = result.unwrap();
-        assert_eq!(bucket, "just-bucket-name");
-        assert_eq!(prefix, "");
-    }
-
-    #[test]
-    fn test_split_bucket_prefix_empty_bucket() {
-        let result = crate::cloud_store::split_bucket_prefix("s3:///prefix");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_split_fs_root_with_scheme() {
-        let result = crate::cloud_store::split_fs_root("file:///tmp/danube/storage");
-        assert!(result.is_ok());
-        let (root, prefix) = result.unwrap();
-        assert_eq!(root, "/tmp/danube/storage");
-        assert_eq!(prefix, "");
-    }
-
-    #[test]
-    fn test_split_fs_root_without_scheme() {
-        let result = crate::cloud_store::split_fs_root("/var/lib/danube");
-        assert!(result.is_ok());
-        let (root, prefix) = result.unwrap();
-        assert_eq!(root, "/var/lib/danube");
-        assert_eq!(prefix, "");
+        for (input, expected_root, expected_prefix) in cases {
+            let res = crate::cloud_store::split_fs_root(input).expect("expected Ok");
+            assert_eq!(res.0, expected_root);
+            assert_eq!(res.1, expected_prefix);
+        }
     }
 
     #[tokio::test]
