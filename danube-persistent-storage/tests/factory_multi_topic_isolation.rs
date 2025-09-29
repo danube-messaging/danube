@@ -10,7 +10,8 @@ use std::time::Duration;
 use danube_core::message::{MessageID, StreamMessage};
 use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_core::storage::PersistentStorage;
-use danube_persistent_storage::wal::WalConfig;
+use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::{BackendConfig, LocalBackend, Uploader, UploaderConfig, WalStorageFactory};
 use tokio_stream::StreamExt;
 
@@ -103,19 +104,19 @@ async fn test_multi_topic_uploader_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
 
-    // Build two per-topic WALs under <wal_root>/default/topic-a and topic-b
-    let wal_a = danube_persistent_storage::wal::Wal::with_config(WalConfig {
-        dir: Some(wal_root.join("default").join("topic-a")),
-        ..Default::default()
-    })
-    .await
-    .expect("wal a");
-    let wal_b = danube_persistent_storage::wal::Wal::with_config(WalConfig {
-        dir: Some(wal_root.join("default").join("topic-b")),
-        ..Default::default()
-    })
-    .await
-    .expect("wal b");
+    // Build two per-topic WALs with CheckpointStore under <wal_root>/default/topic-a and topic-b
+    let dir_a = wal_root.join("default").join("topic-a");
+    let dir_b = wal_root.join("default").join("topic-b");
+    tokio::fs::create_dir_all(&dir_a).await.unwrap();
+    tokio::fs::create_dir_all(&dir_b).await.unwrap();
+    let cfg_a = WalConfig { dir: Some(dir_a.clone()), ..Default::default() };
+    let cfg_b = WalConfig { dir: Some(dir_b.clone()), ..Default::default() };
+    let store_a = std::sync::Arc::new(CheckpointStore::new(dir_a.join("wal.ckpt"), dir_a.join("uploader.ckpt")));
+    let store_b = std::sync::Arc::new(CheckpointStore::new(dir_b.join("wal.ckpt"), dir_b.join("uploader.ckpt")));
+    let _ = store_a.load_from_disk().await;
+    let _ = store_b.load_from_disk().await;
+    let wal_a = Wal::with_config_with_store(cfg_a, Some(store_a.clone())).await.expect("wal a");
+    let wal_b = Wal::with_config_with_store(cfg_b, Some(store_b.clone())).await.expect("wal b");
 
     let topic_a = "default/topic-a"; // uploader expects topic_path without leading '/'
     let topic_b = "default/topic-b";
@@ -125,6 +126,8 @@ async fn test_multi_topic_uploader_isolation() {
         wal_a.append(&make_msg(topic_a, i)).await.expect("append a");
         wal_b.append(&make_msg(topic_b, i)).await.expect("append b");
     }
+    wal_a.flush().await.expect("flush a");
+    wal_b.flush().await.expect("flush b");
 
     // Cloud: memory; Metadata: memory
     let cloud = danube_persistent_storage::CloudStore::new(BackendConfig::Local {
@@ -138,24 +141,29 @@ async fn test_multi_topic_uploader_isolation() {
     // Start two uploaders with short intervals
     let up_a = Uploader::new(
         UploaderConfig { interval_seconds: 1, max_batch_bytes: 8 * 1024 * 1024, topic_path: topic_a.to_string(), root_prefix: "/danube".to_string() },
-        wal_a.clone(),
         cloud.clone(),
         meta.clone(),
-    )
-    .expect("up a");
+        Some(store_a),
+    ).expect("up a");
     let up_b = Uploader::new(
         UploaderConfig { interval_seconds: 1, max_batch_bytes: 8 * 1024 * 1024, topic_path: topic_b.to_string(), root_prefix: "/danube".to_string() },
-        wal_b.clone(),
         cloud.clone(),
         meta.clone(),
-    )
-    .expect("up b");
+        Some(store_b),
+    ).expect("up b");
 
     let h_a = std::sync::Arc::new(up_a).start();
     let h_b = std::sync::Arc::new(up_b).start();
 
-    // Wait for uploaders to tick
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // Wait deterministically for descriptors to appear
+    for _ in 0..50 {
+        let a = mem.get_childrens("/danube/storage/topics/default/topic-a/objects").await.unwrap_or_default();
+        let b = mem.get_childrens("/danube/storage/topics/default/topic-b/objects").await.unwrap_or_default();
+        let a_has = a.iter().any(|c| c != "cur" && !c.ends_with('/'));
+        let b_has = b.iter().any(|c| c != "cur" && !c.ends_with('/'));
+        if a_has && b_has { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     h_a.abort();
     h_b.abort();

@@ -20,6 +20,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::{
     BackendConfig, CloudStore, EtcdMetadata, LocalBackend, Uploader, UploaderConfig, WalStorage,
 };
@@ -47,19 +48,22 @@ fn make_msg(i: u64, topic: &str, tag: &str) -> StreamMessage {
 async fn chaining_stream_handoff_memory() {
     let topic_path = "ns/topic-handoff";
 
-    // WAL minimal config
-    let wal = Wal::with_config(WalConfig {
-        cache_capacity: Some(128),
-        ..Default::default()
-    })
-    .await
-    .expect("wal init");
+    // WAL durable config with CheckpointStore
+    let tmp = tempfile::TempDir::new().expect("temp wal dir");
+    let wal_dir = tmp.path().to_path_buf();
+    let cfg = WalConfig { dir: Some(wal_dir.clone()), cache_capacity: Some(128), ..Default::default() };
+    let wal_ckpt = wal_dir.join("wal.ckpt");
+    let uploader_ckpt = wal_dir.join("uploader.ckpt");
+    let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+    let _ = store.load_from_disk().await;
+    let wal = Wal::with_config_with_store(cfg, Some(store.clone())).await.expect("wal init");
 
     // Append 0..2 and upload
     for i in 0..3u64 {
         let m = make_msg(i, topic_path, "cloud");
         wal.append(&m).await.expect("append pre-upload");
     }
+    wal.flush().await.expect("flush wal");
 
     let cloud = CloudStore::new(BackendConfig::Local {
         backend: LocalBackend::Memory,
@@ -80,35 +84,27 @@ async fn chaining_stream_handoff_memory() {
         root_prefix: "/danube".to_string(),
     };
     let uploader = Arc::new(
-        Uploader::new(up_cfg, wal.clone(), cloud.clone(), meta.clone()).expect("uploader"),
+        Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
     );
     let handle = uploader.clone().start();
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-    handle.abort();
-
-    // Assert that at least one descriptor exists to avoid racing with the uploader
-    // Use prefix without trailing slash to match MemoryStore::get_childrens filtering logic
+    // Deterministic wait for object creation in metadata
     let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
     let mut found = false;
-    for _ in 0..25 {
-        // up to ~2.5s at 100ms per attempt
-        let desc_keys = mem
-            .get_childrens(&prefix)
-            .await
-            .expect("list descriptor keys");
-        if desc_keys.iter().any(|k| k.starts_with(&prefix)) {
-            found = true;
-            break;
-        }
+    for _ in 0..50 { // up to 5s
+        let children = mem.get_childrens(&prefix).await.unwrap_or_default();
+        let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/') ).collect();
+        if !objects.is_empty() { found = true; break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(found, "no object descriptors found under {}", prefix);
+    handle.abort();
 
     // Append 3..5 after upload (these exist only in WAL)
     for i in 3..6u64 {
         let m = make_msg(i, topic_path, "wal");
         wal.append(&m).await.expect("append post-upload");
     }
+    wal.flush().await.expect("flush wal");
 
     // Build WalStorage with cloud capabilities and read from offset 0
     let storage = WalStorage::from_wal(wal.clone()).with_cloud(
