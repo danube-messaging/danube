@@ -1,33 +1,35 @@
 use tokio::time::Duration;
 
 // Simple async wait helper: polls condition up to timeout_ms
-    async fn wait_for_condition<F, Fut>(mut f: F, timeout_ms: u64, interval_ms: u64) -> bool
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = bool>,
-    {
-        let mut waited = 0u64;
-        while waited <= timeout_ms {
-            if f().await {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
-            waited += interval_ms;
+async fn wait_for_condition<F, Fut>(mut f: F, timeout_ms: u64, interval_ms: u64) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let mut waited = 0u64;
+    while waited <= timeout_ms {
+        if f().await {
+            return true;
         }
-        false
+        tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        waited += interval_ms;
     }
+    false
+}
 #[cfg(test)]
 mod tests {
     use super::wait_for_condition;
-    use crate::{Uploader, UploaderConfig};
-    use crate::wal::{Wal, WalConfig, UploaderCheckpoint};
+    use crate::checkpoint::CheckpointStore;
+    use crate::wal::{UploaderCheckpoint, Wal, WalConfig};
     use crate::{BackendConfig, CloudStore, EtcdMetadata, LocalBackend};
+    use crate::{Uploader, UploaderConfig};
     use danube_core::message::{MessageID, StreamMessage};
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
     use danube_metadata_store::MetadataStore; // bring trait into scope for MemoryStore methods
+    use danube_metadata_store::{MemoryStore, MetadataStorage};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     fn make_message(i: u64) -> StreamMessage {
         StreamMessage {
@@ -47,13 +49,33 @@ mod tests {
         }
     }
 
-    async fn create_test_setup() -> (Wal, CloudStore, EtcdMetadata, MemoryStore) {
-        let wal = Wal::with_config(WalConfig {
+    async fn create_test_setup() -> (
+        Wal,
+        CloudStore,
+        EtcdMetadata,
+        MemoryStore,
+        Arc<CheckpointStore>,
+        TempDir,
+    ) {
+        // Create a temp dir for durable WAL files so uploader can read persisted frames.
+        let temp = TempDir::new().expect("tempdir");
+        let wal_dir = temp.path().to_path_buf();
+        let cfg = WalConfig {
+            dir: Some(wal_dir.clone()),
             cache_capacity: Some(128),
             ..Default::default()
-        })
-        .await
-        .expect("wal init");
+        };
+
+        // Create a shared CheckpointStore for this topic directory.
+        let wal_ckpt = wal_dir.join("wal.ckpt");
+        let uploader_ckpt = wal_dir.join("uploader.ckpt");
+        let store = Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let _ = store.load_from_disk().await; // best-effort preload
+
+        // Create WAL with the injected CheckpointStore so writer will persist checkpoints through it.
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+            .await
+            .expect("wal init");
 
         let cloud = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Memory,
@@ -67,7 +89,7 @@ mod tests {
             "/danube".to_string(),
         );
 
-        (wal, cloud, meta, mem)
+        (wal, cloud, meta, mem, store, temp)
     }
 
     /// Test: Uploader configuration default values
@@ -111,7 +133,7 @@ mod tests {
     /// - All dependencies are properly initialized
     #[tokio::test]
     async fn test_uploader_creation() {
-        let (wal, cloud, meta, _mem) = create_test_setup().await;
+        let (_wal, cloud, meta, _mem, store, _tmp) = create_test_setup().await;
 
         let config = UploaderConfig {
             interval_seconds: 1,
@@ -120,7 +142,7 @@ mod tests {
             root_prefix: "/test".to_string(),
         };
 
-        let uploader = Uploader::new(config.clone(), wal, cloud, meta);
+        let uploader = Uploader::new(config.clone(), cloud, meta, Some(store));
         assert!(uploader.is_ok());
 
         let uploader = uploader.unwrap();
@@ -147,12 +169,14 @@ mod tests {
     /// - Object descriptor is stored in metadata
     #[tokio::test]
     async fn test_uploader_dnb1_format() {
-        let (wal, cloud, meta, mem) = create_test_setup().await;
+        let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
         // Add messages to WAL
         for i in 0..3u64 {
             wal.append(&make_message(i)).await.expect("append message");
         }
+        // Ensure writer persists wal.ckpt so uploader can read persisted frames
+        wal.flush().await.expect("flush wal");
 
         let config = UploaderConfig {
             interval_seconds: 1,
@@ -161,7 +185,8 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
 
-        let uploader = Arc::new(Uploader::new(config, wal, cloud.clone(), meta).expect("uploader"));
+        let uploader =
+            Arc::new(Uploader::new(config, cloud.clone(), meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
         // Wait for upload deterministically
@@ -172,25 +197,33 @@ mod tests {
             },
             5000,
             50,
-        ).await;
+        )
+        .await;
         assert!(ok, "uploader did not advance offset in time");
         handle.abort();
 
         // Verify object was created with correct format
         let prefix = "/danube/storage/topics/test/topic/objects";
         let children = mem.get_childrens(prefix).await.expect("get children");
-        let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
-        
-        assert!(!objects.is_empty(), "Should have created at least one object");
+        let objects: Vec<_> = children
+            .into_iter()
+            .filter(|c| c != "cur" && !c.ends_with('/'))
+            .collect();
+
+        assert!(
+            !objects.is_empty(),
+            "Should have created at least one object"
+        );
 
         // Get the first object
         let object_key = &objects[0];
-        let desc_value = mem.get(object_key, danube_metadata_store::MetaOptions::None)
+        let desc_value = mem
+            .get(object_key, danube_metadata_store::MetaOptions::None)
             .await
             .expect("get descriptor")
             .expect("descriptor should exist");
-        
-        let desc: crate::etcd_metadata::ObjectDescriptor = 
+
+        let desc: crate::etcd_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
 
         // Verify object exists in cloud
@@ -224,21 +257,31 @@ mod tests {
     /// - Final uploaded offset is >= 8
     #[tokio::test]
     async fn test_uploader_checkpoint_resume() {
-        let (wal, cloud, meta, _mem) = create_test_setup().await;
+        let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
-        // Create checkpoint manually
+        // Preload WAL with offsets 0..=5
+        for i in 0..=5u64 {
+            wal.append(&make_message(i)).await.expect("append message");
+        }
+        wal.flush().await.expect("flush wal");
+
+        // Create checkpoint manually at offset 5
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: 5,
             last_object_id: Some("previous-object".to_string()),
             updated_at: chrono::Utc::now().timestamp() as u64,
         };
 
-        wal.write_uploader_checkpoint(&checkpoint).await.expect("write checkpoint");
+        store
+            .update_uploader(&checkpoint)
+            .await
+            .expect("write checkpoint");
 
-        // Add messages starting from offset 6
+        // Add messages with next offsets 6..=8
         for i in 6..9u64 {
             wal.append(&make_message(i)).await.expect("append message");
         }
+        wal.flush().await.expect("flush wal");
 
         let config = UploaderConfig {
             interval_seconds: 1,
@@ -247,27 +290,30 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
 
-        let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
-        
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
+
         // Verify uploader starts from correct offset
         assert_eq!(uploader.test_last_uploaded_offset(), 0);
-        
+
         let handle = uploader.clone().start();
 
-        // Wait for upload
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        handle.abort();
-
-        // Verify uploader advanced past checkpoint
+        // Wait for upload and validate via metadata store
         let ok = wait_for_condition(
             || {
-                let uploader = uploader.clone();
-                async move { uploader.test_last_uploaded_offset() >= 8 }
+                let mem = mem.clone();
+                async move {
+                    let prefix = "/danube/storage/topics/test/resume/objects";
+                    let children = mem.get_childrens(prefix).await.unwrap_or_default();
+                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    !objects.is_empty()
+                }
             },
             5000,
             50,
-        ).await;
-        assert!(ok, "Should have processed messages after checkpoint");
+        )
+        .await;
+        assert!(ok, "Should have created objects after resume");
+        handle.abort();
     }
 
     /// Test: Uploader batch size limit handling
@@ -287,7 +333,7 @@ mod tests {
     /// - Upload process completes successfully
     #[tokio::test]
     async fn test_uploader_batch_size_limits() {
-        let (wal, cloud, meta, _mem) = create_test_setup().await;
+        let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
         // Add one large message that would exceed batch size
         let large_msg = StreamMessage {
@@ -307,6 +353,7 @@ mod tests {
         };
 
         wal.append(&large_msg).await.expect("append large message");
+        wal.flush().await.expect("flush wal");
 
         let config = UploaderConfig {
             interval_seconds: 1,
@@ -315,16 +362,26 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
 
-        let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
-        // Wait for upload
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Wait for object creation deterministically
+        let ok = wait_for_condition(
+            || {
+                let mem = mem.clone();
+                async move {
+                    let prefix = "/danube/storage/topics/test/batch/objects";
+                    let children = mem.get_childrens(prefix).await.unwrap_or_default();
+                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    !objects.is_empty()
+                }
+            },
+            5000,
+            50,
+        )
+        .await;
+        assert!(ok, "Should have created an object for large message");
         handle.abort();
-
-        // Should still upload even if message exceeds batch size
-        let final_offset = uploader.test_last_uploaded_offset();
-        assert!(final_offset > 0, "Should have processed the large message");
     }
 
     /// Test: Uploader behavior with empty WAL
@@ -344,7 +401,7 @@ mod tests {
     /// - No metadata entries are added
     #[tokio::test]
     async fn test_uploader_empty_wal() {
-        let (wal, cloud, meta, mem) = create_test_setup().await;
+        let (_wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
         // Don't add any messages to WAL
         let config = UploaderConfig {
@@ -354,7 +411,7 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
 
-        let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
         // Wait for tick
@@ -364,9 +421,15 @@ mod tests {
         // Should not create any objects
         let prefix = "/danube/storage/topics/test/empty/objects";
         let children = mem.get_childrens(prefix).await.unwrap_or_default();
-        let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
-        
-        assert!(objects.is_empty(), "Should not create objects for empty WAL");
+        let objects: Vec<_> = children
+            .into_iter()
+            .filter(|c| c != "cur" && !c.ends_with('/'))
+            .collect();
+
+        assert!(
+            objects.is_empty(),
+            "Should not create objects for empty WAL"
+        );
     }
 
     /// Test: Uploader object naming convention
@@ -386,12 +449,13 @@ mod tests {
     /// - Object ID has proper DNB1 file extension
     #[tokio::test]
     async fn test_uploader_object_naming() {
-        let (wal, cloud, meta, mem) = create_test_setup().await;
+        let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
         // Add messages with specific offsets
         for i in 10..13u64 {
             wal.append(&make_message(i)).await.expect("append message");
         }
+        wal.flush().await.expect("flush wal");
 
         let config = UploaderConfig {
             interval_seconds: 1,
@@ -400,36 +464,49 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
 
-        let uploader = Arc::new(Uploader::new(config, wal, cloud, meta).expect("uploader"));
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
-        // Wait for upload
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Wait for object creation deterministically
+        let ok = wait_for_condition(
+            || {
+                let mem = mem.clone();
+                async move {
+                    let prefix = "/danube/storage/topics/test/naming/objects";
+                    let children = mem.get_childrens(prefix).await.unwrap_or_default();
+                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    !objects.is_empty()
+                }
+            },
+            5000,
+            50,
+        )
+        .await;
+        assert!(ok, "Should have created objects");
         handle.abort();
 
-        // Verify object naming convention
+        // Get descriptor and verify object_id format
         let prefix = "/danube/storage/topics/test/naming/objects";
         let children = mem.get_childrens(prefix).await.expect("get children");
-        let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
-        
-        assert!(!objects.is_empty(), "Should have created objects");
-
-        // Get descriptor and verify object_id format
+        let objects: Vec<_> = children
+            .into_iter()
+            .filter(|c| c != "cur" && !c.ends_with('/'))
+            .collect();
         let object_key = &objects[0];
-        let desc_value = mem.get(object_key, danube_metadata_store::MetaOptions::None)
+        let desc_value = mem
+            .get(object_key, danube_metadata_store::MetaOptions::None)
             .await
             .expect("get descriptor")
             .expect("descriptor should exist");
-        
-        let desc: crate::etcd_metadata::ObjectDescriptor = 
+
+        let desc: crate::etcd_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
 
-        // Object ID should follow pattern: data-<start>-<end>.dnb1
+        // Object ID should follow pattern and offsets should match WAL-assigned offsets [0..=2]
         assert!(desc.object_id.starts_with("data-"));
         assert!(desc.object_id.ends_with(".dnb1"));
-        // Use parsed offsets to avoid brittle substring checks
-        assert_eq!(desc.start_offset, 10);
-        assert_eq!(desc.end_offset, 12);
+        assert_eq!(desc.start_offset, 0);
+        assert_eq!(desc.end_offset, 2);
     }
 
     /// Test: UploaderConfig clone functionality

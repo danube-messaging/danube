@@ -6,8 +6,11 @@ use tracing::info;
 
 use crate::cloud_store::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
-use crate::wal::{UploaderCheckpoint, Wal};
+use crate::wal::UploaderCheckpoint;
+use crate::checkpoint::CheckpointStore;
 use bincode;
+use danube_core::message::StreamMessage;
+use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone)]
 pub struct UploaderConfig {
@@ -31,25 +34,25 @@ impl Default for UploaderConfig {
 #[derive(Debug)]
 pub struct Uploader {
     cfg: UploaderConfig,
-    wal: Wal,
     cloud: CloudStore,
     etcd: EtcdMetadata,
     last_uploaded_offset: AtomicU64,
+    ckpt_store: Option<Arc<CheckpointStore>>,
 }
 
 impl Uploader {
     pub fn new(
         cfg: UploaderConfig,
-        wal: Wal,
         cloud: CloudStore,
         etcd: EtcdMetadata,
+        ckpt_store: Option<Arc<CheckpointStore>>,
     ) -> Result<Self, PersistentStorageError> {
         Ok(Self {
             cfg,
-            wal,
             cloud,
             etcd,
             last_uploaded_offset: AtomicU64::new(0),
+            ckpt_store,
         })
     }
 
@@ -130,14 +133,14 @@ impl Uploader {
             .await;
 
         // Persist uploader checkpoint after successful commit
-        let _ = self
-            .wal
-            .write_uploader_checkpoint(&UploaderCheckpoint {
-                last_committed_offset: end_offset,
-                last_object_id: Some(object_id.to_string()),
-                updated_at: chrono::Utc::now().timestamp() as u64,
-            })
-            .await;
+        let up = UploaderCheckpoint {
+            last_committed_offset: end_offset,
+            last_object_id: Some(object_id.to_string()),
+            updated_at: chrono::Utc::now().timestamp() as u64,
+        };
+        if let Some(store) = &self.ckpt_store {
+            let _ = store.update_uploader(&up).await;
+        }
 
         // Advance watermark to the last committed offset for observability
         self.last_uploaded_offset
@@ -145,17 +148,97 @@ impl Uploader {
         Ok(())
     }
 
+    /// Read persisted frames directly from WAL files using the provided WAL checkpoint.
+    /// Files are read in sequence order given by `ckpt.rotated_files` followed by the active file.
+    async fn read_persisted_since_ckpt(
+        &self,
+        ckpt: &crate::checkpoint::WalCheckpoint,
+        after_offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<(u64, StreamMessage)>, PersistentStorageError> {
+        let mut items = Vec::new();
+        let mut total = 0usize;
+
+        // Build list of files in ascending seq order
+        let mut files: Vec<(u64, std::path::PathBuf)> = ckpt.rotated_files.clone();
+        // Append active file as the last one with current seq
+        files.push((ckpt.file_seq, std::path::PathBuf::from(&ckpt.file_path)));
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (_seq, path) in files {
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            let mut file = match tokio::fs::File::open(&path).await {
+                Ok(f) => f,
+                Err(_) => continue, // ignore missing files
+            };
+            loop {
+                let mut off_bytes = [0u8; 8];
+                if let Err(_) = file.read_exact(&mut off_bytes).await {
+                    break;
+                }
+                let off = u64::from_le_bytes(off_bytes);
+
+                let mut len_bytes = [0u8; 4];
+                if let Err(e) = file.read_exact(&mut len_bytes).await {
+                    return Err(PersistentStorageError::Io(format!(
+                        "wal read len failed: {}",
+                        e
+                    )));
+                }
+                let len = u32::from_le_bytes(len_bytes) as usize;
+
+                let mut crc_bytes = [0u8; 4];
+                if let Err(e) = file.read_exact(&mut crc_bytes).await {
+                    return Err(PersistentStorageError::Io(format!(
+                        "wal read crc failed: {}",
+                        e
+                    )));
+                }
+                let _stored_crc = u32::from_le_bytes(crc_bytes);
+
+                let mut buf = vec![0u8; len];
+                if let Err(e) = file.read_exact(&mut buf).await {
+                    return Err(PersistentStorageError::Io(format!(
+                        "wal read payload failed: {}",
+                        e
+                    )));
+                }
+
+                if off < after_offset {
+                    continue;
+                }
+
+                let msg: StreamMessage = bincode::deserialize(&buf).map_err(|e| {
+                    PersistentStorageError::Other(format!("bincode deserialize failed: {}", e))
+                })?;
+
+                if !items.is_empty() && total + (8 + 4 + 4 + len) > max_bytes {
+                    return Ok(items);
+                }
+                total += 8 + 4 + 4 + len;
+                items.push((off, msg));
+            }
+            // If we've collected anything and reached max_bytes, stop early
+            if total >= max_bytes {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// Run a single upload cycle. Returns Ok(true) if a batch was uploaded.
     async fn run_once(&self) -> Result<bool, PersistentStorageError> {
         // Determine last committed and the current WAL checkpoint for rotation-aware reads.
         let last_committed = self.last_uploaded_offset.load(Ordering::Acquire);
-        let wal_ckpt = match self.wal.read_wal_checkpoint().await? {
-            Some(c) => c,
-            None => return Ok(false), // no durable WAL configured; nothing to upload
+        // Prefer CheckpointStore; if none, we cannot read persisted frames (no durable WAL) => no upload
+        let wal_ckpt = match &self.ckpt_store {
+            Some(store) => match store.get_wal().await { Some(c) => c, None => return Ok(false) },
+            None => return Ok(false),
         };
         // Read only persisted frames from WAL files since last_committed
         let items = self
-            .wal
             .read_persisted_since_ckpt(&wal_ckpt, last_committed, self.cfg.max_batch_bytes)
             .await?;
         if items.is_empty() {
@@ -186,7 +269,12 @@ impl Uploader {
                 "uploader started"
             );
             // On start, try to resume from uploader checkpoint if present.
-            if let Ok(Some(ckpt)) = self.wal.read_uploader_checkpoint().await {
+            let initial_ckpt = if let Some(store) = &self.ckpt_store {
+                store.get_uploader().await
+            } else {
+                None
+            };
+            if let Some(ckpt) = initial_ckpt {
                 self.last_uploaded_offset
                     .store(ckpt.last_committed_offset, Ordering::Release);
                 tracing::info!(

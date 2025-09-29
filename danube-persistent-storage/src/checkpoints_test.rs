@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::checkpoint::UploaderCheckpoint;
+    use crate::checkpoint::{CheckPoint, UploaderCheckpoint};
     use tempfile::TempDir;
 
     /// Test: Checkpoint serialization and deserialization
@@ -30,8 +30,7 @@ mod tests {
         };
 
         // Write checkpoint
-        checkpoint
-            .write_to_path(&path)
+        CheckPoint::write_uploader_to_path(&checkpoint, &path)
             .await
             .expect("write checkpoint");
 
@@ -39,7 +38,7 @@ mod tests {
         assert!(tokio::fs::metadata(&path).await.is_ok());
 
         // Read checkpoint back
-        let read_checkpoint = UploaderCheckpoint::read_from_path(&path)
+        let read_checkpoint = CheckPoint::read_uploader_from_path(&path)
             .await
             .expect("read checkpoint")
             .expect("checkpoint should exist");
@@ -72,7 +71,7 @@ mod tests {
         let path = tmp.path().join("nonexistent.ckpt");
 
         // Reading non-existent file should return None
-        let result = UploaderCheckpoint::read_from_path(&path)
+        let result = CheckPoint::read_uploader_from_path(&path)
             .await
             .expect("read should not error");
         assert!(result.is_none());
@@ -97,7 +96,8 @@ mod tests {
     async fn test_checkpoint_atomic_write() {
         let tmp = TempDir::new().expect("temp dir");
         let path = tmp.path().join("atomic.ckpt");
-        let tmp_path = path.with_extension("ckpt.tmp");
+        // Implementation writes to path.with_extension("tmp") then renames
+        let tmp_path = path.with_extension("tmp");
 
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: 100,
@@ -106,8 +106,7 @@ mod tests {
         };
 
         // Write checkpoint
-        checkpoint
-            .write_to_path(&path)
+        CheckPoint::write_uploader_to_path(&checkpoint, &path)
             .await
             .expect("write checkpoint");
 
@@ -116,7 +115,7 @@ mod tests {
         assert!(tokio::fs::metadata(&tmp_path).await.is_err());
 
         // Verify content
-        let read_checkpoint = UploaderCheckpoint::read_from_path(&path)
+        let read_checkpoint = CheckPoint::read_uploader_from_path(&path)
             .await
             .expect("read checkpoint")
             .expect("checkpoint should exist");
@@ -152,7 +151,9 @@ mod tests {
             last_object_id: Some("first".to_string()),
             updated_at: 1000,
         };
-        checkpoint1.write_to_path(&path).await.expect("write first");
+        CheckPoint::write_uploader_to_path(&checkpoint1, &path)
+            .await
+            .expect("write first");
 
         // Write second checkpoint (overwrite)
         let checkpoint2 = UploaderCheckpoint {
@@ -160,13 +161,12 @@ mod tests {
             last_object_id: Some("second".to_string()),
             updated_at: 2000,
         };
-        checkpoint2
-            .write_to_path(&path)
+        CheckPoint::write_uploader_to_path(&checkpoint2, &path)
             .await
             .expect("write second");
 
         // Read should get the second checkpoint
-        let read_checkpoint = UploaderCheckpoint::read_from_path(&path)
+        let read_checkpoint = CheckPoint::read_uploader_from_path(&path)
             .await
             .expect("read checkpoint")
             .expect("checkpoint should exist");

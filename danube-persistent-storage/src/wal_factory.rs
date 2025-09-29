@@ -9,6 +9,7 @@ use crate::{
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
+use crate::checkpoint::CheckpointStore;
 use danube_core::storage::PersistentStorageError;
 use tracing::{info, warn};
 
@@ -88,13 +89,16 @@ impl WalStorageFactory {
 
     /// Get or create a per-topic WAL configured under <wal_root>/<ns>/<topic>/ and return it
     /// together with the resolved directory path (if any) for logging.
-    async fn get_or_create_wal(&self, topic_path: &str) -> Result<(Wal, Option<std::path::PathBuf>), PersistentStorageError> {
+    async fn get_or_create_wal(&self, topic_path: &str) -> Result<(Wal, Option<std::path::PathBuf>, Option<std::sync::Arc<CheckpointStore>>), PersistentStorageError> {
         if let Some(existing) = self.topics.get(topic_path) {
-            return Ok((existing.clone(), None));
+            // We cannot retrieve the store back from WAL trivially in this branch; factory tracks only Wal instances.
+            // Return None for the store when reusing existing WAL.
+            return Ok((existing.clone(), None, None));
         }
         // Build per-topic config by deriving dir from base root
         let mut cfg = self.base_cfg.clone();
         let mut resolved_dir: Option<std::path::PathBuf> = None;
+        let mut ckpt_store: Option<std::sync::Arc<CheckpointStore>> = None;
         if let Some(mut root) = cfg.dir.clone() {
             // Append ns/topic
             let parts: Vec<&str> = topic_path.split('/').collect();
@@ -105,10 +109,21 @@ impl WalStorageFactory {
             resolved_dir = Some(root.clone());
             cfg.dir = Some(root);
         }
-        // Create WAL asynchronously without blocking
-        let wal = Wal::with_config(cfg).await?;
+        // Initialize CheckpointStore if we have a directory
+        if let Some(dir) = cfg.dir.as_ref() {
+            let wal_ckpt = dir.join("wal.ckpt");
+            let uploader_ckpt = dir.join("uploader.ckpt");
+            let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+            // Best-effort preload from disk
+            if let Err(e) = store.load_from_disk().await {
+                warn!(target = "wal_factory", topic = %topic_path, error = %format!("{}", e), "failed to preload checkpoints from disk");
+            }
+            ckpt_store = Some(store);
+        }
+        // Create WAL asynchronously with injected CheckpointStore
+        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone()).await?;
         self.topics.insert(topic_path.to_string(), wal.clone());
-        Ok((wal, resolved_dir))
+        Ok((wal, resolved_dir, ckpt_store))
     }
 
     /// Create (or reuse) a WalStorage bound to the provided topic name ("/ns/topic").
@@ -116,7 +131,7 @@ impl WalStorageFactory {
     pub async fn for_topic(&self, topic_name: &str) -> Result<WalStorage, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         // Ensure per-topic WAL exists
-        let (topic_wal, resolved_dir) = self.get_or_create_wal(&topic_path).await?;
+        let (topic_wal, resolved_dir, ckpt_store) = self.get_or_create_wal(&topic_path).await?;
         if let Some(dir) = resolved_dir {
             info!(
                 target = "wal_factory",
@@ -140,7 +155,7 @@ impl WalStorageFactory {
                 topic_path: topic_path.clone(),
                 root_prefix: self.root_prefix.clone(),
             };
-            if let Ok(uploader) = Uploader::new(cfg, topic_wal.clone(), self.cloud.clone(), self.etcd.clone()) {
+            if let Ok(uploader) = Uploader::new(cfg, self.cloud.clone(), self.etcd.clone(), ckpt_store) {
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic uploader");
                 let handle = Arc::new(uploader).start();
                 self.uploaders.insert(topic_path.clone(), handle);

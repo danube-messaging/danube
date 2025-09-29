@@ -4,13 +4,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use danube_core::message::{MessageID, StreamMessage};
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use crate::checkpoint::CheckpointStore;
     use crate::wal::{Wal, WalConfig};
     use crate::{
-        BackendConfig, CloudReader, CloudStore, EtcdMetadata, LocalBackend, Uploader, UploaderConfig,
+        BackendConfig, CloudReader, CloudStore, EtcdMetadata, LocalBackend, Uploader,
+        UploaderConfig,
     };
+    use danube_core::message::{MessageID, StreamMessage};
+    use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
     use futures::TryStreamExt;
+    use tempfile::TempDir;
 
     fn make_msg(i: u64, topic: &str) -> StreamMessage {
         StreamMessage {
@@ -50,18 +53,28 @@ mod tests {
     async fn test_cloud_reader_range_reads_memory() {
         let topic_path = "ns/topic-cloud";
 
-        // WAL minimal config
-        let wal = Wal::with_config(WalConfig {
+        // WAL durable config: use temp dir + shared CheckpointStore for persisted reads
+        let tmp = TempDir::new().expect("temp wal dir");
+        let wal_dir = tmp.path().to_path_buf();
+        let cfg = WalConfig {
+            dir: Some(wal_dir.clone()),
             cache_capacity: Some(128),
             ..Default::default()
-        })
-        .await
-        .expect("wal init");
+        };
+        let wal_ckpt = wal_dir.join("wal.ckpt");
+        let uploader_ckpt = wal_dir.join("uploader.ckpt");
+        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let _ = store.load_from_disk().await;
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+            .await
+            .expect("wal init");
 
         for i in 0..3u64 {
             let m = make_msg(i, topic_path);
             wal.append(&m).await.expect("append");
         }
+        // Ensure checkpoint is written so uploader can read persisted frames
+        wal.flush().await.expect("flush wal");
 
         // CloudStore memory
         let cloud = CloudStore::new(BackendConfig::Local {
@@ -85,12 +98,40 @@ mod tests {
             root_prefix: "/danube".to_string(),
         };
         let uploader = Arc::new(
-            Uploader::new(up_cfg, wal.clone(), cloud.clone(), meta.clone()).expect("uploader"),
+            Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
         );
         let handle = uploader.clone().start();
 
-        // Wait for upload
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Wait for an object to appear deterministically
+        async fn wait_for_objects(
+            mem: danube_metadata_store::MemoryStore,
+            prefix: &str,
+            timeout_ms: u64,
+            interval_ms: u64,
+        ) -> bool {
+            let mut waited = 0u64;
+            while waited <= timeout_ms {
+                let children = mem.get_childrens(prefix).await.unwrap_or_default();
+                let objects: Vec<_> = children
+                    .into_iter()
+                    .filter(|c| c != "cur" && !c.ends_with('/'))
+                    .collect();
+                if !objects.is_empty() {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                waited += interval_ms;
+            }
+            false
+        }
+        let ok = wait_for_objects(
+            mem.clone(),
+            "/danube/storage/topics/ns/topic-cloud/objects",
+            5000,
+            50,
+        )
+        .await;
+        assert!(ok, "uploader did not create objects in time");
         handle.abort();
 
         // CloudReader

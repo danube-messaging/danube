@@ -1,8 +1,8 @@
-use crate::checkpoint::WalCheckpoint;
-use bincode;
+use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
 use crc32fast;
 use danube_core::storage::PersistentStorageError;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
@@ -38,6 +38,7 @@ pub(crate) struct WriterInit {
     pub fsync_max_batch_bytes: usize,
     pub rotate_max_bytes: Option<u64>,
     pub rotate_max_seconds: Option<u64>,
+    pub ckpt_store: Option<Arc<CheckpointStore>>,
 }
 
 /// Writer-owned state (no locking). Lives entirely inside the writer task.
@@ -60,6 +61,9 @@ struct WriterState {
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
     rotated_files: Vec<(u64, PathBuf)>,
+    ckpt_store: Option<Arc<CheckpointStore>>,
+    // Track the last offset written since last checkpoint
+    last_offset_written: Option<u64>,
 }
 
 impl WriterState {
@@ -80,6 +84,8 @@ impl WriterState {
             self.write_buf.extend_from_slice(bytes);
 
             self.bytes_in_file += (8 + 4 + 4 + bytes.len()) as u64;
+            // Remember last offset appended
+            self.last_offset_written = Some(offset);
             let should_flush_by_bytes = self.write_buf.len() >= self.fsync_max_batch_bytes;
             let should_flush_by_time = self.last_flush.elapsed()
                 >= std::time::Duration::from_millis(self.fsync_interval_ms);
@@ -114,6 +120,10 @@ impl WriterState {
                     .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
+                // On explicit flush, also persist a checkpoint if we know a last offset
+                if let Some(off) = self.last_offset_written {
+                    self.write_checkpoint(off).await.ok();
+                }
             }
         }
         Ok(())
@@ -185,29 +195,19 @@ impl WriterState {
             file_seq: self.file_seq,
             file_path,
             rotated_files: self.rotated_files.clone(),
+            active_file_name: self
+                .wal_path
+                .as_ref()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned())),
+            last_rotation_at: None,
         };
-        let bytes = bincode::serialize(&ckpt).map_err(|e| {
-            PersistentStorageError::Io(format!("checkpoint serialize failed: {}", e))
-        })?;
-        let tmp = ckpt_path.with_extension("ckpt.tmp");
-        let mut f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .await
-            .map_err(|e| {
-                PersistentStorageError::Io(format!("open checkpoint tmp failed: {}", e))
-            })?;
-        f.write_all(&bytes)
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("write checkpoint failed: {}", e)))?;
-        f.flush()
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("flush checkpoint failed: {}", e)))?;
-        tokio::fs::rename(&tmp, &ckpt_path)
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("rename checkpoint failed: {}", e)))?;
+        if let Some(store) = &self.ckpt_store {
+            // Update cache and persist via store
+            store.update_wal(&ckpt).await?;
+        } else {
+            // Fallback to direct file write
+            CheckPoint::write_wal_to_path(&ckpt, &ckpt_path).await?;
+        }
         debug!(target = "wal", last_offset, file_seq = self.file_seq, path = %ckpt_path.display(), "wrote wal checkpoint");
         Ok(())
     }
@@ -248,6 +248,8 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
         rotated_files: Vec::new(),
+        ckpt_store: init.ckpt_store,
+        last_offset_written: None,
     };
 
     debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");

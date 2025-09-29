@@ -55,6 +55,7 @@ mod tests {
             fsync_max_batch_bytes: 1024,
             rotate_max_bytes: Some(2048),
             rotate_max_seconds: Some(10),
+            ckpt_store: None,
         };
 
         assert_eq!(writer_init.wal_path, Some(wal_path));
@@ -152,6 +153,7 @@ mod tests {
             fsync_max_batch_bytes: 1024,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            ckpt_store: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
@@ -222,6 +224,7 @@ mod tests {
             fsync_max_batch_bytes: 64,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            ckpt_store: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
