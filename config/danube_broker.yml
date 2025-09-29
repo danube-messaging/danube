@@ -39,7 +39,7 @@ auth:
 # wal_cloud configuration
 wal_cloud:
   wal:
-    dir: "./data/wal"
+    dir: "./danube/wal"
     file_name: "wal.log"
     cache_capacity: 1024
     file_sync:

@@ -18,16 +18,7 @@ pub struct WalStorage {
 }
 
 impl WalStorage {
-    pub fn new() -> Self {
-        Self {
-            wal: Wal::new(),
-            cloud: None,
-            etcd: None,
-            topic_path: None,
-        }
-    }
-
-    /// Construct from a pre-configured WAL (e.g., created with WalConfig::with_config())
+    /// Construct from a pre-configured WAL
     pub fn from_wal(wal: Wal) -> Self {
         Self {
             wal,

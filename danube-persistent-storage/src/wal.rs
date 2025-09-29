@@ -390,8 +390,6 @@ impl Wal {
         }
     }
 
-    // Reading of persisted frames is performed by the uploader now.
-
     /// Trigger a writer flush. This is best-effort and does not wait for an ack.
     pub async fn flush(&self) -> Result<(), PersistentStorageError> {
         let _ = self.inner.cmd_tx.send(LogCommand::Flush).await;
@@ -407,8 +405,6 @@ impl Wal {
     pub fn checkpoint_store(&self) -> Option<Arc<CheckpointStore>> {
         self.inner.ckpt_store.clone()
     }
-
-    // Writer task implemented in wal/writer.rs (spawned from with_config/default)
 
     /// Graceful shutdown: flush pending buffered data and stop the background writer task.
     pub async fn shutdown(&self) {

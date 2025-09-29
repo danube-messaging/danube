@@ -39,6 +39,7 @@ pub enum PersistentStorageError {
 pub type TopicStream =
     Pin<Box<dyn Stream<Item = Result<StreamMessage, PersistentStorageError>> + Send>>;
 
+/// A persistent storage interface for a topic.
 #[async_trait]
 pub trait PersistentStorage: Send + Sync + std::fmt::Debug + 'static {
     /// Append a message to a topic and return the assigned offset.

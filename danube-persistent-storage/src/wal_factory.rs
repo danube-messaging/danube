@@ -154,7 +154,7 @@ impl WalStorageFactory {
         }
         // Build per-topic config by deriving dir from base root
         let mut cfg = self.base_cfg.clone();
-        let mut resolved_dir: Option<std::path::PathBuf> = None;
+        let mut root_path: Option<std::path::PathBuf> = None;
         let mut ckpt_store: Option<std::sync::Arc<CheckpointStore>> = None;
         if let Some(mut root) = cfg.dir.clone() {
             // Append ns/topic
@@ -163,7 +163,7 @@ impl WalStorageFactory {
                 root.push(parts[0]);
                 root.push(parts[1]);
             }
-            resolved_dir = Some(root.clone());
+            root_path = Some(root.clone());
             cfg.dir = Some(root);
         }
         // Initialize CheckpointStore if we have a directory
@@ -180,7 +180,7 @@ impl WalStorageFactory {
         // Create WAL asynchronously with injected CheckpointStore
         let wal = Wal::with_config_with_store(cfg, ckpt_store.clone()).await?;
         self.topics.insert(topic_path.to_string(), wal.clone());
-        Ok((wal, resolved_dir, ckpt_store))
+        Ok((wal, root_path, ckpt_store))
     }
 
     /// Best-effort shutdown: currently does not signal tasks, just drops handles.
