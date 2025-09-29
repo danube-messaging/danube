@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::wal::checkpoints::UploaderCheckpoint;
+    use crate::checkpoint::UploaderCheckpoint;
     use tempfile::TempDir;
 
     /// Test: Checkpoint serialization and deserialization

@@ -5,6 +5,10 @@ mod errors;
 pub mod wal;
 pub use wal::Wal;
 
+// Unified checkpoints (WAL + uploader)
+pub mod checkpoint;
+pub use checkpoint::{CheckPoint, UploaderCheckpoint, WalCheckpoint};
+
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
@@ -26,10 +30,12 @@ pub use wal_factory::WalStorageFactory;
 
 // Unit tests
 #[cfg(test)]
-mod wal_test;
+mod checkpoints_test;
 #[cfg(test)]
 mod cloud_reader_test;
 #[cfg(test)]
 mod cloud_store_test;
 #[cfg(test)]
 mod uploader_test;
+#[cfg(test)]
+mod wal_test;

@@ -1,4 +1,4 @@
-use super::WalCheckpoint;
+use crate::checkpoint::WalCheckpoint;
 use bincode;
 use crc32fast;
 use danube_core::storage::PersistentStorageError;
@@ -59,6 +59,7 @@ struct WriterState {
     fsync_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
+    rotated_files: Vec<(u64, PathBuf)>,
 }
 
 impl WriterState {
@@ -137,6 +138,10 @@ impl WriterState {
 
     /// Open a new rotated file, update path, reset counters and timers.
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
+        // Record the previous file into rotation history before switching
+        if let Some(prev_path) = self.wal_path.clone() {
+            self.rotated_files.push((self.file_seq, prev_path));
+        }
         self.file_seq += 1;
         let new_name = format!("wal.{}.log", self.file_seq);
         if let Some(mut dirp) = self
@@ -179,6 +184,7 @@ impl WriterState {
             last_offset,
             file_seq: self.file_seq,
             file_path,
+            rotated_files: self.rotated_files.clone(),
         };
         let bytes = bincode::serialize(&ckpt).map_err(|e| {
             PersistentStorageError::Io(format!("checkpoint serialize failed: {}", e))
@@ -241,6 +247,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         fsync_max_batch_bytes: init.fsync_max_batch_bytes,
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
+        rotated_files: Vec::new(),
     };
 
     debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");

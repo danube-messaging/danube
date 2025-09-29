@@ -147,16 +147,17 @@ impl Uploader {
 
     /// Run a single upload cycle. Returns Ok(true) if a batch was uploaded.
     async fn run_once(&self) -> Result<bool, PersistentStorageError> {
-        // Determine the start offset for this batch.
-        // First run (no prior commit): start at 0 (inclusive) so offset 0 is included.
-        // Subsequent runs: start strictly after the last committed offset to avoid duplicates.
+        // Determine last committed and the current WAL checkpoint for rotation-aware reads.
         let last_committed = self.last_uploaded_offset.load(Ordering::Acquire);
-        let start_from = if last_committed == 0 {
-            0
-        } else {
-            last_committed.saturating_add(1)
+        let wal_ckpt = match self.wal.read_wal_checkpoint().await? {
+            Some(c) => c,
+            None => return Ok(false), // no durable WAL configured; nothing to upload
         };
-        let (items, _watermark) = self.wal.read_cached_since(start_from).await?;
+        // Read only persisted frames from WAL files since last_committed
+        let items = self
+            .wal
+            .read_persisted_since_ckpt(&wal_ckpt, last_committed, self.cfg.max_batch_bytes)
+            .await?;
         if items.is_empty() {
             return Ok(false);
         }

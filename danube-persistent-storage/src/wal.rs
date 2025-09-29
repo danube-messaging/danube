@@ -5,19 +5,19 @@ use danube_core::storage::{PersistentStorageError, TopicStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
 // Submodules for writer and reader paths
 mod cache;
-mod checkpoints;
 mod reader;
 mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
 // Re-export for external users: crate::wal::{Wal, UploaderCheckpoint}
-pub use checkpoints::UploaderCheckpoint;
+pub use crate::checkpoint::{UploaderCheckpoint, WalCheckpoint};
 
 /// Write-Ahead Log (WAL) with:
 /// - In-memory ordered replay cache
@@ -114,12 +114,7 @@ impl WalConfig {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(super) struct WalCheckpoint {
-    last_offset: u64,
-    file_seq: u64,
-    file_path: String,
-}
+// WalCheckpoint moved to crate::checkpoint
 
 impl Default for Wal {
     fn default() -> Self {
@@ -349,6 +344,100 @@ impl Wal {
         Ok((items, watermark))
     }
 
+    /// Read the current WAL checkpoint from disk if available.
+    pub async fn read_wal_checkpoint(&self) -> Result<Option<WalCheckpoint>, PersistentStorageError> {
+        let ckpt_path = match &self.inner.checkpoint_path {
+            Some(p) => p.clone(),
+            None => return Ok(None),
+        };
+        match tokio::fs::read(&ckpt_path).await {
+            Ok(bytes) => {
+                let ckpt: WalCheckpoint = bincode::deserialize(&bytes).map_err(|e| {
+                    PersistentStorageError::Io(format!("wal ckpt parse failed: {}", e))
+                })?;
+                Ok(Some(ckpt))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(PersistentStorageError::Io(format!(
+                "read wal ckpt failed: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Return the active WAL file path if durability is enabled.
+    pub async fn active_wal_path(&self) -> Option<PathBuf> {
+        self.inner.wal_path.lock().await.clone()
+    }
+
+    /// Read persisted frames since `after_offset` across rotated files using a `WalCheckpoint`.
+    /// Files are read in sequence order given by `ckpt.rotated_files` followed by the active file.
+    pub async fn read_persisted_since_ckpt(
+        &self,
+        ckpt: &WalCheckpoint,
+        after_offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<(u64, StreamMessage)>, PersistentStorageError> {
+        let mut items = Vec::new();
+        let mut total = 0usize;
+
+        // Build list of files in ascending seq order
+        let mut files: Vec<(u64, PathBuf)> = ckpt.rotated_files.clone();
+        // Append active file as the last one with current seq
+        files.push((ckpt.file_seq, PathBuf::from(&ckpt.file_path)));
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (_seq, path) in files {
+            if path.as_os_str().is_empty() { continue; }
+            let mut file = match tokio::fs::File::open(&path).await {
+                Ok(f) => f,
+                Err(_) => continue, // ignore missing files
+            };
+            loop {
+                let mut off_bytes = [0u8; 8];
+                if let Err(_) = file.read_exact(&mut off_bytes).await { break; }
+                let off = u64::from_le_bytes(off_bytes);
+
+                let mut len_bytes = [0u8; 4];
+                if let Err(e) = file.read_exact(&mut len_bytes).await {
+                    return Err(PersistentStorageError::Io(format!("wal read len failed: {}", e)));
+                }
+                let len = u32::from_le_bytes(len_bytes) as usize;
+
+                let mut crc_bytes = [0u8; 4];
+                if let Err(e) = file.read_exact(&mut crc_bytes).await {
+                    return Err(PersistentStorageError::Io(format!("wal read crc failed: {}", e)));
+                }
+                let _stored_crc = u32::from_le_bytes(crc_bytes);
+
+                let mut buf = vec![0u8; len];
+                if let Err(e) = file.read_exact(&mut buf).await {
+                    return Err(PersistentStorageError::Io(format!("wal read payload failed: {}", e)));
+                }
+
+                if off <= after_offset { continue; }
+
+                let msg: StreamMessage = bincode::deserialize(&buf).map_err(|e| {
+                    PersistentStorageError::Other(format!("bincode deserialize failed: {}", e))
+                })?;
+
+                if !items.is_empty() && total + (8 + 4 + 4 + len) > max_bytes { return Ok(items); }
+                total += 8 + 4 + 4 + len;
+                items.push((off, msg));
+            }
+            // If we've collected anything and reached max_bytes, stop early
+            if total >= max_bytes { break; }
+        }
+        Ok(items)
+    }
+
+
+    /// Trigger a writer flush. This is best-effort and does not wait for an ack.
+    pub async fn flush(&self) -> Result<(), PersistentStorageError> {
+        let _ = self.inner.cmd_tx.send(LogCommand::Flush).await;
+        Ok(())
+    }
+
     /// Return the next offset that will be assigned on append (i.e., current tip + 1).
     pub fn current_offset(&self) -> u64 {
         self.inner.next_offset.load(Ordering::Acquire)
@@ -403,8 +492,6 @@ impl Wal {
 // Unit tests for WAL submodules
 #[cfg(test)]
 mod cache_test;
-#[cfg(test)]
-mod checkpoints_test;
 #[cfg(test)]
 mod reader_test;
 #[cfg(test)]
