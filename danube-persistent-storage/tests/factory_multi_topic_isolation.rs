@@ -8,11 +8,13 @@
 use std::time::Duration;
 
 use danube_core::message::{MessageID, StreamMessage};
-use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_core::storage::PersistentStorage;
-use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::checkpoint::CheckpointStore;
-use danube_persistent_storage::{BackendConfig, LocalBackend, Uploader, UploaderConfig, WalStorageFactory};
+use danube_persistent_storage::wal::{Wal, WalConfig};
+use danube_persistent_storage::{
+    BackendConfig, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig, WalStorageFactory,
+};
 use tokio_stream::StreamExt;
 
 fn make_msg(topic: &str, i: u64) -> StreamMessage {
@@ -39,15 +41,22 @@ async fn test_factory_multi_topic_wal_isolation() {
     let wal_root = tmp.path().to_path_buf();
 
     // Build BackendConfig (memory) and Metadata store; factory constructs Cloud/Etcd internally
-    let backend = BackendConfig::Local { backend: LocalBackend::Memory, root: "mem-prefix".to_string() };
+    let backend = BackendConfig::Local {
+        backend: LocalBackend::Memory,
+        root: "mem-prefix".to_string(),
+    };
     let meta = MemoryStore::new().await.expect("memory meta");
     let metadata_store = MetadataStorage::InMemory(meta);
 
-    let factory = WalStorageFactory::new_with_backend(
-        WalConfig { dir: Some(wal_root.clone()), ..Default::default() },
+    let factory = WalStorageFactory::new(
+        WalConfig {
+            dir: Some(wal_root.clone()),
+            ..Default::default()
+        },
         backend,
         metadata_store,
         "/danube",
+        UploaderBaseConfig::default(),
     );
 
     let topic_a = "/default/topic-a";
@@ -71,8 +80,14 @@ async fn test_factory_multi_topic_wal_isolation() {
     // Verify per-topic directories exist: <wal_root>/default/topic-a and topic-b
     let dir_a = wal_root.join("default").join("topic-a");
     let dir_b = wal_root.join("default").join("topic-b");
-    assert!(tokio::fs::metadata(&dir_a).await.is_ok(), "topic-a dir should exist");
-    assert!(tokio::fs::metadata(&dir_b).await.is_ok(), "topic-b dir should exist");
+    assert!(
+        tokio::fs::metadata(&dir_a).await.is_ok(),
+        "topic-a dir should exist"
+    );
+    assert!(
+        tokio::fs::metadata(&dir_b).await.is_ok(),
+        "topic-b dir should exist"
+    );
 
     // Readers should see only their own topic messages
     let mut ra = storage_a
@@ -91,8 +106,14 @@ async fn test_factory_multi_topic_wal_isolation() {
         got_a.push(ra.next().await.unwrap().unwrap().payload);
         got_b.push(rb.next().await.unwrap().unwrap().payload);
     }
-    assert_eq!(got_a, vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]);
-    assert_eq!(got_b, vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]);
+    assert_eq!(
+        got_a,
+        vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]
+    );
+    assert_eq!(
+        got_b,
+        vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]
+    );
 }
 
 #[tokio::test]
@@ -109,14 +130,30 @@ async fn test_multi_topic_uploader_isolation() {
     let dir_b = wal_root.join("default").join("topic-b");
     tokio::fs::create_dir_all(&dir_a).await.unwrap();
     tokio::fs::create_dir_all(&dir_b).await.unwrap();
-    let cfg_a = WalConfig { dir: Some(dir_a.clone()), ..Default::default() };
-    let cfg_b = WalConfig { dir: Some(dir_b.clone()), ..Default::default() };
-    let store_a = std::sync::Arc::new(CheckpointStore::new(dir_a.join("wal.ckpt"), dir_a.join("uploader.ckpt")));
-    let store_b = std::sync::Arc::new(CheckpointStore::new(dir_b.join("wal.ckpt"), dir_b.join("uploader.ckpt")));
+    let cfg_a = WalConfig {
+        dir: Some(dir_a.clone()),
+        ..Default::default()
+    };
+    let cfg_b = WalConfig {
+        dir: Some(dir_b.clone()),
+        ..Default::default()
+    };
+    let store_a = std::sync::Arc::new(CheckpointStore::new(
+        dir_a.join("wal.ckpt"),
+        dir_a.join("uploader.ckpt"),
+    ));
+    let store_b = std::sync::Arc::new(CheckpointStore::new(
+        dir_b.join("wal.ckpt"),
+        dir_b.join("uploader.ckpt"),
+    ));
     let _ = store_a.load_from_disk().await;
     let _ = store_b.load_from_disk().await;
-    let wal_a = Wal::with_config_with_store(cfg_a, Some(store_a.clone())).await.expect("wal a");
-    let wal_b = Wal::with_config_with_store(cfg_b, Some(store_b.clone())).await.expect("wal b");
+    let wal_a = Wal::with_config_with_store(cfg_a, Some(store_a.clone()))
+        .await
+        .expect("wal a");
+    let wal_b = Wal::with_config_with_store(cfg_b, Some(store_b.clone()))
+        .await
+        .expect("wal b");
 
     let topic_a = "default/topic-a"; // uploader expects topic_path without leading '/'
     let topic_b = "default/topic-b";
@@ -136,32 +173,55 @@ async fn test_multi_topic_uploader_isolation() {
     })
     .expect("cloud");
     let mem = MemoryStore::new().await.expect("meta mem");
-    let meta = danube_persistent_storage::EtcdMetadata::new(MetadataStorage::InMemory(mem.clone()), "/danube".to_string());
+    let meta = danube_persistent_storage::EtcdMetadata::new(
+        MetadataStorage::InMemory(mem.clone()),
+        "/danube".to_string(),
+    );
 
     // Start two uploaders with short intervals
     let up_a = Uploader::new(
-        UploaderConfig { interval_seconds: 1, max_batch_bytes: 8 * 1024 * 1024, topic_path: topic_a.to_string(), root_prefix: "/danube".to_string() },
+        UploaderConfig {
+            interval_seconds: 1,
+            max_batch_bytes: 8 * 1024 * 1024,
+            topic_path: topic_a.to_string(),
+            root_prefix: "/danube".to_string(),
+        },
         cloud.clone(),
         meta.clone(),
         Some(store_a),
-    ).expect("up a");
+    )
+    .expect("up a");
     let up_b = Uploader::new(
-        UploaderConfig { interval_seconds: 1, max_batch_bytes: 8 * 1024 * 1024, topic_path: topic_b.to_string(), root_prefix: "/danube".to_string() },
+        UploaderConfig {
+            interval_seconds: 1,
+            max_batch_bytes: 8 * 1024 * 1024,
+            topic_path: topic_b.to_string(),
+            root_prefix: "/danube".to_string(),
+        },
         cloud.clone(),
         meta.clone(),
         Some(store_b),
-    ).expect("up b");
+    )
+    .expect("up b");
 
     let h_a = std::sync::Arc::new(up_a).start();
     let h_b = std::sync::Arc::new(up_b).start();
 
     // Wait deterministically for descriptors to appear
     for _ in 0..50 {
-        let a = mem.get_childrens("/danube/storage/topics/default/topic-a/objects").await.unwrap_or_default();
-        let b = mem.get_childrens("/danube/storage/topics/default/topic-b/objects").await.unwrap_or_default();
+        let a = mem
+            .get_childrens("/danube/storage/topics/default/topic-a/objects")
+            .await
+            .unwrap_or_default();
+        let b = mem
+            .get_childrens("/danube/storage/topics/default/topic-b/objects")
+            .await
+            .unwrap_or_default();
         let a_has = a.iter().any(|c| c != "cur" && !c.ends_with('/'));
         let b_has = b.iter().any(|c| c != "cur" && !c.ends_with('/'));
-        if a_has && b_has { break; }
+        if a_has && b_has {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -179,6 +239,12 @@ async fn test_multi_topic_uploader_isolation() {
     children_a.retain(|c| c != "cur" && !c.ends_with('/'));
     children_b.retain(|c| c != "cur" && !c.ends_with('/'));
 
-    assert!(!children_a.is_empty(), "topic-a should have object descriptors");
-    assert!(!children_b.is_empty(), "topic-b should have object descriptors");
+    assert!(
+        !children_a.is_empty(),
+        "topic-a should have object descriptors"
+    );
+    assert!(
+        !children_b.is_empty(),
+        "topic-b should have object descriptors"
+    );
 }

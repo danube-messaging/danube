@@ -3,7 +3,7 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, CloudStore, EtcdMetadata, LocalBackend, ObjectDescriptor, WalStorageFactory,
+    BackendConfig, LocalBackend, ObjectDescriptor, UploaderBaseConfig, WalStorageFactory,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,24 +37,19 @@ pub fn make_test_message(
 /// Creates a test setup with in-memory backends
 pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
     let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
-    let metadata = EtcdMetadata::new(
-        MetadataStorage::InMemory((*memory_store).clone()),
-        "/danube".to_string(),
-    );
 
-    let cloud_store = CloudStore::new(BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "integration-test".to_string(),
-    })
-    .expect("create cloud store");
-
-    let factory = WalStorageFactory::new_with_config(
+    let factory = WalStorageFactory::new(
         WalConfig {
             dir: Some(std::path::PathBuf::from("/tmp/danube-integration-test")),
             ..Default::default()
         },
-        cloud_store,
-        metadata,
+        BackendConfig::Local {
+            backend: LocalBackend::Memory,
+            root: "integration-test".to_string(),
+        },
+        MetadataStorage::InMemory((*memory_store).clone()),
+        "/danube",
+        UploaderBaseConfig::default(),
     );
 
     (factory, memory_store)

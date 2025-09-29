@@ -13,11 +13,37 @@ use danube_core::message::StreamMessage;
 use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone)]
+pub struct UploaderBaseConfig {
+    pub interval_seconds: u64,
+    pub max_batch_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct UploaderConfig {
     pub interval_seconds: u64,
     pub max_batch_bytes: usize,
     pub topic_path: String,  // e.g., "ns/topic"
     pub root_prefix: String, // e.g., "/danube"
+}
+
+impl UploaderConfig {
+    pub fn from_base(base: &UploaderBaseConfig, topic_path: String, root_prefix: String) -> Self {
+        Self {
+            interval_seconds: base.interval_seconds,
+            max_batch_bytes: base.max_batch_bytes,
+            topic_path,
+            root_prefix,
+        }
+    }
+}
+
+impl Default for UploaderBaseConfig {
+    fn default() -> Self {
+        Self {
+            interval_seconds: 10,
+            max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
+        }
+    }
 }
 
 impl Default for UploaderConfig {

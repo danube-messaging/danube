@@ -16,7 +16,7 @@ mod cloud_store;
 pub use cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
 
 mod uploader;
-pub use uploader::{Uploader, UploaderConfig};
+pub use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};
 
 mod etcd_metadata;
 pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
