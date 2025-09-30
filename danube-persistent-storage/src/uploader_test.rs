@@ -1,6 +1,6 @@
 use tokio::time::Duration;
 
-// Simple async wait helper: polls condition up to timeout_ms
+// Simple async wait helper: polls condition up to timeout_ms .
 async fn wait_for_condition<F, Fut>(mut f: F, timeout_ms: u64, interval_ms: u64) -> bool
 where
     F: FnMut() -> Fut,
@@ -304,7 +304,10 @@ mod tests {
                 async move {
                     let prefix = "/danube/storage/topics/test/resume/objects";
                     let children = mem.get_childrens(prefix).await.unwrap_or_default();
-                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    let objects: Vec<_> = children
+                        .into_iter()
+                        .filter(|c| c != "cur" && !c.ends_with('/'))
+                        .collect();
                     !objects.is_empty()
                 }
             },
@@ -372,7 +375,10 @@ mod tests {
                 async move {
                     let prefix = "/danube/storage/topics/test/batch/objects";
                     let children = mem.get_childrens(prefix).await.unwrap_or_default();
-                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    let objects: Vec<_> = children
+                        .into_iter()
+                        .filter(|c| c != "cur" && !c.ends_with('/'))
+                        .collect();
                     !objects.is_empty()
                 }
             },
@@ -474,7 +480,10 @@ mod tests {
                 async move {
                     let prefix = "/danube/storage/topics/test/naming/objects";
                     let children = mem.get_childrens(prefix).await.unwrap_or_default();
-                    let objects: Vec<_> = children.into_iter().filter(|c| c != "cur" && !c.ends_with('/')).collect();
+                    let objects: Vec<_> = children
+                        .into_iter()
+                        .filter(|c| c != "cur" && !c.ends_with('/'))
+                        .collect();
                     !objects.is_empty()
                 }
             },
