@@ -191,6 +191,7 @@ impl WriterState {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let ckpt = WalCheckpoint {
+            start_offset: 0, // TODO: This should be updated when pruning is implemented
             last_offset,
             file_seq: self.file_seq,
             file_path,
