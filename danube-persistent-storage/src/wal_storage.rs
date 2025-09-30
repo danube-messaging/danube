@@ -63,96 +63,74 @@ impl PersistentStorage for WalStorage {
         _topic_name: &str,
         start: StartPosition,
     ) -> Result<TopicStream, PersistentStorageError> {
-        // If cloud and etcd are configured, compute Cloud->WAL handoff watermark and chain streams.
-        if let (Some(cloud), Some(etcd), Some(topic_path)) = (
-            self.cloud.clone(),
-            self.etcd.clone(),
-            self.topic_path.clone(),
+        // This function requires cloud and etcd to be configured for the tiered reading logic.
+        let (cloud, etcd, topic_path) = match (
+            self.cloud.as_ref(),
+            self.etcd.as_ref(),
+            self.topic_path.as_ref(),
         ) {
-            let start_off = match start {
-                StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
-                StartPosition::Offset(o) => o,
-            };
-            // Determine the last completed object that intersects [start_off, ..]
-            let reader = CloudReader::new(cloud, etcd, topic_path.clone());
-            // Fetch descriptors and compute Oend
-            let from_padded = format!("{:020}", start_off);
-            let descs = reader
-                .etcd()
-                .get_object_descriptors_range(reader.topic_path(), &from_padded, None)
-                .await?;
-            if descs.is_empty() {
-                // If cloud is configured but there are no descriptors at/after start,
-                // warn for visibility and fall back to WAL-only.
-                let cur = self.wal.current_offset();
-                if start_off < cur.saturating_sub(1) {
-                    warn!(
-                        target = "wal_storage",
-                        topic = %topic_path,
-                        start = start_off,
-                        wal_tip = cur,
-                        "no ETCD descriptors found for requested start; falling back to WAL-only"
-                    );
-                }
-            }
-            let mut oend: Option<u64> = None;
-            for d in descs.iter() {
-                if d.end_offset >= start_off {
-                    oend = Some(oend.map(|x| x.max(d.end_offset)).unwrap_or(d.end_offset));
-                }
-            }
-            // WAL min offset is unknown yet (no pruning), so assume 0 for now
-            let w0 = 0u64;
-            let h = match oend {
-                Some(end) => std::cmp::max(w0, end.saturating_add(1)),
-                None => start_off, // no cloud needed for this start
-            };
-
-            if oend.is_some() && h > start_off {
-                info!(
+            (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
+            _ => {
+                // Fallback to WAL-only behavior if cloud integration is not configured.
+                let from = match start {
+                    StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
+                    StartPosition::Offset(o) => o,
+                };
+                warn!(
                     target = "wal_storage",
-                    topic = %topic_path,
-                    start = start_off,
-                    handoff = h,
-                    "creating reader with Cloud->WAL chaining"
+                    start = from,
+                    "cloud is not configured; creating reader from WAL only"
                 );
-                // Cloud path needed for [start_off, h-1], then switch to WAL at h
-                let cloud_stream = reader.read_range(start_off, Some(h - 1)).await?;
-                let wal_stream = self.wal.tail_reader(h).await?;
-                let chained = cloud_stream.chain(wal_stream);
-                return Ok(Box::pin(chained));
-            } else {
-                info!(
-                    target = "wal_storage",
-                    topic = %topic_path,
-                    start = start_off,
-                    "creating reader from WAL only (no cloud handoff needed)"
-                );
+                return self.wal.tail_reader(from).await;
             }
-            // else fall through to WAL tail only
-        } else {
-            // Cloud not configured for this topic storage
-            let from = match start {
-                StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
-                StartPosition::Offset(o) => o,
-            };
-            info!(
-                target = "wal_storage",
-                start = from,
-                "cloud disabled; creating reader from WAL only"
-            );
-            return self.wal.tail_reader(from).await;
-        }
+        };
 
-        let from = match start {
-            StartPosition::Latest => {
-                // Start tailing at the current tip (inclusive): ensure the next appended
-                // message (with offset == current_offset) is delivered by setting from = tip-1
-                self.wal.current_offset().saturating_sub(1)
-            }
+        // 1. Determine the concrete start offset from the StartPosition.
+        let start_offset = match start {
+            StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
             StartPosition::Offset(o) => o,
         };
-        self.wal.tail_reader(from).await
+
+        // 2. Get the WAL's start offset from its checkpoint. This tells us the oldest
+        // offset available in the local WAL files.
+        let wal_checkpoint = self.wal.current_wal_checkpoint().await;
+        let wal_start_offset = wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset);
+
+        // 3. Implement the tiered reading logic.
+        if start_offset >= wal_start_offset {
+            // CASE 1: The entire read can be served from the local WAL.
+            // This is the most efficient path for active consumers.
+            info!(
+                target = "wal_storage",
+                topic = %topic_path,
+                start = start_offset,
+                wal_start = wal_start_offset,
+                "creating reader from WAL only (request is within local retention)"
+            );
+            self.wal.tail_reader(start_offset).await
+        } else {
+            // CASE 2: The read must start from the cloud and then hand off to the WAL.
+            let handoff_offset = wal_start_offset;
+            info!(
+                target = "wal_storage",
+                topic = %topic_path,
+                start = start_offset,
+                handoff = handoff_offset,
+                "creating reader with Cloud->WAL chaining"
+            );
+
+            // Create a stream for the historical data from the cloud.
+            // This will read from start_offset up to (but not including) handoff_offset.
+            let reader = CloudReader::new(cloud, etcd, topic_path.clone());
+            let cloud_stream = reader.read_range(start_offset, Some(handoff_offset - 1)).await?;
+
+            // Create a stream for the recent data from the WAL, starting at the handoff point.
+            let wal_stream = self.wal.tail_reader(handoff_offset).await?;
+
+            // Chain them together to provide a single, seamless stream to the consumer.
+            let chained = cloud_stream.chain(wal_stream);
+            Ok(Box::pin(chained))
+        }
     }
 
     async fn ack_checkpoint(

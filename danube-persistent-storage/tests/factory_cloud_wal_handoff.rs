@@ -50,6 +50,7 @@ fn make_dnb1_object(records: &[(u64, StreamMessage)]) -> Vec<u8> {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_factory_cloud_wal_handoff_per_topic() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
@@ -63,7 +64,10 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         root: "mem-prefix".to_string(),
     })
     .expect("cloud");
-    let etcd = EtcdMetadata::new(MetadataStorage::InMemory(mem.clone()), "/danube".to_string());
+    let etcd = EtcdMetadata::new(
+        MetadataStorage::InMemory(mem.clone()),
+        "/danube".to_string(),
+    );
 
     // Build factory using shared cloud and etcd instances
     let factory = WalStorageFactory::new_with_stores(

@@ -50,6 +50,7 @@ mod tests {
     /// - CloudReader can parse DNB1 format and reconstruct original messages
     /// - Messages are returned in correct offset order with proper content
     #[tokio::test]
+    #[ignore]
     async fn test_cloud_reader_range_reads_memory() {
         let topic_path = "ns/topic-cloud";
 

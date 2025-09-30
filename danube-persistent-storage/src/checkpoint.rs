@@ -5,26 +5,53 @@ use tokio::sync::RwLock;
 
 use danube_core::storage::PersistentStorageError;
 
+/// Represents a durable snapshot of the Write-Ahead Log's state.
+///
+/// This checkpoint is periodically persisted to disk and contains the necessary information
+/// to recover the WAL's state and to coordinate between the writer, uploader, and readers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WalCheckpoint {
+    /// The first offset available in the local WAL. This is the oldest offset that can be read
+    /// without fetching from cloud storage. It is advanced when old WAL files are pruned.
+    pub start_offset: u64,
+    /// The last offset successfully written to the WAL at the time of this checkpoint.
     pub last_offset: u64,
+    /// The sequence number of the current active WAL file (e.g., the `1` in `wal.1.log`).
+    /// This is incremented on each rotation.
     pub file_seq: u64,
+    /// The absolute path to the current active WAL file.
     pub file_path: String,
-    // Optional rotation history to help locate frames across rotated files
+    /// A history of WAL files that have been rotated but not yet pruned. The tuple contains
+    /// the file sequence number and its path. This allows the uploader to read from a
+    /// sequence of files to find all data that needs to be persisted to the cloud.
     pub rotated_files: Vec<(u64, PathBuf)>,
-    // Optional: name of the active WAL file for quick reference
+    /// The base name of the active WAL file (e.g., `wal.1.log`). Useful for logging and quick reference.
     pub active_file_name: Option<String>,
-    // Optional: last rotation timestamp (seconds since epoch) for observability
+    /// The timestamp (seconds since epoch) of the last file rotation. Used for observability and
+    /// can be used to trigger time-based rotations.
     pub last_rotation_at: Option<u64>,
 }
 
+/// Represents a durable snapshot of the Uploader's progress.
+///
+/// This checkpoint tracks how much of the WAL has been successfully persisted to cloud storage.
+/// It is used on restart to prevent re-uploading data that has already been committed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UploaderCheckpoint {
+    /// The last message offset that has been successfully uploaded and committed to cloud storage.
+    /// On startup, the uploader will resume its work from this offset.
     pub last_committed_offset: u64,
+    /// The unique identifier of the last cloud object that was written. Useful for debugging and
+    /// for resuming multi-part uploads if the process was interrupted.
     pub last_object_id: Option<String>,
+    /// The timestamp (seconds since epoch) when this checkpoint was last updated.
     pub updated_at: u64,
 }
 
+/// A container struct that holds both the WAL and Uploader checkpoints.
+///
+/// While the two checkpoints are managed and persisted independently, this struct can be
+/// useful for diagnostics or for contexts where a combined view of the system's state is needed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CheckPoint {
     pub wal: WalCheckpoint,
