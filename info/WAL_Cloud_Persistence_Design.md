@@ -159,7 +159,7 @@ Key components:
 - Flow per subscription:
   1) SubscriptionDispatch determines the start position:
      - New subscription: `StartPosition::Latest` (begin at current WAL tail; no historical replay).
-     - Existing subscription: read last flushed progress from ETCD key `/danube/subscriptions/{tenant}/{ns}/{topic}/{sub}/progress` to get start offset `S`, using At-Least-Once semantics (resume at the next undelivered offset).
+     - Existing subscription: read last flushed progress from ETCD key `/danube/subscriptions/{ns}/{topic}/{sub}/progress` to get start offset `S`, using At-Least-Once semantics (resume at the next undelivered offset).
   2) Call `TopicStore::create_reader(topic, start)`:
      - If `start` is `Latest`: return WAL-backed tailing stream immediately (fast path; no CloudReader).
      - If `start` is `Offset(S)` and S within WAL tail window: return WAL-backed tailing stream (fast path).

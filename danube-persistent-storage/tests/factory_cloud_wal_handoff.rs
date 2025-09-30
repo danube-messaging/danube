@@ -9,7 +9,9 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_metadata_store::{MemoryStore, MetadataStorage};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::CloudStore;
-use danube_persistent_storage::{BackendConfig, LocalBackend, WalStorageFactory};
+use danube_persistent_storage::{
+    BackendConfig, LocalBackend, UploaderBaseConfig, WalStorageFactory,
+};
 use danube_persistent_storage::{EtcdMetadata, ObjectDescriptor};
 use tokio_stream::StreamExt;
 
@@ -52,23 +54,26 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
 
-    // Build memory cloud and memory metadata
+    // Build memory metadata store
+    let mem = MemoryStore::new().await.expect("mem store");
+
+    // Create shared cloud and etcd instances for both test setup and factory
     let cloud = CloudStore::new(BackendConfig::Local {
         backend: LocalBackend::Memory,
         root: "mem-prefix".to_string(),
     })
     .expect("cloud");
-    let mem = MemoryStore::new().await.expect("mem store");
-    let etcd = EtcdMetadata::new(MetadataStorage::InMemory(mem), "/danube".to_string());
+    let etcd = EtcdMetadata::new(MetadataStorage::InMemory(mem.clone()), "/danube".to_string());
 
-    // Build factory that uses our cloud/etcd so we can pre-populate history
-    let factory = WalStorageFactory::new_with_config(
+    // Build factory using shared cloud and etcd instances
+    let factory = WalStorageFactory::new_with_stores(
         WalConfig {
             dir: Some(wal_root.clone()),
             ..Default::default()
         },
         cloud.clone(),
         etcd.clone(),
+        UploaderBaseConfig::default(),
     );
 
     // Ensure per-topic WAL file exists at <root>/ns/topic/wal.log to avoid open errors on reader startup.
@@ -88,6 +93,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
     let topic_path = "default/topic-hand"; // for cloud/etcd
 
     // Pre-populate cloud with an object covering offsets [0..1]
+    // Now using the same shared cloud instance,
     let rec0 = make_msg(topic_path, 0, b"h0");
     let rec1 = make_msg(topic_path, 1, b"h1");
     let obj = make_dnb1_object(&[(0, rec0.clone()), (1, rec1.clone())]);

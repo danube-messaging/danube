@@ -38,7 +38,7 @@ use crate::{
 use anyhow::{Context, Result};
 use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{BackendConfig, WalStorageFactory};
+use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
 use std::net::SocketAddr;
 
 use tracing::info;
@@ -115,11 +115,7 @@ async fn main() -> Result<()> {
         dir: wal_cfg.wal.dir.as_ref().map(|d| d.into()),
         file_name: wal_cfg.wal.file_name.clone(),
         cache_capacity: wal_cfg.wal.cache_capacity,
-        fsync_interval_ms: wal_cfg
-            .wal
-            .file_sync
-            .as_ref()
-            .and_then(|f| f.interval_ms),
+        fsync_interval_ms: wal_cfg.wal.file_sync.as_ref().and_then(|f| f.interval_ms),
         fsync_max_batch_bytes: wal_cfg
             .wal
             .file_sync
@@ -133,12 +129,19 @@ async fn main() -> Result<()> {
     // Build BackendConfig from CloudConfig (conversion defined in service_configuration.rs)
     let cloud_backend: BackendConfig = (&wal_cfg.cloud).into();
 
+    // Create UploaderBaseConfig from broker configuration
+    let uploader_base_cfg = UploaderBaseConfig {
+        interval_seconds: wal_cfg.uploader.interval_seconds,
+        max_batch_bytes: wal_cfg.uploader.max_batch_bytes as usize,
+    };
+
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
-    let wal_factory = WalStorageFactory::new_with_backend(
+    let wal_factory = WalStorageFactory::new(
         wal_base_cfg,
         cloud_backend,
         metadata_store.clone(),
         "/danube",
+        uploader_base_cfg,
     );
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store

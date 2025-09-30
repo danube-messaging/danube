@@ -18,16 +18,7 @@ pub struct WalStorage {
 }
 
 impl WalStorage {
-    pub fn new() -> Self {
-        Self {
-            wal: Wal::new(),
-            cloud: None,
-            etcd: None,
-            topic_path: None,
-        }
-    }
-
-    /// Construct from a pre-configured WAL (e.g., created with WalConfig::with_config())
+    /// Construct from a pre-configured WAL
     pub fn from_wal(wal: Wal) -> Self {
         Self {
             wal,
@@ -46,6 +37,14 @@ impl WalStorage {
             info!(target = "wal_storage", topic = %tp, "cloud handoff enabled for topic");
         }
         self
+    }
+
+    /// Convenience: append a message directly to the underlying WAL.
+    ///
+    /// Note: Integration tests use `storage.append(&msg)`; this helper forwards to `Wal::append`.
+    #[allow(dead_code)]
+    pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
+        self.wal.append(msg).await
     }
 }
 

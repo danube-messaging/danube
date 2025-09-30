@@ -200,7 +200,7 @@ impl CloudStore {
     }
 }
 
-fn split_bucket_prefix(uri: &str) -> Result<(String, String), String> {
+pub(crate) fn split_bucket_prefix(uri: &str) -> Result<(String, String), String> {
     // Accept formats: s3://bucket, s3://bucket/prefix, gcs://bucket/prefix
     let parts: Vec<&str> = uri.splitn(2, "://").collect();
     if parts.len() == 2 {
@@ -218,7 +218,7 @@ fn split_bucket_prefix(uri: &str) -> Result<(String, String), String> {
     }
 }
 
-fn split_fs_root(uri_or_path: &str) -> Result<(String, String), String> {
+pub(crate) fn split_fs_root(uri_or_path: &str) -> Result<(String, String), String> {
     // Accept file:///abs/path/prefix or /abs/path/prefix
     let s = if let Some(rest) = uri_or_path.strip_prefix("file://") {
         rest
@@ -230,7 +230,7 @@ fn split_fs_root(uri_or_path: &str) -> Result<(String, String), String> {
     Ok((fs_root, String::new()))
 }
 
-fn normalize_prefix(p: &str) -> String {
+pub(crate) fn normalize_prefix(p: &str) -> String {
     let trimmed = p.trim_matches('/');
     trimmed.to_string()
 }

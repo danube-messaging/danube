@@ -5,19 +5,19 @@ use danube_core::storage::{PersistentStorageError, TopicStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+// use tokio::io::AsyncReadExt; // no longer needed here; file IO for persisted reads moved to uploader
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
 // Submodules for writer and reader paths
 mod cache;
-mod checkpoints;
 mod reader;
 mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
 // Re-export for external users: crate::wal::{Wal, UploaderCheckpoint}
-pub use checkpoints::UploaderCheckpoint;
+pub use crate::checkpoint::{CheckPoint, CheckpointStore, UploaderCheckpoint, WalCheckpoint};
 
 /// Write-Ahead Log (WAL) with:
 /// - In-memory ordered replay cache
@@ -47,6 +47,8 @@ struct WalInner {
     rotate_max_seconds: Option<u64>,
     // Checkpoint path
     checkpoint_path: Option<PathBuf>,
+    // Optional per-topic checkpoint store (cache + atomic persistence)
+    ckpt_store: Option<Arc<CheckpointStore>>,
     // Background writer command channel (hot path enqueues; background task performs IO)
     cmd_tx: mpsc::Sender<LogCommand>,
 }
@@ -114,12 +116,7 @@ impl WalConfig {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(super) struct WalCheckpoint {
-    last_offset: u64,
-    file_seq: u64,
-    file_path: String,
-}
+// WalCheckpoint moved to crate::checkpoint
 
 impl Default for Wal {
     fn default() -> Self {
@@ -137,6 +134,7 @@ impl Default for Wal {
                 rotate_max_bytes: None,
                 rotate_max_seconds: None,
                 checkpoint_path: None,
+                ckpt_store: None,
                 cmd_tx,
             }),
         };
@@ -148,6 +146,7 @@ impl Default for Wal {
             fsync_max_batch_bytes: wal.inner.fsync_max_batch_bytes,
             rotate_max_bytes: wal.inner.rotate_max_bytes,
             rotate_max_seconds: wal.inner.rotate_max_seconds,
+            ckpt_store: None,
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
@@ -170,7 +169,10 @@ impl Wal {
     ///
     /// Returns
     /// - `Ok(Wal)` ready for `append()` and `tail_reader()`; I/O happens in the background task.
-    pub async fn with_config(cfg: WalConfig) -> Result<Self, PersistentStorageError> {
+    pub async fn with_config_with_store(
+        cfg: WalConfig,
+        ckpt_store: Option<Arc<CheckpointStore>>,
+    ) -> Result<Self, PersistentStorageError> {
         let (tx, _rx) = broadcast::channel(1024);
         let (cmd_tx, cmd_rx) = mpsc::channel(8192);
         // Build optional file and wal_path without moving the Option twice
@@ -239,6 +241,7 @@ impl Wal {
                 rotate_max_bytes,
                 rotate_max_seconds,
                 checkpoint_path,
+                ckpt_store: ckpt_store.clone(),
                 cmd_tx,
             }),
         };
@@ -251,11 +254,17 @@ impl Wal {
             fsync_max_batch_bytes,
             rotate_max_bytes,
             rotate_max_seconds,
+            ckpt_store,
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
         });
         Ok(wal)
+    }
+
+    /// Backward-compatible helper that constructs a WAL without passing a CheckpointStore.
+    pub async fn with_config(cfg: WalConfig) -> Result<Self, PersistentStorageError> {
+        Self::with_config_with_store(cfg, None).await
     }
 
     /// Append a message and return the assigned offset.
@@ -349,46 +358,53 @@ impl Wal {
         Ok((items, watermark))
     }
 
+    /// Read the current WAL checkpoint from disk if available.
+    pub async fn read_wal_checkpoint(
+        &self,
+    ) -> Result<Option<WalCheckpoint>, PersistentStorageError> {
+        if let Some(store) = &self.inner.ckpt_store {
+            return Ok(store.get_wal().await);
+        }
+        let ckpt_path = match &self.inner.checkpoint_path {
+            Some(p) => p.clone(),
+            None => return Ok(None),
+        };
+        CheckPoint::read_wal_from_path(&ckpt_path).await
+    }
+
+    /// Return the active WAL file path if durability is enabled.
+    pub async fn active_wal_path(&self) -> Option<PathBuf> {
+        self.inner.wal_path.lock().await.clone()
+    }
+
+    /// Expose the path to `<dir>/wal.ckpt` if durability is enabled.
+    pub async fn wal_checkpoint_path(&self) -> Option<PathBuf> {
+        self.inner.checkpoint_path.clone()
+    }
+
+    /// Return the latest in-memory WAL checkpoint if available (writer-updated), avoiding disk I/O.
+    pub async fn current_wal_checkpoint(&self) -> Option<WalCheckpoint> {
+        match &self.inner.ckpt_store {
+            Some(store) => store.get_wal().await,
+            None => None,
+        }
+    }
+
+    /// Trigger a writer flush. This is best-effort and does not wait for an ack.
+    pub async fn flush(&self) -> Result<(), PersistentStorageError> {
+        let _ = self.inner.cmd_tx.send(LogCommand::Flush).await;
+        Ok(())
+    }
+
     /// Return the next offset that will be assigned on append (i.e., current tip + 1).
     pub fn current_offset(&self) -> u64 {
         self.inner.next_offset.load(Ordering::Acquire)
     }
 
-    // Reader helpers moved to wal/reader.rs
-
-    // Writer rotation and checkpoints are handled inside WriterState; no-op stubs retained for compatibility
-
-    /// Compute the uploader checkpoint path if WAL checkpoints are enabled.
-    async fn uploader_checkpoint_path(&self) -> Option<PathBuf> {
-        let ckpt = self.inner.checkpoint_path.clone()?;
-        let parent = ckpt.parent()?.to_path_buf();
-        Some(parent.join("uploader.ckpt"))
+    /// Expose the underlying checkpoint store if configured for this WAL.
+    pub fn checkpoint_store(&self) -> Option<Arc<CheckpointStore>> {
+        self.inner.ckpt_store.clone()
     }
-
-    /// Persist uploader checkpoint to `uploader.ckpt`.
-    pub async fn write_uploader_checkpoint(
-        &self,
-        ckpt: &UploaderCheckpoint,
-    ) -> Result<(), PersistentStorageError> {
-        let path = match self.uploader_checkpoint_path().await {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-        ckpt.write_to_path(&path).await
-    }
-
-    /// Read uploader checkpoint from `uploader.ckpt` if present.
-    pub async fn read_uploader_checkpoint(
-        &self,
-    ) -> Result<Option<UploaderCheckpoint>, PersistentStorageError> {
-        let path = match self.uploader_checkpoint_path().await {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        UploaderCheckpoint::read_from_path(&path).await
-    }
-
-    // Writer task implemented in wal/writer.rs (spawned from with_config/default)
 
     /// Graceful shutdown: flush pending buffered data and stop the background writer task.
     pub async fn shutdown(&self) {
@@ -399,3 +415,11 @@ impl Wal {
         let _ = rx.await;
     }
 }
+
+// Unit tests for WAL submodules
+#[cfg(test)]
+mod cache_test;
+#[cfg(test)]
+mod reader_test;
+#[cfg(test)]
+mod writer_test;
