@@ -41,6 +41,10 @@ pub struct UploaderCheckpoint {
     /// The last message offset that has been successfully uploaded and committed to cloud storage.
     /// On startup, the uploader will resume its work from this offset.
     pub last_committed_offset: u64,
+    /// The sequence number of the WAL file the uploader was last reading from.
+    pub last_read_file_seq: u64,
+    /// The byte position within that file where the next read should begin.
+    pub last_read_byte_position: u64,
     /// The unique identifier of the last cloud object that was written. Useful for debugging and
     /// for resuming multi-part uploads if the process was interrupted.
     pub last_object_id: Option<String>,

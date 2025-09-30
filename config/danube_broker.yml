@@ -49,8 +49,9 @@ wal_cloud:
       max_bytes: 10485760       # 10 MB (example)
       max_seconds: 60           # rotate every 60s (optional)
   uploader:
+    enabled: true
     interval_seconds: 1
-    max_batch_bytes: 8388608   # 8 MB
+    root_prefix: "/danube"
   cloud:
     backend: "memory"         # options: memory | fs | s3 | gcs
     root: "mem-prefix"        # when backend: memory, this is a namespace prefix (ignored by some backends)

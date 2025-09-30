@@ -132,7 +132,6 @@ async fn main() -> Result<()> {
     // Create UploaderBaseConfig from broker configuration
     let uploader_base_cfg = UploaderBaseConfig {
         interval_seconds: wal_cfg.uploader.interval_seconds,
-        max_batch_bytes: wal_cfg.uploader.max_batch_bytes as usize,
     };
 
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
@@ -140,7 +139,11 @@ async fn main() -> Result<()> {
         wal_base_cfg,
         cloud_backend,
         metadata_store.clone(),
-        "/danube",
+        wal_cfg
+            .uploader
+            .root_prefix
+            .clone()
+            .unwrap_or_else(|| "/danube".to_string()),
         uploader_base_cfg,
     );
 

@@ -182,7 +182,6 @@ async fn test_multi_topic_uploader_isolation() {
     let up_a = Uploader::new(
         UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: topic_a.to_string(),
             root_prefix: "/danube".to_string(),
         },
@@ -194,7 +193,6 @@ async fn test_multi_topic_uploader_isolation() {
     let up_b = Uploader::new(
         UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: topic_b.to_string(),
             root_prefix: "/danube".to_string(),
         },

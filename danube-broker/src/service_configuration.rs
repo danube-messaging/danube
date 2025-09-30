@@ -140,7 +140,10 @@ pub(crate) struct WalRotationNode {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct UploaderNode {
     pub(crate) interval_seconds: u64,
-    pub(crate) max_batch_bytes: u64,
+    /// Optional root prefix for uploader object/etcd paths (defaults to "/danube")
+    pub(crate) root_prefix: Option<String>,
+    /// Optional enable switch for uploader (defaults to true)
+    pub(crate) enabled: Option<bool>,
 }
 
 /// Cloud configuration enum (tagged by `backend`)
