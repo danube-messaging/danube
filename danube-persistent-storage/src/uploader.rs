@@ -4,10 +4,10 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use crate::checkpoint::CheckpointStore;
 use crate::cloud_store::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 use crate::wal::UploaderCheckpoint;
-use crate::checkpoint::CheckpointStore;
 use bincode;
 use danube_core::message::StreamMessage;
 use tokio::io::AsyncReadExt;
@@ -86,7 +86,7 @@ impl Uploader {
     /// (bytes, start_offset, end_offset).
     fn serialize_items(
         &self,
-        items: &[(u64, danube_core::message::StreamMessage)],
+        items: &[(u64, StreamMessage)],
         last_committed: u64,
     ) -> Result<(Vec<u8>, u64, u64), PersistentStorageError> {
         // Format v1 (DNB1):
@@ -95,14 +95,8 @@ impl Uploader {
         //   record_count: u32
         //   repeated records: [u64 offset][u32 len][bytes bincode(StreamMessage)]
         let mut bytes = Vec::new();
-        let start_offset = items
-            .first()
-            .map(|(o, _)| *o)
-            .unwrap_or(last_committed);
-        let end_offset = items
-            .last()
-            .map(|(o, _)| *o)
-            .unwrap_or(last_committed);
+        let start_offset = items.first().map(|(o, _)| *o).unwrap_or(last_committed);
+        let end_offset = items.last().map(|(o, _)| *o).unwrap_or(last_committed);
         // header
         bytes.extend_from_slice(b"DNB1");
         bytes.push(1u8); // version
@@ -260,7 +254,10 @@ impl Uploader {
         let last_committed = self.last_uploaded_offset.load(Ordering::Acquire);
         // Prefer CheckpointStore; if none, we cannot read persisted frames (no durable WAL) => no upload
         let wal_ckpt = match &self.ckpt_store {
-            Some(store) => match store.get_wal().await { Some(c) => c, None => return Ok(false) },
+            Some(store) => match store.get_wal().await {
+                Some(c) => c,
+                None => return Ok(false),
+            },
             None => return Ok(false),
         };
         // Read only persisted frames from WAL files since last_committed
@@ -271,8 +268,7 @@ impl Uploader {
             return Ok(false);
         }
 
-        let (bytes, start_offset, end_offset) =
-            self.serialize_items(&items, last_committed)?;
+        let (bytes, start_offset, end_offset) = self.serialize_items(&items, last_committed)?;
 
         // Object name convention: data-<start>-<end>.dnb1
         let object_id = format!("data-{}-{}.dnb1", start_offset, end_offset);
