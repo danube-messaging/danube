@@ -8,19 +8,19 @@ on:
       - 'danube-core/proto/DanubeAdmin.proto'
 
 jobs:
-  e2e:
+  build_and_test:
     runs-on: ubuntu-latest
+
     services:
       etcd:
-        image: bitnami/etcd:latest
+        image: quay.io/coreos/etcd:latest
         ports:
           - 2379:2379
-        options: >-
+        command: >-
+          /usr/local/bin/etcd
           --name etcd-danube
-        env:
-          ALLOW_NONE_AUTHENTICATION: "yes"
-          ETCD_ADVERTISE_CLIENT_URLS: "http://0.0.0.0:2379"
-          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+          --advertise-client-urls http://0.0.0.0:2379
+          --listen-client-urls http://0.0.0.0:2379
 
     steps:
       - name: Checkout
