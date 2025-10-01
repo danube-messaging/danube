@@ -122,7 +122,12 @@ async fn main() -> Result<()> {
             .as_ref()
             .and_then(|f| f.max_batch_bytes),
         rotate_max_bytes: wal_cfg.wal.rotation.as_ref().and_then(|r| r.max_bytes),
-        rotate_max_seconds: wal_cfg.wal.rotation.as_ref().and_then(|r| r.max_seconds),
+        // Map hours (config) to seconds (WalConfig)
+        rotate_max_seconds: wal_cfg
+            .wal
+            .rotation
+            .as_ref()
+            .and_then(|r| r.max_hours.map(|h| h.saturating_mul(3600))),
         ..Default::default()
     };
 

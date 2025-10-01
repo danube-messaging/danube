@@ -77,7 +77,7 @@ pub struct WalConfig {
     /// Maximum time between flushes (ms) for the background writer. A flush is triggered
     /// if either this interval elapses or `fsync_max_batch_bytes` is reached, whichever comes first.
     ///
-    /// Default when `None`: `1_000` ms (1 s)
+    /// Default when `None`: `5_000` ms (5 s)
     pub fsync_interval_ms: Option<u64>,
 
     /// Maximum buffered bytes in the writer before forcing a flush. This bounds write latency
@@ -129,7 +129,7 @@ impl Default for Wal {
                 wal_path: Mutex::new(None),
                 cache: Mutex::new(Cache::new()),
                 cache_capacity: 1024,
-                fsync_interval_ms: 1_000, // 1s default flush interval
+                fsync_interval_ms: 5_000, // 5s default flush interval
                 fsync_max_batch_bytes: 10 * 1024 * 1024, // 10 MiB default batch
                 rotate_max_bytes: None,
                 rotate_max_seconds: None,
@@ -197,7 +197,7 @@ impl Wal {
         };
 
         let capacity = cfg.cache_capacity.unwrap_or(1024);
-        let fsync_interval_ms = cfg.fsync_interval_ms.unwrap_or(1_000); // 1s default
+        let fsync_interval_ms = cfg.fsync_interval_ms.unwrap_or(5_000); // 5s default
         let fsync_max_batch_bytes = cfg.fsync_max_batch_bytes.unwrap_or(10 * 1024 * 1024); // 10 MiB default
         let rotate_max_bytes = cfg.rotate_max_bytes;
         let rotate_max_seconds = cfg.rotate_max_seconds;

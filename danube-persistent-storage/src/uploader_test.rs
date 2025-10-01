@@ -103,13 +103,13 @@ mod tests {
     /// - Verify all default field values match expected settings
     ///
     /// Expected
-    /// - interval_seconds: 10 (reasonable upload frequency)
+    /// - interval_seconds: 300 (5 minutes default upload frequency)
     /// - topic_path: "default/topic" (placeholder path)
     /// - root_prefix: "/danube" (standard metadata prefix)
     #[tokio::test]
     async fn test_uploader_config_default() {
         let config = UploaderConfig::default();
-        assert_eq!(config.interval_seconds, 10);
+        assert_eq!(config.interval_seconds, 300);
         assert_eq!(config.topic_path, "default/topic");
         assert_eq!(config.root_prefix, "/danube");
     }

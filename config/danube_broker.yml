@@ -36,25 +36,33 @@ auth:
     issuer: "danube-auth"
     expiration_time: 3600 # in seconds
 
-# wal_cloud configuration
+# WAL and Cloud Storage Configuration
 wal_cloud:
   wal:
     dir: "./danube/wal"
     file_name: "wal.log"
     cache_capacity: 1024
+    # WAL file sync configuration, drive flush cadence and checkpoint frequency
     file_sync:
-      interval_ms: 1000         # 1s WAL flush interval (default)
-      max_batch_bytes: 10485760 # 10 MiB WAL writer batch (default)
+      interval_ms: 5000         # Default:Flush every 5s to reduce fsync pressure while keeping WAL checkpoints reasonably fresh
+      max_batch_bytes: 10485760 # Default: 10 MiB writer batch
+    # WAL file rotation configuration, balances file size and directory churn
     rotation:
-      max_bytes: 10485760       # 10 MB (example)
-      max_seconds: 60           # rotate every 60s (optional)
+      max_bytes: 536870912      # Default: 512 MiB WAL file size
+      # max_hours: 24           # Optional time-based rotation (in hours)
+  
+  # Uploader, runs every interval_seconds, reads raw WAL frames, writes to configured cloud storage
   uploader:
     enabled: true
-    interval_seconds: 1
+    interval_seconds: 300       # Default: Upload every 5 minutes
     root_prefix: "/danube"
+  
+  # Cloud storage backend - Default: memory for development
   cloud:
     backend: "memory"         # options: memory | fs | s3 | gcs
     root: "mem-prefix"        # when backend: memory, this is a namespace prefix (ignored by some backends)
+  
+  # Metadata configuration - Default: ETCD
   metadata:
     etcd_endpoint: "127.0.0.1:2379"
     in_memory: false
