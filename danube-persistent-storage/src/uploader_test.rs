@@ -104,14 +104,12 @@ mod tests {
     ///
     /// Expected
     /// - interval_seconds: 10 (reasonable upload frequency)
-    /// - max_batch_bytes: 8MB (good balance of throughput and memory)
     /// - topic_path: "default/topic" (placeholder path)
     /// - root_prefix: "/danube" (standard metadata prefix)
     #[tokio::test]
     async fn test_uploader_config_default() {
         let config = UploaderConfig::default();
         assert_eq!(config.interval_seconds, 10);
-        assert_eq!(config.max_batch_bytes, 8 * 1024 * 1024);
         assert_eq!(config.topic_path, "default/topic");
         assert_eq!(config.root_prefix, "/danube");
     }
@@ -137,7 +135,6 @@ mod tests {
 
         let config = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 1024,
             topic_path: "test/topic".to_string(),
             root_prefix: "/test".to_string(),
         };
@@ -150,17 +147,16 @@ mod tests {
         assert_eq!(uploader.test_cfg().interval_seconds, 1);
     }
 
-    /// Test: Uploader DNB1 format generation and upload
+    /// Test: Uploader raw frame upload
     ///
     /// Purpose
-    /// - Validate that uploader creates correct DNB1 format objects in cloud storage
-    /// - Ensure DNB1 header format and record count are accurate
+    /// - Validate that uploader uploads concatenated raw WAL frames
     ///
     /// Flow
     /// - Add 3 messages to WAL
     /// - Start uploader and wait for upload completion
     /// - Verify object creation in metadata store and cloud storage
-    /// - Parse DNB1 format and validate header and record count
+    /// - Parse first frame header and validate offset/length
     ///
     /// Expected
     /// - Cloud object is created with DNB1 magic bytes
@@ -180,7 +176,6 @@ mod tests {
 
         let config = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: "test/topic".to_string(),
             root_prefix: "/danube".to_string(),
         };
@@ -202,7 +197,7 @@ mod tests {
         assert!(ok, "uploader did not advance offset in time");
         handle.abort();
 
-        // Verify object was created with correct format
+        // Verify object was created and contains raw frame(s)
         let prefix = "/danube/storage/topics/test/topic/objects";
         let children = mem.get_childrens(prefix).await.expect("get children");
         let objects: Vec<_> = children
@@ -229,14 +224,12 @@ mod tests {
         // Verify object exists in cloud
         let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
         let data = cloud.get_object(&object_path).await.expect("get object");
-
-        // Verify DNB1 format
-        assert!(data.len() >= 9, "Object should have at least header");
-        assert_eq!(&data[0..4], b"DNB1", "Should have DNB1 magic");
-        assert_eq!(data[4], 1u8, "Should have version 1");
-
-        let record_count = u32::from_le_bytes(data[5..9].try_into().unwrap());
-        assert_eq!(record_count, 3, "Should have 3 records");
+        assert!(data.len() >= 16, "Object should contain at least one raw frame header");
+        let off = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        let len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let _crc = u32::from_le_bytes(data[12..16].try_into().unwrap());
+        assert_eq!(off, 0, "First uploaded frame should start at offset 0");
+        assert!(data.len() >= 16 + len, "Object should include full payload");
     }
 
     /// Test: Uploader checkpoint resume functionality
@@ -268,6 +261,8 @@ mod tests {
         // Create checkpoint manually at offset 5
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: 5,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: Some("previous-object".to_string()),
             updated_at: chrono::Utc::now().timestamp() as u64,
         };
@@ -285,7 +280,6 @@ mod tests {
 
         let config = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: "test/resume".to_string(),
             root_prefix: "/danube".to_string(),
         };
@@ -319,76 +313,7 @@ mod tests {
         handle.abort();
     }
 
-    /// Test: Uploader batch size limit handling
-    ///
-    /// Purpose
-    /// - Validate uploader behavior when messages exceed batch size limits
-    /// - Ensure large messages are still uploaded despite size constraints
-    ///
-    /// Flow
-    /// - Create message with 2KB payload (larger than 1KB batch limit)
-    /// - Configure uploader with small max_batch_bytes (1024)
-    /// - Start uploader and verify large message is still processed
-    ///
-    /// Expected
-    /// - Large message exceeding batch size is still uploaded
-    /// - Uploader doesn't skip messages due to size constraints
-    /// - Upload process completes successfully
-    #[tokio::test]
-    async fn test_uploader_batch_size_limits() {
-        let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
-
-        // Add one large message that would exceed batch size
-        let large_msg = StreamMessage {
-            request_id: 0,
-            msg_id: MessageID {
-                producer_id: 1,
-                topic_name: "test-topic".to_string(),
-                broker_addr: "localhost:6650".to_string(),
-                segment_id: 0,
-                segment_offset: 0,
-            },
-            payload: vec![0u8; 2048], // Large payload
-            publish_time: 0,
-            producer_name: "test-producer".to_string(),
-            subscription_name: None,
-            attributes: HashMap::new(),
-        };
-
-        wal.append(&large_msg).await.expect("append large message");
-        wal.flush().await.expect("flush wal");
-
-        let config = UploaderConfig {
-            interval_seconds: 1,
-            max_batch_bytes: 1024, // Small batch size
-            topic_path: "test/batch".to_string(),
-            root_prefix: "/danube".to_string(),
-        };
-
-        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
-        let handle = uploader.clone().start();
-
-        // Wait for object creation deterministically
-        let ok = wait_for_condition(
-            || {
-                let mem = mem.clone();
-                async move {
-                    let prefix = "/danube/storage/topics/test/batch/objects";
-                    let children = mem.get_childrens(prefix).await.unwrap_or_default();
-                    let objects: Vec<_> = children
-                        .into_iter()
-                        .filter(|c| c != "cur" && !c.ends_with('/'))
-                        .collect();
-                    !objects.is_empty()
-                }
-            },
-            5000,
-            50,
-        )
-        .await;
-        assert!(ok, "Should have created an object for large message");
-        handle.abort();
-    }
+    // Batch size limits test removed: uploader uses internal adaptive batching without external knob.
 
     /// Test: Uploader behavior with empty WAL
     ///
@@ -412,7 +337,6 @@ mod tests {
         // Don't add any messages to WAL
         let config = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: "test/empty".to_string(),
             root_prefix: "/danube".to_string(),
         };
@@ -465,7 +389,6 @@ mod tests {
 
         let config = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: "test/naming".to_string(),
             root_prefix: "/danube".to_string(),
         };
@@ -518,34 +441,5 @@ mod tests {
         assert_eq!(desc.end_offset, 2);
     }
 
-    /// Test: UploaderConfig clone functionality
-    ///
-    /// Purpose
-    /// - Validate that UploaderConfig can be cloned correctly
-    /// - Ensure all fields are properly copied in cloned instance
-    ///
-    /// Flow
-    /// - Create UploaderConfig with custom values
-    /// - Clone the configuration
-    /// - Verify all fields match between original and cloned instances
-    ///
-    /// Expected
-    /// - Clone operation succeeds
-    /// - All configuration fields are identical in both instances
-    /// - Changes to one instance don't affect the other
-    #[test]
-    fn test_uploader_config_clone() {
-        let config1 = UploaderConfig {
-            interval_seconds: 5,
-            max_batch_bytes: 2048,
-            topic_path: "ns/topic".to_string(),
-            root_prefix: "/test".to_string(),
-        };
-
-        let config2 = config1.clone();
-        assert_eq!(config1.interval_seconds, config2.interval_seconds);
-        assert_eq!(config1.max_batch_bytes, config2.max_batch_bytes);
-        assert_eq!(config1.topic_path, config2.topic_path);
-        assert_eq!(config1.root_prefix, config2.root_prefix);
-    }
+    // Removed: test_uploader_config_clone (trivial config clone adds little behavioral value)
 }

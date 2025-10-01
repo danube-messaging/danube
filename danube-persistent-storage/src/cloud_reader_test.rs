@@ -37,7 +37,7 @@ mod tests {
     ///
     /// Purpose
     /// - Validate CloudReader can read historical messages from cloud objects (memory backend)
-    /// - Ensure DNB1 object format parsing works correctly for message reconstruction
+    /// - Ensure raw WAL frame parsing works correctly for message reconstruction
     /// - Verify range filtering and message ordering from cloud storage
     ///
     /// Flow
@@ -47,10 +47,9 @@ mod tests {
     ///
     /// Expected
     /// - All messages are uploaded to cloud storage successfully
-    /// - CloudReader can parse DNB1 format and reconstruct original messages
+    /// - CloudReader can parse raw frame format and reconstruct original messages
     /// - Messages are returned in correct offset order with proper content
     #[tokio::test]
-    #[ignore]
     async fn test_cloud_reader_range_reads_memory() {
         let topic_path = "ns/topic-cloud";
 
@@ -94,7 +93,6 @@ mod tests {
         // Uploader
         let up_cfg = UploaderConfig {
             interval_seconds: 1,
-            max_batch_bytes: 8 * 1024 * 1024,
             topic_path: topic_path.to_string(),
             root_prefix: "/danube".to_string(),
         };

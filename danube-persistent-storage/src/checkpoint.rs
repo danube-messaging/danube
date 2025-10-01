@@ -41,6 +41,10 @@ pub struct UploaderCheckpoint {
     /// The last message offset that has been successfully uploaded and committed to cloud storage.
     /// On startup, the uploader will resume its work from this offset.
     pub last_committed_offset: u64,
+    /// The sequence number of the WAL file the uploader was last reading from.
+    pub last_read_file_seq: u64,
+    /// The byte position within that file where the next read should begin.
+    pub last_read_byte_position: u64,
     /// The unique identifier of the last cloud object that was written. Useful for debugging and
     /// for resuming multi-part uploads if the process was interrupted.
     pub last_object_id: Option<String>,
@@ -60,13 +64,19 @@ pub struct CheckPoint {
 
 impl CheckPoint {
     /// Write WAL checkpoint to the specified path (typically <dir>/wal.ckpt).
-    pub async fn write_wal_to_path(wal: &WalCheckpoint, path: &std::path::PathBuf) -> Result<(), danube_core::storage::PersistentStorageError> {
+    pub async fn write_wal_to_path(
+        wal: &WalCheckpoint,
+        path: &std::path::PathBuf,
+    ) -> Result<(), danube_core::storage::PersistentStorageError> {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
         use tracing::warn;
         let bytes = bincode::serialize(wal).map_err(|e| {
             warn!(target = "wal", error = %e, "wal ckpt serialize failed");
-            danube_core::storage::PersistentStorageError::Io(format!("wal ckpt serialize failed: {}", e))
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "wal ckpt serialize failed: {}",
+                e
+            ))
         })?;
         let tmp = path.with_extension("tmp");
         let mut f = OpenOptions::new()
@@ -79,18 +89,20 @@ impl CheckPoint {
                 warn!(target = "wal", path = %tmp.display(), error = %e, "open wal ckpt tmp failed");
                 danube_core::storage::PersistentStorageError::Io(format!("open wal ckpt tmp failed: {}", e))
             })?;
-        f.write_all(&bytes)
-            .await
-            .map_err(|e| {
-                warn!(target = "wal", path = %tmp.display(), error = %e, "write wal ckpt failed");
-                danube_core::storage::PersistentStorageError::Io(format!("write wal ckpt failed: {}", e))
-            })?;
-        f.flush()
-            .await
-            .map_err(|e| {
-                warn!(target = "wal", path = %tmp.display(), error = %e, "flush wal ckpt failed");
-                danube_core::storage::PersistentStorageError::Io(format!("flush wal ckpt failed: {}", e))
-            })?;
+        f.write_all(&bytes).await.map_err(|e| {
+            warn!(target = "wal", path = %tmp.display(), error = %e, "write wal ckpt failed");
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "write wal ckpt failed: {}",
+                e
+            ))
+        })?;
+        f.flush().await.map_err(|e| {
+            warn!(target = "wal", path = %tmp.display(), error = %e, "flush wal ckpt failed");
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "flush wal ckpt failed: {}",
+                e
+            ))
+        })?;
         tokio::fs::rename(&tmp, path)
             .await
             .map_err(|e| {
@@ -102,7 +114,9 @@ impl CheckPoint {
     }
 
     /// Read WAL checkpoint from the specified path (<dir>/wal.ckpt), returning Ok(None) if missing.
-    pub async fn read_wal_from_path(path: &std::path::PathBuf) -> Result<Option<WalCheckpoint>, danube_core::storage::PersistentStorageError> {
+    pub async fn read_wal_from_path(
+        path: &std::path::PathBuf,
+    ) -> Result<Option<WalCheckpoint>, danube_core::storage::PersistentStorageError> {
         use tracing::warn;
         match tokio::fs::read(path).await {
             Ok(bytes) => {
@@ -116,34 +130,54 @@ impl CheckPoint {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => {
                 warn!(target = "wal", path = %path.display(), error = %e, "read wal ckpt failed");
-                Err(danube_core::storage::PersistentStorageError::Io(format!("read wal ckpt failed: {}", e)))
+                Err(danube_core::storage::PersistentStorageError::Io(format!(
+                    "read wal ckpt failed: {}",
+                    e
+                )))
             }
         }
     }
 
     /// Write Uploader checkpoint to `<parent(wal.ckpt)>/uploader.ckpt` given the wal checkpoint path.
-    pub async fn write_uploader_near_wal(ckpt: &UploaderCheckpoint, wal_ckpt_path: &std::path::PathBuf) -> Result<(), danube_core::storage::PersistentStorageError> {
-        let parent = wal_ckpt_path.parent()
-            .ok_or_else(|| danube_core::storage::PersistentStorageError::Io("wal ckpt path has no parent".to_string()))?;
+    pub async fn write_uploader_near_wal(
+        ckpt: &UploaderCheckpoint,
+        wal_ckpt_path: &std::path::PathBuf,
+    ) -> Result<(), danube_core::storage::PersistentStorageError> {
+        let parent = wal_ckpt_path.parent().ok_or_else(|| {
+            danube_core::storage::PersistentStorageError::Io(
+                "wal ckpt path has no parent".to_string(),
+            )
+        })?;
         let path = parent.join("uploader.ckpt");
         Self::write_uploader_to_path(ckpt, &path).await
     }
 
     /// Read Uploader checkpoint from `<parent(wal.ckpt)>/uploader.ckpt` given the wal checkpoint path.
-    pub async fn read_uploader_near_wal(wal_ckpt_path: &std::path::PathBuf) -> Result<Option<UploaderCheckpoint>, danube_core::storage::PersistentStorageError> {
-        let parent = match wal_ckpt_path.parent() { Some(p) => p.to_path_buf(), None => return Ok(None) };
+    pub async fn read_uploader_near_wal(
+        wal_ckpt_path: &std::path::PathBuf,
+    ) -> Result<Option<UploaderCheckpoint>, danube_core::storage::PersistentStorageError> {
+        let parent = match wal_ckpt_path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(None),
+        };
         let path = parent.join("uploader.ckpt");
         Self::read_uploader_from_path(&path).await
     }
 
     /// Write Uploader checkpoint to the specified path (typically <dir>/uploader.ckpt).
-    pub async fn write_uploader_to_path(ckpt: &UploaderCheckpoint, path: &std::path::PathBuf) -> Result<(), danube_core::storage::PersistentStorageError> {
+    pub async fn write_uploader_to_path(
+        ckpt: &UploaderCheckpoint,
+        path: &std::path::PathBuf,
+    ) -> Result<(), danube_core::storage::PersistentStorageError> {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
         use tracing::warn;
         let bytes = bincode::serialize(ckpt).map_err(|e| {
             warn!(target = "wal", error = %e, "uploader ckpt serialize failed");
-            danube_core::storage::PersistentStorageError::Io(format!("uploader ckpt serialize failed: {}", e))
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "uploader ckpt serialize failed: {}",
+                e
+            ))
         })?;
         let tmp = path.with_extension("tmp");
         let mut f = OpenOptions::new()
@@ -156,18 +190,20 @@ impl CheckPoint {
                 warn!(target = "wal", path = %tmp.display(), error = %e, "open uploader ckpt tmp failed");
                 danube_core::storage::PersistentStorageError::Io(format!("open uploader ckpt tmp failed: {}", e))
             })?;
-        f.write_all(&bytes)
-            .await
-            .map_err(|e| {
-                warn!(target = "wal", path = %tmp.display(), error = %e, "write uploader ckpt failed");
-                danube_core::storage::PersistentStorageError::Io(format!("write uploader ckpt failed: {}", e))
-            })?;
-        f.flush()
-            .await
-            .map_err(|e| {
-                warn!(target = "wal", path = %tmp.display(), error = %e, "flush uploader ckpt failed");
-                danube_core::storage::PersistentStorageError::Io(format!("flush uploader ckpt failed: {}", e))
-            })?;
+        f.write_all(&bytes).await.map_err(|e| {
+            warn!(target = "wal", path = %tmp.display(), error = %e, "write uploader ckpt failed");
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "write uploader ckpt failed: {}",
+                e
+            ))
+        })?;
+        f.flush().await.map_err(|e| {
+            warn!(target = "wal", path = %tmp.display(), error = %e, "flush uploader ckpt failed");
+            danube_core::storage::PersistentStorageError::Io(format!(
+                "flush uploader ckpt failed: {}",
+                e
+            ))
+        })?;
         tokio::fs::rename(&tmp, path)
             .await
             .map_err(|e| {
@@ -179,7 +215,9 @@ impl CheckPoint {
     }
 
     /// Read Uploader checkpoint from the specified path, returning Ok(None) if missing.
-    pub async fn read_uploader_from_path(path: &std::path::PathBuf) -> Result<Option<UploaderCheckpoint>, danube_core::storage::PersistentStorageError> {
+    pub async fn read_uploader_from_path(
+        path: &std::path::PathBuf,
+    ) -> Result<Option<UploaderCheckpoint>, danube_core::storage::PersistentStorageError> {
         use tracing::warn;
         match tokio::fs::read(path).await {
             Ok(bytes) => {
@@ -193,7 +231,10 @@ impl CheckPoint {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => {
                 warn!(target = "wal", path = %path.display(), error = %e, "read uploader ckpt failed");
-                Err(danube_core::storage::PersistentStorageError::Io(format!("read uploader ckpt failed: {}", e)))
+                Err(danube_core::storage::PersistentStorageError::Io(format!(
+                    "read uploader ckpt failed: {}",
+                    e
+                )))
             }
         }
     }
@@ -243,7 +284,10 @@ impl CheckpointStore {
         self.uploader_cache.read().await.clone()
     }
 
-    pub async fn update_uploader(&self, ckpt: &UploaderCheckpoint) -> Result<(), PersistentStorageError> {
+    pub async fn update_uploader(
+        &self,
+        ckpt: &UploaderCheckpoint,
+    ) -> Result<(), PersistentStorageError> {
         // Monotonicity guard (best-effort)
         {
             let cur = self.uploader_cache.read().await;

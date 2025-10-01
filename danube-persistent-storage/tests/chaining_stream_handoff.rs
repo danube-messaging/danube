@@ -79,7 +79,6 @@ async fn chaining_stream_handoff_memory() {
 
     let up_cfg = UploaderConfig {
         interval_seconds: 1,
-        max_batch_bytes: 8 * 1024 * 1024,
         topic_path: topic_path.to_string(),
         root_prefix: "/danube".to_string(),
     };

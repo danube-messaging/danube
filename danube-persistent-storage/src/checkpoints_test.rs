@@ -25,6 +25,8 @@ mod tests {
 
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: 42,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: Some("data-0-42.dnb1".to_string()),
             updated_at: 1234567890,
         };
@@ -101,6 +103,8 @@ mod tests {
 
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: 100,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: None,
             updated_at: 9876543210,
         };
@@ -148,6 +152,8 @@ mod tests {
         // Write first checkpoint
         let checkpoint1 = UploaderCheckpoint {
             last_committed_offset: 10,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: Some("first".to_string()),
             updated_at: 1000,
         };
@@ -158,6 +164,8 @@ mod tests {
         // Write second checkpoint (overwrite)
         let checkpoint2 = UploaderCheckpoint {
             last_committed_offset: 20,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: Some("second".to_string()),
             updated_at: 2000,
         };
@@ -180,6 +188,8 @@ mod tests {
     async fn test_uploader_checkpoint_serialization() {
         let checkpoint = UploaderCheckpoint {
             last_committed_offset: u64::MAX,
+            last_read_file_seq: 0,
+            last_read_byte_position: 0,
             last_object_id: Some("very-long-object-id-with-special-chars-!@#$%^&*()".to_string()),
             updated_at: 0,
         };
