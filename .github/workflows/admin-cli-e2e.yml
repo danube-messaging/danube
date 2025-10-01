@@ -16,11 +16,10 @@ jobs:
         image: quay.io/coreos/etcd:latest
         ports:
           - 2379:2379
-        command: >-
-          /usr/local/bin/etcd
-          --name etcd-danube
-          --advertise-client-urls http://0.0.0.0:2379
-          --listen-client-urls http://0.0.0.0:2379
+        env:
+          ETCD_NAME: etcd-danube
+          ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
 
     steps:
       - name: Checkout
