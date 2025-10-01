@@ -1,8 +1,15 @@
 # Streaming Uploader and CloudReader Design
 
 ## Status
-- Design proposal for refactoring uploader and cloud reader to use OpenDAL streaming APIs
+- Implemented in codebase (uploader + cloud reader) with OpenDAL streaming APIs
 - Eliminates memory bloat by streaming data instead of buffering entire files/objects in memory
+
+### Implemented Changes (Summary)
+- Uploader streams WAL frames and writes a pending object, then finalizes to `data-<start>-<end>.dnb1` via server-side copy with read+write fallback; pending key is deleted. See `danube-persistent-storage/src/uploader.rs` and `src/cloud_store.rs` (`copy_object`, `delete_object`).
+- Uploader builds a sparse offset index every 1000 messages (`INDEX_EVERY_MSGS`) and persists it in `ObjectDescriptor.offset_index`.
+- CloudReader performs descriptor discovery using `get_object_descriptors()` and filters overlapping ranges; it uses the sparse index (when present) to seek to a starting byte within the object.
+- `CloudRangeReader` uses `stat()` to determine content length and bounds range reads, preventing out-of-bounds on small objects.
+- Uploader retains a legacy buffered fallback (`read_frames_by_position` + `commit_upload`) when the streaming path has nothing to upload, preserving test and behavioral compatibility.
 
 ## Goals
 - Replace buffer-based upload with streaming Writer API for constant memory usage
@@ -56,23 +63,15 @@ msgs.retain(|(off, _)| *off >= start && end_inclusive.map(|e| *off <= e).unwrap_
 
 ---
 
-## OpenDAL Streaming APIs
+## OpenDAL Streaming APIs (as used)
 
 ### Reader API
 ```rust
-// Create reader with byte range
-let reader = op.reader_with("path")
-    .range(start_byte..end_byte)  // Only fetch needed range
-    .await?;
+// Create whole-object reader, but our wrapper issues ranged reads with bounds
+let reader = op.reader(&key).await?;
 
-// Or with options struct
-let reader = op.reader_options("path", ReaderOptions {
-    range: (start_byte..end_byte).into(),
-    ..Default::default()
-}).await?;
-
-// Read in chunks
-let chunk = reader.read(0..chunk_size).await?;
+// Read bounded ranges via Reader::read(start..end)
+let chunk = reader.read(start..end).await?;
 ```
 
 ### Writer API
@@ -95,33 +94,29 @@ writer.close().await?;  // Completes multipart upload
 
 ### Streaming Uploader
 
-**New flow:**
+**New flow (implemented):**
 ```rust
-// 1. Open streaming writer to cloud
-let mut writer = cloud.op.writer_with(&object_path)
-    .chunk(uploader_cfg.chunk_size)  // e.g., 8 MiB
-    .concurrent(4)
-    .await?;
+// 1) Stream frames from WAL with carry buffer and frame-boundary alignment
+let writer = cloud.open_streaming_writer(path, 8*1024*1024, 4).await?;
+//    - Maintain `carry` Vec<u8>
+//    - Compute `safe_len` = largest prefix with whole frames
+//    - On first complete frame, record `first_offset`, create pending object name
+//    - Update `last_offset` as we extend; write only frame-aligned prefixes
+//    - Build sparse index entries every 1000 msgs: (offset, object_byte_pos)
 
-// 2. Stream frames from WAL file(s) in chunks
-let mut file = tokio::fs::File::open(&wal_path).await?;
-file.seek(SeekFrom::Start(start_pos)).await?;
-
-let mut chunk_buf = vec![0u8; chunk_size];
-let mut total_written = 0u64;
-
-loop {
-    // Read chunk from WAL file
-    let n = file.read(&mut chunk_buf).await?;
-    if n == 0 { break; }
-    
-    // Write chunk to cloud writer (async upload)
-    writer.write(&chunk_buf[..n]).await?;
-    total_written += n as u64;
-}
-
-// 3. Finalize multipart upload
+// 2) Close writer to finalize multipart upload
 let meta = writer.close().await?;
+
+// 3) Finalize: copy pending -> final name (data-<start>-<end>.dnb1) and delete pending
+cloud.copy_object(pending_key, final_key).await.or_else(|_| async {
+    // Fallback for backends without server-side copy
+    let bytes = cloud.get_object(pending_key).await?;
+    cloud.put_object_meta(final_key, &bytes).await?;
+    Ok(())
+}).await?;
+let _ = cloud.delete_object(pending_key).await;
+
+// 4) Write ETCD descriptor with offset_index (if non-empty) and update checkpoints
 ```
 
 **Benefits:**
@@ -131,39 +126,26 @@ let meta = writer.close().await?;
 
 ### Streaming CloudReader
 
-**New flow:**
+**New flow (implemented):**
 ```rust
-// 1. Query ETCD for object descriptors covering [start, end]
-let descriptors = etcd.get_object_descriptors_range(topic_path, from_padded, to_padded).await?;
+// 1) Query ETCD for all object descriptors and filter by overlap with [start, end]
+let mut descs = etcd.get_object_descriptors(topic_path).await?;
+descs.retain(|d| d.end_offset >= start && end.map(|e| d.start_offset <= e).unwrap_or(true));
+descs.sort_by_key(|d| d.start_offset);
 
-// 2. For each object, compute byte range needed for offset range
-for desc in descriptors {
-    // Parse object metadata to find byte offsets for message offsets
-    let (byte_start, byte_end) = estimate_byte_range(desc, start, end)?;
-    
-    // 3. Create ranged reader
-    let reader = cloud.op.reader_with(&object_key)
-        .range(byte_start..byte_end)
-        .await?;
-    
-    // 4. Stream and parse frames in chunks
-    let mut offset = 0usize;
-    let chunk_size = 4 * 1024 * 1024; // 4 MiB
-    
-    loop {
-        let chunk = reader.read(offset..(offset + chunk_size)).await?;
-        if chunk.is_empty() { break; }
-        
-        // Parse frames from chunk
-        let frames = parse_raw_frames_partial(&chunk)?;
-        for (off, msg) in frames {
-            if off >= start && end_inclusive.map(|e| off <= e).unwrap_or(true) {
-                yield Ok(msg);
-            }
-        }
-        
-        offset += chunk.len();
-    }
+// 2) For each object, compute a starting byte using sparse index if present
+let start_byte = match &desc.offset_index {
+    Some(index) if !index.is_empty() => binary_search_for_byte(index, start),
+    _ => 0,
+};
+
+// 3) Open CloudRangeReader at start_byte and read bounded chunks using stat() size
+let mut reader = cloud.open_ranged_reader(&object_key, start_byte).await?;
+loop {
+    let chunk = reader.read_chunk(4 * 1024 * 1024).await?; // 4 MiB
+    if chunk.is_empty() { break; }
+    parse_frames_from_carry(&mut carry, &mut parsed)?; // safe at chunk boundaries
+    // Filter on offsets and emit messages lazily
 }
 ```
 
@@ -216,8 +198,8 @@ impl ParserState {
 
 ### CloudReader-specific Notes
 - The reader yields fully parsed messages immediately as they are decoded.
-- If reading with a byte-range, the first chunk may start mid-frame. The parser will discard bytes until a valid header can be assembled (first full 16 bytes) and a CRC-valid frame is found.
-- On final chunk, an incomplete frame tail is ignored (no error) and will be completed by the next ranged read if needed.
+- If starting mid-object with a sparse index, the first chunk may land mid-frame; the carry-buffer parser safely advances to the next full header.
+- On the final chunk, an incomplete frame tail is ignored (no error).
 
 ### Correctness Invariants
 - Never emit a message unless header and full payload are available and CRC matches.
@@ -228,7 +210,25 @@ impl ParserState {
 - Time: O(total bytes), single pass.
 - Memory: O(header + max payload in carry), practically bounded by a small multiple of header size because payload is emitted/forwarded immediately.
 
-## Implementation Plan
+## Implementation Notes
+
+### Uploader finalize and metadata
+- Pending name pattern: `data-<start>-pending.dnb1`
+- Final name pattern: `data-<start>-<end>.dnb1`
+- Finalize via `CloudStore::copy_object()` and delete pending; fallback to read+write if server-side copy is unavailable.
+- `ObjectDescriptor` includes `offset_index: Option<Vec<(u64, u64)>>`.
+
+### CloudReader discovery and bounded reads
+- Descriptors fetched via `get_object_descriptors()` and filtered for overlap.
+- Sparse index binary-searched to find `byte_pos` ≤ start; begin reading there.
+- `CloudRangeReader` calls `stat()` to bound `read(start..end)` calls to content length.
+
+### Legacy fallback path
+- If streaming path uploads nothing in a cycle, fallback reads frames into a buffer and uses `commit_upload()` to preserve behavior.
+
+---
+
+## Implementation Plan (original)
 
 ### Phase 1: Streaming Uploader (Week 1)
 

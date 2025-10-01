@@ -117,6 +117,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         etag: meta.etag().map(|s| s.to_string()),
         created_at: chrono::Utc::now().timestamp() as u64,
         completed: true,
+        offset_index: None,
     };
     let start_padded = format!("{:020}", 0);
     etcd.put_object_descriptor(topic_path, &start_padded, &desc)
