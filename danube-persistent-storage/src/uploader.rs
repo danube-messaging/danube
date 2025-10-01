@@ -42,7 +42,7 @@ impl UploaderConfig {
 impl Default for UploaderBaseConfig {
     fn default() -> Self {
         Self {
-            interval_seconds: 10,
+            interval_seconds: 300,
         }
     }
 }
@@ -50,7 +50,7 @@ impl Default for UploaderBaseConfig {
 impl Default for UploaderConfig {
     fn default() -> Self {
         Self {
-            interval_seconds: 10,
+            interval_seconds: 300,
             topic_path: "default/topic".to_string(),
             root_prefix: "/danube".to_string(),
         }

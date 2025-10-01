@@ -134,7 +134,8 @@ pub(crate) struct WalFlushNode {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalRotationNode {
     pub(crate) max_bytes: Option<u64>,
-    pub(crate) max_seconds: Option<u64>,
+    /// Optional time-based rotation expressed in hours. If unset, rotation is size-only.
+    pub(crate) max_hours: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
