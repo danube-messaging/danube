@@ -33,6 +33,92 @@ mod tests {
         }
     }
 
+    /// Test: CloudReader uses sparse offset index for precise ranged reads
+    ///
+    /// Purpose
+    /// - Ensure that with many messages per object, CloudReader starts near the requested
+    ///   range using the sparse offset index written by the uploader.
+    ///
+    /// Flow
+    /// - Append 3000 messages to WAL
+    /// - Start uploader and wait for object creation
+    /// - Read a narrow range near the tail [2500, 2520] and validate output
+    #[tokio::test]
+    async fn test_cloud_reader_sparse_index_seek() {
+        let topic_path = "ns/topic-cloud";
+
+        let tmp = TempDir::new().expect("temp wal dir");
+        let wal_dir = tmp.path().to_path_buf();
+        let cfg = WalConfig {
+            dir: Some(wal_dir.clone()),
+            cache_capacity: Some(128),
+            ..Default::default()
+        };
+        let wal_ckpt = wal_dir.join("wal.ckpt");
+        let uploader_ckpt = wal_dir.join("uploader.ckpt");
+        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let _ = store.load_from_disk().await;
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+            .await
+            .expect("wal init");
+
+        for i in 0..3000u64 {
+            let m = make_msg(i, topic_path);
+            wal.append(&m).await.expect("append");
+        }
+        wal.flush().await.expect("flush wal");
+
+        let cloud = CloudStore::new(BackendConfig::Local {
+            backend: LocalBackend::Memory,
+            root: "mem-cloud".to_string(),
+        })
+        .expect("cloud store mem");
+
+        let mem = MemoryStore::new().await.expect("memory meta store");
+        let meta = EtcdMetadata::new(
+            MetadataStorage::InMemory(mem.clone()),
+            "/danube".to_string(),
+        );
+
+        let up_cfg = UploaderConfig {
+            interval_seconds: 1,
+            topic_path: topic_path.to_string(),
+            root_prefix: "/danube".to_string(),
+        };
+        let uploader = Arc::new(
+            Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
+        );
+        let handle = uploader.clone().start();
+
+        // Wait until objects cover the requested end offset (2520), otherwise keep uploading
+        let mut waited = 0u64;
+        let ok = loop {
+            let mut descs = meta
+                .get_object_descriptors(topic_path)
+                .await
+                .unwrap_or_default();
+            descs.sort_by_key(|d| d.end_offset);
+            if let Some(last) = descs.last() {
+                if last.end_offset >= 2520 {
+                    break true;
+                }
+            }
+            if waited >= 10_000 { break false; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            waited += 50;
+        };
+        assert!(ok, "uploader did not create objects in time");
+        handle.abort();
+
+        // Reader should only return requested window
+        let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
+        let stream = reader.read_range(2500, Some(2520)).await.expect("cloud read");
+        let msgs: Vec<StreamMessage> = stream.try_collect::<Vec<_>>().await.expect("collect");
+        assert_eq!(msgs.len(), 21);
+        for (i, m) in msgs.into_iter().enumerate() {
+            assert_eq!(m.payload, format!("cloud-{}", 2500 + i as u64).into_bytes());
+        }
+    }
     /// Test: CloudReader range reads from memory backend
     ///
     /// Purpose

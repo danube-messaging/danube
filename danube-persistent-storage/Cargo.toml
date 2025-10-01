@@ -28,6 +28,7 @@ bytes = "1.10.0"
 chrono = { version = "0.4", features = ["clock"] }
 crc32fast = "1.4"
 opendal = { version = "0.54", features = ["services-s3", "services-gcs", "services-fs", "services-memory", "layers-tracing"] }
+async-stream = "0.3"
 
 [dev-dependencies]
 tempfile = "3.8"
