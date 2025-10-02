@@ -9,7 +9,8 @@
 - Uploader builds a sparse offset index every 1000 messages (`INDEX_EVERY_MSGS`) and persists it in `ObjectDescriptor.offset_index`.
 - CloudReader performs descriptor discovery using `get_object_descriptors()` and filters overlapping ranges; it uses the sparse index (when present) to seek to a starting byte within the object.
 - `CloudRangeReader` uses `stat()` to determine content length and bounds range reads, preventing out-of-bounds on small objects.
-- Uploader retains a legacy buffered fallback (`read_frames_by_position` + `commit_upload`) when the streaming path has nothing to upload, preserving test and behavioral compatibility.
+  
+Note: The uploader now only streams complete frames. If no complete frame is available in a cycle, it performs no upload in that cycle. The previous buffered fallback (`read_frames_by_position` + `commit_upload`) has been removed to keep behavior simple and aligned with mid/long-term cloud storage semantics.
 
 ## Goals
 - Replace buffer-based upload with streaming Writer API for constant memory usage
@@ -224,7 +225,7 @@ impl ParserState {
 - `CloudRangeReader` calls `stat()` to bound `read(start..end)` calls to content length.
 
 ### Legacy fallback path
-- If streaming path uploads nothing in a cycle, fallback reads frames into a buffer and uses `commit_upload()` to preserve behavior.
+Removed. The uploader does not buffer frames for cloud upload; it only streams complete frames and skips the cycle otherwise.
 
 ---
 
@@ -591,11 +592,9 @@ tracing::info!(
 - Existing objects readable by new CloudReader
 
 **Rollout strategy:**
-1. Deploy new code with feature flag `storage.streaming_enabled = false`
+1. Deploy streaming uploader
 2. Monitor metrics and logs in staging
-3. Enable streaming for subset of topics
-4. Gradual rollout to all topics
-5. Remove legacy buffered code paths after 2 releases
+3. Gradual rollout to all topics
 
 ---
 

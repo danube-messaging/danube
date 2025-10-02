@@ -19,29 +19,6 @@ pub struct CloudReader {
     topic_path: String,
 }
 
-/// Find the byte position from a sparse `(offset, byte_pos)` index for a target `start_offset`.
-/// Returns the `byte_pos` of the greatest entry with `offset <= start_offset`, or 0 if none.
-fn find_start_byte(index: &[(u64, u64)], start_offset: u64) -> u64 {
-    if index.is_empty() {
-        return 0;
-    }
-    let mut lo = 0usize;
-    let mut hi = index.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if index[mid].0 <= start_offset {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    if lo == 0 {
-        0
-    } else {
-        index[lo - 1].1
-    }
-}
-
 impl CloudReader {
     /// Create a new CloudReader for a given topic path.
     ///
@@ -78,10 +55,7 @@ impl CloudReader {
         end_inclusive: Option<u64>,
     ) -> Result<TopicStream, PersistentStorageError> {
         // Fetch descriptors and keep only those overlapping the requested range.
-        let mut descriptors = self
-            .etcd
-            .get_object_descriptors(self.topic_path())
-            .await?;
+        let mut descriptors = self.etcd.get_object_descriptors(self.topic_path()).await?;
         // Keep only overlapping descriptors and ensure ascending order by start_offset.
         descriptors.retain(|d| d.end_offset >= start);
         if let Some(end) = end_inclusive {
@@ -180,4 +154,27 @@ fn parse_frames_from_carry(
         carry.drain(0..idx);
     }
     Ok(())
+}
+
+/// Find the byte position from a sparse `(offset, byte_pos)` index for a target `start_offset`.
+/// Returns the `byte_pos` of the greatest entry with `offset <= start_offset`, or 0 if none.
+fn find_start_byte(index: &[(u64, u64)], start_offset: u64) -> u64 {
+    if index.is_empty() {
+        return 0;
+    }
+    let mut lo = 0usize;
+    let mut hi = index.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if index[mid].0 <= start_offset {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo == 0 {
+        0
+    } else {
+        index[lo - 1].1
+    }
 }
