@@ -14,6 +14,7 @@ pub use wal_storage::WalStorage;
 
 mod cloud_store;
 pub use cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
+pub use cloud_store::{CloudRangeReader, CloudWriter};
 
 mod uploader;
 pub use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};

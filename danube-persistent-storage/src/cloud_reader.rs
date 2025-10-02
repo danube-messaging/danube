@@ -1,8 +1,8 @@
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
-use crate::cloud_store::CloudStore;
-use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
+use crate::etcd_metadata::EtcdMetadata;
+use crate::{CloudRangeReader, CloudStore};
 
 /// CloudReader reads historical messages for a topic from cloud objects
 /// that contain raw WAL frames as uploaded by the Uploader.
@@ -54,67 +54,127 @@ impl CloudReader {
         start: u64,
         end_inclusive: Option<u64>,
     ) -> Result<TopicStream, PersistentStorageError> {
-        let from_padded = format!("{:020}", start);
-        let descriptors = self
-            .etcd
-            .get_object_descriptors_range(self.topic_path(), &from_padded, None)
-            .await?;
-        // Filter descriptors to those overlapping our range
-        let filtered: Vec<ObjectDescriptor> = descriptors
-            .into_iter()
-            .filter(|d| d.end_offset >= start)
-            .filter(|d| match end_inclusive {
-                Some(end) => d.start_offset <= end,
-                None => true,
-            })
-            .collect();
-
-        // Collect all messages from selected objects
-        let mut all_msgs: Vec<(u64, StreamMessage)> = Vec::new();
-        for desc in filtered {
-            let key = format!(
-                "storage/topics/{}/objects/{}",
-                self.topic_path(),
-                desc.object_id
-            );
-            let bytes = self.cloud.get_object(&key).await?;
-            let mut msgs = parse_raw_frames(&bytes)?;
-            // Filter offsets within the requested range
-            msgs.retain(|(off, _)| {
-                *off >= start && end_inclusive.map(|e| *off <= e).unwrap_or(true)
-            });
-            all_msgs.extend(msgs);
+        // Fetch descriptors and keep only those overlapping the requested range.
+        let mut descriptors = self.etcd.get_object_descriptors(self.topic_path()).await?;
+        // Keep only overlapping descriptors and ensure ascending order by start_offset.
+        descriptors.retain(|d| d.end_offset >= start);
+        if let Some(end) = end_inclusive {
+            descriptors.retain(|d| d.start_offset <= end);
         }
-        // Ensure global ordering by offset across objects
-        all_msgs.sort_by_key(|(o, _)| *o);
-        let stream = tokio_stream::iter(all_msgs.into_iter().map(|(_, m)| Ok(m)));
-        Ok(Box::pin(stream))
+        descriptors.sort_by_key(|d| d.start_offset);
+
+        // Build a stream that iterates objects and yields messages lazily
+        let cloud = self.cloud.clone();
+        let topic_path = self.topic_path.clone();
+        let chunk_size: usize = 4 * 1024 * 1024; // 4 MiB
+        let mut idx = 0usize;
+
+        // State for current object
+        let mut cur_reader: Option<CloudRangeReader> = None;
+        let mut carry: Vec<u8> = Vec::new();
+        let mut emit_buf: Vec<StreamMessage> = Vec::new();
+
+        let s = async_stream::try_stream! {
+            loop {
+                // Emit buffered messages first
+                if let Some(msg) = emit_buf.pop() {
+                    yield msg;
+                    continue;
+                }
+
+                // If no current reader, open next object
+                if cur_reader.is_none() {
+                    if idx >= descriptors.len() {
+                        break;
+                    }
+                    let desc = &descriptors[idx];
+                    idx += 1;
+                    let key = format!("storage/topics/{}/objects/{}", topic_path, desc.object_id);
+                    // Use sparse index if present to jump near the requested start offset.
+                    let start_byte = match &desc.offset_index {
+                        Some(index) if !index.is_empty() => {
+                            find_start_byte(index, start)
+                        }
+                        _ => 0u64,
+                    };
+                    let reader = cloud.open_ranged_reader(&key, start_byte).await?;
+                    cur_reader = Some(reader);
+                    carry.clear();
+                }
+
+                // Read next chunk from current reader
+                let reader = cur_reader.as_mut().unwrap();
+                let chunk = reader.read_chunk(chunk_size).await?;
+                if chunk.is_empty() {
+                    // End of current object
+                    cur_reader = None;
+                    continue;
+                }
+                carry.extend_from_slice(&chunk);
+
+                // Parse complete frames from carry, leave remainder in carry
+                let mut parsed: Vec<(u64, StreamMessage)> = Vec::new();
+                parse_frames_from_carry(&mut carry, &mut parsed)?;
+                // Filter by requested offset range and push into emit buffer (reverse for pop())
+                for (_off, msg) in parsed.into_iter().filter(|(off, _)| *off >= start && end_inclusive.map(|e| *off <= e).unwrap_or(true)) {
+                    emit_buf.insert(0, msg);
+                }
+            }
+        };
+
+        Ok(Box::pin(s))
     }
 }
 
 /// Parse a cloud object composed of concatenated raw WAL frames and return
 /// a vector of `(offset, StreamMessage)` pairs. Stops gracefully at the first
 /// partial frame at the end of the object.
-fn parse_raw_frames(bytes: &[u8]) -> Result<Vec<(u64, StreamMessage)>, PersistentStorageError> {
+fn parse_frames_from_carry(
+    carry: &mut Vec<u8>,
+    out: &mut Vec<(u64, StreamMessage)>,
+) -> Result<(), PersistentStorageError> {
     let mut idx = 0usize;
-    let mut out = Vec::new();
-    while idx + 8 + 4 + 4 <= bytes.len() {
-        let off = u64::from_le_bytes(bytes[idx..idx + 8].try_into().unwrap());
-        idx += 8;
-        let len = u32::from_le_bytes(bytes[idx..idx + 4].try_into().unwrap()) as usize;
-        idx += 4;
-        let _crc = u32::from_le_bytes(bytes[idx..idx + 4].try_into().unwrap());
-        idx += 4;
-        if idx + len > bytes.len() {
-            // Partial payload at end => stop without error
+    while idx + 16 <= carry.len() {
+        let off = u64::from_le_bytes(carry[idx..idx + 8].try_into().unwrap());
+        let len = u32::from_le_bytes(carry[idx + 8..idx + 12].try_into().unwrap()) as usize;
+        let _crc = u32::from_le_bytes(carry[idx + 12..idx + 16].try_into().unwrap());
+        let next = idx + 16 + len;
+        if next > carry.len() {
             break;
         }
-        let rec = &bytes[idx..idx + len];
-        idx += len;
+        let rec = &carry[idx + 16..next];
         let msg: StreamMessage = bincode::deserialize(rec).map_err(|e| {
             PersistentStorageError::Other(format!("cloud_reader: bincode decode failed: {}", e))
         })?;
         out.push((off, msg));
+        idx = next;
     }
-    Ok(out)
+    // Remove consumed prefix, retain leftover for next chunk
+    if idx > 0 {
+        carry.drain(0..idx);
+    }
+    Ok(())
+}
+
+/// Find the byte position from a sparse `(offset, byte_pos)` index for a target `start_offset`.
+/// Returns the `byte_pos` of the greatest entry with `offset <= start_offset`, or 0 if none.
+fn find_start_byte(index: &[(u64, u64)], start_offset: u64) -> u64 {
+    if index.is_empty() {
+        return 0;
+    }
+    let mut lo = 0usize;
+    let mut hi = index.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if index[mid].0 <= start_offset {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo == 0 {
+        0
+    } else {
+        index[lo - 1].1
+    }
 }

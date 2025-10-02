@@ -17,6 +17,10 @@ pub struct ObjectDescriptor {
     pub etag: Option<String>,
     pub created_at: u64,
     pub completed: bool,
+    /// Optional sparse index mapping message offsets to byte positions within the object.
+    /// Each entry is (offset, byte_pos).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset_index: Option<Vec<(u64, u64)>>,
 }
 
 impl EtcdMetadata {
