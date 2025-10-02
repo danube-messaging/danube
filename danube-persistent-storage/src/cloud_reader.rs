@@ -3,6 +3,9 @@ use danube_core::storage::{PersistentStorageError, TopicStream};
 
 use crate::etcd_metadata::EtcdMetadata;
 use crate::{CloudRangeReader, CloudStore};
+use std::collections::VecDeque;
+use tracing::error;
+use crate::frames::FRAME_HEADER_SIZE;
 
 /// CloudReader reads historical messages for a topic from cloud objects
 /// that contain raw WAL frames as uploaded by the Uploader.
@@ -72,12 +75,12 @@ impl CloudReader {
         // State for current object
         let mut cur_reader: Option<CloudRangeReader> = None;
         let mut carry: Vec<u8> = Vec::new();
-        let mut emit_buf: Vec<StreamMessage> = Vec::new();
+        let mut emit_buf: VecDeque<StreamMessage> = VecDeque::new();
 
         let s = async_stream::try_stream! {
             loop {
                 // Emit buffered messages first
-                if let Some(msg) = emit_buf.pop() {
+                if let Some(msg) = emit_buf.pop_front() {
                     yield msg;
                     continue;
                 }
@@ -116,8 +119,11 @@ impl CloudReader {
                 let mut parsed: Vec<(u64, StreamMessage)> = Vec::new();
                 parse_frames_from_carry(&mut carry, &mut parsed)?;
                 // Filter by requested offset range and push into emit buffer (reverse for pop())
-                for (_off, msg) in parsed.into_iter().filter(|(off, _)| *off >= start && end_inclusive.map(|e| *off <= e).unwrap_or(true)) {
-                    emit_buf.insert(0, msg);
+                for (_off, msg) in parsed
+                    .into_iter()
+                    .filter(|(off, _)| *off >= start && end_inclusive.map(|e| *off <= e).unwrap_or(true))
+                {
+                    emit_buf.push_back(msg);
                 }
             }
         };
@@ -134,15 +140,31 @@ fn parse_frames_from_carry(
     out: &mut Vec<(u64, StreamMessage)>,
 ) -> Result<(), PersistentStorageError> {
     let mut idx = 0usize;
-    while idx + 16 <= carry.len() {
+    while idx + FRAME_HEADER_SIZE <= carry.len() {
         let off = u64::from_le_bytes(carry[idx..idx + 8].try_into().unwrap());
         let len = u32::from_le_bytes(carry[idx + 8..idx + 12].try_into().unwrap()) as usize;
-        let _crc = u32::from_le_bytes(carry[idx + 12..idx + 16].try_into().unwrap());
-        let next = idx + 16 + len;
+        let crc = u32::from_le_bytes(carry[idx + 12..idx + 16].try_into().unwrap());
+        let next = idx + FRAME_HEADER_SIZE + len;
         if next > carry.len() {
             break;
         }
-        let rec = &carry[idx + 16..next];
+        let rec = &carry[idx + FRAME_HEADER_SIZE..next];
+        // Strict CRC validation: error on mismatch
+        let computed = crc32fast::hash(rec);
+        if computed != crc {
+            error!(
+                target = "cloud_reader",
+                at_byte = idx,
+                offset = off,
+                expected_crc = crc,
+                computed_crc = computed,
+                "CRC mismatch while decoding cloud object"
+            );
+            return Err(PersistentStorageError::Other(format!(
+                "cloud_reader: CRC mismatch at offset {} (expected {}, got {})",
+                off, crc, computed
+            )));
+        }
         let msg: StreamMessage = bincode::deserialize(rec).map_err(|e| {
             PersistentStorageError::Other(format!("cloud_reader: bincode decode failed: {}", e))
         })?;
