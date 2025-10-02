@@ -16,8 +16,14 @@ mod cloud_store;
 pub use cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
 pub use cloud_store::{CloudRangeReader, CloudWriter};
 
+// Shared frame utilities (header size, CRC-checked scanning)
+mod frames;
+
 mod uploader;
 pub use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};
+
+// Uploader streaming internals
+mod uploader_stream;
 
 mod etcd_metadata;
 pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
