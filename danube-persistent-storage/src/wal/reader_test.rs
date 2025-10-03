@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::wal::reader::{build_tail_stream, read_file_range};
+    use crate::wal::reader::build_tail_stream;
+    use crate::wal::streaming_reader::stream_from_wal_files;
+    use crate::checkpoint::WalCheckpoint;
     use crc32fast;
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::storage::PersistentStorageError;
@@ -10,6 +12,7 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::sync::broadcast;
     use tokio_stream::StreamExt;
+    use tokio::time::{timeout, Duration};
 
     fn make_message(i: u64) -> StreamMessage {
         StreamMessage {
@@ -58,127 +61,101 @@ mod tests {
         Ok(())
     }
 
-    /// Test: WAL file range reading - complete file
+    /// Test: Streaming reader - single file basic
     ///
-    /// Purpose
-    /// - Validate reading all frames from a WAL file using range query
-    /// - Ensure frame deserialization and offset extraction work correctly
-    ///
-    /// Flow
-    /// - Write 3 frames with offsets 0, 1, 2 to WAL file
-    /// - Read entire file using range [0, MAX]
-    /// - Verify all frames are read in correct order
-    ///
-    /// Expected
-    /// - All 3 frames are read successfully
-    /// - Frame offsets and payloads match written data
-    /// - No data corruption during file I/O
+    /// - Writes 3 frames (0,1,2) in one file and streams from offset 0 using streaming_reader
+    /// - Verifies all frames are yielded correctly
     #[tokio::test]
-    async fn test_read_file_range_all() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_streaming_reader_single_file_basic() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
         let wal_path = tmp.path().join("test.wal");
-
-        // Write 3 frames to file
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&wal_path)
-            .await?;
-
+        let mut file = OpenOptions::new().create(true).write(true).open(&wal_path).await?;
         for i in 0..3u64 {
             write_wal_frame(&mut file, i, &make_message(i)).await?;
         }
         drop(file);
 
-        // Read all frames
-        let items = read_file_range(&wal_path, 0, u64::MAX).await?;
-        assert_eq!(items.len(), 3);
+        let ckpt = WalCheckpoint {
+            start_offset: 0,
+            last_offset: 2,
+            file_seq: 0,
+            file_path: wal_path.to_string_lossy().into_owned(),
+            rotated_files: vec![],
+            active_file_name: None,
+            last_rotation_at: None,
+        };
 
-        for (i, (offset, msg)) in items.into_iter().enumerate() {
-            assert_eq!(offset, i as u64);
-            assert_eq!(msg.payload, format!("msg-{}", i).into_bytes());
+        let mut stream = stream_from_wal_files(&ckpt, 0, 4 * 1024 * 1024).await?;
+        let mut offs = vec![];
+        while let Some(item) = stream.next().await {
+            let m = item?;
+            offs.push(m.msg_id.segment_offset);
+            if offs.len() == 3 { break; }
         }
-
+        assert_eq!(offs, vec![0,1,2]);
         Ok(())
     }
 
-    /// Test: WAL file range reading - partial range
+    /// Test: Streaming reader - rotated files continuity
     ///
-    /// Purpose
-    /// - Validate reading specific offset ranges from WAL file
-    /// - Ensure range filtering works correctly for partial reads
-    ///
-    /// Flow
-    /// - Write 5 frames with offsets 0-4 to WAL file
-    /// - Read partial range [1, 3) expecting offsets 1, 2
-    /// - Verify only requested frames are returned
-    ///
-    /// Expected
-    /// - Only frames within specified range are read
-    /// - Frame order and content are preserved
-    /// - Range boundaries are respected (inclusive start, exclusive end)
+    /// - Create two WAL files: file0 with offsets 0..2, file1 with offsets 3..5
+    /// - Put file0 in rotated_files and file1 as active in WalCheckpoint
+    /// - Stream from offset 0 and verify we receive 0..5 in order
     #[tokio::test]
-    async fn test_read_file_range_partial() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_streaming_reader_rotated_files_continuity() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
-        let wal_path = tmp.path().join("test.wal");
+        let file0 = tmp.path().join("wal.000");
+        let file1 = tmp.path().join("wal.active");
 
-        // Write 5 frames to file
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&wal_path)
-            .await?;
+        // Write 0..=2 in file0
+        let mut f0 = OpenOptions::new().create(true).write(true).open(&file0).await?;
+        for i in 0..3u64 { write_wal_frame(&mut f0, i, &make_message(i)).await?; }
+        drop(f0);
 
-        for i in 0..5u64 {
-            write_wal_frame(&mut file, i, &make_message(i)).await?;
+        // Write 3..=5 in file1
+        let mut f1 = OpenOptions::new().create(true).write(true).open(&file1).await?;
+        for i in 3..6u64 { write_wal_frame(&mut f1, i, &make_message(i)).await?; }
+        drop(f1);
+
+        let ckpt = WalCheckpoint {
+            start_offset: 0,
+            last_offset: 5,
+            file_seq: 1,
+            file_path: file1.to_string_lossy().into_owned(),
+            rotated_files: vec![(0, file0.clone())],
+            active_file_name: None,
+            last_rotation_at: None,
+        };
+
+        let mut stream = stream_from_wal_files(&ckpt, 0, 10 * 1024 * 1024).await?;
+        let mut offs = Vec::new();
+        while let Some(item) = timeout(Duration::from_secs(5), stream.next()).await.map_err(|_| "timeout")? {
+            let m = item?;
+            offs.push(m.msg_id.segment_offset);
+            if offs.len() == 6 { break; }
         }
-        drop(file);
-
-        // Read frames [1, 3) - should get offsets 1, 2
-        let items = read_file_range(&wal_path, 1, 3).await?;
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].0, 1);
-        assert_eq!(items[1].0, 2);
-
+        assert_eq!(offs, vec![0,1,2,3,4,5]);
         Ok(())
     }
 
-    /// Test: WAL file reading with CRC corruption
+    /// Test: Streaming reader - CRC mismatch stops before corrupt frame
     ///
-    /// Purpose
-    /// - Validate CRC integrity checking during WAL file reading
-    /// - Ensure corrupted frames are detected and reading stops safely
-    ///
-    /// Flow
-    /// - Write one valid frame followed by one frame with wrong CRC
-    /// - Attempt to read entire file
-    /// - Verify reading stops at corrupted frame
-    ///
-    /// Expected
-    /// - Only valid frame before corruption is read
-    /// - Reading stops at first CRC mismatch (no crash)
-    /// - Data integrity is preserved for valid frames
+    /// - Write a good frame at 0 and a corrupt (wrong CRC) frame at 1
+    /// - Stream from offset 0 and verify only offset 0 is received
     #[tokio::test]
-    async fn test_read_file_range_crc_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_streaming_reader_crc_mismatch_stops() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
-        let wal_path = tmp.path().join("test.wal");
+        let wal_path = tmp.path().join("test_crc.wal");
 
-        // Write one good frame, then corrupt the next one
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&wal_path)
-            .await?;
-
-        // Good frame
+        // Good frame at 0
+        let mut file = OpenOptions::new().create(true).write(true).open(&wal_path).await?;
         write_wal_frame(&mut file, 0, &make_message(0)).await?;
 
-        // Corrupt frame - write wrong CRC
+        // Corrupt frame at 1 (wrong CRC)
         let msg = make_message(1);
         let bytes = bincode::serialize(&msg).unwrap();
         let len = bytes.len() as u32;
-        let wrong_crc = 0xDEADBEEFu32; // Wrong CRC
-
+        let wrong_crc = 0xDEADBEEFu32;
         file.write_all(&1u64.to_le_bytes()).await?;
         file.write_all(&len.to_le_bytes()).await?;
         file.write_all(&wrong_crc.to_le_bytes()).await?;
@@ -186,11 +163,24 @@ mod tests {
         file.flush().await?;
         drop(file);
 
-        // Should only read the first frame, stop on CRC mismatch
-        let items = read_file_range(&wal_path, 0, u64::MAX).await?;
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].0, 0);
+        let ckpt = WalCheckpoint {
+            start_offset: 0,
+            last_offset: 1,
+            file_seq: 0,
+            file_path: wal_path.to_string_lossy().into_owned(),
+            rotated_files: vec![],
+            active_file_name: None,
+            last_rotation_at: None,
+        };
 
+        let mut stream = stream_from_wal_files(&ckpt, 0, 10 * 1024 * 1024).await?;
+        let first = timeout(Duration::from_secs(5), stream.next()).await.map_err(|_| "timeout msg0")?.unwrap()?;
+        assert_eq!(first.msg_id.segment_offset, 0);
+
+        // Next should be None or error due to CRC mismatch; we accept None (no more safe frames)
+        let next = timeout(Duration::from_millis(500), stream.next()).await;
+        // If timeout elapsed because stream keeps alive but has no more items, that's fine too; treat as success
+        if let Ok(Some(Ok(m))) = next { panic!("unexpected extra message: {}", m.msg_id.segment_offset); }
         Ok(())
     }
 
@@ -224,17 +214,26 @@ mod tests {
         let mut stream = build_tail_stream(None, cache_snapshot, 6, rx).await?;
 
         // Should get messages at offsets 7, 9 from cache
-        let msg1 = stream.next().await.unwrap()?;
+        let msg1 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for msg1")?
+            .unwrap()?;
         assert_eq!(msg1.msg_id.segment_offset, 7);
         assert_eq!(msg1.payload, b"msg-7");
 
-        let msg2 = stream.next().await.unwrap()?;
+        let msg2 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for msg2")?
+            .unwrap()?;
         assert_eq!(msg2.msg_id.segment_offset, 9);
         assert_eq!(msg2.payload, b"msg-9");
 
         // Send live message
         tx.send((10, make_message(10)))?;
-        let msg3 = stream.next().await.unwrap()?;
+        let msg3 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for msg3")?
+            .unwrap()?;
         assert_eq!(msg3.msg_id.segment_offset, 10);
         assert_eq!(msg3.payload, b"msg-10");
 
@@ -280,27 +279,50 @@ mod tests {
         // Cache snapshot with messages at offsets 5, 7
         let cache_snapshot = vec![(5, make_message(5)), (7, make_message(7))];
 
+        // Build checkpoint to describe the single wal file
+        let ckpt = WalCheckpoint {
+            start_offset: 0,
+            last_offset: 2,
+            file_seq: 0,
+            file_path: wal_path.to_string_lossy().into_owned(),
+            rotated_files: vec![],
+            active_file_name: None,
+            last_rotation_at: None,
+        };
+
         // Build stream starting from offset 1
         // Should read [1, 2] from file, then [5, 7] from cache
-        let mut stream = build_tail_stream(Some(wal_path), cache_snapshot, 1, rx).await?;
+        let mut stream = build_tail_stream(Some(ckpt), cache_snapshot, 1, rx).await?;
 
         // File replay: offsets 1, 2
-        let msg1 = stream.next().await.unwrap()?;
+        let msg1 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for file msg1")?
+            .unwrap()?;
         assert_eq!(msg1.msg_id.segment_offset, 1);
 
-        let msg2 = stream.next().await.unwrap()?;
+        let msg2 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for file msg2")?
+            .unwrap()?;
         assert_eq!(msg2.msg_id.segment_offset, 2);
 
         // Cache replay: offsets 5, 7
         let msg3 = stream.next().await.unwrap()?;
         assert_eq!(msg3.msg_id.segment_offset, 5);
 
-        let msg4 = stream.next().await.unwrap()?;
+        let msg4 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for cache msg4")?
+            .unwrap()?;
         assert_eq!(msg4.msg_id.segment_offset, 7);
 
         // Live message should start after offset 7
         tx.send((8, make_message(8)))?;
-        let msg5 = stream.next().await.unwrap()?;
+        let msg5 = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for live msg5")?
+            .unwrap()?;
         assert_eq!(msg5.msg_id.segment_offset, 8);
 
         Ok(())

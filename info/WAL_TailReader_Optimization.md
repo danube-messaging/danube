@@ -519,6 +519,43 @@ storage:
    - Document recommended `stream_chunk_size` and expected per-reader memory bounds
    - Document consumer StartPosition guidance (use `Offset(0)` for full catch-up; `Latest` for pure tail)
 
+---
+
+## Test Plan
+
+### Unit tests (src/wal/reader_test.rs)
+
+- Streaming reader single file
+  - Write frames 0..N in one file; `stream_from_wal_files(ckpt, 0)` yields all in order.
+- Streaming reader rotated files
+  - Create 2+ WAL files via rotation; checkpoint lists rotated files + active; stream from offset in first file; verify continuity across file boundaries.
+- Partial frame at chunk boundary
+  - Craft file so a frame spans chunk boundary; ensure carry buffer handles it; all messages delivered.
+- CRC mismatch handling
+  - Corrupt a frame payload CRC; verify reader stops before corrupt frame without panicking.
+- Tail builder cache-only and file→cache→live
+  - `build_tail_stream(None, cache>=from, from)` yields cache→live only.
+  - `build_tail_stream(Some(ckpt), cache, from<cache_start)` yields files→cache→live.
+
+Timeouts:
+- Wrap awaits for next items with `tokio::time::timeout(Duration::from_secs(5), ...)` where a stream could otherwise hang, and assert on timeout to fail fast.
+
+### Integration tests (tests/)
+
+- Local disk handoff focused (chaining_stream_handoff.rs)
+  - Focus on Files→Cache→Live with local disk only; multiple scenarios:
+    - Start far behind (spanning multiple files), catch up to cache, then live.
+    - Start inside cache window, no file phase, cache→live only.
+  - Use `.take(N)` or `timeout(...)` to avoid indefinite tailing.
+
+- Cloud→WAL handoff (factory_cloud_wal_handoff.rs)
+  - Ensure reader chains Cloud [historical objects] → WAL tail correctly.
+  - Add variant starting after cloud object end to skip cloud phase.
+  - Use timeouts for each awaited item to avoid hangs.
+
+Metrics/log assertions (optional):
+- Verify presence of `wal_reader` decision logs (Files→Cache→Live vs Cache→Live) in test logs when enabled.
+
 ## References
 
 - **Streaming pattern:** `danube-persistent-storage/src/uploader_stream.rs`

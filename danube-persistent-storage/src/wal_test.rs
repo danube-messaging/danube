@@ -8,6 +8,7 @@ mod tests {
     use crate::wal::{Wal, WalConfig};
     use tempfile::TempDir;
     use tokio_stream::StreamExt;
+    use tokio::time::{timeout, Duration};
 
     fn make_message(i: u64) -> StreamMessage {
         StreamMessage {
@@ -70,11 +71,15 @@ mod tests {
         let reader = make_wal_with_dir(&dir, None).await?;
         let mut stream = reader.tail_reader(0).await?;
         let mut got = Vec::new();
-        while let Some(item) = stream.next().await {
-            let msg = item?;
-            got.push(msg.payload);
-            if got.len() == 3 {
-                break;
+        while got.len() < 3 {
+            let next_item = timeout(Duration::from_secs(5), stream.next()).await
+                .map_err(|_| "timeout waiting for next message")?;
+            match next_item {
+                Some(item) => {
+                    let msg = item?;
+                    got.push(msg.payload);
+                }
+                None => break,
             }
         }
         assert_eq!(
@@ -109,8 +114,14 @@ mod tests {
 
         let reader = make_wal_with_dir(&dir, None).await?;
         let mut stream = reader.tail_reader(3).await?;
-        let first = stream.next().await.unwrap()?;
-        let second = stream.next().await.unwrap()?;
+        let first = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for first message")?
+            .unwrap()?;
+        let second = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timeout waiting for second message")?
+            .unwrap()?;
         assert_eq!(first.payload, b"msg-3".to_vec());
         assert_eq!(second.payload, b"msg-4".to_vec());
         Ok(())

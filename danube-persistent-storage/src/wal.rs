@@ -327,8 +327,9 @@ impl Wal {
         from_offset: u64,
     ) -> Result<TopicStream, PersistentStorageError> {
         // Snapshot inputs and delegate heavy lifting to reader::build_tail_stream
-        // 1) Obtain current WAL checkpoint for rotated file enumeration (if available)
-        let checkpoint_opt = self.current_wal_checkpoint().await;
+        // 1) Obtain WAL checkpoint for rotated file enumeration.
+        // Prefer in-memory store if present, otherwise read from disk (wal.ckpt)
+        let checkpoint_opt = self.read_wal_checkpoint().await?;
         // 2) Snapshot cache from the requested offset to avoid unnecessary clones
         let cache_snapshot: Vec<(u64, StreamMessage)> = {
             let cache = self.inner.cache.lock().await;
