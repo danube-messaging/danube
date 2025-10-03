@@ -498,6 +498,27 @@ storage:
 
 ---
 
+## Next Steps
+
+1. Implement config knob for streaming chunk size
+   - Add `stream_chunk_size: Option<usize>` to `WalConfig`
+   - Thread into `streaming_reader::stream_from_wal_files`
+
+2. Tests
+   - Unit: single-file streaming, rotated files, partial frame at boundary, CRC mismatch
+   - Integration: lagging subscription (GB-scale) memory bounded; mixed offsets across many readers; file→cache→live handoff continuity
+
+3. Observability
+   - Add gauges/counters/histograms proposed in Metrics and Observability
+   - Log handoff decisions (Files→Cache→Live vs Cache→Live)
+
+4. Optional enhancement (follow-up)
+   - Local sparse index sidecar per WAL file to accelerate seeks for very large files
+
+5. Broker tuning guidance
+   - Document recommended `stream_chunk_size` and expected per-reader memory bounds
+   - Document consumer StartPosition guidance (use `Offset(0)` for full catch-up; `Latest` for pure tail)
+
 ## References
 
 - **Streaming pattern:** `danube-persistent-storage/src/uploader_stream.rs`
