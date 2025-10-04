@@ -49,7 +49,7 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
         },
         MetadataStorage::InMemory((*memory_store).clone()),
         "/danube",
-        UploaderBaseConfig::default(),
+        UploaderBaseConfig { interval_seconds: 1, ..Default::default() },
     );
 
     (factory, memory_store)

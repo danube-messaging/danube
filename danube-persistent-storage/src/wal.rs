@@ -12,6 +12,7 @@ use tracing::{info, warn};
 // Submodules for writer and reader paths
 mod cache;
 mod reader;
+mod streaming_reader;
 mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
@@ -325,17 +326,22 @@ impl Wal {
         &self,
         from_offset: u64,
     ) -> Result<TopicStream, PersistentStorageError> {
-        // Thin wrapper: snapshot inputs and delegate heavy lifting to reader::build_tail_stream
-        let wal_path_opt = self.inner.wal_path.lock().await.clone();
+        // Snapshot inputs and delegate heavy lifting to reader::build_tail_stream
+        // 1) Obtain WAL checkpoint for rotated file enumeration.
+        // Prefer in-memory store if present, otherwise read from disk (wal.ckpt)
+        let checkpoint_opt = self.read_wal_checkpoint().await?;
+        // 2) Snapshot cache from the requested offset to avoid unnecessary clones
         let cache_snapshot: Vec<(u64, StreamMessage)> = {
             let cache = self.inner.cache.lock().await;
             cache
-                .range_from(0)
+                .range_from(from_offset)
                 .map(|(off, msg)| (off, msg.clone()))
                 .collect()
         };
+        // 3) Live receiver for broadcast tailing
         let rx = self.inner.tx.subscribe();
-        reader::build_tail_stream(wal_path_opt, cache_snapshot, from_offset, rx).await
+        // 4) Build the combined file->cache->live stream
+        reader::build_tail_stream(checkpoint_opt, cache_snapshot, from_offset, rx).await
     }
 
     /// Snapshot cached messages with offsets `>= after_offset`.
