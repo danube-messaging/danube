@@ -99,37 +99,28 @@ These assumptions break under high write load or slow consumers.
 
 ### Phase 1: Latest-First Fast Path (High Priority)
 
-**Objective:** Eliminate unnecessary work for `StartPosition::Latest` and make "from now" semantics explicit and efficient.
+**Objective:** Eliminate unnecessary work for `StartPosition::Latest` and make "from now" semantics explicit and efficient, without relying on potentially racy offset comparisons.
 
 **Implementation:**
 Add early return in `Wal::tail_reader()` (preferred for encapsulation):
 
 ```rust
-pub async fn tail_reader(&self, from_offset: u64) -> Result<TopicStream, PersistentStorageError> {
-    let current = self.current_offset();
-    
-    // Fast path: requesting current or future offset
-    if from_offset >= current {
+pub async fn tail_reader(&self, from_offset: u64, live: bool) -> Result<TopicStream, PersistentStorageError> {
+    // Fast path: explicit live-tail request
+    if live {
         debug!(
             target = "wal_reader",
             from_offset,
-            current,
-            "fast path: subscribing directly to broadcast for live tail"
+            "fast path (live): subscribing directly to broadcast"
         );
         
         let rx = self.inner.tx.subscribe();
         let live_stream = BroadcastStream::new(rx)
-            .filter_map(move |item| match item {
-                Ok((off, mut msg)) if off >= from_offset => {
-                    msg.msg_id.segment_offset = off;
-                    Some(Ok(msg))
-                }
-                Ok(_) => None, // Skip older messages
-                Err(BroadcastStreamRecvError::Lagged(n)) => {
-                    Some(Err(PersistentStorageError::Other(
-                        format!("reader lagged by {} messages", n)
-                    )))
-                }
+            .map(|item| match item {
+                Ok((off, msg)) => Ok(msg),
+                Err(BroadcastStreamRecvError::Lagged(n)) => Err(PersistentStorageError::Other(
+                    format!("reader lagged by {} messages", n)
+                )),
             });
         
         return Ok(Box::pin(live_stream));
@@ -140,20 +131,31 @@ pub async fn tail_reader(&self, from_offset: u64) -> Result<TopicStream, Persist
 }
 ```
 
-Update `WalStorage::create_reader()` to map `Latest` correctly:
+#### Start offset and source selection (explicit ordering)
+
+- If `requested_offset >= cache_start_offset` at the moment of initialization:
+  - Start with Cache phase from `requested_offset` and then transition to Live.
+
+- If `requested_offset < cache_start_offset` at initialization:
+  - Start with Files phase from `requested_offset`, transition to Cache when reaching the current cache range start, then transition to Live.
+
+- In all cases, each phase MUST begin at exactly `requested_offset` (or the next needed offset) and continue monotonically without gaps or duplicates.
+
+- During runtime, if conditions change (e.g., cache eviction or broadcast lag):
+  - The stateful reader can re-check positions and transition accordingly (e.g., from Live back to Cache to catch up, or detect that a portion requires Files).
+
+Update `WalStorage::create_reader()` to map `Latest` correctly and select the live fast-path without comparing offsets:
 ```rust
-let start_offset = match start {
-    StartPosition::Latest => {
-        // Latest means from the next offset onward ("from now")
-        self.wal.current_offset()
-    }
-    StartPosition::Offset(o) => o,
+let (start_offset, live) = match start {
+    StartPosition::Latest => (self.wal.current_offset(), true),
+    StartPosition::Offset(o) => (o, false),
 };
+// For WAL-only path call: self.wal.tail_reader(start_offset, live)
 ```
 
 **Where to place the fast path logic:**
 
-- Preferred: implement the fast path inside `Wal::tail_reader()`.
+- Preferred: implement the fast path inside `Wal::tail_reader()` with an explicit `live: bool` argument (or a small enum like `StartMode::{Live, From(u64)}`).
   - Rationale: `WalStorage::create_reader()` (and other callers) already delegate to `tail_reader()` for the WAL path, including the WAL-only fallback when cloud is not configured. Keeping the broadcast subscription logic inside `Wal` preserves encapsulation (only `Wal` touches its internal `broadcast::Sender`).
   - Mechanism: `create_reader()` maps `Latest` to `self.wal.current_offset()` and calls `tail_reader(start_offset)`. `tail_reader()` detects `from_offset >= current_offset()` and returns a broadcast-only stream without invoking file/cache replay.
 
@@ -177,110 +179,21 @@ let start_offset = match start {
 
 ---
 
-### Phase 2: Arc-based Cache Sharing (High Priority)
+### Phase 2: Safe Cache Streaming in `wal/cache.rs` (High Priority)
 
-**Objective:** Eliminate cache snapshot copies via Arc sharing
+**Objective:** Eliminate per-reader cache snapshot copies with a safe, batched streaming iterator implemented in `danube-persistent-storage/src/wal/cache.rs`.
 
-**Implementation:**
+**Implementation (safe, no unsafe):**
 
-**Step 2.1: Update Cache to use Arc**
-```rust
-// In wal.rs WalInner
-struct WalInner {
-    cache: Mutex<Arc<BTreeMap<u64, StreamMessage>>>,
-    // ... other fields
-}
+- Add a batched `CacheStream` in `wal/cache.rs` that:
+  - Holds the lock briefly to clone a small batch (e.g., 128–1024 entries) from `range_from(from_offset)` into a local buffer.
+  - Releases the lock and yields from the buffer.
+  - Repeats until the cache is exhausted.
+  - Updates `from_offset` as it yields to ensure no duplicates.
 
-// Modify append logic
-pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
-    // ... offset assignment ...
-    
-    // Insert into cache with COW
-    {
-        let mut cache_arc = self.inner.cache.lock().unwrap();
-        let cache_mut = Arc::make_mut(&mut *cache_arc);
-        cache_mut.insert(offset, msg.clone());
-        
-        // Eviction triggers new Arc allocation
-        if cache_mut.len() > self.inner.cache_capacity {
-            let mut new_map = BTreeMap::new();
-            // Keep only newest capacity entries
-            let skip_count = cache_mut.len() - self.inner.cache_capacity;
-            for (k, v) in cache_mut.iter().skip(skip_count) {
-                new_map.insert(*k, v.clone());
-            }
-            *cache_arc = Arc::new(new_map);
-        }
-    }
-    
-    // ... broadcast and writer task ...
-}
-```
+- Update `wal.rs::tail_reader()` to use this `CacheStream` instead of materializing a full `Vec<(u64, StreamMessage)>`.
 
-**Step 2.2: Create Streaming CacheStream**
-```rust
-// New file: danube-persistent-storage/src/wal/cache_stream.rs
-use std::sync::Arc;
-use std::collections::BTreeMap;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use futures::Stream;
-
-pub struct CacheStream {
-    cache: Arc<BTreeMap<u64, StreamMessage>>,
-    from_offset: u64,
-    iter: Option<std::collections::btree_map::Range<'static, u64, StreamMessage>>,
-}
-
-impl CacheStream {
-    pub fn new(cache: Arc<BTreeMap<u64, StreamMessage>>, from_offset: u64) -> Self {
-        Self {
-            cache,
-            from_offset,
-            iter: None,
-        }
-    }
-}
-
-impl Stream for CacheStream {
-    type Item = Result<StreamMessage, PersistentStorageError>;
-    
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Lazy initialization of iterator
-        if self.iter.is_none() {
-            // SAFETY: We hold Arc, so BTreeMap won't be dropped
-            let range = unsafe {
-                let map_ref: &BTreeMap<u64, StreamMessage> = &*self.cache;
-                let map_ptr = map_ref as *const BTreeMap<u64, StreamMessage>;
-                (*map_ptr).range(self.from_offset..)
-            };
-            self.iter = Some(range);
-        }
-        
-        if let Some(iter) = &mut self.iter {
-            if let Some((offset, msg)) = iter.next() {
-                let mut msg = msg.clone();
-                msg.msg_id.segment_offset = *offset;
-                return Poll::Ready(Some(Ok(msg)));
-            }
-        }
-        
-        Poll::Ready(None)
-    }
-}
-```
-
-**Step 2.3: Update reader.rs**
-```rust
-// In reader.rs build_tail_stream
-let cache_arc = wal_inner.cache.lock().unwrap().clone(); // Cheap Arc clone
-let cache_stream = CacheStream::new(cache_arc, from_offset);
-
-// Chain: files → cache → live
-let stream = file_stream
-    .chain(cache_stream)
-    .chain(live_stream);
-```
+This achieves O(1) memory per reader and minimizes lock hold time without any unsafe code or complex CoW structures.
 
 **Benefits:**
 - **Memory**: O(cache_size) instead of O(subscriptions × cache_size)
@@ -290,40 +203,9 @@ let stream = file_stream
 - **Scalability**: Hundreds of concurrent readers with minimal memory overhead
 
 **Risks:**
-- Medium: Unsafe code in CacheStream requires careful lifetime management
-- Low: Arc cloning adds atomic refcount overhead (negligible)
+- Low: Requires careful batching size tuning, but correctness is straightforward.
 
-**Alternative (Safer):**
-Use `Arc<RwLock<BTreeMap>>` and implement iterator that holds read lock:
-```rust
-pub struct SafeCacheStream {
-    cache: Arc<RwLock<BTreeMap<u64, StreamMessage>>>,
-    from_offset: u64,
-    buffer: VecDeque<(u64, StreamMessage)>,
-}
-
-impl Stream for SafeCacheStream {
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Option<Self::Item>> {
-        if self.buffer.is_empty() {
-            // Batch read from cache (lock held briefly)
-            let guard = self.cache.read().unwrap();
-            self.buffer.extend(
-                guard.range(self.from_offset..)
-                    .take(100) // Batch size
-                    .map(|(k, v)| (*k, v.clone()))
-            );
-            drop(guard);
-        }
-        
-        if let Some((offset, msg)) = self.buffer.pop_front() {
-            self.from_offset = offset + 1;
-            Poll::Ready(Some(Ok(msg)))
-        } else {
-            Poll::Ready(None)
-        }
-    }
-}
-```
+Note: Keep this implementation in `wal/cache.rs` to centralize cache concerns.
 
 **Testing:**
 - Unit test: Cache eviction during active streaming
@@ -385,9 +267,9 @@ wal:
 
 ---
 
-### Phase 4: State-Aware Reader with Transition Detection (Low Priority)
+### Phase 3: Stateful Reader with Dynamic Transitions (Central Solution)
 
-**Objective:** Detect and handle phase transition edge cases
+**Objective:** Make phase transitions robust against cache eviction and reader lag by managing state and dynamically switching between WAL file replay, cache replay, and live broadcast. Scope this to the WAL only (cloud reader out of scope for now).
 
 **Problem:**
 Current static chaining can't adapt to:
@@ -395,7 +277,7 @@ Current static chaining can't adapt to:
 - Broadcast lag during cache consumption
 - Need to "rewind" when expected data is missing
 
-**Solution: Stateful Reader with Dynamic Transitions**
+**Solution: Stateful Reader with Dynamic Transitions (WAL-only)**
 
 ```rust
 // New file: danube-persistent-storage/src/wal/stateful_reader.rs
@@ -521,7 +403,7 @@ impl Stream for StatefulReader {
 
 impl StatefulReader {
     fn check_cache_range(&self) -> u64 {
-        // Query WAL for current cache start offset
+        // Query WAL for current cache start offset (WAL provides this without reading files)
         self.wal.cache_start_offset()
     }
     
@@ -556,14 +438,10 @@ impl StatefulReader {
 - **Observability**: Clear logging of phase transitions and issues
 
 **Risks:**
-- High: Significant complexity increase
-- Medium: Transition logic must be carefully tested for edge cases
+- Medium: Additional code paths and transitions to test
 - Low: Performance overhead from transition checks
 
-**When to Implement:**
-- Only if Phase 1-3 are insufficient
-- If production systems experience message gaps
-- If monitoring shows frequent broadcast lag errors
+This is the central element to address Problem 4. Implement after Phase 1 (Latest mapping) and Phase 2 (safe cache streaming), before broadcast tuning.
 
 **Testing Requirements:**
 - Chaos testing: Random cache evictions during reads
@@ -572,25 +450,29 @@ impl StatefulReader {
 
 ---
 
-## Implementation Roadmap
+## Implementation Checklist (ordered)
 
-### Timeline
+1) Latest-first API and wiring
+   - Map `StartPosition::Latest` to `(current_offset, live = true)` in `wal_storage.rs::create_reader()`.
+   - Extend `wal.rs::tail_reader(from_offset, live)` (or introduce `StartMode`) and implement the broadcast-only fast path when `live` is true.
+   - Ensure `wal.rs::append()` sets `msg_id.segment_offset = assigned_offset` before broadcasting and enqueueing to the writer, so downstream readers don’t need to mutate messages.
 
-**Week 1: Phase 1 (Fast Path for Latest)**
-- Day 1-2: Implementation
-- Day 3-4: Testing (unit + integration)
-- Day 5: Code review and merge
+2) Safe cache streaming (no unsafe)
+   - Implement a batched `CacheStream` in `wal/cache.rs`.
+   - Replace `cache_snapshot: Vec<_>` usage with `CacheStream` in `wal.rs::tail_reader()`.
 
-**Week 2: Phase 2 (Arc-based Cache)**
-- Day 1-3: Implementation (Arc wrapper + CacheStream)
-- Day 4-5: Testing (stress + memory profiling)
-- Week 3 Day 1-2: Code review and merge
+3) Stateful reader (WAL-only)
+   - Implement `stateful_reader.rs` that orchestrates Files → Cache → Live transitions dynamically.
+   - Integrate it behind `wal.rs::tail_reader()` for non-live reads.
 
-**Week 3-4: Phase 3 (Adaptive Broadcast)**
-- Week 3 Day 3-4: Analysis and configuration design
-- Week 3 Day 5: Implementation
-- Week 4 Day 1-2: Testing and tuning
-- Week 4 Day 3: Documentation and merge
+4) Broadcast tuning
+   - Add `broadcast_capacity` to `WalConfig` and decouple from `cache_capacity`.
+   - Add logging and metrics for broadcast lag and transition events.
+
+5) Testing and validation
+   - Unit tests: Latest live-only, cache streaming batches, stateful transitions.
+   - Integration tests: slow consumers, cache eviction under load, broadcast lag recovery.
+   - Chaos tests: random cache evictions during reads.
 
 **Phase 4: Deferred**
 - Implement only if needed based on production metrics
