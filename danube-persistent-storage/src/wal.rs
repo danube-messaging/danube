@@ -14,8 +14,8 @@ use tracing::{info, warn};
 // Submodules for writer and reader paths
 mod cache;
 mod reader;
-mod streaming_reader;
 mod stateful_reader;
+mod streaming_reader;
 mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
@@ -349,14 +349,9 @@ impl Wal {
 
         // Use the WAL-only StatefulReader to coordinate Files → Cache → Live dynamically.
         let checkpoint_opt = self.read_wal_checkpoint().await?;
-        let rx = self.inner.tx.subscribe();
-        let reader = stateful_reader::StatefulReader::new(
-            self.inner.clone(),
-            checkpoint_opt,
-            from_offset,
-            rx,
-        )
-        .await?;
+        let reader =
+            stateful_reader::StatefulReader::new(self.inner.clone(), checkpoint_opt, from_offset)
+                .await?;
         Ok(Box::pin(reader))
     }
 
@@ -442,6 +437,6 @@ impl Wal {
 #[cfg(test)]
 mod cache_test;
 #[cfg(test)]
-mod reader_test;
+mod streaming_reader_test;
 #[cfg(test)]
 mod writer_test;

@@ -3,12 +3,12 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use crate::wal::{Wal, WalConfig};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::storage::PersistentStorageError;
-    use crate::wal::{Wal, WalConfig};
     use tempfile::TempDir;
-    use tokio_stream::StreamExt;
     use tokio::time::{timeout, Duration};
+    use tokio_stream::StreamExt;
 
     fn make_message(i: u64) -> StreamMessage {
         StreamMessage {
@@ -26,6 +26,225 @@ mod tests {
             subscription_name: None,
             attributes: HashMap::new(),
         }
+    }
+
+    /// Test: Latest live-only delivers only messages appended after subscription
+    ///
+    /// Purpose
+    /// - Validate the live fast-path semantics for `StartPosition::Latest` mapped to `(current_offset, live = true)`.
+    /// - Ensure that only messages appended after subscription are delivered.
+    ///
+    /// Flow
+    /// - Create WAL, subscribe with `current_offset` and `live = true`.
+    /// - Append three messages after subscribing.
+    ///
+    /// Expected
+    /// - The reader yields exactly the three appended payloads (msg-0, msg-1, msg-2) and nothing from before.
+    #[tokio::test]
+    async fn test_latest_live_only() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, None).await?;
+
+        // Subscribe with Latest semantics (from now)
+        let current = wal.current_offset();
+        let mut stream = wal.tail_reader(current, true).await?;
+
+        // Append three messages after subscription
+        for i in 0..3u64 {
+            wal.append(&make_message(i)).await?;
+        }
+
+        // Expect to receive only the three messages appended after subscribing
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            let next_item = timeout(Duration::from_secs(5), stream.next())
+                .await
+                .map_err(|_| "timeout waiting for next message")?;
+            if let Some(Ok(msg)) = next_item {
+                got.push(msg.payload);
+            }
+        }
+
+        assert_eq!(
+            got,
+            vec![b"msg-0".to_vec(), b"msg-1".to_vec(), b"msg-2".to_vec()]
+        );
+        Ok(())
+    }
+
+    /// Test: Cache streaming in batches (bounded lock time) from within cache range
+    ///
+    /// Purpose
+    /// - Validate the batched cache streaming logic implemented in `wal/cache.rs::build_cache_stream`.
+    /// - Ensure short lock hold time and correct ordering without materializing full snapshots.
+    ///
+    /// Flow
+    /// - Append 1500 messages to populate cache.
+    /// - Start reading from `n-100` to ensure we stream entirely from cache.
+    ///
+    /// Expected
+    /// - We receive exactly 100 messages, offsets `[n-100 .. n)`, in order, with correct `segment_offset`.
+    #[tokio::test]
+    async fn test_cache_streaming_batches() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, None).await?;
+
+        // Append enough messages to span multiple cache batches (batch=512 in impl)
+        let n = 1500u64;
+        for i in 0..n {
+            wal.append(&make_message(i)).await?;
+        }
+
+        // Start from within cache to force cache path
+        let start = n - 100;
+        let mut stream = wal.tail_reader(start, false).await?;
+        let mut got_offs = Vec::new();
+        while let Some(item) = timeout(Duration::from_secs(10), stream.next())
+            .await
+            .map_err(|_| "timeout cache batches")?
+        {
+            let msg = item?;
+            got_offs.push(msg.msg_id.segment_offset);
+            if got_offs.len() == 100 {
+                break;
+            }
+        }
+
+        assert_eq!(got_offs.len(), 100);
+        for (i, off) in got_offs.into_iter().enumerate() {
+            assert_eq!(off, start + i as u64);
+        }
+        Ok(())
+    }
+
+    /// Test: Stateful transitions Files → Cache → Live in a single WAL instance
+    ///
+    /// Purpose
+    /// - Validate dynamic phase transitions coordinated by `StatefulReader`.
+    /// - Ensure replay from Files, then Cache, then transition to Live and receive newly appended items.
+    ///
+    /// Flow
+    /// - Configure small rotation threshold and append 100 messages (triggering file replay + cache fill).
+    /// - Read from 0 and consume 100 messages (Files→Cache).
+    /// - Append three new messages and ensure they are delivered via the Live phase.
+    ///
+    /// Expected
+    /// - First 100 offsets `[0..100)` delivered in order.
+    /// - Then offsets `100, 101, 102` delivered via live broadcast.
+    #[tokio::test]
+    async fn test_stateful_transitions_files_cache_live() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        // Force rotation to ensure file replay exists
+        let wal = make_wal_with_dir(&dir, Some(1024)).await?;
+
+        // Append enough to cause rotation and fill cache
+        let n = 100u64;
+        for i in 0..n {
+            wal.append(&make_message(i)).await?;
+        }
+
+        // Start from 0 to trigger Files phase, then Cache, then Live
+        let mut stream = wal.tail_reader(0, false).await?;
+
+        // Consume first n messages (Files + Cache)
+        let mut offs = Vec::new();
+        while let Some(item) = timeout(Duration::from_secs(20), stream.next())
+            .await
+            .map_err(|_| "timeout initial replay")?
+        {
+            let msg = item?;
+            offs.push(msg.msg_id.segment_offset);
+            if offs.len() == n as usize {
+                break;
+            }
+        }
+        assert_eq!(offs.len(), n as usize);
+        for (i, off) in offs.into_iter().enumerate() {
+            assert_eq!(off, i as u64);
+        }
+
+        // Now append a few more to validate transition to Live
+        for i in n..n + 3 {
+            wal.append(&make_message(i)).await?;
+        }
+
+        let mut live_offs = Vec::new();
+        while let Some(item) = timeout(Duration::from_secs(10), stream.next())
+            .await
+            .map_err(|_| "timeout live replay")?
+        {
+            let msg = item?;
+            live_offs.push(msg.msg_id.segment_offset);
+            if live_offs.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(live_offs, vec![n, n + 1, n + 2]);
+        Ok(())
+    }
+
+    /// Test: Cache refill before live
+    ///
+    /// Purpose
+    /// - Validate that when the cache appears exhausted, the reader first attempts a quick
+    ///   cache refill from `last_yielded + 1` before transitioning to live, avoiding gaps.
+    ///
+    /// Flow
+    /// - Create a WAL with a small cache capacity to narrow the cache window.
+    /// - Append 5 messages [0..5) and start a reader from 0 (cache path).
+    /// - Shortly after streaming starts, append another 5 messages [5..10).
+    ///
+    /// Expected
+    /// - The stream yields offsets [0..10) in order with no gaps or duplicates, regardless of whether
+    ///   the last items come from a cache refill or live.
+    #[tokio::test]
+    async fn test_cache_refill_before_live() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        // Use a small cache to increase likelihood of hitting the boundary
+        let cfg = WalConfig {
+            dir: Some(dir.clone()),
+            file_name: Some("wal.log".to_string()),
+            cache_capacity: Some(16),
+            fsync_interval_ms: Some(1),
+            fsync_max_batch_bytes: Some(1024),
+            rotate_max_bytes: None,
+            rotate_max_seconds: None,
+        };
+        let wal = Wal::with_config(cfg).await?;
+
+        // Prime cache with 5 messages
+        for i in 0..5u64 { wal.append(&make_message(i)).await?; }
+
+        // Start reader from 0 (cache path)
+        let mut stream = wal.tail_reader(0, false).await?;
+
+        // Append more soon after starting to read
+        let wal_clone = wal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            for i in 5..10u64 {
+                let _ = wal_clone.append(&make_message(i)).await;
+            }
+        });
+
+        // Collect first 10 offsets and assert continuity
+        let mut offs = Vec::new();
+        while let Some(item) = timeout(Duration::from_secs(10), stream.next()).await
+            .map_err(|_| "timeout collecting refill boundary")? {
+            let msg = item?;
+            offs.push(msg.msg_id.segment_offset);
+            if offs.len() == 10 { break; }
+        }
+
+        assert_eq!(offs.len(), 10, "expected 10 messages");
+        for (i, off) in offs.into_iter().enumerate() {
+            assert_eq!(off, i as u64);
+        }
+        Ok(())
     }
 
     async fn make_wal_with_dir(
@@ -69,10 +288,11 @@ mod tests {
 
         // New reader instance
         let reader = make_wal_with_dir(&dir, None).await?;
-        let mut stream = reader.tail_reader(0).await?;
+        let mut stream = reader.tail_reader(0, false).await?;
         let mut got = Vec::new();
         while got.len() < 3 {
-            let next_item = timeout(Duration::from_secs(5), stream.next()).await
+            let next_item = timeout(Duration::from_secs(5), stream.next())
+                .await
                 .map_err(|_| "timeout waiting for next message")?;
             match next_item {
                 Some(item) => {
@@ -113,7 +333,7 @@ mod tests {
         writer.shutdown().await;
 
         let reader = make_wal_with_dir(&dir, None).await?;
-        let mut stream = reader.tail_reader(3).await?;
+        let mut stream = reader.tail_reader(3, false).await?;
         let first = timeout(Duration::from_secs(5), stream.next())
             .await
             .map_err(|_| "timeout waiting for first message")?
@@ -156,7 +376,7 @@ mod tests {
         wal.shutdown().await;
 
         // Read from offset 0 and collect all
-        let mut stream = wal.tail_reader(0).await?;
+        let mut stream = wal.tail_reader(0, false).await?;
         let mut got: Vec<StreamMessage> = Vec::new();
         while let Some(item) = stream.next().await {
             let msg = item?;
@@ -169,7 +389,7 @@ mod tests {
         assert_eq!(got.len(), n as usize);
         for (i, msg) in got.into_iter().enumerate() {
             assert_eq!(msg.payload, format!("msg-{}", i).into_bytes());
-            // segment_offset is set by reader to the WAL offset
+            // segment_offset is stamped by WAL append and should equal the WAL offset
             assert_eq!(msg.msg_id.segment_offset, i as u64);
         }
         Ok(())
@@ -204,7 +424,7 @@ mod tests {
         wal.shutdown().await;
 
         // Read from offset 10 and collect next 15
-        let mut stream = wal.tail_reader(10).await?;
+        let mut stream = wal.tail_reader(10, false).await?;
         let mut got: Vec<StreamMessage> = Vec::new();
         while let Some(item) = stream.next().await {
             let msg = item?;

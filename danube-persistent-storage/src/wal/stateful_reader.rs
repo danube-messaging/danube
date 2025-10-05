@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Future, Stream, StreamExt};
-use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
+use tracing::{info, warn};
 
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
@@ -40,7 +40,14 @@ impl Stream for StatefulReader {
                     }
                     Poll::Ready(Some(Err(_e))) => {
                         // If files fail (e.g., pruned), try cache from next needed offset; otherwise propagate
-                        if let Poll::Ready(()) = self.poll_transition_from_files_to_cache(cx) {
+                        let from = self.last_yielded.saturating_add(1);
+                        warn!(
+                            target = "stateful_reader",
+                            last_yielded = self.last_yielded,
+                            next_from = from,
+                            "file phase errored, transitioning to cache"
+                        );
+                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
                             continue;
                         }
                         // Can't build now, re-poll
@@ -48,7 +55,14 @@ impl Stream for StatefulReader {
                     }
                     Poll::Ready(None) => {
                         // Files exhausted. Transition to Cache from next needed or current cache start
-                        if let Poll::Ready(()) = self.poll_transition_from_files_to_cache(cx) {
+                        let from = self.last_yielded.saturating_add(1);
+                        info!(
+                            target = "stateful_reader",
+                            last_yielded = self.last_yielded,
+                            next_from = from,
+                            "file phase exhausted, transitioning to cache"
+                        );
+                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
                             continue;
                         }
                         return Poll::Pending;
@@ -66,9 +80,21 @@ impl Stream for StatefulReader {
                         return Poll::Ready(Some(Err(e)));
                     }
                     Poll::Ready(None) => {
-                        // Cache exhausted → Live
-                        self.poll_transition_from_cache_to_live();
-                        continue;
+                        // Cache exhausted; before going live, attempt to refill from cache
+                        // in case new items were appended between our last batch and now.
+                        let from = self.last_yielded.saturating_add(1);
+                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
+                            // Successfully built another cache stream; continue consuming cache
+                            continue;
+                        }
+                        // Could not immediately build (Pending), or none available: proceed to live
+                        info!(
+                            target = "stateful_reader",
+                            last_yielded = self.last_yielded,
+                            "cache exhausted (or pending refill), transitioning to live"
+                        );
+                        self.transition_to_live();
+                        return Poll::Pending;
                     }
                     Poll::Pending => return Poll::Pending,
                 },
@@ -80,7 +106,14 @@ impl Stream for StatefulReader {
                     }
                     Poll::Ready(Some(Err(_e))) => {
                         // On broadcast lag, fall back to cache to catch up
-                        if let Poll::Ready(()) = self.poll_transition_from_live_to_cache(cx) {
+                        let from = self.last_yielded.saturating_add(1);
+                        warn!(
+                            target = "stateful_reader",
+                            last_yielded = self.last_yielded,
+                            next_from = from,
+                            "live phase lag/error, transitioning to cache"
+                        );
+                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
                             continue;
                         }
                         return Poll::Pending;
@@ -98,7 +131,6 @@ impl StatefulReader {
         wal_inner: Arc<WalInner>,
         checkpoint_opt: Option<WalCheckpoint>,
         from_offset: u64,
-        _rx: broadcast::Receiver<(u64, StreamMessage)>,
     ) -> Result<Self, PersistentStorageError> {
         // Decide first phase: if requested offset within cache, start with Cache; otherwise Files.
         let cache_start = {
@@ -109,6 +141,13 @@ impl StatefulReader {
 
         let phase = if from_offset >= cache_start {
             // Cache → Live
+            info!(
+                target = "stateful_reader",
+                from_offset,
+                cache_start,
+                decision = "Cache→Live",
+                "replay decision: using cache, then live (skip files)"
+            );
             let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
             ReaderPhase::Cache {
                 stream: cache_stream,
@@ -116,11 +155,25 @@ impl StatefulReader {
         } else {
             // Files (from requested) → Cache → Live
             if let Some(ckpt) = checkpoint_opt.as_ref() {
+                info!(
+                    target = "stateful_reader",
+                    from_offset,
+                    cache_start,
+                    decision = "Files→Cache→Live",
+                    "replay decision: using files first, then cache, then live"
+                );
                 let fs =
                     streaming_reader::stream_from_wal_files(ckpt, from_offset, 10 * 1024 * 1024)
                         .await?;
                 ReaderPhase::Files { stream: fs }
             } else {
+                info!(
+                    target = "stateful_reader",
+                    from_offset,
+                    cache_start,
+                    decision = "Cache→Live",
+                    "replay decision: no checkpoint; using cache, then live"
+                );
                 // No files available, start from cache directly
                 let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
                 ReaderPhase::Cache {
@@ -172,20 +225,4 @@ impl StatefulReader {
         }
     }
 
-    #[inline]
-    fn poll_transition_from_files_to_cache(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let from = self.last_yielded.saturating_add(1);
-        self.poll_transition_to_cache(cx, from)
-    }
-
-    #[inline]
-    fn poll_transition_from_live_to_cache(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let from = self.last_yielded.saturating_add(1);
-        self.poll_transition_to_cache(cx, from)
-    }
-
-    #[inline]
-    fn poll_transition_from_cache_to_live(&mut self) {
-        self.transition_to_live();
-    }
 }

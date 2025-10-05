@@ -462,27 +462,45 @@ This is the central element to address Problem 4. Implement after Phase 1 (Lates
 
 ## Implementation Checklist (ordered)
 
-1) Latest-first API and wiring
-   - Map `StartPosition::Latest` to `(current_offset, live = true)` in `wal_storage.rs::create_reader()`.
-   - Extend `wal.rs::tail_reader(from_offset, live)` (or introduce `StartMode`) and implement the broadcast-only fast path when `live` is true.
-   - Ensure `wal.rs::append()` sets `msg_id.segment_offset = assigned_offset` before broadcasting and enqueueing to the writer, so downstream readers don’t need to mutate messages.
+1) Latest-first API and wiring — COMPLETED
+   - Map `StartPosition::Latest` to `(current_offset, live = true)` in `wal_storage.rs::create_reader()` — done.
+   - Extend `wal.rs::tail_reader(from_offset, live)` and implement broadcast-only fast path when `live` is true — done.
+   - Ensure `wal.rs::append()` sets `msg_id.segment_offset = assigned_offset` before serialization/cache/broadcast — done.
 
-2) Safe cache streaming (no unsafe)
-   - Implement a batched `CacheStream` in `wal/cache.rs`.
-   - Replace `cache_snapshot: Vec<_>` usage with `CacheStream` in `wal.rs::tail_reader()`.
+2) Safe cache streaming (no unsafe) — COMPLETED
+   - Batched cache stream implemented in `wal/cache.rs::build_cache_stream(...)` — done.
+   - `tail_reader` no longer materializes a full snapshot; coordination moved out of `wal.rs` — done.
 
-3) Stateful reader (WAL-only)
-   - Implement `stateful_reader.rs` that orchestrates Files → Cache → Live transitions dynamically.
-   - Integrate it behind `wal.rs::tail_reader()` for non-live reads.
+3) Stateful reader (WAL-only) — COMPLETED (initial version)
+   - Implemented `wal/stateful_reader.rs` orchestrating Files → Cache → Live — done.
+   - Integrated behind `wal.rs::tail_reader()` for non-live reads — done.
 
-4) Broadcast tuning
-   - Add `broadcast_capacity` to `WalConfig` and decouple from `cache_capacity`.
-   - Add logging and metrics for broadcast lag and transition events.
+4) Broadcast tuning — PENDING
+   - Add `broadcast_capacity` to `WalConfig` and decouple from `cache_capacity` — todo.
+   - Add logging and metrics for broadcast lag and transition events — todo.
 
-5) Testing and validation
-   - Unit tests: Latest live-only, cache streaming batches, stateful transitions.
-   - Integration tests: slow consumers, cache eviction under load, broadcast lag recovery.
-   - Chaos tests: random cache evictions during reads.
+5) Testing and validation — PENDING
+   - Update tests for API changes (e.g., `tail_reader(from, live)`, `reader::build_tail_stream` signature changes) — todo.
+   - Unit tests: Latest live-only, cache streaming batches, stateful transitions — todo.
+   - Integration: slow consumers, cache eviction and WAL pruning during reads, broadcast lag recovery — todo.
+   - Chaos tests: random cache evictions during reads — todo.
+
+---
+
+### Current Status Summary
+
+- Race-free Latest: `Latest` is mapped to `(current_offset, live = true)`; no offset comparison is used to decide live mode.
+- Offset stamping: `wal.rs::append` stamps `msg_id.segment_offset` before serialization, cache insert, and broadcast.
+- Safe cache streaming: Implemented batched cache replay in `wal/cache.rs` with brief locks; no unsafe.
+- Slim `tail_reader`: Live fast path stays in `wal.rs`; historical path is coordinated by `StatefulReader`.
+- Stateful Reader: `wal/stateful_reader.rs` coordinates Files → Cache → Live, handles broadcast lag by falling back to Cache, and will handle WAL pruning by switching phases or erroring clearly when a true gap exists (Cloud fallback to be added later).
+
+### Next Steps
+
+- Add `broadcast_capacity` to `WalConfig`, expose configuration, and instrument metrics/logs for transitions and lag.
+- Update and expand tests to reflect new APIs and behavior; add pruning scenarios.
+- Evaluate batch sizes and chaining limits in `build_cache_stream` under load; parameterize if needed.
+- Plan Cloud→WAL fallback integration into `StatefulReader` once cloud reader is ready.
 
 **Phase 4: Deferred**
 - Implement only if needed based on production metrics
