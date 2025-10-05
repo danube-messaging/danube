@@ -15,6 +15,7 @@ use tracing::{info, warn};
 mod cache;
 mod reader;
 mod streaming_reader;
+mod stateful_reader;
 mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
@@ -346,10 +347,17 @@ impl Wal {
             return Ok(Box::pin(live_stream));
         }
 
-        // Delegate orchestration to reader::build_tail_stream to keep tail_reader slim
+        // Use the WAL-only StatefulReader to coordinate Files → Cache → Live dynamically.
         let checkpoint_opt = self.read_wal_checkpoint().await?;
         let rx = self.inner.tx.subscribe();
-        reader::build_tail_stream(checkpoint_opt, self.inner.clone(), from_offset, rx).await
+        let reader = stateful_reader::StatefulReader::new(
+            self.inner.clone(),
+            checkpoint_opt,
+            from_offset,
+            rx,
+        )
+        .await?;
+        Ok(Box::pin(reader))
     }
 
     /// Snapshot cached messages with offsets `>= after_offset`.
