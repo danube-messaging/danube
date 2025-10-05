@@ -7,10 +7,10 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tracing::info;
 
-use crate::checkpoint::WalCheckpoint;
-use super::streaming_reader;
 use super::cache::build_cache_stream;
+use super::streaming_reader;
 use super::WalInner;
+use crate::checkpoint::WalCheckpoint;
 
 /// Read and decode WAL frames in `[from_offset, to_exclusive)` from file at `path`.
 ///
@@ -33,6 +33,7 @@ use super::WalInner;
 /// - If `from_offset < cache_start`, replay `[from_offset, cache_start)` from the file.
 /// - Then append cache items `>= max(from_offset, cache_start)`.
 /// - Finally switch to live tail (broadcast) starting after the last replayed offset.
+#[allow(dead_code)]
 pub(crate) async fn build_tail_stream(
     checkpoint_opt: Option<WalCheckpoint>,
     wal_inner: Arc<WalInner>,
@@ -80,7 +81,7 @@ pub(crate) async fn build_tail_stream(
     let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
 
     // Phase 3: Live tailing from broadcast, starting at computed watermark
-    
+
     // Live tailing from broadcast. Since append stamps offsets, we don't need to mutate messages.
     // We don't attempt duplicate filtering here; for robust de-dup we will switch to a stateful reader.
     let live_stream = BroadcastStream::new(rx).map(move |item| match item {
