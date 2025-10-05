@@ -144,6 +144,16 @@ pub async fn tail_reader(&self, from_offset: u64, live: bool) -> Result<TopicStr
 - During runtime, if conditions change (e.g., cache eviction or broadcast lag):
   - The stateful reader can re-check positions and transition accordingly (e.g., from Live back to Cache to catch up, or detect that a portion requires Files).
 
+#### Handling WAL pruning during streaming
+
+If WAL files are pruned while the reader is in the Files phase:
+
+- On file open/read error indicating missing/truncated data, the stateful reader SHOULD:
+  - Check whether the missing range is now present in the cache; if yes, transition to Cache from the next needed offset.
+  - If the range is not in cache (true gap), return a clear error indicating an unrecoverable gap due to pruning (until cloud/historical source is integrated, at which point the reader can fall back to cloud).
+
+- This mirrors the eviction and lag handling: detect, reassess available sources (Files/Cache/Live), and transition or fail fast with actionable errors.
+
 Update `WalStorage::create_reader()` to map `Latest` correctly and select the live fast-path without comparing offsets:
 ```rust
 let (start_offset, live) = match start {
