@@ -124,8 +124,8 @@ impl WalConfig {
 
 impl Default for Wal {
     fn default() -> Self {
-        let (tx, _rx) = broadcast::channel(1024);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8192);
+        let (tx, _rx) = broadcast::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
         let wal = Self {
             inner: Arc::new(WalInner {
                 next_offset: AtomicU64::new(0),
@@ -177,8 +177,8 @@ impl Wal {
         cfg: WalConfig,
         ckpt_store: Option<Arc<CheckpointStore>>,
     ) -> Result<Self, PersistentStorageError> {
-        let (tx, _rx) = broadcast::channel(1024);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8192);
+        let (tx, _rx) = broadcast::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
         // Build optional file and wal_path without moving the Option twice
         let wal_path_opt = if let Some(path) = cfg.wal_file_path() {
             if let Some(parent) = path.parent() {
