@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use danube_core::message::{MessageID, StreamMessage};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tracing::{trace, warn};
 
 use crate::consumer::Consumer;
@@ -19,6 +19,7 @@ pub(crate) struct UnifiedSingleDispatcher {
     pub(crate) mode: DispatchMode,
     reliable: Option<mpsc::Sender<DispatcherCommand>>, // control channel for reliable loop
     control_tx: mpsc::Sender<DispatcherCommand>,
+    ready_rx: watch::Receiver<bool>,
 }
 
 #[derive(Debug)]
@@ -35,6 +36,8 @@ enum DispatcherCommand {
 impl UnifiedSingleDispatcher {
     pub(crate) fn new_non_reliable() -> Self {
         let (control_tx, mut control_rx) = mpsc::channel(16);
+        // Non-reliable dispatcher is ready immediately.
+        let (_ready_tx, ready_rx) = watch::channel(true);
 
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
@@ -67,7 +70,10 @@ impl UnifiedSingleDispatcher {
                                 } else {
                                     match cons.send_message(msg).await {
                                         Ok(()) => {
-                                            trace!("Message dispatched to active consumer {}", cons.consumer_id);
+                                            trace!(
+                                                "Message dispatched to active consumer {}",
+                                                cons.consumer_id
+                                            );
                                             Ok(())
                                         }
                                         Err(e) => {
@@ -94,6 +100,7 @@ impl UnifiedSingleDispatcher {
             mode: DispatchMode::NonReliable,
             reliable: None,
             control_tx,
+            ready_rx,
         }
     }
 
@@ -102,6 +109,8 @@ impl UnifiedSingleDispatcher {
         let reliable_tx_for_task = control_tx.clone();
         let reliable_tx_for_struct = control_tx.clone();
         let engine = Mutex::new(engine);
+        // Readiness is false until the stream is initialized.
+        let (ready_tx, ready_rx) = watch::channel(false);
 
         tokio::spawn(async move {
             // State
@@ -118,6 +127,8 @@ impl UnifiedSingleDispatcher {
                 {
                     warn!("Reliable single dispatcher failed to init stream: {}", e);
                 }
+                // Signal readiness regardless of success; dispatcher can still operate and retry.
+                let _ = ready_tx.send(true);
             }
 
             loop {
@@ -155,7 +166,7 @@ impl UnifiedSingleDispatcher {
                                 // Immediately attempt next
                                 let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                             }
-                            DispatcherCommand::DispatchMessage(_, response_tx) => { 
+                            DispatcherCommand::DispatchMessage(_, response_tx) => {
                                 let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
                             }
                             DispatcherCommand::PollAndDispatch => {
@@ -189,6 +200,7 @@ impl UnifiedSingleDispatcher {
             mode: DispatchMode::Reliable,
             reliable: Some(reliable_tx_for_struct),
             control_tx,
+            ready_rx,
         }
     }
 
@@ -205,6 +217,22 @@ impl UnifiedSingleDispatcher {
         notify
     }
 
+    /// Waits until the dispatcher has completed its initial stream setup.
+    ///
+    /// For non-reliable mode this returns immediately. For reliable mode,
+    /// it resolves after `init_stream_from_progress_or_latest()` completes.
+    pub(crate) async fn ready(&self) {
+        if *self.ready_rx.borrow() {
+            return;
+        }
+        let mut rx = self.ready_rx.clone();
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() {
+                break;
+            }
+        }
+    }
+
     pub(crate) async fn dispatch_message(&self, message: StreamMessage) -> Result<()> {
         if let DispatchMode::NonReliable = self.mode {
             let (response_tx, response_rx) = oneshot::channel();
@@ -212,7 +240,7 @@ impl UnifiedSingleDispatcher {
                 .send(DispatcherCommand::DispatchMessage(message, response_tx))
                 .await
                 .map_err(|e| anyhow!("Failed to send dispatch command: {}", e))?;
-            
+
             response_rx
                 .await
                 .map_err(|e| anyhow!("Failed to receive dispatch response: {}", e))?

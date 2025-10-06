@@ -72,8 +72,8 @@ async fn reliable_single_ack_gating() {
         .await
         .expect("add consumer");
 
-    // Give the background task time to initialize the stream before appending
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for reliable dispatcher readiness (stream initialized)
+    dispatcher.ready().await;
 
     // Append the first message AFTER engine init; then notify to trigger dispatch loop
     ts.store_message(make_msg(100, 0, topic)).await.unwrap();

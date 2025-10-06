@@ -71,8 +71,8 @@ async fn reliable_multiple_round_robin_ack_gating() {
     let c2 = Consumer::new(2, "c2", 1, topic, tx2, status2);
     dispatcher.add_consumer(c2).await.expect("add c2");
 
-    // Give the background task time to initialize the stream before appending
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for reliable dispatcher readiness (stream initialized)
+    dispatcher.ready().await;
 
     // Append first message and notify -> expect delivery to one of the consumers
     ts.store_message(make_msg(500, 0, topic)).await.unwrap();
