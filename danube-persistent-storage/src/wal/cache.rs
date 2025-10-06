@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use danube_core::message::StreamMessage;
+use danube_core::storage::TopicStream;
+use futures::StreamExt;
 
 /// Ordered in-memory cache keyed by WAL offset.
 ///
@@ -10,6 +13,50 @@ use danube_core::message::StreamMessage;
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
     map: BTreeMap<u64, StreamMessage>,
+}
+
+/// Build a cache replay stream that yields messages starting at `from_offset` in bounded batches.
+/// This keeps lock hold times short and memory per reader bounded.
+pub(crate) async fn build_cache_stream(
+    wal_inner: Arc<super::WalInner>,
+    mut from_offset: u64,
+    batch_size: usize,
+) -> TopicStream {
+    use futures::stream;
+
+    let mut segments: Vec<TopicStream> = Vec::new();
+    loop {
+        let batch: Vec<StreamMessage> = {
+            let cache = wal_inner.cache.lock().await;
+            cache
+                .range_from(from_offset)
+                .take(batch_size)
+                .map(|(_off, msg)| msg)
+                .collect()
+        };
+        if batch.is_empty() {
+            break;
+        }
+        // advance from_offset to after the last yielded item
+        if let Some(last) = batch.last() {
+            from_offset = last.msg_id.segment_offset.saturating_add(1);
+        }
+        let seg = Box::pin(stream::iter(batch.into_iter().map(Ok))) as TopicStream;
+        segments.push(seg);
+        if segments.len() >= 32 {
+            break;
+        }
+    }
+
+    let mut it = segments.into_iter();
+    if let Some(mut acc) = it.next() {
+        for s in it {
+            acc = Box::pin(acc.chain(s));
+        }
+        acc
+    } else {
+        Box::pin(futures::stream::empty())
+    }
 }
 
 impl Cache {

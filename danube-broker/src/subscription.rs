@@ -190,6 +190,8 @@ impl Subscription {
                             )
                         };
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
+                        // Ensure reliable dispatcher is initialized before exposing notifier
+                        new_dispatcher.ready().await;
                         let notifier = new_dispatcher.get_notifier();
                         (
                             Dispatcher::UnifiedOneConsumer(new_dispatcher),
@@ -218,6 +220,8 @@ impl Subscription {
                             )
                         };
                         let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
+                        // Ensure reliable dispatcher is initialized before exposing notifier
+                        new_dispatcher.ready().await;
                         let notifier = new_dispatcher.get_notifier();
                         (
                             Dispatcher::UnifiedMultipleConsumers(new_dispatcher),

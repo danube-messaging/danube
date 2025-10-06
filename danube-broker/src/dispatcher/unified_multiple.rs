@@ -3,7 +3,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tracing::{trace, warn};
 
 use crate::consumer::Consumer;
@@ -22,6 +22,7 @@ pub(crate) struct UnifiedMultipleDispatcher {
     reliable: Option<mpsc::Sender<DispatcherCommand>>, // control channel for reliable loop
     control_tx: mpsc::Sender<DispatcherCommand>,
     _marker: PhantomData<()>,
+    ready_rx: watch::Receiver<bool>,
 }
 
 #[derive(Debug)]
@@ -40,6 +41,8 @@ impl UnifiedMultipleDispatcher {
         let (control_tx, mut control_rx) = mpsc::channel(32);
         let rr = Arc::new(AtomicUsize::new(0));
         let rr_task = rr.clone();
+        // Non-reliable dispatcher is ready immediately.
+        let (_ready_tx, ready_rx) = watch::channel(true);
 
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
@@ -110,6 +113,7 @@ impl UnifiedMultipleDispatcher {
             reliable: None,
             control_tx,
             _marker: PhantomData,
+            ready_rx,
         }
     }
 
@@ -120,6 +124,8 @@ impl UnifiedMultipleDispatcher {
         let rr = Arc::new(AtomicUsize::new(0));
         let rr_task = rr.clone();
         let engine = Mutex::new(engine);
+        // Readiness is false until stream initialization completes.
+        let (ready_tx, ready_rx) = watch::channel(false);
 
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
@@ -134,6 +140,8 @@ impl UnifiedMultipleDispatcher {
             {
                 warn!("Reliable multi dispatcher failed to init stream: {}", e);
             }
+            // Signal readiness regardless of success.
+            let _ = ready_tx.send(true);
 
             loop {
                 tokio::select! {
@@ -204,6 +212,7 @@ impl UnifiedMultipleDispatcher {
             reliable: Some(reliable_tx_for_struct),
             control_tx,
             _marker: PhantomData,
+            ready_rx,
         }
     }
 
@@ -218,6 +227,19 @@ impl UnifiedMultipleDispatcher {
             }
         });
         notify
+    }
+
+    /// Waits until the dispatcher has completed its initial stream setup.
+    pub(crate) async fn ready(&self) {
+        if *self.ready_rx.borrow() {
+            return;
+        }
+        let mut rx = self.ready_rx.clone();
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() {
+                break;
+            }
+        }
     }
 
     pub(crate) async fn dispatch_message(&self, message: StreamMessage) -> Result<()> {

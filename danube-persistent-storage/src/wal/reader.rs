@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 use tokio::sync::broadcast;
@@ -5,8 +7,10 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tracing::info;
 
-use crate::checkpoint::WalCheckpoint;
+use super::cache::build_cache_stream;
 use super::streaming_reader;
+use super::WalInner;
+use crate::checkpoint::WalCheckpoint;
 
 /// Read and decode WAL frames in `[from_offset, to_exclusive)` from file at `path`.
 ///
@@ -29,14 +33,21 @@ use super::streaming_reader;
 /// - If `from_offset < cache_start`, replay `[from_offset, cache_start)` from the file.
 /// - Then append cache items `>= max(from_offset, cache_start)`.
 /// - Finally switch to live tail (broadcast) starting after the last replayed offset.
+#[allow(dead_code)]
 pub(crate) async fn build_tail_stream(
     checkpoint_opt: Option<WalCheckpoint>,
-    cache_snapshot: Vec<(u64, StreamMessage)>,
+    wal_inner: Arc<WalInner>,
     from_offset: u64,
     rx: broadcast::Receiver<(u64, StreamMessage)>,
 ) -> Result<TopicStream, PersistentStorageError> {
-    // Determine the earliest offset in the (already ordered) cache snapshot
-    let cache_start = cache_snapshot.first().map(|(o, _)| *o).unwrap_or(u64::MAX);
+    // Determine the earliest offset currently present in cache
+    let cache_start = {
+        let cache = wal_inner.cache.lock().await;
+        // Ensure the iterator drops before leaving the block to avoid E0597
+        let mut iter = cache.range_from(0);
+        let first = iter.next().map(|(off, _)| off).unwrap_or(u64::MAX);
+        first
+    };
 
     // Phase 1: Stream items from local WAL files if needed (using rotated file list from checkpoint)
     let file_stream: Option<TopicStream> = if let Some(ckpt) = checkpoint_opt {
@@ -66,40 +77,19 @@ pub(crate) async fn build_tail_stream(
         None
     };
 
-    // Compute live watermark:
-    // - If cache is empty, start live from `from_offset`.
-    // - Otherwise, start after the last cached item we will emit to avoid duplicates.
-    let start_from_live = if cache_snapshot.is_empty() {
-        from_offset
-    } else {
-        let last_cache_off = cache_snapshot.last().map(|(o, _)| *o).unwrap_or(from_offset);
-        from_offset.max(last_cache_off.saturating_add(1))
-    };
-
-    // Now extend with cache items that are >= max(from_offset, cache_start)
-    let cache_lower = from_offset.max(cache_start);
-    let cache_stream = tokio_stream::iter(
-        cache_snapshot
-            .into_iter()
-            .filter(move |(off, _)| *off >= cache_lower)
-            .map(|(off, mut msg)| {
-                msg.msg_id.segment_offset = off;
-                Ok(msg)
-            }),
-    );
+    // Build cache stream from requested offset (bounded batches under brief locks)
+    let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
 
     // Phase 3: Live tailing from broadcast, starting at computed watermark
-    
-    let live_stream = BroadcastStream::new(rx).filter_map(move |item| match item {
-        Ok((off, mut msg)) if off >= start_from_live => {
-            msg.msg_id.segment_offset = off;
-            Some(Ok(msg))
-        }
-        Ok(_) => None, // skip older
-        Err(e) => Some(Err(PersistentStorageError::Other(format!(
+
+    // Live tailing from broadcast. Since append stamps offsets, we don't need to mutate messages.
+    // We don't attempt duplicate filtering here; for robust de-dup we will switch to a stateful reader.
+    let live_stream = BroadcastStream::new(rx).map(move |item| match item {
+        Ok((_off, msg)) => Ok(msg),
+        Err(e) => Err(PersistentStorageError::Other(format!(
             "broadcast error: {}",
             e
-        )))),
+        ))),
     });
 
     // Chain: file (optional) -> cache -> live

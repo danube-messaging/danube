@@ -72,23 +72,23 @@ impl PersistentStorage for WalStorage {
             (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
             _ => {
                 // Fallback to WAL-only behavior if cloud integration is not configured.
-                let from = match start {
-                    StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
-                    StartPosition::Offset(o) => o,
+                let (from, live) = match start {
+                    StartPosition::Latest => (self.wal.current_offset(), true),
+                    StartPosition::Offset(o) => (o, false),
                 };
                 warn!(
                     target = "wal_storage",
                     start = from,
                     "cloud is not configured; creating reader from WAL only"
                 );
-                return self.wal.tail_reader(from).await;
+                return self.wal.tail_reader(from, live).await;
             }
         };
 
-        // 1. Determine the concrete start offset from the StartPosition.
-        let start_offset = match start {
-            StartPosition::Latest => self.wal.current_offset().saturating_sub(1),
-            StartPosition::Offset(o) => o,
+        // 1. Determine the concrete start offset and whether we are in live mode.
+        let (start_offset, live) = match start {
+            StartPosition::Latest => (self.wal.current_offset(), true),
+            StartPosition::Offset(o) => (o, false),
         };
 
         // 2. Get the WAL's start offset from its checkpoint. This tells us the oldest
@@ -107,7 +107,7 @@ impl PersistentStorage for WalStorage {
                 wal_start = wal_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            self.wal.tail_reader(start_offset).await
+            self.wal.tail_reader(start_offset, live).await
         } else {
             // CASE 2: The read must start from the cloud and then hand off to the WAL.
             let handoff_offset = wal_start_offset;
@@ -122,10 +122,12 @@ impl PersistentStorage for WalStorage {
             // Create a stream for the historical data from the cloud.
             // This will read from start_offset up to (but not including) handoff_offset.
             let reader = CloudReader::new(cloud, etcd, topic_path.clone());
-            let cloud_stream = reader.read_range(start_offset, Some(handoff_offset - 1)).await?;
+            let cloud_stream = reader
+                .read_range(start_offset, Some(handoff_offset - 1))
+                .await?;
 
             // Create a stream for the recent data from the WAL, starting at the handoff point.
-            let wal_stream = self.wal.tail_reader(handoff_offset).await?;
+            let wal_stream = self.wal.tail_reader(handoff_offset, false).await?;
 
             // Chain them together to provide a single, seamless stream to the consumer.
             let chained = cloud_stream.chain(wal_stream);

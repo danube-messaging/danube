@@ -7,11 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 // use tokio::io::AsyncReadExt; // no longer needed here; file IO for persisted reads moved to uploader
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 // Submodules for writer and reader paths
 mod cache;
 mod reader;
+mod stateful_reader;
 mod streaming_reader;
 mod writer;
 use cache::Cache;
@@ -34,7 +37,7 @@ pub struct Wal {
 }
 
 #[derive(Debug)]
-struct WalInner {
+pub(crate) struct WalInner {
     next_offset: AtomicU64,
     tx: broadcast::Sender<(u64, StreamMessage)>,
     wal_path: Mutex<Option<PathBuf>>,
@@ -121,8 +124,8 @@ impl WalConfig {
 
 impl Default for Wal {
     fn default() -> Self {
-        let (tx, _rx) = broadcast::channel(1024);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8192);
+        let (tx, _rx) = broadcast::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
         let wal = Self {
             inner: Arc::new(WalInner {
                 next_offset: AtomicU64::new(0),
@@ -174,8 +177,8 @@ impl Wal {
         cfg: WalConfig,
         ckpt_store: Option<Arc<CheckpointStore>>,
     ) -> Result<Self, PersistentStorageError> {
-        let (tx, _rx) = broadcast::channel(1024);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8192);
+        let (tx, _rx) = broadcast::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
         // Build optional file and wal_path without moving the Option twice
         let wal_path_opt = if let Some(path) = cfg.wal_file_path() {
             if let Some(parent) = path.parent() {
@@ -280,13 +283,17 @@ impl Wal {
     /// - On-disk frame layout: `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 over `bytes`.
     pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
         let offset = self.inner.next_offset.fetch_add(1, Ordering::AcqRel);
-        // Serialize the full message for durability and enqueue to background writer
-        let bytes = bincode::serialize(msg)
+        // Clone and stamp the message with its assigned offset so all downstream paths
+        // (cache, disk, broadcast) see the correct segment_offset without rewriting later.
+        let mut stamped = msg.clone();
+        stamped.msg_id.segment_offset = offset;
+        // Serialize the stamped message for durability and enqueue to background writer
+        let bytes = bincode::serialize(&stamped)
             .map_err(|e| PersistentStorageError::Io(format!("bincode serialize failed: {}", e)))?;
         // Update in-memory cache with single lock and evict oldest if over capacity
         {
             let mut cache = self.inner.cache.lock().await;
-            cache.insert(offset, msg.clone());
+            cache.insert(offset, stamped.clone());
             cache.evict_to(self.inner.cache_capacity);
         }
 
@@ -303,7 +310,7 @@ impl Wal {
         }
 
         // Notify tailing readers
-        if let Err(e) = self.inner.tx.send((offset, msg.clone())) {
+        if let Err(e) = self.inner.tx.send((offset, stamped.clone())) {
             warn!(
                 target = "wal",
                 offset = offset,
@@ -325,23 +332,27 @@ impl Wal {
     pub async fn tail_reader(
         &self,
         from_offset: u64,
+        live: bool,
     ) -> Result<TopicStream, PersistentStorageError> {
-        // Snapshot inputs and delegate heavy lifting to reader::build_tail_stream
-        // 1) Obtain WAL checkpoint for rotated file enumeration.
-        // Prefer in-memory store if present, otherwise read from disk (wal.ckpt)
+        // Fast path: explicit live-tail request ("from now").
+        if live {
+            let rx = self.inner.tx.subscribe();
+            let live_stream = BroadcastStream::new(rx).map(|item| match item {
+                Ok((_off, msg)) => Ok(msg),
+                Err(e) => Err(PersistentStorageError::Other(format!(
+                    "broadcast error: {}",
+                    e
+                ))),
+            });
+            return Ok(Box::pin(live_stream));
+        }
+
+        // Use the WAL-only StatefulReader to coordinate Files → Cache → Live dynamically.
         let checkpoint_opt = self.read_wal_checkpoint().await?;
-        // 2) Snapshot cache from the requested offset to avoid unnecessary clones
-        let cache_snapshot: Vec<(u64, StreamMessage)> = {
-            let cache = self.inner.cache.lock().await;
-            cache
-                .range_from(from_offset)
-                .map(|(off, msg)| (off, msg.clone()))
-                .collect()
-        };
-        // 3) Live receiver for broadcast tailing
-        let rx = self.inner.tx.subscribe();
-        // 4) Build the combined file->cache->live stream
-        reader::build_tail_stream(checkpoint_opt, cache_snapshot, from_offset, rx).await
+        let reader =
+            stateful_reader::StatefulReader::new(self.inner.clone(), checkpoint_opt, from_offset)
+                .await?;
+        Ok(Box::pin(reader))
     }
 
     /// Snapshot cached messages with offsets `>= after_offset`.
@@ -426,6 +437,6 @@ impl Wal {
 #[cfg(test)]
 mod cache_test;
 #[cfg(test)]
-mod reader_test;
+mod streaming_reader_test;
 #[cfg(test)]
 mod writer_test;
