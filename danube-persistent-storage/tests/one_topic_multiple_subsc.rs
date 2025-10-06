@@ -107,7 +107,6 @@ async fn test_multiple_subscriptions_independent_positions() {
 /// - Each reader receives messages in correct order
 /// - No data corruption under concurrent access
 #[tokio::test]
-#[ignore]
 async fn test_multiple_subscriptions_concurrent_reading() {
     let (factory, _memory_store) = create_test_factory().await;
     let topic_name = "integration/multi-subsc-concurrent";
@@ -241,7 +240,6 @@ async fn test_multiple_subscriptions_concurrent_reading() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_subscriptions_with_cloud_handoff() {
     let (factory, memory_store) = create_test_factory().await;
     let topic_name = "integration/multi-subsc-cloud";
@@ -435,7 +433,6 @@ async fn test_multiple_subscriptions_different_speeds() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_subscriptions_tail_reading() {
     let (factory, _memory_store) = create_test_factory().await;
     let topic_name = "integration/multi-subsc-tail";
@@ -518,7 +515,6 @@ async fn test_multiple_subscriptions_tail_reading() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_subscriptions_mixed_start_positions() {
     let (factory, memory_store) = create_test_factory().await;
     let topic_name = "integration/multi-subsc-mixed";

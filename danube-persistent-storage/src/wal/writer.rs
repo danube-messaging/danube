@@ -56,7 +56,6 @@ struct WriterState {
     file_seq: u64,
     wal_path: Option<PathBuf>,
     checkpoint_path: Option<PathBuf>,
-    fsync_interval_ms: u64,
     fsync_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
@@ -75,33 +74,25 @@ impl WriterState {
         bytes: &[u8],
     ) -> Result<(), PersistentStorageError> {
         self.rotate_if_needed().await?;
-        if let Some(writer) = self.writer.as_mut() {
-            let len = bytes.len() as u32;
-            let crc = crc32fast::hash(bytes);
-            self.write_buf.extend_from_slice(&offset.to_le_bytes());
-            self.write_buf.extend_from_slice(&len.to_le_bytes());
-            self.write_buf.extend_from_slice(&crc.to_le_bytes());
-            self.write_buf.extend_from_slice(bytes);
+        // Frame and buffer the entry. We avoid borrowing the writer here so we can call
+        // `process_flush()` (which accesses `self.writer`) without overlapping borrows.
+        let len = bytes.len() as u32;
+        let crc = crc32fast::hash(bytes);
+        self.write_buf.extend_from_slice(&offset.to_le_bytes());
+        self.write_buf.extend_from_slice(&len.to_le_bytes());
+        self.write_buf.extend_from_slice(&crc.to_le_bytes());
+        self.write_buf.extend_from_slice(bytes);
 
-            self.bytes_in_file += (8 + 4 + 4 + bytes.len()) as u64;
-            // Remember last offset appended
-            self.last_offset_written = Some(offset);
-            let should_flush_by_bytes = self.write_buf.len() >= self.fsync_max_batch_bytes;
-            let should_flush_by_time = self.last_flush.elapsed()
-                >= std::time::Duration::from_millis(self.fsync_interval_ms);
-            if should_flush_by_bytes || should_flush_by_time {
-                writer
-                    .write_all(&self.write_buf)
-                    .await
-                    .map_err(|e| PersistentStorageError::Io(format!("wal write failed: {}", e)))?;
-                writer
-                    .flush()
-                    .await
-                    .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
-                self.write_buf.clear();
-                self.last_flush = std::time::Instant::now();
-                self.write_checkpoint(offset).await.ok();
-            }
+        self.bytes_in_file += (8 + 4 + 4 + bytes.len()) as u64;
+        // Remember last offset appended
+        self.last_offset_written = Some(offset);
+
+        // Time-based flushing is handled by the periodic ticker in run(); only enforce byte threshold here
+        let should_flush_by_bytes = self.write_buf.len() >= self.fsync_max_batch_bytes;
+        if should_flush_by_bytes {
+            // This will write the buffer, fsync, clear, update timers, and persist a checkpoint
+            // using `last_offset_written`.
+            self.process_flush().await?;
         }
         Ok(())
     }
@@ -244,7 +235,6 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         file_seq: 0,
         wal_path: init.wal_path,
         checkpoint_path: init.checkpoint_path,
-        fsync_interval_ms: init.fsync_interval_ms,
         fsync_max_batch_bytes: init.fsync_max_batch_bytes,
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
@@ -254,22 +244,45 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     };
 
     debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
-    while let Some(cmd) = rx.recv().await {
-        let res = match cmd {
-            LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
-            LogCommand::Flush => state.process_flush().await,
-            LogCommand::Rotate => state.rotate_if_needed().await,
-            LogCommand::Shutdown(ack_tx) => {
-                if let Err(e) = state.process_flush().await {
-                    warn!(target = "wal", error = ?e, "flush on shutdown failed");
+    let mut ticker =
+        tokio::time::interval(std::time::Duration::from_millis(init.fsync_interval_ms));
+    loop {
+        tokio::select! {
+            maybe_cmd = rx.recv() => {
+                match maybe_cmd {
+                    Some(cmd) => {
+                        let res = match cmd {
+                            LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
+                            LogCommand::Flush => state.process_flush().await,
+                            LogCommand::Rotate => state.rotate_if_needed().await,
+                            LogCommand::Shutdown(ack_tx) => {
+                                if let Err(e) = state.process_flush().await {
+                                    warn!(target = "wal", error = ?e, "flush on shutdown failed");
+                                }
+                                let _ = ack_tx.send(());
+                                debug!(target = "wal", "writer task shutting down");
+                                break;
+                            }
+                        };
+                        if let Err(e) = res {
+                            warn!(target = "wal", error = ?e, "background writer command failed");
+                        }
+                    }
+                    None => {
+                        // Sender dropped; perform a final flush and exit
+                        if let Err(e) = state.process_flush().await {
+                            warn!(target = "wal", error = ?e, "final flush failed after channel closed");
+                        }
+                        break;
+                    }
                 }
-                let _ = ack_tx.send(());
-                debug!(target = "wal", "writer task shutting down");
-                break;
             }
-        };
-        if let Err(e) = res {
-            warn!(target = "wal", error = ?e, "background writer command failed");
+            _ = ticker.tick() => {
+                // Time-based flush to ensure checkpoints advance even without new writes
+                if let Err(e) = state.process_flush().await {
+                    warn!(target = "wal", error = ?e, "periodic flush failed");
+                }
+            }
         }
     }
 }

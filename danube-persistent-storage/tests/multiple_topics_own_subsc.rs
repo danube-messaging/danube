@@ -79,7 +79,6 @@ async fn test_multiple_topics_isolated_storage() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_topics_independent_uploaders() {
     let (factory, memory_store) = create_test_factory().await;
 
@@ -230,7 +229,6 @@ async fn test_multiple_topics_concurrent_operations() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_topics_different_read_patterns() {
     let (factory, _memory_store) = create_test_factory().await;
 

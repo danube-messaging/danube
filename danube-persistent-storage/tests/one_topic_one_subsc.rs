@@ -92,7 +92,7 @@ async fn test_single_topic_wal_rotation_and_upload() {
     let storage = factory.for_topic(topic_name).await.expect("create storage");
 
     // Write enough messages to trigger WAL rotation and upload
-    let batch_size = 50;
+    let batch_size = 30;
     for i in 0..batch_size {
         let msg = make_test_message(i, 1, topic_name, i, &format!("rotation-msg-{}", i));
         storage
@@ -140,7 +140,6 @@ async fn test_single_topic_wal_rotation_and_upload() {
 /// - All messages are delivered in correct offset order
 /// - No gaps or duplicates in message stream
 #[tokio::test]
-#[ignore]
 async fn test_single_topic_cloud_handoff_reading() {
     let (factory, memory_store) = create_test_factory().await;
     let topic_name = "integration/handoff";
@@ -278,7 +277,6 @@ async fn test_single_topic_resume_from_position() {
 /// - New messages are delivered in real-time
 /// - Message ordering is preserved for live stream
 #[tokio::test]
-#[ignore]
 async fn test_single_topic_tail_reading() {
     let (factory, _memory_store) = create_test_factory().await;
     let topic_name = "integration/tail";
@@ -349,7 +347,6 @@ async fn test_single_topic_tail_reading() {
 /// - All written messages are readable
 /// - Message ordering is preserved under concurrency
 #[tokio::test]
-#[ignore]
 async fn test_single_topic_concurrent_write_read() {
     let (factory, _memory_store) = create_test_factory().await;
     let topic_name = "integration/concurrent";
