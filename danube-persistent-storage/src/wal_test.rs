@@ -134,7 +134,8 @@ mod tests {
     /// - First 100 offsets `[0..100)` delivered in order.
     /// - Then offsets `100, 101, 102` delivered via live broadcast.
     #[tokio::test]
-    async fn test_stateful_transitions_files_cache_live() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_stateful_transitions_files_cache_live() -> Result<(), Box<dyn std::error::Error>>
+    {
         let tmp = TempDir::new()?;
         let dir = tmp.path().to_path_buf();
         // Force rotation to ensure file replay exists
@@ -217,7 +218,9 @@ mod tests {
         let wal = Wal::with_config(cfg).await?;
 
         // Prime cache with 5 messages
-        for i in 0..5u64 { wal.append(&make_message(i)).await?; }
+        for i in 0..5u64 {
+            wal.append(&make_message(i)).await?;
+        }
 
         // Start reader from 0 (cache path)
         let mut stream = wal.tail_reader(0, false).await?;
@@ -233,11 +236,15 @@ mod tests {
 
         // Collect first 10 offsets and assert continuity
         let mut offs = Vec::new();
-        while let Some(item) = timeout(Duration::from_secs(10), stream.next()).await
-            .map_err(|_| "timeout collecting refill boundary")? {
+        while let Some(item) = timeout(Duration::from_secs(10), stream.next())
+            .await
+            .map_err(|_| "timeout collecting refill boundary")?
+        {
             let msg = item?;
             offs.push(msg.msg_id.segment_offset);
-            if offs.len() == 10 { break; }
+            if offs.len() == 10 {
+                break;
+            }
         }
 
         assert_eq!(offs.len(), 10, "expected 10 messages");

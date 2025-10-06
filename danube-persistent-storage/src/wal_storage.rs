@@ -122,7 +122,9 @@ impl PersistentStorage for WalStorage {
             // Create a stream for the historical data from the cloud.
             // This will read from start_offset up to (but not including) handoff_offset.
             let reader = CloudReader::new(cloud, etcd, topic_path.clone());
-            let cloud_stream = reader.read_range(start_offset, Some(handoff_offset - 1)).await?;
+            let cloud_stream = reader
+                .read_range(start_offset, Some(handoff_offset - 1))
+                .await?;
 
             // Create a stream for the recent data from the WAL, starting at the handoff point.
             let wal_stream = self.wal.tail_reader(handoff_offset, false).await?;

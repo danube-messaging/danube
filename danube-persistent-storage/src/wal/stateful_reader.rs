@@ -224,5 +224,4 @@ impl StatefulReader {
             Poll::Pending => Poll::Pending,
         }
     }
-
 }
