@@ -22,7 +22,6 @@ use tokio::time::timeout;
 
 use crate::consumer::Consumer;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
-use crate::dispatcher::subscription_engine::TopicStoreLike;
 use crate::dispatcher::UnifiedSingleDispatcher;
 use crate::topic::TopicStore;
 
@@ -58,7 +57,7 @@ async fn reliable_single_ack_gating() {
     // Dispatcher with reliable engine (start: Latest)
     let engine = SubscriptionEngine::new(
         "sub-a".to_string(),
-        Arc::new(ts.clone()) as Arc<dyn TopicStoreLike>,
+        Arc::new(ts.clone()),
     );
     let dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
     let notifier = dispatcher.get_notifier();

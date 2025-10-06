@@ -7,28 +7,7 @@ use tokio::select;
 use tokio::time::{Duration, Instant};
 
 use crate::resources::TopicResources;
-
-/// Minimal trait to decouple SubscriptionEngine from a concrete TopicStore location.
-/// The real `TopicStore` in the broker should implement this trait.
-pub(crate) trait TopicStoreLike: Send + Sync {
-    fn create_reader(
-        &self,
-        start: StartPosition,
-    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<TopicStream>> + Send + '_>>;
-}
-
-/// Allow using unit type for Non-Reliable unified dispatchers (reader is never used there)
-impl TopicStoreLike for () {
-    fn create_reader(
-        &self,
-        _start: StartPosition,
-    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<TopicStream>> + Send + '_>>
-    {
-        Box::pin(
-            async move { unreachable!("Non-reliable unified dispatchers do not use TopicStore") },
-        )
-    }
-}
+use crate::topic::TopicStore;
 
 /// SubscriptionEngine encapsulates reliable delivery mechanics for a subscription:
 /// - Polling from TopicStore-backed TopicStream (WAL tail + CloudReader handoff)
@@ -36,7 +15,7 @@ impl TopicStoreLike for () {
 pub(crate) struct SubscriptionEngine {
     pub(crate) _subscription_name: String,
     pub(crate) topic_name: Option<String>,
-    pub(crate) topic_store: Arc<dyn TopicStoreLike>,
+    pub(crate) topic_store: Arc<TopicStore>,
     pub(crate) stream: Option<TopicStream>,
     // progress persistence (optional)
     pub(crate) progress_resources: Option<tokio::sync::Mutex<TopicResources>>,
@@ -47,7 +26,7 @@ pub(crate) struct SubscriptionEngine {
 }
 
 impl SubscriptionEngine {
-    pub(crate) fn new(subscription_name: String, topic_store: Arc<dyn TopicStoreLike>) -> Self {
+    pub(crate) fn new(subscription_name: String, topic_store: Arc<TopicStore>) -> Self {
         Self {
             _subscription_name: subscription_name,
             topic_name: None,
@@ -64,7 +43,7 @@ impl SubscriptionEngine {
     pub(crate) fn new_with_progress(
         subscription_name: String,
         topic_name: String,
-        topic_store: Arc<dyn TopicStoreLike>,
+        topic_store: Arc<TopicStore>,
         progress_resources: TopicResources,
         sub_progress_flush_interval: Duration,
     ) -> Self {
@@ -77,10 +56,7 @@ impl SubscriptionEngine {
 
     /// Initialize underlying stream. For a brand-new subscription we default to Latest.
     pub(crate) async fn init_stream_latest(&mut self) -> Result<()> {
-        let stream = self
-            .topic_store
-            .create_reader(StartPosition::Latest)
-            .await?;
+        let stream = self.topic_store.create_reader(StartPosition::Latest).await?;
         self.stream = Some(stream);
         Ok(())
     }
@@ -160,6 +136,8 @@ mod tests {
     use crate::resources::TopicResources;
     use danube_core::message::MessageID;
     use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use danube_persistent_storage::wal::{Wal, WalConfig};
+    use danube_persistent_storage::WalStorage;
     use tokio::time::{sleep, Duration};
 
     /// What this test validates
@@ -190,11 +168,14 @@ mod tests {
         let topic_resources = TopicResources::new(local_cache, store.clone());
         let topic_resources_reader = topic_resources.clone();
 
-        // Engine with short debounce interval (50ms), TopicStore unused (non-reliable variant placeholder)
+        // Engine with short debounce interval (50ms). TopicStore not used here, but must be provided.
+        let wal = Wal::with_config(WalConfig::default()).await.expect("init wal");
+        let wal_storage = WalStorage::from_wal(wal);
+        let ts = TopicStore::new("/ns/topic-a".to_string(), wal_storage);
         let mut engine = SubscriptionEngine::new_with_progress(
             "sub-a".to_string(),
             "/ns/topic-a".to_string(),
-            Arc::new(()) as Arc<dyn TopicStoreLike>,
+            Arc::new(ts),
             topic_resources,
             Duration::from_millis(50),
         );

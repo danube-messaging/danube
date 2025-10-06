@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::Consumer;
-use crate::dispatcher::subscription_engine::{SubscriptionEngine, TopicStoreLike};
+use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedMultipleDispatcher;
 use crate::topic::TopicStore;
 
@@ -55,7 +55,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     let engine = SubscriptionEngine::new(
         "sub-shared".to_string(),
-        Arc::new(ts.clone()) as Arc<dyn TopicStoreLike>,
+        Arc::new(ts.clone()),
     );
     let dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
     let notifier = dispatcher.get_notifier();

@@ -175,18 +175,14 @@ impl Subscription {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
                                 options.subscription_name.clone(),
                                 self.topic_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                Arc::new(ts.clone()),
                                 pr,
                                 sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             )
                         } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<
-                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
-                                    >,
+                                Arc::new(ts.clone()),
                             )
                         };
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
@@ -205,18 +201,14 @@ impl Subscription {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
                                 options.subscription_name.clone(),
                                 self.topic_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                Arc::new(ts.clone()),
                                 pr,
                                 sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             )
                         } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<
-                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
-                                    >,
+                                Arc::new(ts.clone()),
                             )
                         };
                         let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
@@ -235,18 +227,14 @@ impl Subscription {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
                                 options.subscription_name.clone(),
                                 self.topic_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<dyn crate::dispatcher::subscription_engine::TopicStoreLike>,
+                                Arc::new(ts.clone()),
                                 pr,
                                 sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             )
                         } else {
                             crate::dispatcher::subscription_engine::SubscriptionEngine::new(
                                 options.subscription_name.clone(),
-                                Arc::new(ts.clone())
-                                    as Arc<
-                                        dyn crate::dispatcher::subscription_engine::TopicStoreLike,
-                                    >,
+                                Arc::new(ts.clone()),
                             )
                         };
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
