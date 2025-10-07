@@ -15,7 +15,6 @@ use tracing::{info, warn};
 use crate::{
     broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
     dispatch_strategy::DispatchStrategy,
-    dispatcher::subscription_engine::TopicStoreLike,
     message::AckMessage,
     policies::Policies,
     producer::Producer,
@@ -404,17 +403,5 @@ impl TopicStore {
     pub(crate) async fn create_reader(&self, start: StartPosition) -> anyhow::Result<TopicStream> {
         let stream = self.storage.create_reader(&self.topic_name, start).await?;
         Ok(stream)
-    }
-}
-
-// Implement the minimal trait expected by SubscriptionEngine to decouple module layout.
-impl TopicStoreLike for TopicStore {
-    fn create_reader(
-        &self,
-        start: StartPosition,
-    ) -> core::pin::Pin<
-        Box<dyn core::future::Future<Output = anyhow::Result<TopicStream>> + Send + '_>,
-    > {
-        Box::pin(async move { self.create_reader(start).await })
     }
 }
