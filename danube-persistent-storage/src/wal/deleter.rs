@@ -58,7 +58,7 @@ impl Deleter {
         })
     }
 
-    async fn run_cycle(&self) -> Result<(), PersistentStorageError> {
+    pub(crate) async fn run_cycle(&self) -> Result<(), PersistentStorageError> {
         let wal_ckpt_opt = self.ckpt_store.get_wal().await;
         let uploader_ckpt_opt = self.ckpt_store.get_uploader().await;
         let (mut wal_ckpt, uploader_ckpt) = match (wal_ckpt_opt, uploader_ckpt_opt) {
