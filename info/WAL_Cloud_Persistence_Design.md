@@ -40,6 +40,11 @@
 - Configures WAL directory structure: `<root>/<namespace>/<topic>/`
 - Initializes per-topic `CheckpointStore` for atomic checkpoint management
 
+**Deleter** (`wal/deleter.rs`):
+- Per-topic background task that enforces WAL retention policies
+- Evaluates eligible rotated files and deletes them safely
+- Advances `WalCheckpoint.start_offset` after deletions
+
 **Wal** (`wal.rs`):
 - Per-topic append-only log with integrated in-memory `Cache` (BTreeMap-based)
 - Frame format: `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 validation
@@ -177,13 +182,14 @@ impl CloudReader {
 **WalCheckpoint:**
 ```rust
 struct WalCheckpoint {
-    start_offset: u64,              // Oldest offset in local WAL
-    last_offset: u64,               // Last written offset
-    file_seq: u64,                  // Current file sequence number
-    file_path: String,              // Active file path
-    rotated_files: Vec<(u64, PathBuf)>, // History of rotated files
-    active_file_name: Option<String>,
-    last_rotation_at: Option<u64>,
+    start_offset: u64,                         // Oldest offset in local WAL (advanced by Deleter)
+    last_offset: u64,                          // Last written offset
+    file_seq: u64,                             // Current file sequence number (active file)
+    file_path: String,                         // Active file path
+    rotated_files: Vec<(u64, PathBuf, u64)>,   // (seq, path, first_offset) for each rotated file
+    active_file_name: Option<String>,          // e.g., "wal.<seq>.log"
+    last_rotation_at: Option<u64>,             // For observability
+    active_file_first_offset: Option<u64>,     // First offset written to the active file
 }
 ```
 
@@ -321,7 +327,7 @@ struct UploaderCheckpoint {
 ### Configuration Knobs (summary)
 - Progress updater: `progress_flush_interval_seconds`, `progress_min_offset_delta`.
 - Uploader: `interval_seconds`, `max_batch_bytes`, rotation thresholds.
-- WAL: `fsync_interval_ms`, retention floors.
+- WAL: `fsync_interval_ms`, rotation thresholds, retention (time/size).
 - ETCD: endpoints, namespace, leader lease parameters.
 
 ---
@@ -433,12 +439,20 @@ let uploader_config = UploaderBaseConfig {
     interval_seconds: 300,
 };
 
+// Include Deleter (retention) configuration when constructing the factory
+let deleter_config = DeleterConfig {
+    check_interval_minutes: 5,
+    retention_time_minutes: Some(24 * 60), // 24h default
+    retention_size_mb: Some(10 * 1024),    // 10 GiB default
+};
+
 let factory = WalStorageFactory::new(
     wal_config,
     backend_config,
     metadata_store,
     "/danube",
     uploader_config,
+    deleter_config,
 );
 
 // Create per-topic storage
@@ -533,6 +547,7 @@ storage/
 - Directory: `<wal_root>/<namespace>/<topic>/`
 - Files: `wal.log` (active), `wal.<seq>.log` (rotated)
 - Checkpoints: `wal.ckpt`, `uploader.ckpt`
+- Retention: background `Deleter` task per topic advances `start_offset` and removes old rotated files
 
 ### Writer Model
 **Background writer task** (`wal/writer.rs`):
@@ -609,9 +624,10 @@ struct Cache {
 **State tracking:**
 ```rust
 struct WalCheckpoint {
-    rotated_files: Vec<(u64, PathBuf)>,  // History for reader/uploader
+    rotated_files: Vec<(u64, PathBuf, u64)>,  // (seq, path, first_offset) for reader/uploader/deleter
     file_seq: u64,                       // Current sequence
     file_path: String,                   // Active file path
+    active_file_first_offset: Option<u64>,// First offset written to active file
     // ...
 }
 ```
@@ -644,6 +660,7 @@ let stream = file_stream
 - Atomic: tmp+rename pattern
 - Serialization: bincode (compact binary)
 - Cached in `CheckpointStore` for fast reads
+- `start_offset` is updated by the `Deleter` after deletions using `first_offset` metadata
 
 **Recovery:**
 - On startup: read `wal.ckpt`, restore state
