@@ -122,23 +122,23 @@ pub struct Deleter {
 **Modify**: `wal.rs`, `wal_factory.rs`
 
 Tasks:
-- [x] Create `DeleterConfig` and `Deleter` structs
-- [x] Implement `Deleter::new()`, `start()`, `run_cycle()`
-- [x] Implement safety checks for file eligibility
-- [x] Implement time-based and size-based retention
-- [x] Implement file deletion and checkpoint update
-- [x] Add logging (info, warn, error, debug)
-- [x] Error handling (continue on single file errors)
+- [ ] Create `DeleterConfig` and `Deleter` structs
+- [ ] Implement `Deleter::new()`, `start()`, `run_cycle()`
+- [ ] Implement safety checks for file eligibility
+- [ ] Implement time-based and size-based retention
+- [ ] Implement file deletion and checkpoint update
+- [ ] Add logging (info, warn, error, debug)
+- [ ] Error handling (continue on single file errors)
 
 ### Phase 2: start_offset Management ✅ (2-3 hours)
 **Problem**: `start_offset` currently hardcoded to 0 in `writer.rs:185`
 **Solution**: Update after deletions to first offset in oldest remaining file
 
 Tasks:
-- [x] Implement `scan_file_first_offset()` helper
-- [x] Update `start_offset` in Deleter after deletions
-- [x] Test `start_offset` advancing
-- [x] Verify WalStorage respects updated `start_offset`
+- [ ] Implement `scan_file_first_offset()` helper
+- [ ] Update `start_offset` in Deleter after deletions
+- [ ] Test `start_offset` advancing
+- [ ] Verify WalStorage respects updated `start_offset`
 
 ### Phase 3: Configuration Integration ✅ (2-3 hours)
 **Modify**: `danube_broker.yml`, `service_configuration.rs`, `main.rs`, `wal_factory.rs`
@@ -163,25 +163,25 @@ pub struct WalRetentionNode {
 ```
 
 Tasks:
-- [x] Add `WalRetentionNode` to service_configuration.rs
-- [x] Update broker YAML with retention config
-- [x] Pass `DeleterConfig` to WalStorageFactory
-- [x] Spawn Deleter in `for_topic()` alongside Uploader
+- [ ] Add `WalRetentionNode` to service_configuration.rs
+- [ ] Update broker YAML with retention config
+- [ ] Pass `DeleterConfig` to WalStorageFactory
+- [ ] Spawn Deleter in `for_topic()` alongside Uploader
 
 ### Phase 4: Testing & Validation ✅ (6-8 hours)
 **Create**: `tests/wal_retention_test.rs`, `src/wal/deleter_test.rs`
 
 Test Coverage:
-- [x] Does NOT delete active file
-- [x] Does NOT delete file being uploaded
-- [x] Does NOT delete file with uncommitted data
-- [x] Time-based retention triggers correctly
-- [x] Size-based retention triggers correctly
-- [x] `start_offset` updates correctly
-- [x] StatefulReader works after deletion
-- [x] Checkpoint updates are atomic
-- [x] Handles file system errors gracefully
-- [x] Multiple topics work independently
+- [ ] Does NOT delete active file
+- [ ] Does NOT delete file being uploaded
+- [ ] Does NOT delete file with uncommitted data
+- [ ] Time-based retention triggers correctly
+- [ ] Size-based retention triggers correctly
+- [ ] `start_offset` updates correctly
+- [ ] StatefulReader works after deletion
+- [ ] Checkpoint updates are atomic
+- [ ] Handles file system errors gracefully
+- [ ] Multiple topics work independently
 
 ### Phase 5: Observability & Metrics ✅ (2-3 hours)
 **Metrics** (prometheus/tracing):
