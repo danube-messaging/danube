@@ -22,14 +22,16 @@ pub struct WalCheckpoint {
     /// The absolute path to the current active WAL file.
     pub file_path: String,
     /// A history of WAL files that have been rotated but not yet pruned. The tuple contains
-    /// the file sequence number and its path. This allows the uploader to read from a
-    /// sequence of files to find all data that needs to be persisted to the cloud.
-    pub rotated_files: Vec<(u64, PathBuf)>,
+    /// (file sequence number, file path, first_offset in that file). This allows the uploader
+    /// and deleter to operate without scanning.
+    pub rotated_files: Vec<(u64, PathBuf, u64)>,
     /// The base name of the active WAL file (e.g., `wal.1.log`). Useful for logging and quick reference.
     pub active_file_name: Option<String>,
     /// The timestamp (seconds since epoch) of the last file rotation. Used for observability and
     /// can be used to trigger time-based rotations.
     pub last_rotation_at: Option<u64>,
+    /// The first offset written to the current active WAL file, if any write has occurred.
+    pub active_file_first_offset: Option<u64>,
 }
 
 /// Represents a durable snapshot of the Uploader's progress.

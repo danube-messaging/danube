@@ -11,6 +11,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use danube_core::storage::PersistentStorage;
 use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::checkpoint::CheckpointStore;
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::{
     BackendConfig, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig, WalStorageFactory,
@@ -57,6 +58,7 @@ async fn test_factory_multi_topic_wal_isolation() {
         metadata_store,
         "/danube",
         UploaderBaseConfig::default(),
+        DeleterConfig::default(),
     );
 
     let topic_a = "/default/topic-a";

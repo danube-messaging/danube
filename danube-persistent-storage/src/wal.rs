@@ -17,6 +17,7 @@ mod reader;
 mod stateful_reader;
 mod streaming_reader;
 mod writer;
+pub mod deleter;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 

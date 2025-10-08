@@ -13,7 +13,12 @@ use crate::frames::scan_safe_frame_boundary_with_crc;
 
 /// Build ordered list of WAL files from checkpoint: rotated files + active file, sorted by seq.
 fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
-    let mut files = wal_ckpt.rotated_files.clone();
+    // Map rotated_files (seq, path, first_offset) -> (seq, path) for streaming
+    let mut files: Vec<(u64, PathBuf)> = wal_ckpt
+        .rotated_files
+        .iter()
+        .map(|(seq, path, _first)| (*seq, path.clone()))
+        .collect();
     if !wal_ckpt.file_path.is_empty() {
         files.push((wal_ckpt.file_seq, PathBuf::from(&wal_ckpt.file_path)));
     }

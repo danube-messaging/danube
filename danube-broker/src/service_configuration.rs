@@ -123,6 +123,8 @@ pub(crate) struct WalNode {
     pub(crate) cache_capacity: Option<usize>,
     pub(crate) file_sync: Option<WalFlushNode>,
     pub(crate) rotation: Option<WalRotationNode>,
+    /// Optional per-topic retention policy (time + size based)
+    pub(crate) retention: Option<WalRetentionNode>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -136,6 +138,16 @@ pub(crate) struct WalRotationNode {
     pub(crate) max_bytes: Option<u64>,
     /// Optional time-based rotation expressed in hours. If unset, rotation is size-only.
     pub(crate) max_hours: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct WalRetentionNode {
+    /// Time-based retention in minutes; if None, time-based retention is disabled
+    pub(crate) time_minutes: Option<u64>,
+    /// Size-based retention in megabytes; if None, size-based retention is disabled
+    pub(crate) size_mb: Option<u64>,
+    /// How often to check for retention in minutes; defaults to 5 if not set
+    pub(crate) check_interval_minutes: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -4,6 +4,7 @@ use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
     BackendConfig, LocalBackend, ObjectDescriptor, UploaderBaseConfig, WalStorageFactory,
 };
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -64,6 +65,7 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
             interval_seconds: 1,
             ..Default::default()
         },
+        DeleterConfig::default(),
     );
 
     (factory, memory_store)

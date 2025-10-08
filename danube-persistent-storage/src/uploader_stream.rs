@@ -129,7 +129,12 @@ pub async fn stream_frames_to_cloud(
 }
 
 fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
-    let mut files = wal_ckpt.rotated_files.clone();
+    // Map rotated_files (seq, path, first_offset) -> (seq, path) for streaming
+    let mut files: Vec<(u64, PathBuf)> = wal_ckpt
+        .rotated_files
+        .iter()
+        .map(|(seq, path, _first)| (*seq, path.clone()))
+        .collect();
     files.push((wal_ckpt.file_seq, PathBuf::from(&wal_ckpt.file_path)));
     files.sort_by(|a, b| a.0.cmp(&b.0));
     files

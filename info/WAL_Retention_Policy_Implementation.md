@@ -1,7 +1,16 @@
 # WAL Retention Policy Implementation Design
 
 ## Status
-**DESIGN PHASE** - Implementation document for WAL file retention/deletion mechanism
+**IN PROGRESS** - Core implementation underway
+
+### Implementation Status
+- Writer updated to record per-file `first_offset` and `active_file_first_offset` and persist them in `WalCheckpoint`.
+- Checkpoint schema updated: `rotated_files: Vec<(seq, PathBuf, first_offset)>`, `active_file_first_offset: Option<u64>`.
+- Uploader and WAL streaming reader adapted to the new rotated file tuple shape.
+- New `wal/deleter.rs` implemented: periodic time+size retention, safe candidate selection (`seq < uploader.last_read_file_seq`), deletion, and `start_offset` advancement.
+- Deleter wired into `WalStorageFactory` and started per topic.
+- Broker configuration (`service_configuration.rs`, `main.rs`) parses `wal.retention` and builds `DeleterConfig`.
+- YAML updated: `config/danube_broker.yml` includes `wal_cloud.wal.retention` with safe defaults.
 
 ## Problem Statement
 
@@ -34,7 +43,11 @@ Since data is durably persisted to cloud and StatefulReader can read from cloud 
 ### Our Approach: Hybrid (Time + Size)
 - **Time-based**: Delete files older than X minutes
 - **Size-based**: Delete oldest files when total exceeds Y MB
-- **Both**: Whichever triggers first
+- **Both**: Apply both each cycle; whichever rule selects candidates first, subject to safety constraints
+
+### Scope: Topic-Based Retention
+- Retention is applied per topic directory (`<root>/<namespace>/<topic>/`), matching how `WalStorageFactory` constructs per-topic `Wal` and `Uploader` instances.
+- Different topics can have different traffic patterns; topic-level retention provides operational simplicity and flexibility.
 
 ### Scope: Per-Topic Retention
 - Each topic has own WAL directory: `<root>/<namespace>/<topic>/`
@@ -57,10 +70,13 @@ Since data is durably persisted to cloud and StatefulReader can read from cloud 
 A rotated WAL file `wal.<seq>.log` can be deleted **IF AND ONLY IF**:
 ```
 seq < WalCheckpoint.file_seq                               (not active)
-AND seq < UploaderCheckpoint.last_read_file_seq           (fully processed)
-AND file_end_offset <= UploaderCheckpoint.last_committed_offset  (in cloud)
+AND seq < UploaderCheckpoint.last_read_file_seq           (strictly older than the uploader's current file)
 AND (file_age > retention_time OR total_size > retention_size)
 ```
+
+Notes:
+- By requiring `seq < last_read_file_seq`, we avoid any need to compute a per-file `end_offset` and eliminate races with the uploader. Files strictly older than the uploader's current file have been fully uploaded.
+- We intentionally do not delete `seq == last_read_file_seq` to avoid scanning for file completeness; this keeps the deleter simple and safe.
 
 ---
 
@@ -92,23 +108,23 @@ pub struct Deleter {
 
 ```
 1. Load checkpoints: wal_ckpt, uploader_ckpt
-2. Build list of rotated files from wal_ckpt.rotated_files
+2. Build list of rotated files from `wal_ckpt.rotated_files` (now includes `(seq, path, first_offset)`)
 3. For each file:
-   - Safety checks (active, uploading, uncommitted)
+   - Safety checks (exclude active; exclude any `seq >= uploader.last_read_file_seq`)
    - Get file metadata (size, modified time)
 4. Apply retention policies:
    - Time-based: age > retention_time_seconds
    - Size-based: total_size > retention_size_bytes, delete oldest
 5. Delete eligible files
 6. Update WalCheckpoint.rotated_files (remove deleted)
-7. Update WalCheckpoint.start_offset to oldest remaining file's first offset
+7. Update `WalCheckpoint.start_offset` to the smallest `first_offset` of remaining files; if none remain, use `wal_ckpt.active_file_first_offset`
 8. Persist updated checkpoint atomically
 ```
 
 ### Synchronization via CheckpointStore
 
 - Deleter **reads**: `get_wal()`, `get_uploader()` (RwLock read)
-- Deleter **writes**: `update_wal()` after deletion (RwLock write)
+- Deleter **writes**: `update_wal()` after deletion (RwLock write). The deleter is the single component that advances `WalCheckpoint.start_offset` based on remaining files.
 - Writer/Uploader: Only add/advance
 - Deleter: Only removes old entries
 - No race conditions possible
@@ -118,29 +134,29 @@ pub struct Deleter {
 ## Implementation Phases
 
 ### Phase 1: Core Deleter Logic ✅ (4-6 hours)
-**Create**: `danube-persistent-storage/src/wal/deleter.rs`
+**Create**: `danube-persistent-storage/src/wal/deleter.rs` (COMPLETED)
 **Modify**: `wal.rs`, `wal_factory.rs`
 
 Tasks:
-- [ ] Create `DeleterConfig` and `Deleter` structs
-- [ ] Implement `Deleter::new()`, `start()`, `run_cycle()`
-- [ ] Implement safety checks for file eligibility
-- [ ] Implement time-based and size-based retention
-- [ ] Implement file deletion and checkpoint update
-- [ ] Add logging (info, warn, error, debug)
-- [ ] Error handling (continue on single file errors)
+- [x] Create `DeleterConfig` and `Deleter` structs
+- [x] Implement `Deleter::new()`, `start()`, `run_cycle()`
+- [x] Implement safety checks for file eligibility
+- [x] Implement time-based and size-based retention
+- [x] Implement file deletion and checkpoint update
+- [x] Add logging (info, warn, error, debug)
+- [x] Error handling (continue on single file errors)
 
-### Phase 2: start_offset Management ✅ (2-3 hours)
+### Phase 2: start_offset Management ✅ (2-3 hours) (COMPLETED)
 **Problem**: `start_offset` currently hardcoded to 0 in `writer.rs:185`
-**Solution**: Update after deletions to first offset in oldest remaining file
+**Solution**: The deleter updates `start_offset` after deletions by using per-file `first_offset` values stored in checkpoints. No file scanning required. The writer records `first_offset` for each rotated file and the current active file.
 
 Tasks:
-- [ ] Implement `scan_file_first_offset()` helper
-- [ ] Update `start_offset` in Deleter after deletions
+- [x] Writer: record `first_offset` for each file
+- [x] Update `start_offset` in Deleter after deletions
 - [ ] Test `start_offset` advancing
-- [ ] Verify WalStorage respects updated `start_offset`
+- [ ] Verify `WalStorage` path selection (Cloud→WAL handoff) respects updated `start_offset`
 
-### Phase 3: Configuration Integration ✅ (2-3 hours)
+### Phase 3: Configuration Integration ✅ (2-3 hours) (COMPLETED)
 **Modify**: `danube_broker.yml`, `service_configuration.rs`, `main.rs`, `wal_factory.rs`
 
 Configuration in `danube_broker.yml`:
@@ -163,12 +179,12 @@ pub struct WalRetentionNode {
 ```
 
 Tasks:
-- [ ] Add `WalRetentionNode` to service_configuration.rs
-- [ ] Update broker YAML with retention config
-- [ ] Pass `DeleterConfig` to WalStorageFactory
-- [ ] Spawn Deleter in `for_topic()` alongside Uploader
+- [x] Add `WalRetentionNode` to service_configuration.rs
+- [x] Update broker YAML with retention config
+- [x] Pass `DeleterConfig` to WalStorageFactory
+- [x] Spawn Deleter in `for_topic()` alongside Uploader
 
-### Phase 4: Testing & Validation ✅ (6-8 hours)
+### Phase 4: Testing & Validation ✅ (6-8 hours) (PENDING)
 **Create**: `tests/wal_retention_test.rs`, `src/wal/deleter_test.rs`
 
 Test Coverage:
@@ -183,7 +199,7 @@ Test Coverage:
 - [ ] Handles file system errors gracefully
 - [ ] Multiple topics work independently
 
-### Phase 5: Observability & Metrics ✅ (2-3 hours)
+### Phase 5: Observability & Metrics ✅ (2-3 hours) (PENDING)
 **Metrics** (prometheus/tracing):
 - `wal_retention_files_deleted_total{topic}`
 - `wal_retention_bytes_reclaimed_total{topic}`
@@ -262,29 +278,29 @@ let wal_factory = WalStorageFactory::new(
 
 ### 3. Checkpoint Updates
 
-**No new checkpoint fields needed**. Use existing:
-- `WalCheckpoint.rotated_files` - Remove deleted entries
-- `WalCheckpoint.start_offset` - Update to oldest remaining file
+We will augment the checkpoint schema to carry per-file `first_offset` from day one:
+
+- `WalCheckpoint.rotated_files: Vec<(u64 /*seq*/, PathBuf, u64 /*first_offset*/)>`
+- `WalCheckpoint.active_file_first_offset: Option<u64>`
+- `WalCheckpoint.start_offset` - Updated by the deleter to the oldest remaining `first_offset` (or `active_file_first_offset` if no rotated files remain)
+
+Rationale:
+- Eliminates file scanning in the deleter.
+- Makes `start_offset` advancement deterministic and fast.
 
 ---
 
 ## Key Implementation Details
 
-### File Scanning Helpers
+### Writer responsibilities for first_offset
 
-```rust
-// Scan for maximum offset (last message)
-async fn scan_file_max_offset(path: &Path) -> Result<u64, ...> {
-    // Read frame headers, track max offset
-    // Used to verify all data is uploaded
-}
+The writer records the first message offset written to each file:
 
-// Scan for minimum offset (first message)
-async fn scan_file_first_offset(path: &Path) -> Result<u64, ...> {
-    // Read first frame header
-    // Used to update start_offset after deletion
-}
-```
+- On opening a new active WAL file (initial open or rotation), the next appended frame’s offset is captured as that file’s `first_offset`.
+- At the moment of rotation, the writer pushes the just-closed file into `WalCheckpoint.rotated_files` as `(seq, path, first_offset)`.
+- The writer also maintains `WalCheckpoint.active_file_first_offset` for the current active file once the first frame is appended after rotation.
+
+This ensures the deleter can advance `start_offset` without touching the filesystem.
 
 ### Retention Policy Application
 
@@ -302,7 +318,7 @@ async fn apply_retention_policy(
         }
     }
     
-    // Size-based: delete oldest until under limit
+    // Size-based: delete oldest until under limit (deterministic: sort by seq, then by mtime)
     if let Some(retention_bytes) = self.config.retention_size_bytes {
         let total = candidates.iter().map(|f| f.size).sum();
         if total > retention_bytes {
