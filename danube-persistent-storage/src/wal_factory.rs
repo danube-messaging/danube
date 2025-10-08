@@ -10,6 +10,7 @@ use crate::{
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
+use crate::wal::deleter::{Deleter, DeleterConfig};
 use danube_core::storage::PersistentStorageError;
 use danube_metadata_store::MetadataStorage;
 use tracing::{info, warn};
@@ -32,6 +33,10 @@ pub struct WalStorageFactory {
     root_prefix: String,
     // Base uploader configuration from broker config
     uploader_base_cfg: UploaderBaseConfig,
+    // Retention (deleter) configuration
+    deleter_cfg: DeleterConfig,
+    // topic_path (ns/topic) -> deleter task handle
+    deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
 }
 
 impl WalStorageFactory {
@@ -42,6 +47,7 @@ impl WalStorageFactory {
         metadata_store: MetadataStorage,
         etcd_root: impl Into<String>,
         uploader_base_cfg: UploaderBaseConfig,
+        deleter_cfg: DeleterConfig,
     ) -> Self {
         // Log the chosen base WAL root and backend
         let wal_root = cfg
@@ -66,6 +72,8 @@ impl WalStorageFactory {
             uploaders: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
             uploader_base_cfg,
+            deleter_cfg,
+            deleters: Arc::new(DashMap::new()),
         }
     }
 
@@ -76,6 +84,7 @@ impl WalStorageFactory {
         cloud: CloudStore,
         etcd: EtcdMetadata,
         uploader_base_cfg: UploaderBaseConfig,
+        deleter_cfg: DeleterConfig,
     ) -> Self {
         Self {
             base_cfg: cfg,
@@ -85,6 +94,8 @@ impl WalStorageFactory {
             uploaders: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
             uploader_base_cfg,
+            deleter_cfg,
+            deleters: Arc::new(DashMap::new()),
         }
     }
 
@@ -94,7 +105,7 @@ impl WalStorageFactory {
         let topic_path = normalize_topic_path(topic_name);
         // Ensure per-topic WAL exists
         let (topic_wal, resolved_dir, ckpt_store) = self.get_or_create_wal(&topic_path).await?;
-        if let Some(dir) = resolved_dir {
+        if let Some(ref dir) = resolved_dir {
             info!(
                 target = "wal_factory",
                 topic = %topic_path,
@@ -116,14 +127,26 @@ impl WalStorageFactory {
                 topic_path.clone(),
                 self.root_prefix.clone(),
             );
+            // clone the checkpoint store so we can still use it below for the deleter
+            let ckpt_for_uploader = ckpt_store.clone();
             if let Ok(uploader) =
-                Uploader::new(cfg, self.cloud.clone(), self.etcd.clone(), ckpt_store)
+                Uploader::new(cfg, self.cloud.clone(), self.etcd.clone(), ckpt_for_uploader)
             {
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic uploader");
                 let handle = Arc::new(uploader).start();
                 self.uploaders.insert(topic_path.clone(), handle);
             } else {
                 warn!(target = "wal_factory", topic = %topic_path, "failed to initialize uploader for topic");
+            }
+        }
+
+        // Start deleter once per topic (only when checkpoints are available and a directory is configured)
+        if !self.deleters.contains_key(&topic_path) {
+            if let (Some(_dir), Some(store)) = (resolved_dir.clone(), ckpt_store.clone()) {
+                let deleter = Deleter::new(topic_path.clone(), store, self.deleter_cfg.clone());
+                let handle = Arc::new(deleter).start();
+                self.deleters.insert(topic_path.clone(), handle);
+                info!(target = "wal_factory", topic = %topic_path, "starting per-topic deleter");
             }
         }
 
@@ -187,6 +210,7 @@ impl WalStorageFactory {
     /// Can be extended to add a stop signal to Uploader.
     pub async fn shutdown(&self) {
         self.uploaders.clear();
+        self.deleters.clear();
     }
 }
 

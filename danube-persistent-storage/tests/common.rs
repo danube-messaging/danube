@@ -1,5 +1,6 @@
 use danube_core::message::{MessageID, StreamMessage};
 use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
     BackendConfig, LocalBackend, ObjectDescriptor, UploaderBaseConfig, WalStorageFactory,
@@ -34,6 +35,7 @@ pub fn make_test_message(
 }
 
 /// Creates a test setup with in-memory backends
+#[allow(dead_code)]
 pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
     let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
 
@@ -64,6 +66,7 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
             interval_seconds: 1,
             ..Default::default()
         },
+        DeleterConfig::default(),
     );
 
     (factory, memory_store)

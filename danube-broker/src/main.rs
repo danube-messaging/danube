@@ -39,6 +39,7 @@ use anyhow::{Context, Result};
 use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use std::net::SocketAddr;
 
 use tracing::info;
@@ -139,6 +140,17 @@ async fn main() -> Result<()> {
         interval_seconds: wal_cfg.uploader.interval_seconds,
     };
 
+    // Build DeleterConfig (retention) from broker configuration (defaults handled in factory layer if needed)
+    let deleter_cfg = if let Some(ret) = &wal_cfg.wal.retention {
+        DeleterConfig {
+            check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
+            retention_time_minutes: ret.time_minutes,
+            retention_size_mb: ret.size_mb,
+        }
+    } else {
+        DeleterConfig { check_interval_minutes: 5, retention_time_minutes: None, retention_size_mb: None }
+    };
+
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
     let wal_factory = WalStorageFactory::new(
         wal_base_cfg,
@@ -150,6 +162,7 @@ async fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(|| "/danube".to_string()),
         uploader_base_cfg,
+        deleter_cfg,
     );
 
     // caching metadata locally to reduce the number of remote calls to Metadata Store

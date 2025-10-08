@@ -13,7 +13,7 @@ use tracing::{info, warn};
 
 // Submodules for writer and reader paths
 mod cache;
-mod reader;
+pub mod deleter;
 mod stateful_reader;
 mod streaming_reader;
 mod writer;
@@ -436,6 +436,8 @@ impl Wal {
 // Unit tests for WAL submodules
 #[cfg(test)]
 mod cache_test;
+#[cfg(test)]
+mod deleter_test;
 #[cfg(test)]
 mod streaming_reader_test;
 #[cfg(test)]

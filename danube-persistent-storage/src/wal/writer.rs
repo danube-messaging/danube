@@ -59,10 +59,12 @@ struct WriterState {
     fsync_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
-    rotated_files: Vec<(u64, PathBuf)>,
+    rotated_files: Vec<(u64, PathBuf, u64)>,
     ckpt_store: Option<Arc<CheckpointStore>>,
     // Track the last offset written since last checkpoint
     last_offset_written: Option<u64>,
+    // Track the first offset written in the current active file
+    current_file_first_offset: Option<u64>,
 }
 
 impl WriterState {
@@ -74,6 +76,10 @@ impl WriterState {
         bytes: &[u8],
     ) -> Result<(), PersistentStorageError> {
         self.rotate_if_needed().await?;
+        // Record first offset for the current active file if not recorded yet
+        if self.current_file_first_offset.is_none() {
+            self.current_file_first_offset = Some(offset);
+        }
         // Frame and buffer the entry. We avoid borrowing the writer here so we can call
         // `process_flush()` (which accesses `self.writer`) without overlapping borrows.
         let len = bytes.len() as u32;
@@ -141,7 +147,13 @@ impl WriterState {
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
         // Record the previous file into rotation history before switching
         if let Some(prev_path) = self.wal_path.clone() {
-            self.rotated_files.push((self.file_seq, prev_path));
+            if let Some(first_off) = self.current_file_first_offset {
+                self.rotated_files.push((self.file_seq, prev_path, first_off));
+            } else {
+                // If no writes happened, treat first_offset as last_offset_written or 0
+                let first_off = self.last_offset_written.unwrap_or(0);
+                self.rotated_files.push((self.file_seq, prev_path, first_off));
+            }
         }
         self.file_seq += 1;
         let new_name = format!("wal.{}.log", self.file_seq);
@@ -163,6 +175,8 @@ impl WriterState {
             self.wal_path = Some(dirp);
             self.bytes_in_file = 0;
             self.file_started = std::time::Instant::now();
+            // Reset first offset for the new active file; will be set on first write
+            self.current_file_first_offset = None;
             if let Some(ref p) = self.wal_path {
                 debug!(target = "wal", seq = self.file_seq, file = %p.display(), "rotated wal file");
             }
@@ -192,6 +206,7 @@ impl WriterState {
                 .as_ref()
                 .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned())),
             last_rotation_at: None,
+            active_file_first_offset: self.current_file_first_offset,
         };
         if let Some(store) = &self.ckpt_store {
             // Update cache and persist via store
@@ -241,6 +256,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         rotated_files: Vec::new(),
         ckpt_store: init.ckpt_store,
         last_offset_written: None,
+        current_file_first_offset: None,
     };
 
     debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");

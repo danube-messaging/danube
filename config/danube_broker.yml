@@ -50,6 +50,11 @@ wal_cloud:
     rotation:
       max_bytes: 536870912      # Default: 512 MiB WAL file size
       # max_hours: 24           # Optional time-based rotation (in hours)
+    # WAL retention policy (time + size). Both applied each cycle; safety-checked against uploader progress.
+    retention:
+      time_minutes: 2880            # 48 hours (conservative production default)
+      size_mb: 20480                # 20 GiB per topic
+      check_interval_minutes: 5     # run every 5 minutes
   
   # Uploader, runs every interval_seconds, reads raw WAL frames, writes to configured cloud storage
   uploader:

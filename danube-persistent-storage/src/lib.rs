@@ -1,7 +1,5 @@
 mod errors;
 
-// legacy connection.rs removed in Phase D
-
 pub mod wal;
 pub use wal::Wal;
 
