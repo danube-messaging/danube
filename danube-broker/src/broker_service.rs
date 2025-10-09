@@ -39,10 +39,12 @@ pub(crate) struct BrokerService {
 
     // Only wrap mutable operations
     pub(crate) resources: Arc<Mutex<Resources>>,
+    /// Whether producers are allowed to auto-create topics when missing
+    pub(crate) auto_create_topics: bool,
 }
 
 impl BrokerService {
-    pub(crate) fn new(resources: Resources, wal_factory: WalStorageFactory) -> Self {
+    pub(crate) fn new(resources: Resources, wal_factory: WalStorageFactory, auto_create_topics: bool) -> Self {
         let broker_id = get_random_id();
         BrokerService {
             broker_id,
@@ -51,6 +53,7 @@ impl BrokerService {
             consumer_index: Arc::new(DashMap::new()),
             topic_worker_pool: Arc::new(TopicWorkerPool::new(None)),
             resources: Arc::new(Mutex::new(resources)),
+            auto_create_topics,
         }
     }
 
@@ -127,8 +130,8 @@ impl BrokerService {
             }
         }
 
-        // If the topic does not exist and create_if_missing is false
-        if !create_if_missing {
+        // If the topic does not exist and create_if_missing is false, or auto-create is disabled by broker config
+        if !create_if_missing || !self.auto_create_topics {
             let error_string = &format!("Unable to find the topic: {}", topic_name);
             let status = create_error_status(
                 Code::InvalidArgument,

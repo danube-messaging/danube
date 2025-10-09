@@ -28,6 +28,8 @@ pub(crate) struct LoadConfiguration {
     pub(crate) meta_store_port: usize,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
+    /// Allow producers to auto-create topics when missing (if None, defaults to true)
+    pub(crate) auto_create_topics: Option<bool>,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
     /// Optional: new wal_cloud configuration (Phase D)
@@ -54,6 +56,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) meta_store_addr: String,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
+    /// Allow producers to auto-create topics when missing
+    pub(crate) auto_create_topics: bool,
     /// Broker policies, that can be overwritten by namespace / topic policies
     pub(crate) policies: Policies,
     /// Optional: new wal_cloud configuration (Phase D)
@@ -100,6 +104,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             prom_exporter,
             meta_store_addr,
             bootstrap_namespaces: config.bootstrap_namespaces,
+            auto_create_topics: config.auto_create_topics.unwrap_or(true),
             policies: config.policies,
             wal_cloud: config.wal_cloud,
             auth: config.auth,
