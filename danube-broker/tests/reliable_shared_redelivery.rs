@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, SchemaType, SubType};
+use danube_client::{SchemaType, SubType};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Duration};
@@ -36,14 +36,12 @@ async fn reliable_shared_redelivery_to_other_consumer() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/reliable_shared_redelivery");
 
-    // Reliable producer
-    let reliable = ConfigReliableOptions::new(5, ConfigRetentionPolicy::RetainUntilExpire, 3600);
     let mut producer = client
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_reliable_shared_redelivery")
         .with_schema("schema_str".into(), SchemaType::String)
-        .with_reliable_dispatch(reliable)
+        .with_reliable_dispatch()
         .build();
     producer.create().await?;
 

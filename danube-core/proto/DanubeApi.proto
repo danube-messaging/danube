@@ -20,23 +20,6 @@ enum DispatchStrategy {
     Reliable = 1;
 }
 
-enum RetentionPolicy {
-    RetainUntilAck = 0;
-    RetainUntilExpire = 1;
-}
-
-message ReliableOptions {
-    uint64 segment_size = 1; // in MB
-    RetentionPolicy retention_policy = 4; // RetainUntilAck or RetainUntilExpire
-    uint64 retention_period = 5; // in seconds
-}
-
-// Message representing topic retention strategy
-message TopicDispatchStrategy {
-    DispatchStrategy strategy = 1; // NonReliable or Reliable
-    ReliableOptions reliable_options = 2; // options for Reliable dispatch strategy
-}
-
 // Create Producer request
 message ProducerRequest { 
     uint64 request_id = 1;
@@ -44,7 +27,7 @@ message ProducerRequest {
     string topic_name = 3;
     Schema schema = 4;
     ProducerAccessMode producer_access_mode = 5;
-    TopicDispatchStrategy dispatch_strategy = 6;
+    DispatchStrategy dispatch_strategy = 6;
 }
 
 // Create Producer response

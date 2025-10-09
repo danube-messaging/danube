@@ -1,4 +1,3 @@
-use crate::ConfigReliableOptions;
 use crate::{
     errors::Result, message_router::MessageRouter, topic_producer::TopicProducer, DanubeClient,
     Schema, SchemaType,
@@ -308,9 +307,9 @@ impl ProducerBuilder {
     ///
     /// # Parameters
     ///
-    /// - `reliable_options`: The reliable dispatch options to be used for the producer.
-    pub fn with_reliable_dispatch(mut self, reliable_options: ConfigReliableOptions) -> Self {
-        let dispatch_strategy = ConfigDispatchStrategy::Reliable(reliable_options.into());
+    /// No parameters; broker uses defaults for reliable topics.
+    pub fn with_reliable_dispatch(mut self) -> Self {
+        let dispatch_strategy = ConfigDispatchStrategy::Reliable;
         self.dispatch_strategy = Some(dispatch_strategy);
         self
     }

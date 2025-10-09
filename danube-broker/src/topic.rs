@@ -67,7 +67,7 @@ impl Topic {
         let topic_store = TopicStore::new(topic_name.to_string(), wal_storage.clone());
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
-            ConfigDispatchStrategy::Reliable(_reliable_options) => DispatchStrategy::Reliable,
+            ConfigDispatchStrategy::Reliable => DispatchStrategy::Reliable,
         };
 
         Topic {

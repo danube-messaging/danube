@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Parser, ValueEnum};
-use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, DanubeClient, SchemaType};
+use danube_client::{DanubeClient, SchemaType};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
@@ -105,34 +105,10 @@ pub struct ReliableArgs {
     #[arg(long, help = "Enable reliable message delivery with in-memory storage")]
     pub reliable: bool,
 
-    #[arg(
-        long,
-        default_value = "20",
-        help = "Segment size in MB for reliable delivery (default: 20)"
-    )]
-    pub segment_size: usize,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value = "expire",
-        help = "Retention policy: ack (retain until acknowledged) or expire (retain until time expires)"
-    )]
-    pub retention: Option<RetentionPolicyArg>,
-
-    #[arg(
-        long,
-        default_value = "3600",
-        help = "Retention period in seconds for reliable delivery (default: 3600)"
-    )]
-    pub retention_period: u64,
+    // Legacy reliable tuning flags removed in Phase 1; broker uses defaults
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
-pub enum RetentionPolicyArg {
-    Ack,
-    Expire,
-}
+// RetentionPolicyArg removed
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
 pub enum SchemaTypeArg {
@@ -195,22 +171,7 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
     }
 
     if produce.reliable_args.reliable {
-        let retention_policy = match produce
-            .reliable_args
-            .retention
-            .unwrap_or(RetentionPolicyArg::Expire)
-        {
-            RetentionPolicyArg::Ack => ConfigRetentionPolicy::RetainUntilAck,
-            RetentionPolicyArg::Expire => ConfigRetentionPolicy::RetainUntilExpire,
-        };
-
-        let reliable_options = ConfigReliableOptions::new(
-            produce.reliable_args.segment_size as u64,
-            retention_policy,
-            produce.reliable_args.retention_period,
-        );
-
-        producer_builder = producer_builder.with_reliable_dispatch(reliable_options);
+        producer_builder = producer_builder.with_reliable_dispatch();
     }
 
     let mut producer = producer_builder.build();
@@ -218,12 +179,8 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
     producer.create().await?;
 
     // Use the provided message or read from a file if provided
-    let encoded_data = if produce.reliable_args.reliable {
-        if let Some(file_path) = &produce.basic_args.file {
-            std::fs::read(file_path)?
-        } else {
-            produce.basic_args.message.as_bytes().to_vec()
-        }
+    let encoded_data = if let Some(file_path) = &produce.basic_args.file {
+        std::fs::read(file_path)?
     } else {
         produce.basic_args.message.as_bytes().to_vec()
     };
