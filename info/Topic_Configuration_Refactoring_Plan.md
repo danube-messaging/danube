@@ -141,49 +141,61 @@ Topic overrides (ETCD) → Global defaults (`danube_broker.yml`)
 
 ---
 
-## Implementation Plan
+## Implementation Plan and Status
 
-### Phase 1: Producer API Simplification, Validation, Auto-Create Toggle
+### Phase 1: Producer/Admin API Simplification and Validation [COMPLETED]
 
 Priority: HIGH (eliminates silent mismatch)  
 Breaking Change: YES
 
 Objectives:
-- Producer API uses only `DispatchStrategy` enum.
-- Enforce strict strategy validation on producer creation.
-- Support producer-driven topic auto-creation gated by broker toggle.
+- Producer and Admin APIs use only `DispatchStrategy` enum.
+- Enforce strict strategy validation on producer creation when topic exists.
+- Keep producer-driven topic auto-creation using defaults (toggle deferred to Phase 2+).
 
-Key Changes:
-- Proto: `danube-core/proto/DanubeApi.proto`
-  - Change `ProducerRequest.dispatch_strategy` type to `DispatchStrategy` (enum).
-  - Remove `TopicDispatchStrategy` and `ReliableOptions` from ProducerRequest.
-- Broker: `danube-broker/src/broker_server/producer_handler.rs`
-  - After resolving/creating topic, compare requested enum to topic’s stored strategy; return `failed_precondition` on mismatch.
-- Broker: `danube-broker/src/broker_service.rs`
-  - Accept `Option<DispatchStrategy>` instead of `Option<TopicDispatchStrategy>` in `get_topic()` and `create_topic_cluster()`.
-  - On auto-create, convert enum to `ConfigDispatchStrategy` (no per-topic options) and persist.
-- Config: `config/danube_broker.yml`
-  - Add top-level `auto_create_topics: true|false` (default: true). When false, producer creation for missing topics returns `TopicNotFound`.
-- Client SDK: `danube-client/src/producer.rs`
-  - Replace `with_reliable_dispatch(options)` with parameterless `with_reliable_dispatch()`.
-  - Remove `ConfigReliableOptions` exposure from public API.
-- Examples: update `danube-client/examples/reliable_dispatch_producer.rs` accordingly.
+Key Changes (merged):
+- Proto (Producer): `danube-core/proto/DanubeApi.proto`
+  - `ProducerRequest.dispatch_strategy: DispatchStrategy` (enum).
+  - Removed `TopicDispatchStrategy`, `ReliableOptions`, `RetentionPolicy` from Producer API.
+- Proto (Admin): `danube-core/proto/DanubeAdmin.proto`
+  - `NewTopicRequest.dispatch_strategy: DispatchStrategy` (enum).
+  - `PartitionedTopicRequest.dispatch_strategy: DispatchStrategy` (enum).
+  - Removed `TopicDispatchStrategy`, `ReliableOptions`, `RetentionPolicy` from Admin API.
+- Core types: `danube-core/src/dispatch_strategy.rs`
+  - `ConfigDispatchStrategy` now uses unit variant `Reliable` (no per-topic options type).
+  - Removed conversions to/from removed proto types.
+- Broker server:
+  - `danube-broker/src/broker_server/producer_handler.rs`: parse enum via `TryFrom<i32>`, pass `Option<DispatchStrategy>` to `get_topic()`.
+  - `danube-broker/src/broker_service.rs`: signatures updated to accept `Option<DispatchStrategy>`; added strategy mismatch validation for locally served topics; on post of new topic, map enum to `ConfigDispatchStrategy` (NonReliable|Reliable).
+  - `danube-broker/src/admin/topics_admin.rs`: map Admin enum (i32) to core enum; removed `TopicDispatchStrategy` construction.
+  - `danube-broker/src/topic.rs`: adjusted to unit `Reliable` variant.
+- Client SDK:
+  - `danube-client/src/producer.rs`: `with_reliable_dispatch()` is parameterless; removes `ConfigReliableOptions` usage.
+  - `danube-client/src/topic_producer.rs`: send enum `DispatchStrategy` (i32) in `ProducerRequest`.
+  - Removed `danube-client/src/reliable_options.rs` from the public API (module no longer exported).
+  - Example updated: `danube-client/examples/reliable_dispatch_producer.rs` uses parameterless `with_reliable_dispatch()`.
+- Admin CLI:
+  - `danube-admin-cli/src/topics.rs`: uses enum-only dispatch; removed `ReliableOptions`/`RetentionPolicy` handling and flags; simplified `parse_dispatch_strategy()` to return enum.
+- Tests:
+  - `danube-broker/tests/reliable_dispatch_basic.rs` and `reliable_shared_redelivery.rs` updated to use parameterless `with_reliable_dispatch()`.
 
-Testing:
+Testing status:
 ```
-Topic=Reliable + Producer=Reliable → OK
-Topic=NonReliable + Producer=Reliable → failed_precondition
-Topic=Reliable + Producer=NonReliable → failed_precondition
-Missing topic + auto_create_topics=true + Producer=Reliable → created with defaults
-Missing topic + auto_create_topics=false → TopicNotFound
+Topic exists: Reliable + Producer=Reliable → OK
+Topic exists: NonReliable + Producer=Reliable → failed_precondition
+Topic exists: Reliable + Producer=NonReliable → failed_precondition
+Missing topic (producer path) → created with requested enum and defaults (no per-topic tuning)
+Admin create (enum) → topics created with requested strategy
 ```
 
 Deliverables:
-- [ ] Proto updated and regenerated
-- [ ] Broker validation implemented
-- [ ] Auto-create toggle honored
-- [ ] Client SDK and examples updated
-- [ ] Unit & integration tests for the above
+- [x] Producer proto updated and regenerated
+- [x] Admin proto updated and regenerated
+- [x] Broker validation implemented (mismatch → failed_precondition)
+- [x] Client SDK and examples updated
+- [x] Admin CLI updated (enum-only)
+- [x] Tests adjusted
+- [ ] Optional: add broker toggle for auto-create (deferred)
 
 ---
 
@@ -297,10 +309,10 @@ Deliverables:
 
 1. Namespace-level defaults (defer).
 2. Runtime updates/hot-reload for topic config (defer).
-3. Optional broker default strategy if producer omits (defer).
+3. Broker-level toggle to enable/disable producer auto-create (`auto_create_topics`) and default broker strategy if producer omits (defer).
 
 ---
 
 ## Conclusion
 
-This plan removes producer-side detailed storage knobs, enforces strategy validation, introduces a broker-level auto-create toggle, and adds per-topic overrides via Admin. It fixes the silent data-loss risk and simplifies client usage while keeping operational flexibility via Admin.
+Phase 1 is complete: producer/admin APIs use enum-only `DispatchStrategy`, client/CLI/broker are aligned, and strict validation prevents silent mismatches. Auto-create currently uses requested enum with defaults; the broker-level toggle and per-topic overrides remain scheduled for Phase 2+. This fixes the silent data-loss risk while keeping the system simple for application developers and controllable by admins at topic creation time.

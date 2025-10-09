@@ -1,13 +1,13 @@
 use crate::utils::get_random_id;
 use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
 use danube_core::proto::{
-    producer_service_server::ProducerService, MessageResponse, ProducerRequest, ProducerResponse,
-    StreamMessage as ProtoStreamMessage,
+    producer_service_server::ProducerService, DispatchStrategy as ProtoDispatchStrategy,
+    MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
 };
 
 use danube_core::message::StreamMessage;
-use metrics::histogram;
 use dashmap::mapref::entry::Entry;
+use metrics::histogram;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, Level};
@@ -29,8 +29,12 @@ impl ProducerService for DanubeServerImpl {
 
         let service = self.service.as_ref();
 
+        let requested_strategy =
+            <ProtoDispatchStrategy as core::convert::TryFrom<i32>>::try_from(req.dispatch_strategy)
+                .ok();
+
         match service
-            .get_topic(&req.topic_name, req.dispatch_strategy, req.schema, true)
+            .get_topic(&req.topic_name, requested_strategy, req.schema, true)
             .await
         {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
@@ -126,9 +130,12 @@ impl ProducerService for DanubeServerImpl {
         let topic_name = stream_message.msg_id.topic_name.clone();
 
         // Use async message publishing through the performance-enhanced pipeline
-        service.publish_message_async(topic_name, stream_message).await.map_err(|err| {
-            Status::permission_denied(format!("Unable to publish the message: {}", err))
-        })?;
+        service
+            .publish_message_async(topic_name, stream_message)
+            .await
+            .map_err(|err| {
+                Status::permission_denied(format!("Unable to publish the message: {}", err))
+            })?;
 
         // Measure the elapsed time
         let elapsed_time = start_time.elapsed().as_secs_f64();

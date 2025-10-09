@@ -8,22 +8,7 @@ enum DispatchStrategy {
   Reliable = 1;
 }
 
-enum RetentionPolicy {
-  RetainUntilAck = 0;
-  RetainUntilExpire = 1;
-}
-
-message ReliableOptions {
-  uint64 segment_size = 1; // in MB
-  RetentionPolicy retention_policy = 4; // RetainUntilAck or RetainUntilExpire
-  uint64 retention_period = 5; // in seconds
-}
-
-// Message representing topic retention/dispatch strategy
-message TopicDispatchStrategy {
-  DispatchStrategy strategy = 1; // NonReliable or Reliable
-  ReliableOptions reliable_options = 2; // options for Reliable dispatch strategy
-}
+// Retention policy and reliable options are removed in Phase 1; use DispatchStrategy only
 
 service BrokerAdmin {
   // Broker related RPCs
@@ -67,7 +52,7 @@ message NewTopicRequest {
   string name = 1;
   string schema_type = 2;
   string schema_data = 3;
-  TopicDispatchStrategy dispatch_strategy = 4;
+  DispatchStrategy dispatch_strategy = 4;
 }
 
 message TopicRequest {
@@ -83,7 +68,7 @@ message PartitionedTopicRequest {
   uint32 partitions = 2;         // number of partitions
   string schema_type = 3;
   string schema_data = 4;
-  TopicDispatchStrategy dispatch_strategy = 5;
+  DispatchStrategy dispatch_strategy = 5;
 }
 
 message SubscriptionRequest {

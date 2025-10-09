@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 use tonic::{Code, Status};
 use tracing::{info, warn};
 
-use danube_core::proto::{ErrorType, Schema as ProtoSchema, TopicDispatchStrategy};
+use danube_core::proto::{ErrorType, Schema as ProtoSchema, DispatchStrategy as ProtoDispatchStrategy};
 
 use crate::{
     broker_metrics::{BROKER_TOPICS, TOPIC_CONSUMERS, TOPIC_PRODUCERS},
@@ -65,7 +65,7 @@ impl BrokerService {
     pub(crate) async fn get_topic(
         &self,
         topic_name: &str,
-        dispatch_strategy: Option<TopicDispatchStrategy>,
+        dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
         create_if_missing: bool,
     ) -> Result<bool, Status> {
@@ -84,8 +84,26 @@ impl BrokerService {
             return Err(status);
         }
 
-        // check if topic is served by this broker
+        // check if topic is served by this broker and validate strategy if provided
         if self.topic_worker_pool.contains_topic(topic_name) {
+            if let Some(req_ds) = dispatch_strategy {
+                if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+                    let topic_ds = &topic.dispatch_strategy;
+                    let expected = match req_ds {
+                        ProtoDispatchStrategy::NonReliable => crate::dispatch_strategy::DispatchStrategy::NonReliable,
+                        ProtoDispatchStrategy::Reliable => crate::dispatch_strategy::DispatchStrategy::Reliable,
+                    };
+                    if std::mem::discriminant(topic_ds) != std::mem::discriminant(&expected) {
+                        let status = create_error_status(
+                            Code::FailedPrecondition,
+                            ErrorType::UnknownError,
+                            "Producer requested dispatch strategy does not match topic strategy",
+                            None,
+                        );
+                        return Err(status);
+                    }
+                }
+            }
             return Ok(true);
         }
 
@@ -150,7 +168,7 @@ impl BrokerService {
     pub(crate) async fn create_topic_cluster(
         &self,
         topic_name: &str,
-        dispatch_strategy: Option<TopicDispatchStrategy>,
+        dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
     ) -> Result<(), Status> {
         // The topic format is /{namespace_name}/{topic_name}
@@ -179,23 +197,7 @@ impl BrokerService {
             return Err(status);
         }
 
-        if let Some(dispatch_strategy) = &dispatch_strategy {
-            match dispatch_strategy.strategy {
-                0 => {}
-                1 => {}
-                _ => {
-                    let error_string =
-                        "Unable to create a topic with the specified dispatch strategy";
-                    let status = create_error_status(
-                        Code::InvalidArgument,
-                        ErrorType::UnknownError,
-                        error_string,
-                        None,
-                    );
-                    return Err(status);
-                }
-            }
-        } else {
+        if dispatch_strategy.is_none() {
             let error_string = "Dispatch strategy is missing";
             let status = create_error_status(
                 Code::InvalidArgument,
@@ -243,7 +245,7 @@ impl BrokerService {
     pub(crate) async fn post_new_topic(
         &self,
         topic_name: &str,
-        dispatch_strategy: TopicDispatchStrategy,
+        dispatch_strategy: ProtoDispatchStrategy,
         schema: ProtoSchema,
         policies: Option<Policies>,
     ) -> Result<()> {
@@ -257,7 +259,10 @@ impl BrokerService {
         resources.namespace.create_new_topic(topic_name).await?;
 
         // store new topic retention strategy: /topics/{namespace}/{topic}/retention
-        let dispatch_strategy: ConfigDispatchStrategy = dispatch_strategy.into();
+        let dispatch_strategy: ConfigDispatchStrategy = match dispatch_strategy {
+            ProtoDispatchStrategy::NonReliable => ConfigDispatchStrategy::NonReliable,
+            ProtoDispatchStrategy::Reliable => ConfigDispatchStrategy::Reliable,
+        };
         resources
             .topic
             .add_topic_delivery(topic_name, dispatch_strategy)

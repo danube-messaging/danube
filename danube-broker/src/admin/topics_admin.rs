@@ -5,7 +5,7 @@ use danube_core::admin_proto::{
     NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse, SubscriptionRequest,
     SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
 };
-use danube_core::proto::TopicDispatchStrategy;
+use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
@@ -53,28 +53,10 @@ impl TopicAdmin for DanubeAdminImpl {
             schema_type = SchemaType::Json(req.schema_data);
         }
 
-        // Map admin NewTopicRequest.dispatch_strategy (structured) into core TopicDispatchStrategy
-        let dispatch_strategy = {
-            let ds = req
-                .dispatch_strategy
-                .as_ref()
-                .ok_or_else(|| Status::invalid_argument("dispatch_strategy is required"))?;
-
-            // Map enum value directly; enums are aligned with core proto
-            let strategy = ds.strategy;
-
-            // Map reliable options if present
-            let reliable_options = ds.reliable_options.as_ref().map(|ro| danube_core::proto::ReliableOptions {
-                segment_size: ro.segment_size,
-                retention_policy: ro.retention_policy,
-                retention_period: ro.retention_period,
-            });
-
-            TopicDispatchStrategy {
-                strategy,
-                reliable_options,
-            }
-        };
+        // Map admin NewTopicRequest.dispatch_strategy (enum i32) into core proto DispatchStrategy
+        let dispatch_strategy =
+            <CoreDispatchStrategy as core::convert::TryFrom<i32>>::try_from(req.dispatch_strategy)
+                .map_err(|_| Status::invalid_argument("invalid dispatch_strategy value"))?;
 
         let service = self.broker_service.as_ref();
 
@@ -107,7 +89,8 @@ impl TopicAdmin for DanubeAdminImpl {
 
         trace!(
             "Admin: creates a partitioned topic: {} with {} partitions",
-            req.base_name, req.partitions
+            req.base_name,
+            req.partitions
         );
 
         // Schema mapping
@@ -125,25 +108,10 @@ impl TopicAdmin for DanubeAdminImpl {
             schema_type = SchemaType::Json(req.schema_data);
         }
 
-        // Dispatch mapping
-        let dispatch_strategy = {
-            let ds = req
-                .dispatch_strategy
-                .as_ref()
-                .ok_or_else(|| Status::invalid_argument("dispatch_strategy is required"))?;
-
-            let strategy = ds.strategy;
-            let reliable_options = ds.reliable_options.as_ref().map(|ro| danube_core::proto::ReliableOptions {
-                segment_size: ro.segment_size,
-                retention_policy: ro.retention_policy,
-                retention_period: ro.retention_period,
-            });
-
-            TopicDispatchStrategy {
-                strategy,
-                reliable_options,
-            }
-        };
+        // Dispatch mapping: admin enum (i32) -> core proto enum
+        let dispatch_strategy =
+            <CoreDispatchStrategy as core::convert::TryFrom<i32>>::try_from(req.dispatch_strategy)
+                .map_err(|_| Status::invalid_argument("invalid dispatch_strategy value"))?;
 
         let service = self.broker_service.as_ref();
         let schema = Schema::new(format!("{}_schema", req.base_name), schema_type);

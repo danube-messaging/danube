@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{ConfigReliableOptions, ConfigRetentionPolicy, SchemaType, SubType};
+use danube_client::{SchemaType, SubType};
 use std::fs;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -14,16 +14,13 @@ async fn run_reliable_basic(topic_prefix: &str, sub_type: SubType) -> Result<()>
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic(topic_prefix);
 
-    let reliable_options =
-        ConfigReliableOptions::new(5, ConfigRetentionPolicy::RetainUntilExpire, 3600);
-
     // Producer with reliable dispatch
     let mut producer = client
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_reliable_basic")
         .with_schema("my_schema".into(), SchemaType::String)
-        .with_reliable_dispatch(reliable_options)
+        .with_reliable_dispatch()
         .build();
     producer.create().await?;
 
@@ -83,7 +80,6 @@ async fn reliable_basic_exclusive() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore]
 /// What this test validates
 ///
 /// - Scenario: a reliable producer sends a fixed payload repeatedly; a single Shared consumer

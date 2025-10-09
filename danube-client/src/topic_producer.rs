@@ -5,7 +5,7 @@ use crate::{
 };
 use danube_core::proto::{
     producer_service_client::ProducerServiceClient, ProducerAccessMode, ProducerRequest,
-    StreamMessage as ProtoStreamMessage,
+    StreamMessage as ProtoStreamMessage, DispatchStrategy as ProtoDispatchStrategy,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
@@ -97,7 +97,10 @@ impl TopicProducer {
                 topic_name: self.topic.clone(),
                 schema: Some(self.schema.clone().into()),
                 producer_access_mode: ProducerAccessMode::Shared.into(),
-                dispatch_strategy: Some(self.dispatch_strategy.clone().into()),
+                dispatch_strategy: match &self.dispatch_strategy {
+                    ConfigDispatchStrategy::NonReliable => ProtoDispatchStrategy::NonReliable as i32,
+                    ConfigDispatchStrategy::Reliable => ProtoDispatchStrategy::Reliable as i32,
+                },
             };
 
             let mut request = tonic::Request::new(producer_request);

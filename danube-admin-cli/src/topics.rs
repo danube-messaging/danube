@@ -5,8 +5,7 @@ use danube_core::admin_proto::{
     topic_admin_client::TopicAdminClient,
     DescribeTopicRequest,
     DispatchStrategy as AdminDispatchStrategy, NamespaceRequest, NewTopicRequest,
-    PartitionedTopicRequest, ReliableOptions, RetentionPolicy, SubscriptionRequest,
-    TopicDispatchStrategy, TopicRequest,
+    PartitionedTopicRequest, SubscriptionRequest, TopicRequest,
 };
 use crate::client::admin_channel;
 use std::fs;
@@ -40,40 +39,11 @@ async fn fetch_schema_json(topic: &str) -> Result<serde_json::Value, Box<dyn std
     Ok(value)
 }
 
-// Convert CLI string into structured dispatch strategy for admin API
-fn parse_dispatch_strategy(
-    input: &str,
-    segment_size_mb: Option<u64>,
-    retention_policy: Option<&str>,
-    retention_period_sec: Option<u64>,
-) -> TopicDispatchStrategy {
+// Convert CLI string into enum DispatchStrategy for admin API
+fn parse_dispatch_strategy(input: &str) -> AdminDispatchStrategy {
     match input.to_ascii_lowercase().as_str() {
-        "reliable" | "reliable_dispatch" | "reliable-dispatch" => {
-            // Defaults
-            let seg = segment_size_mb.unwrap_or(64);
-            let pol = match retention_policy
-                .unwrap_or("retain_until_ack")
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "retain_until_expire" => RetentionPolicy::RetainUntilExpire as i32,
-                _ => RetentionPolicy::RetainUntilAck as i32,
-            };
-            let period = retention_period_sec.unwrap_or(24 * 60 * 60);
-
-            TopicDispatchStrategy {
-                strategy: AdminDispatchStrategy::Reliable as i32,
-                reliable_options: Some(ReliableOptions {
-                    segment_size: seg,
-                    retention_policy: pol,
-                    retention_period: period,
-                }),
-            }
-        }
-        _ => TopicDispatchStrategy {
-            strategy: AdminDispatchStrategy::NonReliable as i32,
-            reliable_options: None,
-        },
+        "reliable" | "reliable_dispatch" | "reliable-dispatch" => AdminDispatchStrategy::Reliable,
+        _ => AdminDispatchStrategy::NonReliable,
     }
 }
 
@@ -88,8 +58,8 @@ pub(crate) enum TopicsCommands {
     },
     #[command(
         about = "Create a topic (use --partitions for partitioned)",
-        long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable --segment-size-mb 128\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema Json --schema-file schema.json\n",
-        after_help = "Examples:\n  danube-admin-cli topics create /default/mytopic\n  danube-admin-cli topics create /default/mytopic --dispatch-strategy reliable --segment-size-mb 128\n  danube-admin-cli topics create /default/mytopic --partitions 3\n  danube-admin-cli topics create mytopic --namespace default --schema Json --schema-file schema.json\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
+        long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema Json --schema-file schema.json\n",
+        after_help = "Examples:\n  danube-admin-cli topics create /default/mytopic\n  danube-admin-cli topics create /default/mytopic --dispatch-strategy reliable\n  danube-admin-cli topics create /default/mytopic --partitions 3\n  danube-admin-cli topics create mytopic --namespace default --schema Json --schema-file schema.json\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
         arg_required_else_help = true
     )]
     Create {
@@ -107,12 +77,6 @@ pub(crate) enum TopicsCommands {
         schema_data: Option<String>,
         #[arg(long, default_value = "non_reliable", help = "Dispatch strategy: non_reliable|reliable")]
         dispatch_strategy: String,
-        #[arg(long)]
-        segment_size_mb: Option<u64>,
-        #[arg(long, value_parser = ["retain_until_ack", "retain_until_expire"])]
-        retention_policy: Option<String>,
-        #[arg(long)]
-        retention_period_sec: Option<u64>,
     },
     #[command(about = "Delete an existing topic", after_help = "Example:\n  danube-admin-cli topics delete /default/mytopic\n  danube-admin-cli topics delete mytopic --namespace default", arg_required_else_help = true)]
     Delete { 
@@ -179,9 +143,6 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
             schema_file,
             schema_data,
             dispatch_strategy,
-            segment_size_mb,
-            retention_policy,
-            retention_period_sec,
         } => {
             let topic_path = normalize_topic(&topic, namespace.as_deref())?;
 
@@ -197,12 +158,7 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
                     partitions: parts as u32,
                     schema_type: schema.clone(),
                     schema_data: payload.unwrap_or_else(|| "{}".into()),
-                    dispatch_strategy: Some(parse_dispatch_strategy(
-                        &dispatch_strategy,
-                        segment_size_mb,
-                        retention_policy.as_deref(),
-                        retention_period_sec,
-                    )),
+                    dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
                 };
                 let response = client.create_partitioned_topic(req).await?;
                 println!("Partitioned Topic Created: {:?}", response.into_inner().success);
@@ -211,12 +167,7 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
                     name: topic_path,
                     schema_type: schema.clone(),
                     schema_data: payload.unwrap_or_else(|| "{}".into()),
-                    dispatch_strategy: Some(parse_dispatch_strategy(
-                        &dispatch_strategy,
-                        segment_size_mb,
-                        retention_policy.as_deref(),
-                        retention_period_sec,
-                    )),
+                    dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
                 };
                 let response = client.create_topic(request).await?;
                 println!("Topic Created: {:?}", response.into_inner().success);
