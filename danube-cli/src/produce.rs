@@ -104,7 +104,6 @@ pub struct ExtendedArgs {
 pub struct ReliableArgs {
     #[arg(long, help = "Enable reliable message delivery with in-memory storage")]
     pub reliable: bool,
-
     // Legacy reliable tuning flags removed in Phase 1; broker uses defaults
 }
 
@@ -128,17 +127,11 @@ EXAMPLES:
 
     # Reliable message delivery
     danube-cli produce -s http://localhost:6650 -m "Hello Danube" -c 100 \
-        --reliable \
-        --segment-size 10 \
-        --retention expire \
-        --retention-period 7200
+        --reliable
     
     # Reliable message delivery with binary file
     danube-cli produce -s http://localhost:6650 -m "none" -f ./data.blob -c 100\
-        --reliable \
-        --segment-size 5 \
-        --retention expire \
-        --retention-period 7200
+        --reliable
 
     # Producing with attributes
     danube-cli produce -s http://localhost:6650 -m "Hello Danube" -a "key1:value1,key2:value2"

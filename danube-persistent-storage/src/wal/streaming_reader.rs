@@ -87,7 +87,7 @@ pub(crate) async fn stream_from_wal_files(
                         let payload = &carry[idx + FRAME_HEADER_SIZE..frame_end];
                         match bincode::deserialize::<StreamMessage>(payload) {
                             Ok(mut msg) => {
-                                msg.msg_id.segment_offset = off;
+                                msg.msg_id.topic_offset = off;
                                 if tx.send(Ok(msg)).await.is_err() {
                                     // receiver dropped; stop work
                                     break 'outer;

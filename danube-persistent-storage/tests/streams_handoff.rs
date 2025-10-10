@@ -24,8 +24,7 @@ fn make_msg_tagged(i: u64, topic: &str, tag: &str) -> StreamMessage {
             producer_id: 1,
             topic_name: topic.to_string(),
             broker_addr: "127.0.0.1:8080".to_string(),
-            segment_id: 0,
-            segment_offset: i,
+            topic_offset: i,
         },
         payload: format!("{}-{}", tag, i).into_bytes(),
         publish_time: 0,
@@ -42,8 +41,7 @@ fn make_msg_bin(topic: &str, off: u64, payload: &[u8]) -> StreamMessage {
             producer_id: 1,
             topic_name: topic.to_string(),
             broker_addr: "127.0.0.1:6650".to_string(),
-            segment_id: 0,
-            segment_offset: off,
+            topic_offset: off,
         },
         payload: payload.to_vec(),
         publish_time: 0,
@@ -106,13 +104,13 @@ async fn local_cache_only_handoff() {
         .expect("timeout m3")
         .unwrap()
         .expect("m3 ok");
-    assert_eq!(m3.msg_id.segment_offset, 3);
+    assert_eq!(m3.msg_id.topic_offset, 3);
     let m4 = timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("timeout m4")
         .unwrap()
         .expect("m4 ok");
-    assert_eq!(m4.msg_id.segment_offset, 4);
+    assert_eq!(m4.msg_id.topic_offset, 4);
 
     // Append live 5 and expect it
     let live5 = make_msg_tagged(5, topic_path, "wal");
@@ -123,7 +121,7 @@ async fn local_cache_only_handoff() {
         .expect("timeout m5")
         .unwrap()
         .expect("m5 ok");
-    assert_eq!(m5.msg_id.segment_offset, 5);
+    assert_eq!(m5.msg_id.topic_offset, 5);
 }
 
 /// Test: Files→Cache→Live handoff using local WAL only
@@ -186,32 +184,32 @@ async fn local_files_cache_live_handoff() {
         .expect("timeout m0")
         .unwrap()
         .expect("m0 ok");
-    assert_eq!(m0.msg_id.segment_offset, 0);
+    assert_eq!(m0.msg_id.topic_offset, 0);
     let m1 = timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("timeout m1")
         .unwrap()
         .expect("m1 ok");
-    assert_eq!(m1.msg_id.segment_offset, 1);
+    assert_eq!(m1.msg_id.topic_offset, 1);
     let m2 = timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("timeout m2")
         .unwrap()
         .expect("m2 ok");
-    assert_eq!(m2.msg_id.segment_offset, 2);
+    assert_eq!(m2.msg_id.topic_offset, 2);
 
     let m3 = timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("timeout m3")
         .unwrap()
         .expect("m3 ok");
-    assert_eq!(m3.msg_id.segment_offset, 3);
+    assert_eq!(m3.msg_id.topic_offset, 3);
     let m4 = timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("timeout m4")
         .unwrap()
         .expect("m4 ok");
-    assert_eq!(m4.msg_id.segment_offset, 4);
+    assert_eq!(m4.msg_id.topic_offset, 4);
 
     // Live phase
     wal.append(&make_msg_tagged(5, topic_path, "live"))
@@ -223,7 +221,7 @@ async fn local_files_cache_live_handoff() {
         .expect("timeout m5")
         .unwrap()
         .expect("m5 ok");
-    assert_eq!(m5.msg_id.segment_offset, 5);
+    assert_eq!(m5.msg_id.topic_offset, 5);
 }
 
 /// Test: Cloud→WAL chaining end-to-end (memory cloud backend)

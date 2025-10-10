@@ -39,7 +39,7 @@ pub(crate) async fn build_cache_stream(
         }
         // advance from_offset to after the last yielded item
         if let Some(last) = batch.last() {
-            from_offset = last.msg_id.segment_offset.saturating_add(1);
+            from_offset = last.msg_id.topic_offset.saturating_add(1);
         }
         let seg = Box::pin(stream::iter(batch.into_iter().map(Ok))) as TopicStream;
         segments.push(seg);

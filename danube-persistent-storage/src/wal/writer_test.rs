@@ -13,8 +13,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: "test".to_string(),
                 broker_addr: "localhost:6650".to_string(),
-                segment_id: 0,
-                segment_offset: offset,
+                topic_offset: offset,
             },
             payload: format!("test message {}", offset).into_bytes(),
             publish_time: std::time::SystemTime::now()

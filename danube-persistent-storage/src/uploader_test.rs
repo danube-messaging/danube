@@ -38,8 +38,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: "test-topic".to_string(),
                 broker_addr: "localhost:6650".to_string(),
-                segment_id: 0,
-                segment_offset: i,
+                topic_offset: i,
             },
             payload: format!("uploader-msg-{}", i).into_bytes(),
             publish_time: i,
@@ -224,7 +223,10 @@ mod tests {
         // Verify object exists in cloud
         let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
         let data = cloud.get_object(&object_path).await.expect("get object");
-        assert!(data.len() >= 16, "Object should contain at least one raw frame header");
+        assert!(
+            data.len() >= 16,
+            "Object should contain at least one raw frame header"
+        );
         let off = u64::from_le_bytes(data[0..8].try_into().unwrap());
         let len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
         let _crc = u32::from_le_bytes(data[12..16].try_into().unwrap());

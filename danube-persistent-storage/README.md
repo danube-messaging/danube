@@ -67,8 +67,7 @@ let msg = StreamMessage {
         producer_id: 1,
         topic_name: topic_name.to_string(),
         broker_addr: "127.0.0.1:6650".into(),
-        segment_id: 0,
-        segment_offset: 0,
+        topic_offset: 0,
     },
     payload: b"hello".to_vec(),
     publish_time: 0,
@@ -126,7 +125,7 @@ Wal::tail_reader(from) ->
   - if from < cache_start:
       read_file_range(<file>, [from, cache_start))
   - append cache items >= max(from, cache_start)
-  - inject WAL offsets into MessageID.segment_offset
+  - inject WAL offsets into MessageID.topic_offset
   - chain with live broadcast for new appends
 ```
 

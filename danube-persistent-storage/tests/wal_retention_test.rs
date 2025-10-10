@@ -360,7 +360,7 @@ async fn test_stateful_reader_after_retention() {
     }
     assert_eq!(read0.len(), total_msgs as usize);
     for (i, m) in read0.iter().enumerate() {
-        assert_eq!(m.msg_id.segment_offset, i as u64);
+        assert_eq!(m.msg_id.topic_offset, i as u64);
         assert_eq!(m.payload, format!("msg-{}", i).as_bytes());
     }
 
@@ -376,9 +376,6 @@ async fn test_stateful_reader_after_retention() {
             read_mid.push(m.expect("m"));
         }
     }
-    assert_eq!(read_mid.first().unwrap().msg_id.segment_offset, mid);
-    assert_eq!(
-        read_mid.last().unwrap().msg_id.segment_offset,
-        total_msgs - 1
-    );
+    assert_eq!(read_mid.first().unwrap().msg_id.topic_offset, mid);
+    assert_eq!(read_mid.last().unwrap().msg_id.topic_offset, total_msgs - 1);
 }

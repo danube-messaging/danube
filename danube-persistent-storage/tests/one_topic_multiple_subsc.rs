@@ -79,16 +79,16 @@ async fn test_multiple_subscriptions_independent_positions() {
 
     // Verify each reader got the correct messages
     assert_eq!(messages1.len(), 20);
-    assert_eq!(messages1[0].msg_id.segment_offset, 0);
-    assert_eq!(messages1[19].msg_id.segment_offset, 19);
+    assert_eq!(messages1[0].msg_id.topic_offset, 0);
+    assert_eq!(messages1[19].msg_id.topic_offset, 19);
 
     assert_eq!(messages2.len(), 15);
-    assert_eq!(messages2[0].msg_id.segment_offset, 5);
-    assert_eq!(messages2[14].msg_id.segment_offset, 19);
+    assert_eq!(messages2[0].msg_id.topic_offset, 5);
+    assert_eq!(messages2[14].msg_id.topic_offset, 19);
 
     assert_eq!(messages3.len(), 10);
-    assert_eq!(messages3[0].msg_id.segment_offset, 10);
-    assert_eq!(messages3[9].msg_id.segment_offset, 19);
+    assert_eq!(messages3[0].msg_id.topic_offset, 10);
+    assert_eq!(messages3[9].msg_id.topic_offset, 19);
 }
 
 /// Test: Multiple subscriptions concurrent reading
@@ -225,18 +225,18 @@ async fn test_multiple_subscriptions_concurrent_reading() {
 
     // Verify reader1 got all messages (0-14)
     assert_eq!(messages1.len(), 15);
-    assert_eq!(messages1[0].msg_id.segment_offset, 0);
-    assert_eq!(messages1[14].msg_id.segment_offset, 14);
+    assert_eq!(messages1[0].msg_id.topic_offset, 0);
+    assert_eq!(messages1[14].msg_id.topic_offset, 14);
 
     // Verify reader2 got messages from offset 5 (5-14)
     assert_eq!(messages2.len(), 10);
-    assert_eq!(messages2[0].msg_id.segment_offset, 5);
-    assert_eq!(messages2[9].msg_id.segment_offset, 14);
+    assert_eq!(messages2[0].msg_id.topic_offset, 5);
+    assert_eq!(messages2[9].msg_id.topic_offset, 14);
 
     // Verify reader3 got only new messages (10-14)
     assert_eq!(messages3.len(), 5);
-    assert_eq!(messages3[0].msg_id.segment_offset, 10);
-    assert_eq!(messages3[4].msg_id.segment_offset, 14);
+    assert_eq!(messages3[0].msg_id.topic_offset, 10);
+    assert_eq!(messages3[4].msg_id.topic_offset, 14);
 }
 
 #[tokio::test]
@@ -312,16 +312,16 @@ async fn test_multiple_subscriptions_with_cloud_handoff() {
 
     // Verify all readers got correct messages
     assert_eq!(messages1.len(), 70);
-    assert_eq!(messages1[0].msg_id.segment_offset, 0);
-    assert_eq!(messages1[69].msg_id.segment_offset, 69);
+    assert_eq!(messages1[0].msg_id.topic_offset, 0);
+    assert_eq!(messages1[69].msg_id.topic_offset, 69);
 
     assert_eq!(messages2.len(), 50);
-    assert_eq!(messages2[0].msg_id.segment_offset, 20);
-    assert_eq!(messages2[49].msg_id.segment_offset, 69);
+    assert_eq!(messages2[0].msg_id.topic_offset, 20);
+    assert_eq!(messages2[49].msg_id.topic_offset, 69);
 
     assert_eq!(messages3.len(), 25);
-    assert_eq!(messages3[0].msg_id.segment_offset, 45);
-    assert_eq!(messages3[24].msg_id.segment_offset, 69);
+    assert_eq!(messages3[0].msg_id.topic_offset, 45);
+    assert_eq!(messages3[24].msg_id.topic_offset, 69);
 
     // Verify message content integrity across cloud/WAL boundary
     for (i, msg) in messages1.iter().enumerate() {
@@ -423,9 +423,9 @@ async fn test_multiple_subscriptions_different_speeds() {
 
     // Verify message content is identical
     for i in 0..20 {
-        assert_eq!(fast_messages[i].msg_id.segment_offset, i as u64);
-        assert_eq!(medium_messages[i].msg_id.segment_offset, i as u64);
-        assert_eq!(slow_messages[i].msg_id.segment_offset, i as u64);
+        assert_eq!(fast_messages[i].msg_id.topic_offset, i as u64);
+        assert_eq!(medium_messages[i].msg_id.topic_offset, i as u64);
+        assert_eq!(slow_messages[i].msg_id.topic_offset, i as u64);
 
         assert_eq!(fast_messages[i].payload, medium_messages[i].payload);
         assert_eq!(fast_messages[i].payload, slow_messages[i].payload);
@@ -503,9 +503,9 @@ async fn test_multiple_subscriptions_tail_reading() {
 
     // Verify all readers got messages starting from offset 10
     for i in 0..10 {
-        assert_eq!(tail_messages1[i].msg_id.segment_offset, (i + 10) as u64);
-        assert_eq!(tail_messages2[i].msg_id.segment_offset, (i + 10) as u64);
-        assert_eq!(tail_messages3[i].msg_id.segment_offset, (i + 10) as u64);
+        assert_eq!(tail_messages1[i].msg_id.topic_offset, (i + 10) as u64);
+        assert_eq!(tail_messages2[i].msg_id.topic_offset, (i + 10) as u64);
+        assert_eq!(tail_messages3[i].msg_id.topic_offset, (i + 10) as u64);
 
         let expected_payload = format!("tail-{}", i + 10);
         assert_eq!(tail_messages1[i].payload, expected_payload.as_bytes());
@@ -608,18 +608,18 @@ async fn test_multiple_subscriptions_mixed_start_positions() {
 
     // Verify each reader got correct range of messages
     assert_eq!(earliest_messages.len(), 45);
-    assert_eq!(earliest_messages[0].msg_id.segment_offset, 0);
-    assert_eq!(earliest_messages[44].msg_id.segment_offset, 44);
+    assert_eq!(earliest_messages[0].msg_id.topic_offset, 0);
+    assert_eq!(earliest_messages[44].msg_id.topic_offset, 44);
 
     assert_eq!(middle_messages.len(), 30);
-    assert_eq!(middle_messages[0].msg_id.segment_offset, 15);
-    assert_eq!(middle_messages[29].msg_id.segment_offset, 44);
+    assert_eq!(middle_messages[0].msg_id.topic_offset, 15);
+    assert_eq!(middle_messages[29].msg_id.topic_offset, 44);
 
     assert_eq!(recent_messages.len(), 10);
-    assert_eq!(recent_messages[0].msg_id.segment_offset, 35);
-    assert_eq!(recent_messages[9].msg_id.segment_offset, 44);
+    assert_eq!(recent_messages[0].msg_id.topic_offset, 35);
+    assert_eq!(recent_messages[9].msg_id.topic_offset, 44);
 
     assert_eq!(latest_messages.len(), 5);
-    assert_eq!(latest_messages[0].msg_id.segment_offset, 40);
-    assert_eq!(latest_messages[4].msg_id.segment_offset, 44);
+    assert_eq!(latest_messages[0].msg_id.topic_offset, 40);
+    assert_eq!(latest_messages[4].msg_id.topic_offset, 44);
 }

@@ -102,7 +102,7 @@ impl Stream for StatefulReader {
                 ReaderPhase::Live { stream } => match Pin::new(stream).poll_next(cx) {
                     Poll::Ready(Some(Ok(msg))) => {
                         // Drop duplicates only if we have yielded at least once.
-                        if self.last_yielded != u64::MAX && msg.msg_id.segment_offset <= self.last_yielded {
+                        if self.last_yielded != u64::MAX && msg.msg_id.topic_offset <= self.last_yielded {
                             continue;
                         }
                         // Detect gaps due to late subscription to broadcast: if we observe an
@@ -110,11 +110,11 @@ impl Stream for StatefulReader {
                         // starting from last_yielded + 1. We intentionally drop this broadcast item
                         // because it is present in the cache (cache is updated before broadcast in append()).
                         let expected = if self.last_yielded == u64::MAX { 0 } else { self.last_yielded + 1 };
-                        if msg.msg_id.segment_offset > expected {
+                        if msg.msg_id.topic_offset > expected {
                             warn!(
                                 target = "stateful_reader",
                                 last_yielded = self.last_yielded,
-                                observed = msg.msg_id.segment_offset,
+                                observed = msg.msg_id.topic_offset,
                                 expected,
                                 "gap detected in live stream; transitioning to cache to fill"
                             );
@@ -213,7 +213,7 @@ impl StatefulReader {
 
     #[inline]
     fn update_last_yielded(&mut self, msg: &StreamMessage) {
-        self.last_yielded = msg.msg_id.segment_offset;
+        self.last_yielded = msg.msg_id.topic_offset;
     }
 
     #[inline]

@@ -39,12 +39,6 @@ Values:
 - `non_reliable` (default)
 - `reliable`
 
-When `reliable` is selected, the following flags can override defaults:
-
-- `--segment-size-mb <u64>` (default: 64)
-- `--retention-policy retain_until_ack|retain_until_expire` (default: retain_until_ack)
-- `--retention-period-sec <u64>` (default: 86400)
-
 ## Command examples
 
 ### Brokers
@@ -90,20 +84,10 @@ danube-admin-cli topics create /default/mytopic --dispatch-strategy non_reliable
 # Create non-partitioned topic (reliable with defaults)
 danube-admin-cli topics create /default/mytopic --dispatch-strategy reliable
 
-# Create non-partitioned topic (reliable with overrides)
-danube-admin-cli topics create /default/mytopic \
-  --dispatch-strategy reliable \
-  --segment-size-mb 128 \
-  --retention-policy retain_until_expire \
-  --retention-period-sec 172800
-
 # Create partitioned topic (unified create with --partitions)
 danube-admin-cli topics create /default/mytopic \
   --partitions 3 \
-  --dispatch-strategy reliable \
-  --segment-size-mb 64 \
-  --retention-policy retain_until_ack \
-  --retention-period-sec 86400
+  --dispatch-strategy reliable
 
 # You can omit namespace in the topic and provide it via --namespace
 danube-admin-cli topics create mytopic --namespace default --dispatch-strategy reliable

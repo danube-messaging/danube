@@ -14,7 +14,7 @@ pub fn make_test_message(
     request_id: u64,
     producer_id: u64,
     topic_name: &str,
-    segment_offset: u64,
+    topic_offset: u64,
     payload: &str,
 ) -> StreamMessage {
     StreamMessage {
@@ -23,11 +23,10 @@ pub fn make_test_message(
             producer_id,
             topic_name: topic_name.to_string(),
             broker_addr: "localhost:6650".to_string(),
-            segment_id: 0,
-            segment_offset,
+            topic_offset,
         },
         payload: payload.as_bytes().to_vec(),
-        publish_time: segment_offset,
+        publish_time: topic_offset,
         producer_name: format!("producer-{}", producer_id),
         subscription_name: None,
         attributes: HashMap::new(),

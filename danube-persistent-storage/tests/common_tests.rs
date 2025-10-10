@@ -10,7 +10,7 @@ async fn test_make_test_message() {
     assert_eq!(msg.request_id, 1);
     assert_eq!(msg.msg_id.producer_id, 100);
     assert_eq!(msg.msg_id.topic_name, "test-topic");
-    assert_eq!(msg.msg_id.segment_offset, 5);
+    assert_eq!(msg.msg_id.topic_offset, 5);
     assert_eq!(msg.payload, b"hello");
     assert_eq!(msg.producer_name, "producer-100");
 }

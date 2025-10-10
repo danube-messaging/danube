@@ -34,7 +34,7 @@ impl ProducerService for DanubeServerImpl {
                 .ok();
 
         match service
-            .get_topic(&req.topic_name, requested_strategy, req.schema, true)
+            .get_topic(&req.topic_name, requested_strategy, req.schema)
             .await
         {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
