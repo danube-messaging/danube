@@ -11,8 +11,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: "test".to_string(),
                 broker_addr: "localhost:6650".to_string(),
-                segment_id: 0,
-                segment_offset: i,
+                topic_offset: i,
             },
             payload: format!("msg-{}", i).into_bytes(),
             publish_time: i,
@@ -96,7 +95,10 @@ mod tests {
         cache.evict_to(3);
         assert_eq!(cache.len(), 3);
         let items: Vec<_> = cache.range_from(0).collect();
-        assert_eq!(items.iter().map(|(o, _)| *o).collect::<Vec<_>>(), vec![3, 4, 5]);
+        assert_eq!(
+            items.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
 
         cache.evict_to(0);
         assert_eq!(cache.len(), 0);

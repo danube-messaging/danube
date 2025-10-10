@@ -108,10 +108,8 @@ message MsgID {
     string topic_name = 2;
     // Broker address
     string broker_addr = 3;
-    // Segment is the unit of storage in Danube.
-    uint64 segment_id = 4;
-    // Offset within the segment
-    uint64 segment_offset = 5;
+    // Offset within the topic
+    uint64 topic_offset = 5;
 }
 
 message AckRequest {

@@ -107,8 +107,7 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
     let mut message_stream = consumer.receive().await?;
 
     let mut state = ConsumerState {
-        last_segment_id: 0,
-        last_segment_offset: 0,
+        last_topic_offset: 0,
         total_received_bytes: 0,
     };
 
@@ -227,8 +226,7 @@ fn print_attr(attributes: &HashMap<String, String>) -> String {
 }
 
 struct ConsumerState {
-    last_segment_id: u64,
-    last_segment_offset: u64,
+    last_topic_offset: u64,
     total_received_bytes: usize,
 }
 
@@ -239,8 +237,7 @@ fn print_to_console(
     payload_size: usize,
     state: &mut ConsumerState,
 ) {
-    let is_reliable = msg_id.segment_offset > state.last_segment_offset
-        || msg_id.segment_id != state.last_segment_id;
+    let is_reliable = msg_id.topic_offset > state.last_topic_offset;
 
     state.total_received_bytes += payload_size;
 
@@ -252,10 +249,9 @@ fn print_to_console(
         };
 
         println!(
-            "Received reliable message: {} \nSegment: {}, Offset: {}, Size: {} bytes, Total received: {} bytes\nProducer: {}, Topic: {}",
+            "Received reliable message: {} \nTopic offset: {}, Size: {} bytes, Total received: {} bytes\nProducer: {}, Topic: {}",
             message_preview,
-            msg_id.segment_id,
-            msg_id.segment_offset,
+            msg_id.topic_offset,
             payload_size,
             state.total_received_bytes,
             msg_id.producer_id,
@@ -272,6 +268,5 @@ fn print_to_console(
         println!("Attributes: {}", print_attr(&attributes));
     }
 
-    state.last_segment_id = msg_id.segment_id;
-    state.last_segment_offset = msg_id.segment_offset;
+    state.last_topic_offset = msg_id.topic_offset;
 }

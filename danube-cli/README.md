@@ -32,11 +32,7 @@ danube-cli produce -s <http://localhost:6650> -c 100 -y json --json-schema '{"ty
 
 ```bash
 danube-cli produce -s <http://localhost:6650> -m "Hello Danube" -c 100 \
-        --reliable \
-        --storage disk \
-        --segment-size 10 \
-        --retention expire \
-        --retention-period 7200
+        --reliable
 ```
 
 #### Producing with attributes

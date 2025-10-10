@@ -147,12 +147,9 @@ pub struct MsgId {
     /// Broker address
     #[prost(string, tag = "3")]
     pub broker_addr: ::prost::alloc::string::String,
-    /// Segment is the unit of storage in Danube.
-    #[prost(uint64, tag = "4")]
-    pub segment_id: u64,
-    /// Offset within the segment
+    /// Offset within the topic
     #[prost(uint64, tag = "5")]
-    pub segment_offset: u64,
+    pub topic_offset: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AckRequest {

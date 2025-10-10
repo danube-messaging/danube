@@ -8,7 +8,9 @@ use tokio::sync::{mpsc, Mutex};
 use tonic::{Code, Status};
 use tracing::{info, warn};
 
-use danube_core::proto::{ErrorType, Schema as ProtoSchema, DispatchStrategy as ProtoDispatchStrategy};
+use danube_core::proto::{
+    DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
+};
 
 use crate::{
     broker_metrics::{BROKER_TOPICS, TOPIC_CONSUMERS, TOPIC_PRODUCERS},
@@ -44,7 +46,11 @@ pub(crate) struct BrokerService {
 }
 
 impl BrokerService {
-    pub(crate) fn new(resources: Resources, wal_factory: WalStorageFactory, auto_create_topics: bool) -> Self {
+    pub(crate) fn new(
+        resources: Resources,
+        wal_factory: WalStorageFactory,
+        auto_create_topics: bool,
+    ) -> Self {
         let broker_id = get_random_id();
         BrokerService {
             broker_id,
@@ -70,7 +76,6 @@ impl BrokerService {
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
-        create_if_missing: bool,
     ) -> Result<bool, Status> {
         // The topic format is /{namespace_name}/{topic_name}
         if !validate_topic_format(topic_name) {
@@ -93,8 +98,12 @@ impl BrokerService {
                 if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
                     let topic_ds = &topic.dispatch_strategy;
                     let expected = match req_ds {
-                        ProtoDispatchStrategy::NonReliable => crate::dispatch_strategy::DispatchStrategy::NonReliable,
-                        ProtoDispatchStrategy::Reliable => crate::dispatch_strategy::DispatchStrategy::Reliable,
+                        ProtoDispatchStrategy::NonReliable => {
+                            crate::dispatch_strategy::DispatchStrategy::NonReliable
+                        }
+                        ProtoDispatchStrategy::Reliable => {
+                            crate::dispatch_strategy::DispatchStrategy::Reliable
+                        }
                     };
                     if std::mem::discriminant(topic_ds) != std::mem::discriminant(&expected) {
                         let status = create_error_status(
@@ -130,8 +139,8 @@ impl BrokerService {
             }
         }
 
-        // If the topic does not exist and create_if_missing is false, or auto-create is disabled by broker config
-        if !create_if_missing || !self.auto_create_topics {
+        // If the topic does not exist and auto-create is disabled by broker config
+        if !self.auto_create_topics {
             let error_string = &format!("Unable to find the topic: {}", topic_name);
             let status = create_error_status(
                 Code::InvalidArgument,

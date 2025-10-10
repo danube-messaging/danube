@@ -72,7 +72,7 @@ async fn test_multiple_topics_isolated_storage() {
         for (j, msg) in messages.iter().enumerate() {
             assert_eq!(msg.msg_id.topic_name, *topic);
             assert_eq!(msg.msg_id.producer_id, (i + 1) as u64);
-            assert_eq!(msg.msg_id.segment_offset, j as u64);
+            assert_eq!(msg.msg_id.topic_offset, j as u64);
             assert_eq!(msg.payload, format!("topic-{}-msg-{}", i, j).as_bytes());
         }
     }
@@ -222,7 +222,7 @@ async fn test_multiple_topics_concurrent_operations() {
         for (j, msg) in messages.iter().enumerate() {
             assert_eq!(msg.msg_id.topic_name, topic_name);
             assert_eq!(msg.msg_id.producer_id, (i + 1) as u64);
-            assert_eq!(msg.msg_id.segment_offset, j as u64);
+            assert_eq!(msg.msg_id.topic_offset, j as u64);
             assert_eq!(msg.payload, format!("concurrent-{}-{}", i, j).as_bytes());
         }
     }
@@ -314,18 +314,18 @@ async fn test_multiple_topics_different_read_patterns() {
 
     // Verify results
     assert_eq!(messages_a.len(), 40);
-    assert_eq!(messages_a[0].msg_id.segment_offset, 0);
-    assert_eq!(messages_a[39].msg_id.segment_offset, 39);
+    assert_eq!(messages_a[0].msg_id.topic_offset, 0);
+    assert_eq!(messages_a[39].msg_id.topic_offset, 39);
     assert_eq!(messages_a[0].msg_id.topic_name, topics[0]);
 
     assert_eq!(messages_b.len(), 25);
-    assert_eq!(messages_b[0].msg_id.segment_offset, 15);
-    assert_eq!(messages_b[24].msg_id.segment_offset, 39);
+    assert_eq!(messages_b[0].msg_id.topic_offset, 15);
+    assert_eq!(messages_b[24].msg_id.topic_offset, 39);
     assert_eq!(messages_b[0].msg_id.topic_name, topics[1]);
 
     assert_eq!(messages_c.len(), 10);
-    assert_eq!(messages_c[0].msg_id.segment_offset, 40);
-    assert_eq!(messages_c[9].msg_id.segment_offset, 49);
+    assert_eq!(messages_c[0].msg_id.topic_offset, 40);
+    assert_eq!(messages_c[9].msg_id.topic_offset, 49);
     assert_eq!(messages_c[0].msg_id.topic_name, topics[2]);
 }
 

@@ -22,8 +22,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: topic.to_string(),
                 broker_addr: "127.0.0.1:8080".to_string(),
-                segment_id: 0,
-                segment_offset: i,
+                topic_offset: i,
             },
             payload: format!("cloud-{}", i).into_bytes(),
             publish_time: 0,
@@ -103,7 +102,9 @@ mod tests {
                     break true;
                 }
             }
-            if waited >= 10_000 { break false; }
+            if waited >= 10_000 {
+                break false;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
             waited += 50;
         };
@@ -112,7 +113,10 @@ mod tests {
 
         // Reader should only return requested window
         let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
-        let stream = reader.read_range(2500, Some(2520)).await.expect("cloud read");
+        let stream = reader
+            .read_range(2500, Some(2520))
+            .await
+            .expect("cloud read");
         let msgs: Vec<StreamMessage> = stream.try_collect::<Vec<_>>().await.expect("collect");
         assert_eq!(msgs.len(), 21);
         for (i, m) in msgs.into_iter().enumerate() {

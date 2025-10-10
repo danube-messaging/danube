@@ -25,15 +25,14 @@ use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedSingleDispatcher;
 use crate::topic::TopicStore;
 
-fn make_msg(req_id: u64, seg_off: u64, topic: &str) -> StreamMessage {
+fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
     StreamMessage {
         request_id: req_id,
         msg_id: MessageID {
             producer_id: 1,
             topic_name: topic.to_string(),
             broker_addr: "127.0.0.1:8080".to_string(),
-            segment_id: 0,
-            segment_offset: seg_off,
+            topic_offset: topic_off,
         },
         payload: format!("unified-single-{}", req_id).into_bytes(),
         publish_time: 0,
@@ -55,10 +54,7 @@ async fn reliable_single_ack_gating() {
     let ts = TopicStore::new(topic.to_string(), wal_storage);
 
     // Dispatcher with reliable engine (start: Latest)
-    let engine = SubscriptionEngine::new(
-        "sub-a".to_string(),
-        Arc::new(ts.clone()),
-    );
+    let engine = SubscriptionEngine::new("sub-a".to_string(), Arc::new(ts.clone()));
     let dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
     let notifier = dispatcher.get_notifier();
 

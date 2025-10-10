@@ -56,7 +56,10 @@ impl SubscriptionEngine {
 
     /// Initialize underlying stream. For a brand-new subscription we default to Latest.
     pub(crate) async fn init_stream_latest(&mut self) -> Result<()> {
-        let stream = self.topic_store.create_reader(StartPosition::Latest).await?;
+        let stream = self
+            .topic_store
+            .create_reader(StartPosition::Latest)
+            .await?;
         self.stream = Some(stream);
         Ok(())
     }
@@ -98,7 +101,7 @@ impl SubscriptionEngine {
     /// Called by dispatcher when a message has been acknowledged by a consumer.
     pub(crate) async fn on_acked(&mut self, _request_id: u64, msg_id: MessageID) -> Result<()> {
         // Track last acked offset
-        self.last_acked = Some(msg_id.segment_offset);
+        self.last_acked = Some(msg_id.topic_offset);
         self.dirty = true;
 
         // Debounced flush: persist at most every `flush_interval`
@@ -149,7 +152,7 @@ mod tests {
     /// - In-memory `MetadataStorage::InMemory` with `LocalCache`, wrapped by `TopicResources`.
     /// - `SubscriptionEngine::new_with_progress(...)` configured for subscription `sub-a` on topic `/ns/topic-a`.
     /// - `sub_progress_flush_interval` set to 50ms (short for test).
-    /// - A `MessageID` with `segment_offset = 5` to simulate an acked WAL offset.
+    /// - A `MessageID` with `topic_offset = 5` to simulate an acked WAL offset.
     ///
     /// Execution Steps
     /// 1. Call `on_acked(100, msg_id)` to mark engine state as dirty with last_acked = 5.
@@ -169,7 +172,9 @@ mod tests {
         let topic_resources_reader = topic_resources.clone();
 
         // Engine with short debounce interval (50ms). TopicStore not used here, but must be provided.
-        let wal = Wal::with_config(WalConfig::default()).await.expect("init wal");
+        let wal = Wal::with_config(WalConfig::default())
+            .await
+            .expect("init wal");
         let wal_storage = WalStorage::from_wal(wal);
         let ts = TopicStore::new("/ns/topic-a".to_string(), wal_storage);
         let mut engine = SubscriptionEngine::new_with_progress(
@@ -185,8 +190,7 @@ mod tests {
             producer_id: 1,
             topic_name: "/ns/topic-a".to_string(),
             broker_addr: "127.0.0.1:8080".to_string(),
-            segment_id: 0,
-            segment_offset: 5,
+            topic_offset: 5,
         };
         engine.on_acked(100, msg_id.clone()).await.unwrap();
 

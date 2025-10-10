@@ -4,8 +4,8 @@ use crate::{
     DanubeClient, ProducerOptions, Schema,
 };
 use danube_core::proto::{
-    producer_service_client::ProducerServiceClient, ProducerAccessMode, ProducerRequest,
-    StreamMessage as ProtoStreamMessage, DispatchStrategy as ProtoDispatchStrategy,
+    producer_service_client::ProducerServiceClient, DispatchStrategy as ProtoDispatchStrategy,
+    ProducerAccessMode, ProducerRequest, StreamMessage as ProtoStreamMessage,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
@@ -98,7 +98,9 @@ impl TopicProducer {
                 schema: Some(self.schema.clone().into()),
                 producer_access_mode: ProducerAccessMode::Shared.into(),
                 dispatch_strategy: match &self.dispatch_strategy {
-                    ConfigDispatchStrategy::NonReliable => ProtoDispatchStrategy::NonReliable as i32,
+                    ConfigDispatchStrategy::NonReliable => {
+                        ProtoDispatchStrategy::NonReliable as i32
+                    }
                     ConfigDispatchStrategy::Reliable => ProtoDispatchStrategy::Reliable as i32,
                 },
             };
@@ -178,8 +180,7 @@ impl TopicProducer {
                 .expect("Producer ID should be set before sending messages"),
             topic_name: self.topic.clone(),
             broker_addr: self.client.uri.to_string(),
-            segment_id: 0,
-            segment_offset: 0,
+            topic_offset: 0,
         };
 
         let send_message = StreamMessage {

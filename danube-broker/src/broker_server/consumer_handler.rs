@@ -34,7 +34,7 @@ impl ConsumerService for DanubeServerImpl {
         let service = self.service.as_ref();
 
         // the client is allowed to create the subscription only if the topic is served by this broker
-        match service.get_topic(&req.topic_name, None, None, false).await {
+        match service.get_topic(&req.topic_name, None, None).await {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
             Err(status) => {
                 info!("Error topic request: {}", status.message());
@@ -133,14 +133,16 @@ impl ConsumerService for DanubeServerImpl {
 
         let rx_cloned = Arc::clone(&rx);
         let service_for_disconnect = self.service.clone();
-        
+
         // Create a new cancellation token for this streaming session
         let cancellation_token = CancellationToken::new();
         let token_for_task = cancellation_token.clone();
 
         // Store the cancellation token in the consumer info
         if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
-            consumer_info.set_cancellation_token(cancellation_token).await;
+            consumer_info
+                .set_cancellation_token(cancellation_token)
+                .await;
         }
 
         tokio::spawn(async move {

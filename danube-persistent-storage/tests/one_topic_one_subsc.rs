@@ -62,7 +62,7 @@ async fn test_single_topic_basic_flow() {
 
     assert_eq!(read_messages.len(), 10);
     for (i, msg) in read_messages.iter().enumerate() {
-        assert_eq!(msg.msg_id.segment_offset, i as u64);
+        assert_eq!(msg.msg_id.topic_offset, i as u64);
         assert_eq!(msg.payload, format!("message-{}", i).as_bytes());
     }
 }
@@ -183,7 +183,7 @@ async fn test_single_topic_cloud_handoff_reading() {
 
     // Verify message ordering and content
     for (i, msg) in read_messages.iter().enumerate() {
-        assert_eq!(msg.msg_id.segment_offset, i as u64);
+        assert_eq!(msg.msg_id.topic_offset, i as u64);
         assert_eq!(msg.payload, format!("handoff-msg-{}", i).as_bytes());
     }
 }
@@ -254,10 +254,10 @@ async fn test_single_topic_resume_from_position() {
     assert_eq!(read_messages.len(), 30); // 40 - 10
 
     // Verify first message is from correct offset
-    assert_eq!(read_messages[0].msg_id.segment_offset, start_offset);
+    assert_eq!(read_messages[0].msg_id.topic_offset, start_offset);
 
     // Verify last message
-    assert_eq!(read_messages.last().unwrap().msg_id.segment_offset, 39);
+    assert_eq!(read_messages.last().unwrap().msg_id.topic_offset, 39);
 }
 
 /// Test: Single topic tail reading (live messages)
@@ -325,7 +325,7 @@ async fn test_single_topic_tail_reading() {
 
     // Verify tail messages are the new ones
     for (i, msg) in tail_messages.iter().enumerate() {
-        assert_eq!(msg.msg_id.segment_offset, (i + 5) as u64);
+        assert_eq!(msg.msg_id.topic_offset, (i + 5) as u64);
         assert_eq!(msg.payload, format!("tail-{}", i + 5).as_bytes());
     }
 }
@@ -388,7 +388,7 @@ async fn test_single_topic_concurrent_write_read() {
 
     // Verify message ordering
     for (i, msg) in read_messages.iter().enumerate() {
-        assert_eq!(msg.msg_id.segment_offset, i as u64);
+        assert_eq!(msg.msg_id.topic_offset, i as u64);
         assert_eq!(msg.payload, format!("concurrent-{}", i).as_bytes());
     }
 }
@@ -464,7 +464,7 @@ async fn test_single_topic_large_message_handling() {
 
     // Verify normal messages
     for i in 1..5 {
-        assert_eq!(read_messages[i].msg_id.segment_offset, i as u64);
+        assert_eq!(read_messages[i].msg_id.topic_offset, i as u64);
         assert_eq!(read_messages[i].payload, format!("normal-{}", i).as_bytes());
     }
 }

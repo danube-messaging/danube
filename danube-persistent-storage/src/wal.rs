@@ -284,9 +284,9 @@ impl Wal {
     pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
         let offset = self.inner.next_offset.fetch_add(1, Ordering::AcqRel);
         // Clone and stamp the message with its assigned offset so all downstream paths
-        // (cache, disk, broadcast) see the correct segment_offset without rewriting later.
+        // (cache, disk, broadcast) see the correct topic_offset without rewriting later.
         let mut stamped = msg.clone();
-        stamped.msg_id.segment_offset = offset;
+        stamped.msg_id.topic_offset = offset;
         // Serialize the stamped message for durability and enqueue to background writer
         let bytes = bincode::serialize(&stamped)
             .map_err(|e| PersistentStorageError::Io(format!("bincode serialize failed: {}", e)))?;

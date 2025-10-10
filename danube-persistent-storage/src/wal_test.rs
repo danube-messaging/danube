@@ -17,8 +17,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: "t".to_string(),
                 broker_addr: "b".to_string(),
-                segment_id: 0,
-                segment_offset: 0,
+                topic_offset: 0,
             },
             payload: format!("msg-{i}").into_bytes(),
             publish_time: i,
@@ -84,7 +83,7 @@ mod tests {
     /// - Start reading from `n-100` to ensure we stream entirely from cache.
     ///
     /// Expected
-    /// - We receive exactly 100 messages, offsets `[n-100 .. n)`, in order, with correct `segment_offset`.
+    /// - We receive exactly 100 messages, offsets `[n-100 .. n)`, in order, with correct `topic_offset`.
     #[tokio::test]
     async fn test_cache_streaming_batches() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
@@ -106,7 +105,7 @@ mod tests {
             .map_err(|_| "timeout cache batches")?
         {
             let msg = item?;
-            got_offs.push(msg.msg_id.segment_offset);
+            got_offs.push(msg.msg_id.topic_offset);
             if got_offs.len() == 100 {
                 break;
             }
@@ -157,7 +156,7 @@ mod tests {
             .map_err(|_| "timeout initial replay")?
         {
             let msg = item?;
-            offs.push(msg.msg_id.segment_offset);
+            offs.push(msg.msg_id.topic_offset);
             if offs.len() == n as usize {
                 break;
             }
@@ -178,7 +177,7 @@ mod tests {
             .map_err(|_| "timeout live replay")?
         {
             let msg = item?;
-            live_offs.push(msg.msg_id.segment_offset);
+            live_offs.push(msg.msg_id.topic_offset);
             if live_offs.len() == 3 {
                 break;
             }
@@ -241,7 +240,7 @@ mod tests {
             .map_err(|_| "timeout collecting refill boundary")?
         {
             let msg = item?;
-            offs.push(msg.msg_id.segment_offset);
+            offs.push(msg.msg_id.topic_offset);
             if offs.len() == 10 {
                 break;
             }
@@ -366,7 +365,7 @@ mod tests {
     ///
     /// Expected
     /// - We receive 20 messages; each message payload is msg-i, and the injected
-    ///   `msg_id.segment_offset` equals i (the WAL offset assigned during append).
+    ///   `msg_id.topic_offset` equals i (the WAL offset assigned during append).
     #[tokio::test]
     async fn test_append_and_tail_from_zero() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
@@ -396,8 +395,8 @@ mod tests {
         assert_eq!(got.len(), n as usize);
         for (i, msg) in got.into_iter().enumerate() {
             assert_eq!(msg.payload, format!("msg-{}", i).into_bytes());
-            // segment_offset is stamped by WAL append and should equal the WAL offset
-            assert_eq!(msg.msg_id.segment_offset, i as u64);
+            // topic_offset is stamped by WAL append and should equal the WAL offset
+            assert_eq!(msg.msg_id.topic_offset, i as u64);
         }
         Ok(())
     }
@@ -414,7 +413,7 @@ mod tests {
     ///
     /// Expected
     /// - We receive exactly 15 messages for offsets [10..25). Payloads match msg-<offset>,
-    ///   and `msg_id.segment_offset` equals each expected offset.
+    ///   and `msg_id.topic_offset` equals each expected offset.
     #[tokio::test]
     async fn test_rotation_and_tail_from_offset() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = TempDir::new()?;
@@ -435,7 +434,7 @@ mod tests {
         let mut got: Vec<StreamMessage> = Vec::new();
         while let Some(item) = stream.next().await {
             let msg = item?;
-            if msg.msg_id.segment_offset >= 10 && msg.msg_id.segment_offset < 25 {
+            if msg.msg_id.topic_offset >= 10 && msg.msg_id.topic_offset < 25 {
                 got.push(msg);
             }
             if got.len() == 15 {
@@ -447,7 +446,7 @@ mod tests {
         for (idx, msg) in got.into_iter().enumerate() {
             let expected_off = 10 + idx as u64;
             assert_eq!(msg.payload, format!("msg-{}", expected_off).into_bytes());
-            assert_eq!(msg.msg_id.segment_offset, expected_off);
+            assert_eq!(msg.msg_id.topic_offset, expected_off);
         }
 
         Ok(())

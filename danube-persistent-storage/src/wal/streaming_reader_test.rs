@@ -19,8 +19,7 @@ mod tests {
                 producer_id: 1,
                 topic_name: "test".to_string(),
                 broker_addr: "localhost:6650".to_string(),
-                segment_id: 0,
-                segment_offset: i,
+                topic_offset: i,
             },
             payload: format!("msg-{}", i).into_bytes(),
             publish_time: i,
@@ -63,7 +62,7 @@ mod tests {
     ///
     /// Purpose
     /// - Validate that `stream_from_wal_files` can read a single WAL file end-to-end
-    ///   and yield frames in order with correct `segment_offset`.
+    ///   and yield frames in order with correct `topic_offset`.
     ///
     /// Flow
     /// - Create a single WAL file and write frames for offsets 0, 1, 2.
@@ -101,7 +100,7 @@ mod tests {
         let mut offs = vec![];
         while let Some(item) = stream.next().await {
             let m = item?;
-            offs.push(m.msg_id.segment_offset);
+            offs.push(m.msg_id.topic_offset);
             if offs.len() == 3 {
                 break;
             }
@@ -170,7 +169,7 @@ mod tests {
             .map_err(|_| "timeout")?
         {
             let m = item?;
-            offs.push(m.msg_id.segment_offset);
+            offs.push(m.msg_id.topic_offset);
             if offs.len() == 6 {
                 break;
             }
@@ -231,12 +230,12 @@ mod tests {
             .await
             .map_err(|_| "timeout msg0")?
             .unwrap()?;
-        assert_eq!(first.msg_id.segment_offset, 0);
+        assert_eq!(first.msg_id.topic_offset, 0);
 
         // Next should be None or error due to CRC mismatch; accept None as success
         let next = timeout(Duration::from_millis(500), stream.next()).await;
         if let Ok(Some(Ok(m))) = next {
-            panic!("unexpected extra message: {}", m.msg_id.segment_offset);
+            panic!("unexpected extra message: {}", m.msg_id.topic_offset);
         }
         Ok(())
     }
