@@ -28,6 +28,9 @@ bootstrap_namespaces:
   - "examples"
   - "testing"
 
+# Allow producers to auto-create topics when missing
+auto_create_topics: true
+
 # Security Configuration - Disabled for development
 auth:
   mode: none # Options: none, tls, tlswithjwt
@@ -47,6 +50,10 @@ wal_cloud:
     rotation:
       max_bytes: 536870912      # Default: 512 MiB WAL file size
       # max_hours: 24           # Optional time-based rotation (in hours)
+    retention:
+      time_minutes: 2880            # 48 hours (conservative production default)
+      size_mb: 20480                # 20 GiB per topic
+      check_interval_minutes: 5     # run every 5 minutes
 
   # Uploader configuration for background S3 uploads
   uploader:

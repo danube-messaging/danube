@@ -2,8 +2,6 @@
 # Danube Messaging Platform - Docker Compose Setup
 # Multi-broker setup with MinIO (S3-compatible) storage and ETCD metadata store
 
-version: "3.8"
-
 services:
   # ETCD service for metadata storage
   etcd:

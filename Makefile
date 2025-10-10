@@ -39,7 +39,7 @@ etcd:
 	@echo "Starting ETCD..."
 	docker run -d --name $(ETCD_NAME) -p $(ETCD_PORT):$(ETCD_PORT) \
 	    -v $(PWD)/$(ETCD_DATA_DIR):/etcd-data \
-	    quay.io/coreos/etcd:latest \
+	    quay.io/coreos/etcd:v3.5.22 \
 	    /usr/local/bin/etcd \
 	    --name $(ETCD_NAME) \
 	    --data-dir /etcd-data \
