@@ -71,6 +71,12 @@ pub struct Schema {
     pub(crate) type_schema: SchemaType,
 }
 
+impl Display for Schema {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "name: '{}', type: {}", self.name, self.type_schema)
+    }
+}
+
 impl Schema {
     #[allow(dead_code)]
     pub fn new(name: String, type_schema: SchemaType) -> Self {
@@ -89,12 +95,22 @@ impl Schema {
 // Implement a conversion method from ProtoSchema to Schema
 impl From<ProtoSchema> for Schema {
     fn from(proto_schema: ProtoSchema) -> Self {
-        let type_schema =
+        let proto_type_schema =
             ProtoTypeSchema::try_from(proto_schema.type_schema).expect("Invalid type schema");
+
+        let type_schema: SchemaType = match proto_type_schema {
+            ProtoTypeSchema::Json => {
+                let schema_str =
+                    String::from_utf8(proto_schema.schema_data.clone()).unwrap_or_default();
+                SchemaType::Json(schema_str)
+            }
+            other => other.into(),
+        };
+
         Schema {
             name: proto_schema.name,
             schema_data: Some(proto_schema.schema_data),
-            type_schema: type_schema.into(),
+            type_schema,
         }
     }
 }

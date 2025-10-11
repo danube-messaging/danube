@@ -1,8 +1,9 @@
+use crate::proto::DispatchStrategy as ProtoDispatchStrategy;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
 /// Dispatch strategy for a topic.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ConfigDispatchStrategy {
     /// Non-reliable dispatch strategy.It means that messages are not guaranteed to be delivered.
     NonReliable,
@@ -25,6 +26,11 @@ impl Display for ConfigDispatchStrategy {
     }
 }
 
-// Note: conversions to/from proto TopicDispatchStrategy were removed because
-// the Producer API now uses enum-only DispatchStrategy. Admin-side per-topic
-// overrides (Phase 2) will define their own conversion paths as needed.
+impl From<ProtoDispatchStrategy> for ConfigDispatchStrategy {
+    fn from(s: ProtoDispatchStrategy) -> Self {
+        match s {
+            ProtoDispatchStrategy::NonReliable => ConfigDispatchStrategy::NonReliable,
+            ProtoDispatchStrategy::Reliable => ConfigDispatchStrategy::Reliable,
+        }
+    }
+}

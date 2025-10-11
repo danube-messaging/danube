@@ -361,7 +361,11 @@ impl BrokerService {
         let dispatch_strategy = dispatch_strategy.unwrap();
 
         // Build per-topic WalStorage with Cloud handoff via the factory
-        let wal_storage = self.wal_factory.for_topic(topic_name).await?;
+        let wal_storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
+            Some(self.wal_factory.for_topic(topic_name).await?)
+        } else {
+            None
+        };
 
         let mut new_topic = Topic::new(
             topic_name,
