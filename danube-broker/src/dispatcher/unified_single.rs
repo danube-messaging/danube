@@ -133,62 +133,71 @@ impl UnifiedSingleDispatcher {
 
             loop {
                 tokio::select! {
-                    Some(cmd) = control_rx.recv() => {
-                        match cmd {
-                            DispatcherCommand::AddConsumer(c) => {
-                                if consumers.is_empty() {
-                                    active_consumer = Some(c.clone());
-                                }
-                                consumers.push(c);
-                                // Try to kick the loop if idle and no pending
-                                if !pending {
-                                    let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
-                                }
-                            }
-                            DispatcherCommand::RemoveConsumer(id) => {
-                                consumers.retain(|c| c.consumer_id != id);
-                                if let Some(ref ac) = active_consumer {
-                                    if ac.consumer_id == id {
-                                        active_consumer = None;
+                    cmd_result = control_rx.recv() => {
+                        match cmd_result {
+                            Some(cmd) => {
+                                match cmd {
+                                    DispatcherCommand::AddConsumer(c) => {
+                                        if consumers.is_empty() {
+                                            active_consumer = Some(c.clone());
+                                        }
+                                        consumers.push(c);
+                                        // Try to kick the loop if idle and no pending
+                                        if !pending {
+                                            let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
+                                        }
                                     }
-                                }
-                            }
-                            DispatcherCommand::DisconnectAllConsumers => {
-                                consumers.clear();
-                                active_consumer = None;
-                            }
-                            DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                // Clear pending and record ack
-                                if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
-                                    warn!("Ack handling failed: {}", e);
-                                }
-                                pending = false;
-                                // Immediately attempt next
-                                let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
-                            }
-                            DispatcherCommand::DispatchMessage(_, response_tx) => {
-                                let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
-                            }
-                            DispatcherCommand::PollAndDispatch => {
-                                if pending { continue; }
-                                // Need an active consumer to send to
-                                if let Some(cons) = &mut active_consumer {
-                                    if !cons.get_status().await { continue; }
-                                    match engine.lock().await.poll_next().await {
-                                        Ok(Some(msg)) => {
-                                            let rid = msg.request_id;
-                                            let _mid = msg.msg_id.clone();
-                                            if let Err(e) = cons.send_message(msg).await {
-                                                warn!("Failed to send reliable message: {}", e);
-                                            } else {
-                                                trace!("Reliable dispatched req_id={} to consumer {}", rid, cons.consumer_id);
-                                                pending = true; // wait for ack
+                                    DispatcherCommand::RemoveConsumer(id) => {
+                                        consumers.retain(|c| c.consumer_id != id);
+                                        if let Some(ref ac) = active_consumer {
+                                            if ac.consumer_id == id {
+                                                active_consumer = None;
                                             }
                                         }
-                                        Ok(None) => { /* no data yet */ }
-                                        Err(e) => warn!("poll_next error: {}", e),
+                                    }
+                                    DispatcherCommand::DisconnectAllConsumers => {
+                                        consumers.clear();
+                                        active_consumer = None;
+                                    }
+                                    DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                        // Clear pending and record ack
+                                        if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
+                                            warn!("Ack handling failed: {}", e);
+                                        }
+                                        pending = false;
+                                        // Immediately attempt next
+                                        let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
+                                    }
+                                    DispatcherCommand::DispatchMessage(_, response_tx) => {
+                                        let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
+                                    }
+                                    DispatcherCommand::PollAndDispatch => {
+                                        if pending { continue; }
+                                        // Need an active consumer to send to
+                                        if let Some(cons) = &mut active_consumer {
+                                            if !cons.get_status().await { continue; }
+                                            match engine.lock().await.poll_next().await {
+                                                Ok(Some(msg)) => {
+                                                    let rid = msg.request_id;
+                                                    let _mid = msg.msg_id.clone();
+                                                    if let Err(e) = cons.send_message(msg).await {
+                                                        warn!("Failed to send reliable message: {}", e);
+                                                    } else {
+                                                        trace!("Reliable dispatched req_id={} to consumer {}", rid, cons.consumer_id);
+                                                        pending = true; // wait for ack
+                                                    }
+                                                }
+                                                Ok(None) => { /* no data yet */ }
+                                                Err(e) => warn!("poll_next error: {}", e),
+                                            }
+                                        }
                                     }
                                 }
+                            }
+                            None => {
+                                // Channel closed, exit gracefully
+                                trace!("Reliable single dispatcher control channel closed, exiting");
+                                break;
                             }
                         }
                     }
