@@ -42,58 +42,58 @@ impl UnifiedSingleDispatcher {
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut active_consumer: Option<Consumer> = None;
-            loop {
-                if let Some(cmd) = control_rx.recv().await {
-                    match cmd {
-                        DispatcherCommand::AddConsumer(c) => {
-                            if consumers.is_empty() {
-                                active_consumer = Some(c.clone());
+            // Use while let to properly exit when channel is closed
+            while let Some(cmd) = control_rx.recv().await {
+                match cmd {
+                    DispatcherCommand::AddConsumer(c) => {
+                        if consumers.is_empty() {
+                            active_consumer = Some(c.clone());
+                        }
+                        consumers.push(c);
+                    }
+                    DispatcherCommand::RemoveConsumer(consumer_id) => {
+                        consumers.retain(|c| c.consumer_id != consumer_id);
+                        if let Some(ref ac) = active_consumer {
+                            if ac.consumer_id == consumer_id {
+                                active_consumer = None;
                             }
-                            consumers.push(c);
                         }
-                        DispatcherCommand::RemoveConsumer(consumer_id) => {
-                            consumers.retain(|c| c.consumer_id != consumer_id);
-                            if let Some(ref ac) = active_consumer {
-                                if ac.consumer_id == consumer_id {
-                                    active_consumer = None;
-                                }
-                            }
-                        }
-                        DispatcherCommand::DisconnectAllConsumers => {
-                            consumers.clear();
-                            active_consumer = None;
-                        }
-                        DispatcherCommand::DispatchMessage(msg, response_tx) => {
-                            let result = if let Some(cons) = &mut active_consumer {
-                                if !cons.get_status().await {
-                                    Err(anyhow!("No active consumer available to dispatch message"))
-                                } else {
-                                    match cons.send_message(msg).await {
-                                        Ok(()) => {
-                                            trace!(
-                                                "Message dispatched to active consumer {}",
-                                                cons.consumer_id
-                                            );
-                                            Ok(())
-                                        }
-                                        Err(e) => {
-                                            warn!("Failed to dispatch to active consumer: {}", e);
-                                            Err(e)
-                                        }
+                    }
+                    DispatcherCommand::DisconnectAllConsumers => {
+                        consumers.clear();
+                        active_consumer = None;
+                    }
+                    DispatcherCommand::DispatchMessage(msg, response_tx) => {
+                        let result = if let Some(cons) = &mut active_consumer {
+                            if !cons.get_status().await {
+                                Err(anyhow!("No active consumer available to dispatch message"))
+                            } else {
+                                match cons.send_message(msg).await {
+                                    Ok(()) => {
+                                        trace!(
+                                            "Message dispatched to active consumer {}",
+                                            cons.consumer_id
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to dispatch to active consumer: {}", e);
+                                        Err(e)
                                     }
                                 }
-                            } else {
-                                Err(anyhow!("No active consumer available to dispatch message"))
-                            };
-                            let _ = response_tx.send(result);
-                        }
-                        DispatcherCommand::MessageAcked(_, _) => {
-                            // non-reliable ignores acks
-                        }
-                        DispatcherCommand::PollAndDispatch => {}
+                            }
+                        } else {
+                            Err(anyhow!("No active consumer available to dispatch message"))
+                        };
+                        let _ = response_tx.send(result);
                     }
+                    DispatcherCommand::MessageAcked(_, _) => {
+                        // non-reliable ignores acks
+                    }
+                    DispatcherCommand::PollAndDispatch => {}
                 }
             }
+            trace!("Non-reliable single dispatcher task exiting gracefully");
         });
 
         Self {
