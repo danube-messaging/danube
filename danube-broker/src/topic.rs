@@ -54,17 +54,17 @@ pub(crate) struct Topic {
     // handle to metadata topic resources for cleanup operations
     resources_topic: Option<TopicResources>,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
-    topic_store: TopicStore,
+    topic_store: Option<TopicStore>,
 }
 
 impl Topic {
     pub(crate) fn new(
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
-        wal_storage: WalStorage,
+        wal_storage: Option<WalStorage>,
         resources_topic: Option<TopicResources>,
     ) -> Self {
-        let topic_store = TopicStore::new(topic_name.to_string(), wal_storage.clone());
+        let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
             ConfigDispatchStrategy::Reliable => DispatchStrategy::Reliable,
@@ -165,7 +165,11 @@ impl Topic {
             }
             DispatchStrategy::Reliable => {
                 // Reliable: persist first, notify only on success (WAL append)
-                self.topic_store.store_message(stream_message).await?;
+                if let Some(store) = &self.topic_store {
+                    store.store_message(stream_message).await?;
+                } else {
+                    return Err(anyhow!("WAL is not configured for a reliable topic"));
+                }
 
                 let notifier_guard = self.notifiers.lock().await;
                 for notifier in notifier_guard.iter() {
@@ -267,7 +271,7 @@ impl Topic {
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,
-                        Some(self.topic_store.clone()),
+                        self.topic_store.clone(),
                         self.resources_topic.clone(),
                         Some(Duration::from_secs(10)),
                     )

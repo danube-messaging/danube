@@ -1,0 +1,142 @@
+# Danube cluster name
+cluster_name: "MY_CLUSTER"
+
+# Danube Broker hostname
+# Hostname or IP address shared by Broker, Admin API, and Prometheus exporter
+broker_host: "0.0.0.0"
+
+# Ports for the Danube broker services
+# Port for gRPC communication with the broker
+broker_port: 6650
+# Port for the Admin API
+admin_port: 50051
+# Port for Prometheus exporter
+prom_port: 9040
+
+# Metadata Persistent Store address (e.g., etcd)
+# Hostname or IP for etcd
+meta_store_host: "127.0.0.1"
+# Port for etcd or metadata store
+meta_store_port: 2379
+
+# Namespaces to be created on boot
+bootstrap_namespaces:
+  - "default"
+
+# Allow producers to auto-create topics when missing
+auto_create_topics: true
+
+# Security Configuration
+auth:
+  mode: none # Options: none, tls, tlswithjwt
+  # tls:
+  #   cert_file: "./cert/server-cert.pem"
+  #   key_file: "./cert/server-key.pem"
+  #   ca_file: "./cert/ca-cert.pem"
+  #   verify_client: false
+  # jwt:
+  #   secret_key: "your-secret-key"
+  #   issuer: "danube-auth"
+  #   expiration_time: 3600 # in seconds
+
+# WAL and Cloud Storage Configuration
+wal_cloud:
+  wal:
+    dir: "./danube/wal"
+    file_name: "wal.log"
+    cache_capacity: 1024
+    # WAL file sync configuration, drive flush cadence and checkpoint frequency
+    file_sync:
+      interval_ms: 5000 # Default:Flush every 5s to reduce fsync pressure while keeping WAL checkpoints reasonably fresh
+      max_batch_bytes: 10485760 # Default: 10 MiB writer batch
+    # WAL file rotation configuration, balances file size and directory churn
+    rotation:
+      max_bytes: 536870912 # Default: 512 MiB WAL file size
+      # max_hours: 24           # Optional time-based rotation (in hours)
+    # WAL retention policy (time + size). Both applied each cycle; safety-checked against uploader progress.
+    retention:
+      time_minutes: 2880 # 48 hours (conservative production default)
+      size_mb: 20480 # 20 GiB per topic
+      check_interval_minutes: 5 # run every 5 minutes
+
+  # Uploader, runs every interval_seconds, reads raw WAL frames, writes to configured cloud storage
+  uploader:
+    enabled: true
+    interval_seconds: 300 # Default: Upload every 5 minutes
+    root_prefix: "/danube"
+
+  # Cloud storage backend - Default: memory for development
+  cloud:
+    backend: "memory" # options: memory | fs | s3 | gcs
+    root: "mem-prefix" # when backend: memory, this is a namespace prefix (ignored by some backends)
+
+  # Metadata configuration - Default: ETCD
+  metadata:
+    etcd_endpoint: "127.0.0.1:2379"
+    in_memory: false
+
+# Broker policies, that can be overwritten by namespace / topic policies
+policies:
+  # Limits the maximum number of producers that can simultaneously publish messages to a specific topic.
+  # Default is 0, unlimited.
+  max_producers_per_topic: 0
+
+  # Limits the maximum number of subscriptions that can be created on the topic.
+  # Default is 0, unlimited.
+  max_subscriptions_per_topic: 0
+
+  # Limits the maximum number of consumers that can simultaneously consume messages from a specific topic.
+  # Default is 0, unlimited.
+  max_consumers_per_topic: 0
+
+  # Limits the maximum number of consumers that can simultaneously use a single subscription on a topic.
+  # Default is 0, unlimited.
+  max_consumers_per_subscription: 0
+
+  # Defines the Max publish rate (number of messages and/or bytes per second) for producers publishing to the topic.
+  # Default is 0, unlimited.
+  max_publish_rate: 0
+
+  # Defines the Max dispatch rate (number of messages and/or bytes per second) for the topic.
+  # Default is 0, unlimited.
+  max_dispatch_rate: 0
+
+  # Defines the dispatch rate for each subscription on the topic.
+  # Default is 0, unlimited.
+  max_subscription_dispatch_rate: 0
+
+  # Limits the maximum size of a single message that can be published to the topic.
+  # Default is 10 MB
+  max_message_size: 10485760 # in bytes which means 10 MB
+
+#
+# --- Cloud backend examples ---
+#
+# Example: Local filesystem backend
+#wal_cloud:
+#  cloud:
+#    backend: "fs"
+#    root: "./object_root"     # directory where object data will be stored
+
+# Example: Amazon S3 backend
+#wal_cloud:
+#  cloud:
+#    backend: "s3"
+#    root: "s3://my-bucket/prefix"  # bucket and optional prefix
+#    region: "us-east-1"
+#    endpoint: "https://s3.us-east-1.amazonaws.com"   # optional custom endpoint
+#    access_key: "${AWS_ACCESS_KEY_ID}"               # or omit and rely on env/instance profile
+#    secret_key: "${AWS_SECRET_ACCESS_KEY}"
+#    profile: null                                      # optional AWS profile name
+#    role_arn: null                                     # optional role to assume
+#    session_token: null                                # optional session token
+#    anonymous: false                                   # true to use anonymous access for public buckets
+
+# Example: Google Cloud Storage backend
+#wal_cloud:
+#  cloud:
+#    backend: "gcs"
+#    root: "gcs://my-bucket/prefix"
+#    project: "my-gcp-project"
+#    credentials_json: null                             # inline JSON (string)
+#    credentials_path: "/path/to/creds.json"          # or a path to credentials file

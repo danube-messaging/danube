@@ -5,6 +5,7 @@ use danube_core::proto::{
     MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
 };
 
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
 use dashmap::mapref::entry::Entry;
 use metrics::histogram;
@@ -22,11 +23,26 @@ impl ProducerService for DanubeServerImpl {
     ) -> Result<Response<ProducerResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        info!(
-            "Received producer creation request - name: '{}', topic: '{}'",
-            req.producer_name, req.topic_name
-        );
+        let config_dispatch_strategy: ConfigDispatchStrategy =
+            ProtoDispatchStrategy::try_from(req.dispatch_strategy)
+                .unwrap_or_default()
+                .into();
 
+        let schema_log = match &req.schema {
+            Some(s) => {
+                let broker_schema: crate::schema::Schema = s.clone().into();
+                broker_schema.to_string()
+            }
+            None => "None".to_string(),
+        };
+
+        info!(
+            "Received producer creation request - name: '{}', topic: '{}', schema: '{}', dispatch: '{}'",
+            req.producer_name,
+            req.topic_name,
+            schema_log,
+            config_dispatch_strategy
+            );
         let service = self.service.as_ref();
 
         let requested_strategy =
