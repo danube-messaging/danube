@@ -50,7 +50,7 @@ pub(crate) struct Topic {
     pub(crate) producers: Mutex<HashMap<u64, Producer>>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
-    notifiers: Mutex<Vec<Arc<Notify>>>,
+    pub(crate) notifiers: Mutex<Vec<Arc<Notify>>>,
     // handle to metadata topic resources for cleanup operations
     resources_topic: Option<TopicResources>,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)

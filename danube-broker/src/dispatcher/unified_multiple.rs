@@ -34,6 +34,7 @@ enum DispatcherCommand {
     MessageAcked(u64, MessageID),
     // Reliable-only
     PollAndDispatch,
+    ResetPending, // Clear pending flag to allow retry after consumer disconnect
 }
 
 impl UnifiedMultipleDispatcher {
@@ -103,6 +104,9 @@ impl UnifiedMultipleDispatcher {
                         // non-reliable ignores acks
                     }
                     DispatcherCommand::PollAndDispatch => {}
+                    DispatcherCommand::ResetPending => {
+                        // non-reliable has no pending state
+                    }
                 }
             }
             trace!("Non-reliable multiple dispatcher task exiting gracefully");
@@ -191,7 +195,7 @@ impl UnifiedMultipleDispatcher {
                                                         if let Err(e) = target.send_message(msg).await {
                                                             warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
                                                         } else {
-                                                            trace!("Reliable dispatched req_id={} to consumer {}", rid, target.consumer_id);
+                                                            trace!("Dispatched req_id={} to consumer {}", rid, target.consumer_id);
                                                             pending = true;
                                                             sent = true;
                                                         }
@@ -202,6 +206,12 @@ impl UnifiedMultipleDispatcher {
                                             }
                                             attempts += 1;
                                         }
+                                    }
+                                    DispatcherCommand::ResetPending => {
+                                        trace!("ResetPending: clearing pending flag to allow retry");
+                                        pending = false;
+                                        // Trigger immediate poll attempt to failover to another consumer
+                                        let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                 }
                             }
@@ -298,6 +308,18 @@ impl UnifiedMultipleDispatcher {
             .send(DispatcherCommand::DisconnectAllConsumers)
             .await
             .map_err(|_| anyhow!("Failed to send disconnect all consumers command"))
+    }
+
+    /// Reset pending state to allow failover to another consumer after disconnect
+    pub(crate) async fn reset_pending(&self) -> Result<()> {
+        if let Some(tx) = &self.reliable {
+            tx.send(DispatcherCommand::ResetPending)
+                .await
+                .map_err(|_| anyhow!("Failed to send reset pending command"))
+        } else {
+            // Non-reliable: no-op
+            Ok(())
+        }
     }
 }
 

@@ -129,6 +129,10 @@ impl ConsumerService for DanubeServerImpl {
         if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
             consumer_info.cancel_existing_stream().await;
             consumer_info.set_status_true().await; // Mark as active for new connection
+            
+            // Trigger dispatcher to resume polling for reliable subscriptions
+            // This is critical for reconnection scenarios where the dispatcher may be idle
+            service.trigger_dispatcher_on_reconnect(consumer_id).await;
         }
 
         let rx_cloned = Arc::clone(&rx);

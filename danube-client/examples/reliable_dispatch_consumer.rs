@@ -1,13 +1,5 @@
 use anyhow::Result;
 use danube_client::{DanubeClient, SubType};
-use serde::Deserialize;
-
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)]
-struct MyMessage {
-    field1: String,
-    field2: i32,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,8 +38,8 @@ async fn main() -> Result<()> {
         match String::from_utf8(payload) {
             Ok(message_str) => {
                 println!(
-                    "Received message: {:?} , with topic offset: {}, total received bytes: {}",
-                    message_str.split_once("!").unwrap().0,
+                    "Received message: {} | offset: {} | total received bytes: {}",
+                    message_str,
                     &message.msg_id.topic_offset,
                     total_received_size
                 );

@@ -31,6 +31,7 @@ enum DispatcherCommand {
     MessageAcked(u64, MessageID),
     // Reliable-only
     PollAndDispatch,
+    ResetPending, // Clear pending flag to allow retry after reconnection
 }
 
 impl UnifiedSingleDispatcher {
@@ -91,6 +92,9 @@ impl UnifiedSingleDispatcher {
                         // non-reliable ignores acks
                     }
                     DispatcherCommand::PollAndDispatch => {}
+                    DispatcherCommand::ResetPending => {
+                        // non-reliable has no pending state
+                    }
                 }
             }
             trace!("Non-reliable single dispatcher task exiting gracefully");
@@ -138,6 +142,7 @@ impl UnifiedSingleDispatcher {
                             Some(cmd) => {
                                 match cmd {
                                     DispatcherCommand::AddConsumer(c) => {
+                                        trace!("AddConsumer: consumer {} added to reliable dispatcher", c.consumer_id);
                                         if consumers.is_empty() {
                                             active_consumer = Some(c.clone());
                                         }
@@ -172,10 +177,15 @@ impl UnifiedSingleDispatcher {
                                         let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
                                     }
                                     DispatcherCommand::PollAndDispatch => {
-                                        if pending { continue; }
+                                        if pending { 
+                                            continue; 
+                                        }
                                         // Need an active consumer to send to
                                         if let Some(cons) = &mut active_consumer {
-                                            if !cons.get_status().await { continue; }
+                                            let status = cons.get_status().await;
+                                            if !status { 
+                                                continue; 
+                                            }
                                             match engine.lock().await.poll_next().await {
                                                 Ok(Some(msg)) => {
                                                     let rid = msg.request_id;
@@ -183,14 +193,20 @@ impl UnifiedSingleDispatcher {
                                                     if let Err(e) = cons.send_message(msg).await {
                                                         warn!("Failed to send reliable message: {}", e);
                                                     } else {
-                                                        trace!("Reliable dispatched req_id={} to consumer {}", rid, cons.consumer_id);
+                                                        trace!("Dispatched req_id={} to consumer {}", rid, cons.consumer_id);
                                                         pending = true; // wait for ack
                                                     }
                                                 }
-                                                Ok(None) => { /* no data yet */ }
+                                                Ok(None) => { /* no messages available */ }
                                                 Err(e) => warn!("poll_next error: {}", e),
                                             }
                                         }
+                                    }
+                                    DispatcherCommand::ResetPending => {
+                                        trace!("ResetPending: clearing pending flag to allow retry");
+                                        pending = false;
+                                        // Trigger immediate poll attempt
+                                        let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                 }
                             }
@@ -290,6 +306,19 @@ impl UnifiedSingleDispatcher {
             .send(DispatcherCommand::DisconnectAllConsumers)
             .await
             .map_err(|_| anyhow!("Failed to send disconnect all consumers command"))
+    }
+
+    /// Reset the pending state to allow retry after consumer reconnection.
+    /// Only relevant for reliable mode.
+    pub(crate) async fn reset_pending(&self) -> Result<()> {
+        if let Some(tx) = &self.reliable {
+            tx.send(DispatcherCommand::ResetPending)
+                .await
+                .map_err(|_| anyhow!("Failed to send reset pending command"))
+        } else {
+            // Non-reliable: no-op
+            Ok(())
+        }
     }
 }
 
