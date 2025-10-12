@@ -46,66 +46,66 @@ impl UnifiedMultipleDispatcher {
 
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
-            loop {
-                if let Some(cmd) = control_rx.recv().await {
-                    match cmd {
-                        DispatcherCommand::AddConsumer(c) => {
-                            consumers.push(c);
-                        }
-                        DispatcherCommand::RemoveConsumer(id) => {
-                            consumers.retain(|c| c.consumer_id != id);
-                        }
-                        DispatcherCommand::DisconnectAllConsumers => {
-                            consumers.clear();
-                        }
-                        DispatcherCommand::DispatchMessage(msg, response_tx) => {
-                            let result = if consumers.is_empty() {
-                                Err(anyhow!("No consumers available to dispatch the message"))
-                            } else {
-                                let num_consumers = consumers.len();
-                                let mut dispatched = false;
-                                
-                                for _ in 0..num_consumers {
-                                    let idx = rr_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % num_consumers;
-                                    if let Some(target) = consumers.get_mut(idx) {
-                                        // Only send to healthy consumers
-                                        if !target.get_status().await {
-                                            continue;
+            // Use while let to properly exit when channel is closed
+            while let Some(cmd) = control_rx.recv().await {
+                match cmd {
+                    DispatcherCommand::AddConsumer(c) => {
+                        consumers.push(c);
+                    }
+                    DispatcherCommand::RemoveConsumer(id) => {
+                        consumers.retain(|c| c.consumer_id != id);
+                    }
+                    DispatcherCommand::DisconnectAllConsumers => {
+                        consumers.clear();
+                    }
+                    DispatcherCommand::DispatchMessage(msg, response_tx) => {
+                        let result = if consumers.is_empty() {
+                            Err(anyhow!("No consumers available to dispatch the message"))
+                        } else {
+                            let num_consumers = consumers.len();
+                            let mut dispatched = false;
+                            
+                            for _ in 0..num_consumers {
+                                let idx = rr_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % num_consumers;
+                                if let Some(target) = consumers.get_mut(idx) {
+                                    // Only send to healthy consumers
+                                    if !target.get_status().await {
+                                        continue;
+                                    }
+                                    match target.send_message(msg.clone()).await {
+                                        Ok(()) => {
+                                            trace!(
+                                                "Dispatcher sent the message to consumer: {}",
+                                                target.consumer_id
+                                            );
+                                            dispatched = true;
+                                            break;
                                         }
-                                        match target.send_message(msg.clone()).await {
-                                            Ok(()) => {
-                                                trace!(
-                                                    "Dispatcher sent the message to consumer: {}",
-                                                    target.consumer_id
-                                                );
-                                                dispatched = true;
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "Failed to dispatch to consumer {}: {}",
-                                                    target.consumer_id, e
-                                                );
-                                            }
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to dispatch to consumer {}: {}",
+                                                target.consumer_id, e
+                                            );
                                         }
                                     }
                                 }
-                                
-                                if dispatched {
-                                    Ok(())
-                                } else {
-                                    Err(anyhow!("No active consumers available to handle the message"))
-                                }
-                            };
-                            let _ = response_tx.send(result);
-                        }
-                        DispatcherCommand::MessageAcked(_, _) => {
-                            // non-reliable ignores acks
-                        }
-                        DispatcherCommand::PollAndDispatch => {}
+                            }
+                            
+                            if dispatched {
+                                Ok(())
+                            } else {
+                                Err(anyhow!("No active consumers available to handle the message"))
+                            }
+                        };
+                        let _ = response_tx.send(result);
                     }
+                    DispatcherCommand::MessageAcked(_, _) => {
+                        // non-reliable ignores acks
+                    }
+                    DispatcherCommand::PollAndDispatch => {}
                 }
             }
+            trace!("Non-reliable multiple dispatcher task exiting gracefully");
         });
 
         Self {
@@ -145,61 +145,70 @@ impl UnifiedMultipleDispatcher {
 
             loop {
                 tokio::select! {
-                    Some(cmd) = control_rx.recv() => {
-                        match cmd {
-                            DispatcherCommand::AddConsumer(c) => {
-                                consumers.push(c);
-                                if !pending {
-                                    let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
-                                }
-                            }
-                            DispatcherCommand::RemoveConsumer(id) => {
-                                consumers.retain(|c| c.consumer_id != id);
-                            }
-                            DispatcherCommand::DisconnectAllConsumers => {
-                                consumers.clear();
-                            }
-                            DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
-                                    warn!("Ack handling failed: {}", e);
-                                }
-                                pending = false;
-                                let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
-                            }
-                            DispatcherCommand::DispatchMessage(_, response_tx) => { 
-                                let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
-                            }
-                            DispatcherCommand::PollAndDispatch => {
-                                if pending { continue; }
-                                if consumers.is_empty() { continue; }
-                                // choose next consumer in round-robin order among active ones
-                                let mut attempts = 0usize;
-                                let mut sent = false;
-                                while attempts < consumers.len() && !sent {
-                                    let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
-                                    if let Some(target) = consumers.get_mut(idx) {
-                                        // Only send to healthy consumers
-                                        if !target.get_status().await {
-                                            attempts += 1;
-                                            continue;
-                                        }
-                                        match engine.lock().await.poll_next().await {
-                                            Ok(Some(msg)) => {
-                                                let rid = msg.request_id;
-                                                if let Err(e) = target.send_message(msg).await {
-                                                    warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
-                                                } else {
-                                                    trace!("Reliable dispatched req_id={} to consumer {}", rid, target.consumer_id);
-                                                    pending = true;
-                                                    sent = true;
-                                                }
-                                            }
-                                            Ok(None) => { break; }
-                                            Err(e) => { warn!("poll_next error: {}", e); break; }
+                    cmd_result = control_rx.recv() => {
+                        match cmd_result {
+                            Some(cmd) => {
+                                match cmd {
+                                    DispatcherCommand::AddConsumer(c) => {
+                                        consumers.push(c);
+                                        if !pending {
+                                            let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                         }
                                     }
-                                    attempts += 1;
+                                    DispatcherCommand::RemoveConsumer(id) => {
+                                        consumers.retain(|c| c.consumer_id != id);
+                                    }
+                                    DispatcherCommand::DisconnectAllConsumers => {
+                                        consumers.clear();
+                                    }
+                                    DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                        if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
+                                            warn!("Ack handling failed: {}", e);
+                                        }
+                                        pending = false;
+                                        let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
+                                    }
+                                    DispatcherCommand::DispatchMessage(_, response_tx) => { 
+                                        let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
+                                    }
+                                    DispatcherCommand::PollAndDispatch => {
+                                        if pending { continue; }
+                                        if consumers.is_empty() { continue; }
+                                        // choose next consumer in round-robin order among active ones
+                                        let mut attempts = 0usize;
+                                        let mut sent = false;
+                                        while attempts < consumers.len() && !sent {
+                                            let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
+                                            if let Some(target) = consumers.get_mut(idx) {
+                                                // Only send to healthy consumers
+                                                if !target.get_status().await {
+                                                    attempts += 1;
+                                                    continue;
+                                                }
+                                                match engine.lock().await.poll_next().await {
+                                                    Ok(Some(msg)) => {
+                                                        let rid = msg.request_id;
+                                                        if let Err(e) = target.send_message(msg).await {
+                                                            warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
+                                                        } else {
+                                                            trace!("Reliable dispatched req_id={} to consumer {}", rid, target.consumer_id);
+                                                            pending = true;
+                                                            sent = true;
+                                                        }
+                                                    }
+                                                    Ok(None) => { break; }
+                                                    Err(e) => { warn!("poll_next error: {}", e); break; }
+                                                }
+                                            }
+                                            attempts += 1;
+                                        }
+                                    }
                                 }
+                            }
+                            None => {
+                                // Channel closed, exit gracefully
+                                trace!("Reliable multiple dispatcher control channel closed, exiting");
+                                break;
                             }
                         }
                     }
