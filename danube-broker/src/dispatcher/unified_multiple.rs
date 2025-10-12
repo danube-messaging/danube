@@ -134,6 +134,7 @@ impl UnifiedMultipleDispatcher {
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut pending = false; // strict ack-gating across the subscription
+            let mut pending_message: Option<StreamMessage> = None; // Buffer for unacked message
 
             // Initialize stream from persisted progress if available, otherwise Latest
             if let Err(e) = engine
@@ -170,6 +171,7 @@ impl UnifiedMultipleDispatcher {
                                             warn!("Ack handling failed: {}", e);
                                         }
                                         pending = false;
+                                        pending_message = None; // Clear buffered message on ack
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                     DispatcherCommand::DispatchMessage(_, response_tx) => { 
@@ -178,39 +180,66 @@ impl UnifiedMultipleDispatcher {
                                     DispatcherCommand::PollAndDispatch => {
                                         if pending { continue; }
                                         if consumers.is_empty() { continue; }
-                                        // choose next consumer in round-robin order among active ones
-                                        let mut attempts = 0usize;
-                                        let mut sent = false;
-                                        while attempts < consumers.len() && !sent {
-                                            let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
-                                            if let Some(target) = consumers.get_mut(idx) {
-                                                // Only send to healthy consumers
-                                                if !target.get_status().await {
-                                                    attempts += 1;
-                                                    continue;
-                                                }
-                                                match engine.lock().await.poll_next().await {
-                                                    Ok(Some(msg)) => {
-                                                        let rid = msg.request_id;
-                                                        if let Err(e) = target.send_message(msg).await {
-                                                            warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
-                                                        } else {
-                                                            trace!("Dispatched req_id={} to consumer {}", rid, target.consumer_id);
-                                                            pending = true;
-                                                            sent = true;
-                                                        }
-                                                    }
-                                                    Ok(None) => { break; }
-                                                    Err(e) => { warn!("poll_next error: {}", e); break; }
+                                        
+                                        // First, try to resend pending message if it exists (for at-least-once delivery)
+                                        let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
+                                            trace!("Resending buffered message req_id={} to another consumer", buffered_msg.request_id);
+                                            Some(buffered_msg)
+                                        } else {
+                                            // No pending message, poll new one from stream
+                                            match engine.lock().await.poll_next().await {
+                                                Ok(msg_opt) => msg_opt,
+                                                Err(e) => {
+                                                    warn!("poll_next error: {}", e);
+                                                    None
                                                 }
                                             }
-                                            attempts += 1;
+                                        };
+                                        
+                                        if let Some(msg) = msg_to_send {
+                                            // Try to send to a healthy consumer via round-robin
+                                            let mut attempts = 0usize;
+                                            let mut sent = false;
+                                            let rid = msg.request_id;
+                                            
+                                            while attempts < consumers.len() && !sent {
+                                                let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
+                                                if let Some(target) = consumers.get_mut(idx) {
+                                                    // Only send to healthy consumers
+                                                    if !target.get_status().await {
+                                                        attempts += 1;
+                                                        continue;
+                                                    }
+                                                    
+                                                    // Buffer message before sending (in case of failure)
+                                                    pending_message = Some(msg.clone());
+                                                    
+                                                    if let Err(e) = target.send_message(msg.clone()).await {
+                                                        warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
+                                                        // Keep pending_message buffered, try next consumer
+                                                        attempts += 1;
+                                                        continue;
+                                                    } else {
+                                                        trace!("Dispatched req_id={} to consumer {}", rid, target.consumer_id);
+                                                        pending = true;
+                                                        sent = true;
+                                                        // pending_message stays buffered until ack
+                                                    }
+                                                }
+                                                attempts += 1;
+                                            }
+                                            
+                                            // If we couldn't send to any consumer, keep pending_message for retry
+                                            if !sent {
+                                                trace!("Could not send to any healthy consumer, will retry");
+                                            }
                                         }
                                     }
                                     DispatcherCommand::ResetPending => {
-                                        trace!("ResetPending: clearing pending flag to allow retry");
+                                        trace!("ResetPending: clearing pending flag to allow failover of buffered message");
                                         pending = false;
-                                        // Trigger immediate poll attempt to failover to another consumer
+                                        // Keep pending_message buffered - it will be resent to another healthy consumer
+                                        // Trigger immediate poll attempt to failover the buffered message
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                 }

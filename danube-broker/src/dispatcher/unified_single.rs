@@ -121,6 +121,7 @@ impl UnifiedSingleDispatcher {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut active_consumer: Option<Consumer> = None;
             let mut pending = false; // strict ack-gating
+            let mut pending_message: Option<StreamMessage> = None; // Buffer for unacked message
                                      // Initialize stream from persisted progress if available, otherwise Latest
             {
                 if let Err(e) = engine
@@ -170,6 +171,7 @@ impl UnifiedSingleDispatcher {
                                             warn!("Ack handling failed: {}", e);
                                         }
                                         pending = false;
+                                        pending_message = None; // Clear buffered message on ack
                                         // Immediately attempt next
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
@@ -186,26 +188,44 @@ impl UnifiedSingleDispatcher {
                                             if !status { 
                                                 continue; 
                                             }
-                                            match engine.lock().await.poll_next().await {
-                                                Ok(Some(msg)) => {
-                                                    let rid = msg.request_id;
-                                                    let _mid = msg.msg_id.clone();
-                                                    if let Err(e) = cons.send_message(msg).await {
-                                                        warn!("Failed to send reliable message: {}", e);
-                                                    } else {
-                                                        trace!("Dispatched req_id={} to consumer {}", rid, cons.consumer_id);
-                                                        pending = true; // wait for ack
+                                            
+                                            // First, try to resend pending message if it exists (for at-least-once delivery)
+                                            let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
+                                                trace!("Resending buffered message req_id={}", buffered_msg.request_id);
+                                                Some(buffered_msg)
+                                            } else {
+                                                // No pending message, poll new one from stream
+                                                match engine.lock().await.poll_next().await {
+                                                    Ok(msg_opt) => msg_opt,
+                                                    Err(e) => {
+                                                        warn!("poll_next error: {}", e);
+                                                        None
                                                     }
                                                 }
-                                                Ok(None) => { /* no messages available */ }
-                                                Err(e) => warn!("poll_next error: {}", e),
+                                            };
+                                            
+                                            if let Some(msg) = msg_to_send {
+                                                let rid = msg.request_id;
+                                                let _mid = msg.msg_id.clone();
+                                                // Buffer message before sending (in case of failure)
+                                                pending_message = Some(msg.clone());
+                                                
+                                                if let Err(e) = cons.send_message(msg).await {
+                                                    warn!("Failed to send reliable message: {}", e);
+                                                    // Keep pending_message buffered for retry
+                                                } else {
+                                                    trace!("Dispatched req_id={} to consumer {}", rid, cons.consumer_id);
+                                                    pending = true; // wait for ack
+                                                    // pending_message stays buffered until ack
+                                                }
                                             }
                                         }
                                     }
                                     DispatcherCommand::ResetPending => {
-                                        trace!("ResetPending: clearing pending flag to allow retry");
+                                        trace!("ResetPending: clearing pending flag to allow retry of buffered message");
                                         pending = false;
-                                        // Trigger immediate poll attempt
+                                        // Keep pending_message buffered - it will be resent on next PollAndDispatch
+                                        // Trigger immediate poll attempt to resend the buffered message
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                 }
