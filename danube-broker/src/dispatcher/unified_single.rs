@@ -122,7 +122,7 @@ impl UnifiedSingleDispatcher {
             let mut active_consumer: Option<Consumer> = None;
             let mut pending = false; // strict ack-gating
             let mut pending_message: Option<StreamMessage> = None; // Buffer for unacked message
-                                     // Initialize stream from persisted progress if available, otherwise Latest
+                                                                   // Initialize stream from persisted progress if available, otherwise Latest
             {
                 if let Err(e) = engine
                     .lock()
@@ -166,12 +166,30 @@ impl UnifiedSingleDispatcher {
                                         active_consumer = None;
                                     }
                                     DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                        let acked_offset = msg_id.topic_offset;
+
                                         // Clear pending and record ack
                                         if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
                                             warn!("Ack handling failed: {}", e);
                                         }
-                                        pending = false;
-                                        pending_message = None; // Clear buffered message on ack
+
+                                        // Only clear buffer if ack is for the currently pending message
+                                        let should_clear_buffer = pending_message
+                                            .as_ref()
+                                            .map(|msg| msg.request_id == request_id)
+                                            .unwrap_or(false);
+
+                                        if should_clear_buffer {
+                                            trace!("Ack received for pending message req_id={}, offset={}, clearing buffer",
+                                                request_id, acked_offset);
+                                            pending = false;
+                                            pending_message = None;
+                                        } else {
+                                            // Late ack for already-dispatched message, ignore
+                                            trace!("Ignoring late ack for req_id={}, offset={} (not the pending message)",
+                                                request_id, acked_offset);
+                                        }
+
                                         // Immediately attempt next
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
@@ -179,19 +197,19 @@ impl UnifiedSingleDispatcher {
                                         let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
                                     }
                                     DispatcherCommand::PollAndDispatch => {
-                                        if pending { 
-                                            continue; 
+                                        if pending {
+                                            continue;
                                         }
                                         // Need an active consumer to send to
                                         if let Some(cons) = &mut active_consumer {
                                             let status = cons.get_status().await;
-                                            if !status { 
-                                                continue; 
+                                            if !status {
+                                                continue;
                                             }
-                                            
+
                                             // First, try to resend pending message if it exists (for at-least-once delivery)
                                             let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
-                                                trace!("Resending buffered message req_id={}", buffered_msg.request_id);
+                                                trace!("Resending buffered message offset={}", buffered_msg.msg_id.topic_offset);
                                                 Some(buffered_msg)
                                             } else {
                                                 // No pending message, poll new one from stream
@@ -203,18 +221,16 @@ impl UnifiedSingleDispatcher {
                                                     }
                                                 }
                                             };
-                                            
+
                                             if let Some(msg) = msg_to_send {
-                                                let rid = msg.request_id;
-                                                let _mid = msg.msg_id.clone();
+                                                let offset = msg.msg_id.topic_offset;
                                                 // Buffer message before sending (in case of failure)
                                                 pending_message = Some(msg.clone());
-                                                
+
                                                 if let Err(e) = cons.send_message(msg).await {
-                                                    warn!("Failed to send reliable message: {}", e);
+                                                    warn!("Failed to send message offset={}: {}. Will retry on reconnect.", offset, e);
                                                     // Keep pending_message buffered for retry
                                                 } else {
-                                                    trace!("Dispatched req_id={} to consumer {}", rid, cons.consumer_id);
                                                     pending = true; // wait for ack
                                                     // pending_message stays buffered until ack
                                                 }
@@ -232,7 +248,6 @@ impl UnifiedSingleDispatcher {
                             }
                             None => {
                                 // Channel closed, exit gracefully
-                                trace!("Reliable single dispatcher control channel closed, exiting");
                                 break;
                             }
                         }
