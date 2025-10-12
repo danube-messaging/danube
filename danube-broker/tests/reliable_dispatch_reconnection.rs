@@ -46,16 +46,10 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .build();
     producer.create().await?;
 
-    // Send 10 messages before consumer connects
     let total_messages = 10usize;
     let payloads: Vec<String> = (0..total_messages).map(|i| format!("msg_{}", i)).collect();
-    for body in &payloads {
-        let _ = producer.send(body.clone().into_bytes(), None).await?;
-    }
 
-    sleep(Duration::from_millis(200)).await;
-
-    // Phase 1: Consumer connects and receives first 3 messages with acks
+    // Phase 1: Consumer connects FIRST
     let mut consumer = client
         .new_consumer()
         .with_topic(topic.clone())
@@ -65,6 +59,11 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .build();
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
+
+    // Now send messages AFTER consumer is subscribed
+    for body in &payloads {
+        let _ = producer.send(body.clone().into_bytes(), None).await?;
+    }
 
     // Receive and ack first 3 messages
     for i in 0..3 {
@@ -316,18 +315,12 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .build();
     producer.create().await?;
 
-    // Send 5 messages
     let payloads: Vec<String> = (0..5).map(|i| format!("msg_{}", i)).collect();
-    for body in &payloads {
-        let _ = producer.send(body.clone().into_bytes(), None).await?;
-    }
-
-    sleep(Duration::from_millis(200)).await;
 
     let consumer_name = "cons_multi_reconnect";
     let sub_name = "sub_multi_reconnect";
 
-    // Connect and ack first message
+    // Connect consumer FIRST
     let mut consumer = client
         .new_consumer()
         .with_topic(topic.clone())
@@ -337,6 +330,11 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .build();
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
+
+    // Send messages AFTER consumer is subscribed
+    for body in &payloads {
+        let _ = producer.send(body.clone().into_bytes(), None).await?;
+    }
 
     let msg0 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("msg0");
     assert_eq!(String::from_utf8(msg0.payload.clone())?, payloads[0]);
