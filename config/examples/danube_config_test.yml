@@ -42,7 +42,7 @@ auth:
 # WAL and Cloud Storage Configuration
 wal_cloud:
   wal:
-    dir: "./danube/wal"
+    dir: "./danube-data/wal"
     file_name: "wal.log"
     cache_capacity: 1024
     # WAL file sync configuration, drive flush cadence and checkpoint frequency
@@ -63,7 +63,7 @@ wal_cloud:
   uploader:
     enabled: true
     interval_seconds: 300 # Default: Upload every 5 minutes
-    root_prefix: "/danube"
+    root_prefix: "/danube-data"
 
   # Cloud storage backend - Default: memory for development
   cloud:
