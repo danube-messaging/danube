@@ -73,4 +73,15 @@ impl Dispatcher {
             }
         }
     }
+
+    pub(crate) async fn reset_pending(&self) -> Result<()> {
+        match self {
+            Dispatcher::UnifiedOneConsumer(dispatcher) => {
+                Ok(dispatcher.reset_pending().await?)
+            }
+            Dispatcher::UnifiedMultipleConsumers(dispatcher) => {
+                Ok(dispatcher.reset_pending().await?)
+            }
+        }
+    }
 }

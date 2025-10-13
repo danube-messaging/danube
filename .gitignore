@@ -16,6 +16,9 @@ Cargo.lock
 # certificates used for TLS support 
 *.pem
 
+# etcd data and danube data are used for local testing
 etcd-data/
+danube-data/
+
 temp/
 .vscode/

@@ -650,6 +650,45 @@ impl BrokerService {
         false
     }
 
+    /// Trigger the dispatcher to resume polling when a consumer reconnects.
+    /// This is essential for reliable dispatch mode where the dispatcher may be idle.
+    pub(crate) async fn trigger_dispatcher_on_reconnect(&self, consumer_id: u64) {
+        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
+            let (topic_name, subscription_name) = consumer_ref.value().clone();
+            drop(consumer_ref);
+
+            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+                // First, reset any pending state in the dispatcher (critical for reliable mode)
+                let subscriptions = topic.subscriptions.lock().await;
+                if let Some(subscription) = subscriptions.get(&subscription_name) {
+                    if let Some(dispatcher) = &subscription.dispatcher {
+                        if let Err(e) = dispatcher.reset_pending().await {
+                            tracing::warn!("Failed to reset pending state: {}", e);
+                        }
+                    }
+                }
+                drop(subscriptions);
+
+                // Then notify all registered notifiers for this topic (for reliable dispatch)
+                let notifier_guard = topic.notifiers.lock().await;
+                let notifier_count = notifier_guard.len();
+                tracing::info!(
+                    "Triggering {} dispatcher notifier(s) for consumer {} on topic {}",
+                    notifier_count,
+                    consumer_id,
+                    topic_name
+                );
+                for notifier in notifier_guard.iter() {
+                    notifier.notify_one();
+                }
+            } else {
+                tracing::warn!("Topic not found when trying to trigger dispatcher for consumer {}", consumer_id);
+            }
+        } else {
+            tracing::warn!("Consumer {} not found in consumer_index when trying to trigger dispatcher", consumer_id);
+        }
+    }
+
     pub(crate) async fn check_if_consumer_exist(
         &self,
         consumer_name: &str,

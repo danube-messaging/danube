@@ -309,15 +309,11 @@ impl Wal {
             ));
         }
 
-        // Notify tailing readers
-        if let Err(e) = self.inner.tx.send((offset, stamped.clone())) {
-            warn!(
-                target = "wal",
-                offset = offset,
-                error = %e,
-                "failed to broadcast message to live readers; a consumer may be lagging"
-            );
-        }
+        // Notify tailing readers (if any are subscribed)
+        // Note: It's normal for this to fail when no consumers are active
+        // The broadcast is just an optimization - it's for live consumers, but not required for correctness
+        // as we can always replay reliable from the WAL
+        let _ = self.inner.tx.send((offset, stamped.clone()));
         Ok(offset)
     }
 

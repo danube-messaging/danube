@@ -34,6 +34,7 @@ enum DispatcherCommand {
     MessageAcked(u64, MessageID),
     // Reliable-only
     PollAndDispatch,
+    ResetPending, // Clear pending flag to allow retry after consumer disconnect
 }
 
 impl UnifiedMultipleDispatcher {
@@ -64,9 +65,10 @@ impl UnifiedMultipleDispatcher {
                         } else {
                             let num_consumers = consumers.len();
                             let mut dispatched = false;
-                            
+
                             for _ in 0..num_consumers {
-                                let idx = rr_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % num_consumers;
+                                let idx = rr_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                                    % num_consumers;
                                 if let Some(target) = consumers.get_mut(idx) {
                                     // Only send to healthy consumers
                                     if !target.get_status().await {
@@ -90,11 +92,13 @@ impl UnifiedMultipleDispatcher {
                                     }
                                 }
                             }
-                            
+
                             if dispatched {
                                 Ok(())
                             } else {
-                                Err(anyhow!("No active consumers available to handle the message"))
+                                Err(anyhow!(
+                                    "No active consumers available to handle the message"
+                                ))
                             }
                         };
                         let _ = response_tx.send(result);
@@ -103,6 +107,9 @@ impl UnifiedMultipleDispatcher {
                         // non-reliable ignores acks
                     }
                     DispatcherCommand::PollAndDispatch => {}
+                    DispatcherCommand::ResetPending => {
+                        // non-reliable has no pending state
+                    }
                 }
             }
             trace!("Non-reliable multiple dispatcher task exiting gracefully");
@@ -130,6 +137,7 @@ impl UnifiedMultipleDispatcher {
         tokio::spawn(async move {
             let mut consumers: Vec<Consumer> = Vec::new();
             let mut pending = false; // strict ack-gating across the subscription
+            let mut pending_message: Option<StreamMessage> = None; // Buffer for unacked message
 
             // Initialize stream from persisted progress if available, otherwise Latest
             if let Err(e) = engine
@@ -162,52 +170,99 @@ impl UnifiedMultipleDispatcher {
                                         consumers.clear();
                                     }
                                     DispatcherCommand::MessageAcked(request_id, msg_id) => {
+                                        let acked_offset = msg_id.topic_offset;
+
                                         if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
                                             warn!("Ack handling failed: {}", e);
                                         }
-                                        pending = false;
+
+                                        // Only clear buffer if ack is for the currently pending message
+                                        let should_clear_buffer = pending_message
+                                            .as_ref()
+                                            .map(|msg| msg.request_id == request_id)
+                                            .unwrap_or(false);
+
+                                        if should_clear_buffer {
+                                            trace!("Ack received for pending message req_id={}, offset={}, clearing buffer",
+                                                request_id, acked_offset);
+                                            pending = false;
+                                            pending_message = None;
+                                        } else {
+                                            // Late ack for already-dispatched message, ignore
+                                            trace!("Ignoring late ack for req_id={}, offset={} (not the pending message)",
+                                                request_id, acked_offset);
+                                        }
+
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
-                                    DispatcherCommand::DispatchMessage(_, response_tx) => { 
+                                    DispatcherCommand::DispatchMessage(_, response_tx) => {
                                         let _ = response_tx.send(Err(anyhow!("Reliable dispatcher does not support direct message dispatch")));
                                     }
                                     DispatcherCommand::PollAndDispatch => {
                                         if pending { continue; }
                                         if consumers.is_empty() { continue; }
-                                        // choose next consumer in round-robin order among active ones
-                                        let mut attempts = 0usize;
-                                        let mut sent = false;
-                                        while attempts < consumers.len() && !sent {
-                                            let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
-                                            if let Some(target) = consumers.get_mut(idx) {
-                                                // Only send to healthy consumers
-                                                if !target.get_status().await {
-                                                    attempts += 1;
-                                                    continue;
-                                                }
-                                                match engine.lock().await.poll_next().await {
-                                                    Ok(Some(msg)) => {
-                                                        let rid = msg.request_id;
-                                                        if let Err(e) = target.send_message(msg).await {
-                                                            warn!("Failed to send reliable message to {}: {}", target.consumer_id, e);
-                                                        } else {
-                                                            trace!("Reliable dispatched req_id={} to consumer {}", rid, target.consumer_id);
-                                                            pending = true;
-                                                            sent = true;
-                                                        }
-                                                    }
-                                                    Ok(None) => { break; }
-                                                    Err(e) => { warn!("poll_next error: {}", e); break; }
+
+                                        // First, try to resend pending message if it exists (for at-least-once delivery)
+                                        let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
+                                            trace!("Resending buffered message offset={} to another consumer", buffered_msg.msg_id.topic_offset);
+                                            Some(buffered_msg)
+                                        } else {
+                                            // No pending message, poll new one from stream
+                                            match engine.lock().await.poll_next().await {
+                                                Ok(msg_opt) => msg_opt,
+                                                Err(e) => {
+                                                    warn!("poll_next error: {}", e);
+                                                    None
                                                 }
                                             }
-                                            attempts += 1;
+                                        };
+
+                                        if let Some(msg) = msg_to_send {
+                                            // Try to send to a healthy consumer via round-robin
+                                            let mut attempts = 0usize;
+                                            let mut sent = false;
+                                            let offset = msg.msg_id.topic_offset;
+
+                                            while attempts < consumers.len() && !sent {
+                                                let idx = rr_task.fetch_add(1, Ordering::Relaxed) % consumers.len();
+                                                if let Some(target) = consumers.get_mut(idx) {
+                                                    // Only send to healthy consumers
+                                                    if !target.get_status().await {
+                                                        attempts += 1;
+                                                        continue;
+                                                    }
+
+                                                    // Buffer message before sending (in case of failure)
+                                                    pending_message = Some(msg.clone());
+
+                                                    if let Err(e) = target.send_message(msg.clone()).await {
+                                                        warn!("Failed to send message offset={} to consumer {}: {}", offset, target.consumer_id, e);
+                                                        // Keep pending_message buffered, try next consumer
+                                                        attempts += 1;
+                                                        continue;
+                                                    } else {
+                                                        pending = true;
+                                                        sent = true;
+                                                        // pending_message stays buffered until ack
+                                                    }
+                                                }
+                                                attempts += 1;
+                                            }
                                         }
+                                    }
+                                    DispatcherCommand::ResetPending => {
+                                        if pending_message.is_some() {
+                                            trace!("Consumer disconnected, will failover buffered message to available consumer");
+                                        }
+                                        pending = false;
+                                        // Keep pending_message buffered - it will be resent to another healthy consumer
+                                        // Trigger immediate poll attempt to failover the buffered message
+                                        let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
                                 }
                             }
                             None => {
                                 // Channel closed, exit gracefully
-                                trace!("Reliable multiple dispatcher control channel closed, exiting");
                                 break;
                             }
                         }
@@ -258,7 +313,7 @@ impl UnifiedMultipleDispatcher {
                 .send(DispatcherCommand::DispatchMessage(message, response_tx))
                 .await
                 .map_err(|e| anyhow!("Failed to send dispatch command: {}", e))?;
-            
+
             response_rx
                 .await
                 .map_err(|e| anyhow!("Failed to receive dispatch response: {}", e))?
@@ -298,6 +353,18 @@ impl UnifiedMultipleDispatcher {
             .send(DispatcherCommand::DisconnectAllConsumers)
             .await
             .map_err(|_| anyhow!("Failed to send disconnect all consumers command"))
+    }
+
+    /// Reset pending state to allow failover to another consumer after disconnect
+    pub(crate) async fn reset_pending(&self) -> Result<()> {
+        if let Some(tx) = &self.reliable {
+            tx.send(DispatcherCommand::ResetPending)
+                .await
+                .map_err(|_| anyhow!("Failed to send reset pending command"))
+        } else {
+            // Non-reliable: no-op
+            Ok(())
+        }
     }
 }
 
