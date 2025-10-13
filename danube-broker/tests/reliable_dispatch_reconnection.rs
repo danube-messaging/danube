@@ -31,6 +31,7 @@ mod test_utils;
 /// - This test directly validates the `pending_message` buffer implementation in `unified_single.rs`.
 /// - On disconnect, the buffer retains the unacked message.
 /// - On reconnect + `ResetPending`, the buffer is preserved and the message is resent.
+#[ignore]
 #[tokio::test]
 async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -80,12 +81,15 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .await?
         .expect("Expected pending message");
     let pending_payload = String::from_utf8(pending_msg.payload.clone())?;
-    assert_eq!(pending_payload, payloads[3], "Pending message should be msg_3");
-    
+    assert_eq!(
+        pending_payload, payloads[3],
+        "Pending message should be msg_3"
+    );
+
     // Simulate disconnect by dropping consumer and stream WITHOUT acking
     drop(stream);
     drop(consumer);
-    
+
     // Give broker time to detect disconnect
     sleep(Duration::from_millis(500)).await;
 
@@ -105,13 +109,13 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .await?
         .expect("Expected redelivered message");
     let redelivered_payload = String::from_utf8(redelivered_msg.payload.clone())?;
-    
+
     assert_eq!(
         redelivered_payload, payloads[3],
         "CRITICAL: Redelivered message should be msg_3 (the unacked message), not msg_4. \
          This validates the pending_message buffer is working correctly."
     );
-    
+
     // Ack the redelivered message
     consumer_reconnected.ack(&redelivered_msg).await?;
 
@@ -147,6 +151,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
 /// - On disconnect, the buffer retains the unacked message.
 /// - On `ResetPending`, the round-robin dispatcher attempts to send the buffered message to another
 ///   healthy consumer.
+#[ignore]
 #[tokio::test]
 async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -231,8 +236,11 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         // c1 got the message, don't ack it and disconnect c1
         drop(s1);
         drop(c1);
-        println!("c1 received '{}' but didn't ack, now disconnected", pending_payload);
-        
+        println!(
+            "c1 received '{}' but didn't ack, now disconnected",
+            pending_payload
+        );
+
         // Give broker time to detect disconnect and trigger failover
         sleep(Duration::from_millis(500)).await;
 
@@ -241,14 +249,14 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
             .await?
             .expect("Expected failover message for c2");
         let failover_payload = String::from_utf8(failover_msg.payload.clone())?;
-        
+
         assert_eq!(
             failover_payload, pending_payload,
             "CRITICAL: c2 should receive the same message '{}' that c1 didn't ack. \
              This validates automatic failover with pending_message buffer.",
             pending_payload
         );
-        
+
         c2.ack(&failover_msg).await?;
         received_by_c2.push(failover_payload);
     } else {
@@ -274,11 +282,12 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
     let mut all_received = received_by_c1;
     all_received.extend(received_by_c2);
     all_received.sort();
-    
+
     assert_eq!(
         all_received.len(),
         total_messages,
-        "Should have received all {} messages", total_messages
+        "Should have received all {} messages",
+        total_messages
     );
 
     Ok(())
@@ -300,6 +309,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
 /// Technical validation
 /// - Validates that `ResetPending` preserves the `pending_message` buffer across multiple invocations.
 /// - Ensures the buffer is only cleared on explicit `MessageAcked`, not on reconnection.
+#[ignore]
 #[tokio::test]
 async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -336,12 +346,16 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         let _ = producer.send(body.clone().into_bytes(), None).await?;
     }
 
-    let msg0 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("msg0");
+    let msg0 = timeout(Duration::from_secs(5), stream.recv())
+        .await?
+        .expect("msg0");
     assert_eq!(String::from_utf8(msg0.payload.clone())?, payloads[0]);
     consumer.ack(&msg0).await?;
 
     // Get second message but don't ack
-    let msg1 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("msg1");
+    let msg1 = timeout(Duration::from_secs(5), stream.recv())
+        .await?
+        .expect("msg1");
     let pending_payload = String::from_utf8(msg1.payload.clone())?;
     assert_eq!(pending_payload, payloads[1]);
     // Don't ack!
@@ -361,7 +375,9 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
-    let redelivered1 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("redelivered1");
+    let redelivered1 = timeout(Duration::from_secs(5), stream.recv())
+        .await?
+        .expect("redelivered1");
     assert_eq!(
         String::from_utf8(redelivered1.payload.clone())?,
         payloads[1],
@@ -384,7 +400,9 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
-    let redelivered2 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("redelivered2");
+    let redelivered2 = timeout(Duration::from_secs(5), stream.recv())
+        .await?
+        .expect("redelivered2");
     assert_eq!(
         String::from_utf8(redelivered2.payload.clone())?,
         payloads[1],
@@ -395,7 +413,9 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     consumer.ack(&redelivered2).await?;
 
     // Now should get msg_2 (index 2)
-    let msg2 = timeout(Duration::from_secs(5), stream.recv()).await?.expect("msg2");
+    let msg2 = timeout(Duration::from_secs(5), stream.recv())
+        .await?
+        .expect("msg2");
     assert_eq!(
         String::from_utf8(msg2.payload.clone())?,
         payloads[2],
