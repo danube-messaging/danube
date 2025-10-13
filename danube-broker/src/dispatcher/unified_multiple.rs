@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tracing::{trace, warn};
 
 use crate::consumer::Consumer;
+use crate::message::AckMessage;
 
 use super::subscription_engine::SubscriptionEngine;
 
@@ -31,7 +32,7 @@ enum DispatcherCommand {
     RemoveConsumer(u64),
     DisconnectAllConsumers,
     DispatchMessage(StreamMessage, oneshot::Sender<Result<()>>),
-    MessageAcked(u64, MessageID),
+    MessageAcked(AckMessage),
     // Reliable-only
     PollAndDispatch,
     ResetPending, // Clear pending flag to allow retry after consumer disconnect
@@ -103,7 +104,7 @@ impl UnifiedMultipleDispatcher {
                         };
                         let _ = response_tx.send(result);
                     }
-                    DispatcherCommand::MessageAcked(_, _) => {
+                    DispatcherCommand::MessageAcked(_) => {
                         // non-reliable ignores acks
                     }
                     DispatcherCommand::PollAndDispatch => {}
@@ -169,28 +170,28 @@ impl UnifiedMultipleDispatcher {
                                     DispatcherCommand::DisconnectAllConsumers => {
                                         consumers.clear();
                                     }
-                                    DispatcherCommand::MessageAcked(request_id, msg_id) => {
-                                        let acked_offset = msg_id.topic_offset;
+                                    DispatcherCommand::MessageAcked(ack_msg) => {
+                                        let acked_offset = ack_msg.msg_id.topic_offset;
 
-                                        if let Err(e) = engine.lock().await.on_acked(request_id, msg_id).await {
+                                        if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
                                             warn!("Ack handling failed: {}", e);
                                         }
 
                                         // Only clear buffer if ack is for the currently pending message
                                         let should_clear_buffer = pending_message
                                             .as_ref()
-                                            .map(|msg| msg.request_id == request_id)
+                                            .map(|msg| msg.msg_id.topic_offset == acked_offset)
                                             .unwrap_or(false);
 
                                         if should_clear_buffer {
                                             trace!("Ack received for pending message req_id={}, offset={}, clearing buffer",
-                                                request_id, acked_offset);
+                                                ack_msg.request_id, acked_offset);
                                             pending = false;
                                             pending_message = None;
                                         } else {
                                             // Late ack for already-dispatched message, ignore
                                             trace!("Ignoring late ack for req_id={}, offset={} (not the pending message)",
-                                                request_id, acked_offset);
+                                                ack_msg.request_id, acked_offset);
                                         }
 
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
@@ -324,9 +325,9 @@ impl UnifiedMultipleDispatcher {
         }
     }
 
-    pub(crate) async fn ack_message(&self, request: u64, msg_id: MessageID) -> Result<()> {
+    pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         if let Some(tx) = &self.reliable {
-            tx.send(DispatcherCommand::MessageAcked(request, msg_id))
+            tx.send(DispatcherCommand::MessageAcked(ack_msg))
                 .await
                 .map_err(|_| anyhow!("Failed to send ack to reliable dispatcher"))
         } else {

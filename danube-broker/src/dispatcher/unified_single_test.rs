@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::Consumer;
+use crate::message::AckMessage;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedSingleDispatcher;
 use crate::topic::TopicStore;
@@ -86,8 +87,9 @@ async fn reliable_single_ack_gating() {
     assert!(none_second.is_err(), "should not receive second before ack");
 
     // Ack the first; then the second should arrive
+    let ack = AckMessage { request_id: first.request_id, msg_id: first.msg_id.clone(), subscription_name: "test-sub".to_string() };
     dispatcher
-        .ack_message(first.request_id, first.msg_id.clone())
+        .ack_message(ack)
         .await
         .expect("ack");
 

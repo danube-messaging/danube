@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::Consumer;
+use crate::message::AckMessage;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedMultipleDispatcher;
 use crate::topic::TopicStore;
@@ -87,8 +88,9 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Ack the first delivery
     let (first_consumer_id, first_msg) = first_delivered;
+    let ack = AckMessage { request_id: first_msg.request_id, msg_id: first_msg.msg_id.clone(), subscription_name: "test-sub".to_string() };
     dispatcher
-        .ack_message(first_msg.request_id, first_msg.msg_id.clone())
+        .ack_message(ack)
         .await
         .expect("ack first");
 
