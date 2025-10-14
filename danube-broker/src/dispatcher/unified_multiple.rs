@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use danube_core::message::{MessageID, StreamMessage};
+use danube_core::message::StreamMessage;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

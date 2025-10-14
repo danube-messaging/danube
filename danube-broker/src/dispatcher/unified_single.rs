@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use danube_core::message::{MessageID, StreamMessage};
+use danube_core::message::StreamMessage;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tracing::{trace, warn};
