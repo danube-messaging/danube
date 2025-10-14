@@ -58,8 +58,15 @@ impl ConsumerInfo {
             token.cancel();
         }
     }
-    pub(crate) async fn set_cancellation_token(&self, token: CancellationToken) {
-        *self.cancellation_token.lock().await = Some(token);
+    /// Cancel any existing session token and install a fresh one, returning the new token.
+    pub(crate) async fn reset_session_token(&self) -> CancellationToken {
+        let mut token_guard = self.cancellation_token.lock().await;
+        if let Some(old) = token_guard.take() {
+            old.cancel();
+        }
+        let new_token = CancellationToken::new();
+        *token_guard = Some(new_token.clone());
+        new_token
     }
 }
 
