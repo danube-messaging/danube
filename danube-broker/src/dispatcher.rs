@@ -33,12 +33,8 @@ impl Dispatcher {
     }
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         match self {
-            Dispatcher::UnifiedOneConsumer(dispatcher) => Ok(dispatcher
-                .ack_message(ack_msg.request_id, ack_msg.msg_id)
-                .await?),
-            Dispatcher::UnifiedMultipleConsumers(dispatcher) => Ok(dispatcher
-                .ack_message(ack_msg.request_id, ack_msg.msg_id)
-                .await?),
+            Dispatcher::UnifiedOneConsumer(dispatcher) => Ok(dispatcher.ack_message(ack_msg).await?),
+            Dispatcher::UnifiedMultipleConsumers(dispatcher) => Ok(dispatcher.ack_message(ack_msg).await?),
         }
     }
     pub(crate) async fn add_consumer(&mut self, consumer: Consumer) -> Result<()> {

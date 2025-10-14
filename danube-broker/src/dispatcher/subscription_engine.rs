@@ -99,7 +99,7 @@ impl SubscriptionEngine {
     }
 
     /// Called by dispatcher when a message has been acknowledged by a consumer.
-    pub(crate) async fn on_acked(&mut self, _request_id: u64, msg_id: MessageID) -> Result<()> {
+    pub(crate) async fn on_acked(&mut self, msg_id: MessageID) -> Result<()> {
         // Track last acked offset
         self.last_acked = Some(msg_id.topic_offset);
         self.dirty = true;
@@ -192,13 +192,13 @@ mod tests {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: 5,
         };
-        engine.on_acked(100, msg_id.clone()).await.unwrap();
+        engine.on_acked(msg_id.clone()).await.unwrap();
 
         // Wait longer than debounce interval
         sleep(Duration::from_millis(60)).await;
 
         // Second ack (same offset); should trigger flush
-        engine.on_acked(101, msg_id.clone()).await.unwrap();
+        engine.on_acked(msg_id.clone()).await.unwrap();
 
         // Validate cursor persisted
         let mut reader = topic_resources_reader;
