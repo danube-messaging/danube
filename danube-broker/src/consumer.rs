@@ -50,8 +50,6 @@ impl Consumer {
                 "Failed to send message to consumer with id: {}. Error: {:?}",
                 self.consumer_id, err
             );
-
-            *self.status.lock().await = false
         } else {
             trace!("Sending the message over channel to {}", self.consumer_id);
             counter!(CONSUMER_MSG_OUT_COUNTER.name, "topic"=> self.topic_name.clone() , "consumer" => self.consumer_id.to_string()).increment(1);

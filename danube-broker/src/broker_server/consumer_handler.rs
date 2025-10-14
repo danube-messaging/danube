@@ -9,7 +9,6 @@ use danube_core::proto::{
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, warn, Level};
 
@@ -47,6 +46,16 @@ impl ConsumerService for DanubeServerImpl {
             .check_if_consumer_exist(&req.consumer_name, &req.subscription, &req.topic_name)
             .await
         {
+            // Single-attach takeover at subscribe: cancel existing stream and prepare for new session
+            if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
+                // Cancel any existing streaming task for this consumer
+                consumer_info.cancel_existing_stream().await;
+                // Mark as active for the new connection
+                consumer_info.set_status_true().await;
+                // Reset dispatcher pending state and notify to resume polling (reliable mode)
+                service.trigger_dispatcher_on_reconnect(consumer_id).await;
+            }
+
             let response = ConsumerResponse {
                 request_id: req.request_id,
                 consumer_id,
@@ -115,8 +124,9 @@ impl ConsumerService for DanubeServerImpl {
 
         let service = self.service.as_ref();
 
-        let rx = if let Some(consumer) = service.find_consumer_rx(consumer_id).await {
-            consumer
+        // Fetch both ConsumerInfo and its receiver in one lookup
+        let (consumer_info, rx) = if let Some((info, rx)) = service.find_consumer_and_rx(consumer_id).await {
+            (info, rx)
         } else {
             let status = Status::not_found(format!(
                 "The consumer with the id {} does not exist",
@@ -125,29 +135,13 @@ impl ConsumerService for DanubeServerImpl {
             return Err(status);
         };
 
-        // Cancel any existing streaming task for this consumer
-        if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
-            consumer_info.cancel_existing_stream().await;
-            consumer_info.set_status_true().await; // Mark as active for new connection
-            
-            // Trigger dispatcher to resume polling for reliable subscriptions
-            // This is critical for reconnection scenarios where the dispatcher may be idle
-            service.trigger_dispatcher_on_reconnect(consumer_id).await;
-        }
+        // Note: takeover is handled during subscribe(); here we only attach a new stream
 
         let rx_cloned = Arc::clone(&rx);
         let service_for_disconnect = self.service.clone();
 
-        // Create a new cancellation token for this streaming session
-        let cancellation_token = CancellationToken::new();
-        let token_for_task = cancellation_token.clone();
-
-        // Store the cancellation token in the consumer info
-        if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
-            consumer_info
-                .set_cancellation_token(cancellation_token)
-                .await;
-        }
+        // Reset and store a new cancellation token for this streaming session
+        let token_for_task = consumer_info.reset_session_token().await;
 
         tokio::spawn(async move {
             let mut rx_guard = rx_cloned.lock().await;

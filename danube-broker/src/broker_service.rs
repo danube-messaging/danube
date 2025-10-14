@@ -608,25 +608,6 @@ impl BrokerService {
         }
     }
 
-    // finding the receiver for the provided consumer_id
-    pub(crate) async fn find_consumer_rx(
-        &self,
-        consumer_id: u64,
-    ) -> Option<Arc<Mutex<mpsc::Receiver<StreamMessage>>>> {
-        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
-            let (topic_name, subscription_name) = consumer_ref.value().clone();
-            drop(consumer_ref);
-
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
-                {
-                    return subscription.get_consumer_rx(consumer_id);
-                }
-            }
-        }
-        None
-    }
-
     // finding the ConsumerInfo for the provided consumer_id
     pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<ConsumerInfo> {
         if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
@@ -637,6 +618,27 @@ impl BrokerService {
                 if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
                 {
                     return subscription.get_consumer_info(consumer_id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Combined accessor: returns both ConsumerInfo and its receiver for the given consumer_id.
+    pub(crate) async fn find_consumer_and_rx(
+        &self,
+        consumer_id: u64,
+    ) -> Option<(ConsumerInfo, Arc<Mutex<mpsc::Receiver<StreamMessage>>>)> {
+        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
+            let (topic_name, subscription_name) = consumer_ref.value().clone();
+            drop(consumer_ref);
+
+            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
+                {
+                    let info = subscription.get_consumer_info(consumer_id)?;
+                    let rx = subscription.get_consumer_rx(consumer_id)?;
+                    return Some((info, rx));
                 }
             }
         }
@@ -682,10 +684,16 @@ impl BrokerService {
                     notifier.notify_one();
                 }
             } else {
-                tracing::warn!("Topic not found when trying to trigger dispatcher for consumer {}", consumer_id);
+                tracing::warn!(
+                    "Topic not found when trying to trigger dispatcher for consumer {}",
+                    consumer_id
+                );
             }
         } else {
-            tracing::warn!("Consumer {} not found in consumer_index when trying to trigger dispatcher", consumer_id);
+            tracing::warn!(
+                "Consumer {} not found in consumer_index when trying to trigger dispatcher",
+                consumer_id
+            );
         }
     }
 
