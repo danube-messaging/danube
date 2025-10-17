@@ -2,7 +2,7 @@ use danube_core::storage::PersistentStorageError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{info, error};
 
 use crate::checkpoint::CheckpointStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
@@ -69,7 +69,14 @@ impl Uploader {
             }
 
             // Run one immediate cycle for determinism in tests and faster startup
-            let _ = self.run_once().await?;
+            if let Err(e) = self.run_once().await {
+                error!(
+                    target = "uploader",
+                    topic = %self.cfg.topic_path,
+                    error = %format!("{}", e),
+                    "uploader run_once failed on startup"
+                );
+            }
 
             let mut ticker =
                 tokio::time::interval(std::time::Duration::from_secs(self.cfg.interval_seconds));
@@ -77,7 +84,14 @@ impl Uploader {
                 ticker.tick().await;
 
                 // Idle tick if no items; otherwise process a batch
-                let _ = self.run_once().await?;
+                if let Err(e) = self.run_once().await {
+                    error!(
+                        target = "uploader",
+                        topic = %self.cfg.topic_path,
+                        error = %format!("{}", e),
+                        "uploader run_once failed"
+                    );
+                }
             }
         })
     }

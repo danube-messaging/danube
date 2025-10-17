@@ -91,6 +91,16 @@ impl CloudStore {
                     if let Some(sk) = options.get("secret_key") {
                         builder = builder.secret_access_key(sk);
                     }
+                    // Addressing mode: default to path-style for custom endpoints (e.g., MinIO)
+                    let vhost_opt = options.get("virtual_host_style");
+                    let has_custom_endpoint = options.get("endpoint").is_some();
+                    let vhost = match vhost_opt {
+                        Some(v) => matches!(v.as_str(), "true" | "1" | "yes"),
+                        None => !has_custom_endpoint, // if custom endpoint, prefer path-style (false)
+                    };
+                    if vhost {
+                        builder = builder.enable_virtual_host_style();
+                    }
                     let op = Operator::new(builder)
                         .map_err(|e| {
                             PersistentStorageError::Other(format!("opendal s3 builder: {}", e))
