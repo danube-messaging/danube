@@ -8,8 +8,9 @@ use crate::{
 use danube_core::message::StreamMessage;
 use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 /// Represents the type of subscription
 ///
@@ -43,6 +44,9 @@ pub struct Consumer {
     subscription_type: SubType,
     // other configurable options for the consumer
     consumer_options: ConsumerOptions,
+    // shutdown flag and task handles for graceful close
+    shutdown: Arc<AtomicBool>,
+    task_handles: Vec<JoinHandle<()>>,
 }
 
 impl Consumer {
@@ -68,6 +72,8 @@ impl Consumer {
             subscription,
             subscription_type,
             consumer_options,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            task_handles: Vec::new(),
         }
     }
 
@@ -166,8 +172,9 @@ impl Consumer {
             let tx = tx.clone();
             let consumer = Arc::clone(consumer);
             let retry_manager = retry_manager.clone();
+            let shutdown = self.shutdown.clone();
 
-            tokio::spawn(async move {
+            let handle: JoinHandle<()> = tokio::spawn(async move {
                 let mut attempts = 0;
                 let max_retries = if retry_manager.max_retries() == 0 {
                     5
@@ -176,6 +183,7 @@ impl Consumer {
                 };
 
                 loop {
+                    if shutdown.load(Ordering::SeqCst) { return; }
                     // Try to get stream from consumer (subscribe is handled internally with its own retry)
                     let stream_result = {
                         let mut locked = consumer.lock().await;
@@ -187,7 +195,10 @@ impl Consumer {
                             attempts = 0; // Reset attempts on successful connection
 
                             // Process messages until stream ends or errors
-                            while let Some(message) = stream.next().await {
+                            while !shutdown.load(Ordering::SeqCst) {
+                                let message_opt = stream.next().await;
+                                if message_opt.is_none() { break; }
+                                let message = message_opt.unwrap();
                                 match message {
                                     Ok(stream_message) => {
                                         let message: StreamMessage = stream_message.into();
@@ -205,6 +216,7 @@ impl Consumer {
                             // Stream ended, retry receive
                         }
                         Err(error) => {
+                            if shutdown.load(Ordering::SeqCst) { return; }
                             // Check if this is an unrecoverable error (e.g., stream client not initialized)
                             if matches!(error, DanubeError::Unrecoverable(_)) {
                                 eprintln!("Unrecoverable error detected, attempting resubscription: {:?}", error);
@@ -261,6 +273,7 @@ impl Consumer {
                     }
                 }
             });
+            self.task_handles.push(handle);
         }
 
         Ok(rx)
@@ -280,6 +293,23 @@ impl Consumer {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Gracefully close all receive tasks and stop background activities for this consumer
+    pub async fn close(&mut self) {
+        // signal shutdown
+        self.shutdown.store(true, Ordering::SeqCst);
+        // stop topic-level activities (e.g., health checks)
+        for (_, topic_consumer) in self.consumers.iter() {
+            let locked = topic_consumer.lock().await;
+            locked.stop();
+        }
+        // abort receive tasks
+        for handle in self.task_handles.drain(..) {
+            handle.abort();
+        }
+        // small delay to allow server to observe closure
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 

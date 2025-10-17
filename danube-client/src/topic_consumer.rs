@@ -82,6 +82,11 @@ impl TopicConsumer {
             retry_manager,
         }
     }
+
+    /// Signal this consumer to stop background activities (e.g., health checks)
+    pub(crate) fn stop(&self) {
+        self.stop_signal.store(true, Ordering::SeqCst);
+    }
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
         let mut attempts = 0;
         let max_retries = 5; // Default for consumers

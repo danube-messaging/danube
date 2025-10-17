@@ -148,6 +148,22 @@ impl ConsumerService for DanubeServerImpl {
 
             loop {
                 tokio::select! {
+                    // If the gRPC response stream is dropped (client disconnected), mark inactive
+                    _ = grpc_tx.closed() => {
+                        warn!(
+                            "Client disconnected for consumer_id: {}, marking inactive",
+                            consumer_id
+                        );
+                        if let Some(consumer_info) = service_for_disconnect
+                            .find_consumer_by_id(consumer_id)
+                            .await
+                        {
+                            consumer_info.set_status_false().await;
+                            // Reset dispatcher pending state so buffered messages can fail over/redeliver
+                            service_for_disconnect.trigger_dispatcher_on_reconnect(consumer_id).await;
+                        }
+                        break;
+                    }
                     // Check for cancellation
                     _ = token_for_task.cancelled() => {
                         trace!("Streaming task cancelled for consumer_id: {}", consumer_id);
@@ -171,6 +187,8 @@ impl ConsumerService for DanubeServerImpl {
                                         .await
                                     {
                                         consumer_info.set_status_false().await;
+                                        // Reset dispatcher pending state so buffered messages can fail over/redeliver
+                                        service_for_disconnect.trigger_dispatcher_on_reconnect(consumer_id).await;
                                     }
                                     break;
                                 }
