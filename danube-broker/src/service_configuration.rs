@@ -183,6 +183,9 @@ pub(crate) enum CloudConfig {
         role_arn: Option<String>,
         session_token: Option<String>,
         anonymous: Option<bool>,
+        /// When true, use virtual-hosted-style addressing (bucket.host). When false, use path-style.
+        /// MinIO commonly requires path-style (set this to false).
+        virtual_host_style: Option<bool>,
     },
     #[serde(rename = "gcs")]
     Gcs {
@@ -222,6 +225,7 @@ impl From<&CloudConfig> for BackendConfig {
                 role_arn,
                 session_token,
                 anonymous,
+                virtual_host_style,
             } => {
                 let mut options: HashMap<String, String> = HashMap::new();
                 if let Some(v) = region {
@@ -247,6 +251,9 @@ impl From<&CloudConfig> for BackendConfig {
                 }
                 if let Some(v) = anonymous {
                     options.insert("anonymous".into(), v.to_string());
+                }
+                if let Some(v) = virtual_host_style {
+                    options.insert("virtual_host_style".into(), v.to_string());
                 }
                 BackendConfig::Cloud {
                     backend: CloudBackend::S3,

@@ -34,6 +34,23 @@ The setup includes:
    docker-compose ps
    ```
 
+```bash
+✗ docker-compose ps
+NAME   IMAGE    COMMAND   SERVICE    CREATED     STATUS     PORTS
+
+danube-broker1   docker-broker1                             "/usr/local/bin/danu…"   broker1      About a minute ago   Up 6 seconds (health: starting)   0.0.0.0:6650->6650/tcp, [::]:6650->6650/tcp, 0.0.0.0:9040->9040/tcp, [::]:9040->9040/tcp, 0.0.0.0:50051->50051/tcp, [::]:50051->50051/tcp
+
+danube-broker2   docker-broker2                             "/usr/local/bin/danu…"   broker2      About a minute ago   Up 6 seconds (health: starting)   0.0.0.0:6651->6650/tcp, [::]:6651->6650/tcp, 0.0.0.0:9041->9040/tcp, [::]:9041->9040/tcp, 0.0.0.0:50052->50051/tcp, [::]:50052->50051/tcp
+
+danube-cli       docker-danube-cli                          "sleep infinity"         danube-cli   About a minute ago   Up 6 seconds                      
+
+danube-etcd      quay.io/coreos/etcd:v3.5.9                 "/usr/local/bin/etcd"    etcd         About a minute ago   Up 12 seconds (healthy)           0.0.0.0:2379-2380->2379-2380/tcp, [::]:2379-2380->2379-2380/tcp
+
+danube-mc        minio/mc:RELEASE.2024-09-16T17-43-14Z      "/bin/sh -c ' echo '…"   mc           About a minute ago   Up About a minute                 
+
+danube-minio     minio/minio:RELEASE.2025-07-23T15-54-02Z   "/usr/bin/docker-ent…"   minio        About a minute ago   Up About a minute (healthy)       0.0.0.0:9000-9001->9000-9001/tcp, [::]:9000-9001->9000-9001/tcp
+```
+
 4. **Check logs** (optional):
    ```bash
    # View all logs
