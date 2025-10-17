@@ -31,7 +31,6 @@ mod test_utils;
 /// - This test directly validates the `pending_message` buffer implementation in `unified_single.rs`.
 /// - On disconnect, the buffer retains the unacked message.
 /// - On reconnect + `ResetPending`, the buffer is preserved and the message is resent.
-#[ignore]
 #[tokio::test]
 async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -86,12 +85,12 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         "Pending message should be msg_3"
     );
 
-    // Simulate disconnect by dropping consumer and stream WITHOUT acking
+    // Simulate disconnect using graceful shutdown to mirror real client termination
     drop(stream);
-    drop(consumer);
+    consumer.close().await;
 
-    // Give broker time to detect disconnect
-    sleep(Duration::from_millis(500)).await;
+    // Give broker time to detect disconnect (short delay is sufficient with close())
+    sleep(Duration::from_millis(300)).await;
 
     // Phase 3: Reconnect the same consumer
     let mut consumer_reconnected = client
@@ -151,7 +150,6 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
 /// - On disconnect, the buffer retains the unacked message.
 /// - On `ResetPending`, the round-robin dispatcher attempts to send the buffered message to another
 ///   healthy consumer.
-#[ignore]
 #[tokio::test]
 async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -233,16 +231,15 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
     let pending_payload = String::from_utf8(msg.payload.clone())?;
 
     if receiver == "c1" {
-        // c1 got the message, don't ack it and disconnect c1
-        drop(s1);
-        drop(c1);
+        // c1 got the message, DON'T ack it and disconnect c1 (graceful close)
+        c1.close().await;
         println!(
             "c1 received '{}' but didn't ack, now disconnected",
             pending_payload
         );
 
         // Give broker time to detect disconnect and trigger failover
-        sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(300)).await;
 
         // Phase 3: c2 should receive the same message (failover)
         let failover_msg = timeout(Duration::from_secs(5), s2.recv())
@@ -260,21 +257,57 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         c2.ack(&failover_msg).await?;
         received_by_c2.push(failover_payload);
     } else {
-        // c2 got the message, ack it normally (test still valid but different path)
-        c2.ack(&msg).await?;
-        received_by_c2.push(pending_payload.clone());
-        println!("c2 received '{}' and acked", pending_payload);
+        // c2 got the message, DON'T ack it and disconnect c2 (graceful close)
+        c2.close().await;
+        println!(
+            "c2 received '{}' but didn't ack, now disconnected",
+            pending_payload
+        );
+
+        // Give broker time to detect disconnect and trigger failover to c1
+        sleep(Duration::from_millis(300)).await;
+
+        // Phase 3: c1 should receive the same message (failover)
+        let failover_msg = timeout(Duration::from_secs(5), s1.recv())
+            .await?
+            .expect("Expected failover message for c1");
+        let failover_payload = String::from_utf8(failover_msg.payload.clone())?;
+
+        assert_eq!(
+            failover_payload, pending_payload,
+            "CRITICAL: c1 should receive the same message '{}' that c2 didn't ack. \
+             This validates automatic failover with pending_message buffer.",
+            pending_payload
+        );
+
+        c1.ack(&failover_msg).await?;
+        received_by_c1.push(failover_payload);
     }
 
-    // Phase 4: Continue receiving remaining messages with c2 only
-    loop {
-        match timeout(Duration::from_secs(2), s2.recv()).await {
-            Ok(Some(msg)) => {
-                let payload = String::from_utf8(msg.payload.clone())?;
-                received_by_c2.push(payload);
-                c2.ack(&msg).await?;
+    // Phase 4: Continue receiving remaining messages with the surviving consumer only
+    if receiver == "c1" {
+        // c2 remains; keep consuming from s2
+        loop {
+            match timeout(Duration::from_secs(2), s2.recv()).await {
+                Ok(Some(msg)) => {
+                    let payload = String::from_utf8(msg.payload.clone())?;
+                    received_by_c2.push(payload);
+                    c2.ack(&msg).await?;
+                }
+                _ => break, // Timeout or None
             }
-            _ => break, // Timeout or None, assume we got all messages
+        }
+    } else {
+        // c1 remains; keep consuming from s1
+        loop {
+            match timeout(Duration::from_secs(2), s1.recv()).await {
+                Ok(Some(msg)) => {
+                    let payload = String::from_utf8(msg.payload.clone())?;
+                    received_by_c1.push(payload);
+                    c1.ack(&msg).await?;
+                }
+                _ => break, // Timeout or None
+            }
         }
     }
 
@@ -309,7 +342,6 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
 /// Technical validation
 /// - Validates that `ResetPending` preserves the `pending_message` buffer across multiple invocations.
 /// - Ensures the buffer is only cleared on explicit `MessageAcked`, not on reconnection.
-#[ignore]
 #[tokio::test]
 async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     let client = test_utils::setup_client().await?;
@@ -362,8 +394,8 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
 
     // Reconnection cycle 1
     drop(stream);
-    drop(consumer);
-    sleep(Duration::from_millis(500)).await;
+    consumer.close().await;
+    sleep(Duration::from_millis(300)).await;
 
     let mut consumer = client
         .new_consumer()
@@ -387,8 +419,8 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
 
     // Reconnection cycle 2
     drop(stream);
-    drop(consumer);
-    sleep(Duration::from_millis(500)).await;
+    consumer.close().await;
+    sleep(Duration::from_millis(300)).await;
 
     let mut consumer = client
         .new_consumer()

@@ -674,7 +674,7 @@ impl BrokerService {
                 // Then notify all registered notifiers for this topic (for reliable dispatch)
                 let notifier_guard = topic.notifiers.lock().await;
                 let notifier_count = notifier_guard.len();
-                tracing::info!(
+                tracing::trace!(
                     "Triggering {} dispatcher notifier(s) for consumer {} on topic {}",
                     notifier_count,
                     consumer_id,
