@@ -27,7 +27,7 @@ bincode = "1.3.3"
 bytes = "1.10.0"
 chrono = { version = "0.4", features = ["clock"] }
 crc32fast = "1.4"
-opendal = { version = "0.54", features = ["services-s3", "services-gcs", "services-fs", "services-memory", "layers-tracing"] }
+opendal = { version = "0.54", features = ["services-azblob", "services-s3", "services-gcs", "services-fs", "services-memory", "layers-tracing"] }
 async-stream = "0.3"
 
 [dev-dependencies]

@@ -2,9 +2,9 @@
 
 ## Context
 - **Module**: `danube-persistent-storage/`
-- **Current behavior**: `uploader_stream::stream_frames_to_cloud()` uploads at most one WAL file per cycle and finalizes a cloud object (e.g., `data-<start>-<end>.dnb1`). With short `interval_seconds` and low traffic, this yields many small objects.
+- **Implemented behavior**: `uploader_stream::stream_frames_to_cloud()` aggregates frames across multiple WAL files within a single cycle and produces one cloud object per tick (e.g., `data-<start>-<end>.dnb1`). Upload stops when the optional `max_object_mb` cap is reached or frames are exhausted for the cycle.
 - **Constraints**:
-  - S3/MinIO objects are immutable after finalize. No true append to finalized objects.
+  - Cloud objects are immutable after finalize. No true append to finalized objects.
   - OpenDAL `writer_with()` abstracts Multipart Upload (MPU) and finalizes on `close()`.
   - We want larger objects for efficiency while maintaining timely persistence.
 
@@ -16,63 +16,51 @@
 
 ---
 
-## Option B: Multi-file Aggregation per Cycle (Quick Win)
+## Chosen Approach: Option A-lite (Option B++)
 
 ### Summary
-Aggregate frames across multiple WAL files within a single uploader cycle, up to a configurable size/message cap, then finalize a single object. This removes the current "one-file-per-cycle" limitation.
+Stream sequentially across multiple WAL files within a single uploader tick into one `CloudWriter`, producing a single large object per tick, while keeping memory bounded by fixed chunk sizes. The writer is not kept open across ticks; on crash, the tick restarts and rebuilds the object from WAL. This is an extension of Option B (multi-file per cycle) with a strong emphasis on sequential streaming and bounded memory.
 
 ### Changes
-- **Config** (`docker/danube_broker.yml` → `UploaderNode` in `service_configuration.rs` → `UploaderBaseConfig`/`UploaderConfig`):
-  - `max_object_bytes: Option<u64>` (e.g., 1 GiB)
-  - `max_object_messages: Option<u64>` (optional)
-- **Streamer** (`danube-persistent-storage/src/uploader_stream.rs`):
-  - Remove early `break` after the first file that yields frames.
-  - Maintain `state.total_bytes_uploaded` and optionally a `msgs_written` counter.
-  - Continue reading subsequent WAL files in order while thresholds are not met.
-  - Finalize pending object into `data-<start>-<end>.dnb1` when a threshold is reached or no more complete frames are available.
+- **Config** (extend `UploaderConfig`):
+  - `max_object_mb: Option<u64>`
+- **Streamer** (`danube-persistent-storage/src/cloud/uploader_stream.rs`):
+  - Remove the early stop after the first WAL file that yields frames.
+  - Continue to subsequent WAL files in the same tick while size threshold isn’t reached.
+  - Track `total_bytes_uploaded` (in bytes) for comparison against `max_object_mb`.
+- **Uploader** (`danube-persistent-storage/src/cloud/uploader.rs`):
+  - Pass thresholds into `stream_frames_to_cloud(...)` from `run_once()`.
+  - Optionally perform defensive cleanup of any leftover `*-pending.dnb1` objects at start.
 
-### Algorithm (high-level)
-1. Build ordered list of WAL files from `WalCheckpoint` (rotated + active).
-2. Initialize in-memory `carry` buffer and `UploadState` (includes `first_offset`, `last_offset`, `total_bytes_uploaded`, `index_entries`).
-3. For each file `seq >= start_seq`:
-   - Read in 10 MiB chunks (as today) → extend `carry`.
+### Algorithm (single tick)
+1. Determine `(start_seq, start_pos)` from `UploaderCheckpoint` and WAL watermark from `WalCheckpoint`.
+2. Open one pending writer: `storage/topics/{topic}/objects/data-<start>-pending.dnb1` on first complete frame seen.
+3. For each WAL file in order `seq >= start_seq`:
+   - Read in fixed-size chunks (e.g., 50 MiB) → append to carry buffer.
    - Compute `safe_len = scan_safe_frame_boundary_with_crc(carry)`.
    - If `safe_len > 0`:
-     - Lazily open writer via `cloud.open_streaming_writer()` on first frame, choose key `storage/topics/{topic}/objects/data-<start>-pending.dnb1`.
-     - Build/extend sparse index within `safe_len`.
-     - Write `carry[..safe_len]` to the writer; drain from `carry`; update counters.
-     - If `total_bytes_uploaded >= max_object_bytes` (or `msgs >= max_object_messages`): stop scanning further files.
+     - Extend sparse index over `carry[..safe_len]`.
+     - Write `carry[..safe_len]` to `CloudWriter`; drain those bytes; update counters.
+     - If `total_bytes_uploaded >= max_object_mb * 1024 * 1024`: stop.
 4. If nothing was uploaded: return `None`.
-5. Otherwise, close writer and finalize pending → final key `data-<start>-<end>.dnb1` (via `copy_object`/fallback).
-6. Return `(object_id, start_offset, end_offset, next_seq, next_pos, meta, index)` back to `uploader.rs`, which commits the descriptor and checkpoint.
+5. Else: close writer, finalize pending → final key `data-<start>-<end>.dnb1`, write descriptor to ETCD, update checkpoints.
 
-### OpenDAL Usage
-- Continue to use `writer_with(chunk, concurrent)`:
-  - Chunk: 8–16 MiB
-  - Concurrent: 4–8
-- Optional `WriteOptions.user_metadata` can store lightweight hints (topic, start offset), but authoritative metadata remains in ETCD `ObjectDescriptor`.
-
-### Pros/Cons
-- **Pros**: Simple; much larger objects when backlog exists; no persistent writer state.
-- **Cons**: Object size depends on available backlog within one cycle; still limited if traffic is low and `interval_seconds` is short.
+### Scaling and Memory
+- **Bounded per-topic memory**: limited to read chunk size + carry buffer + OpenDAL internal buffers (typically ~10–20 MiB).
+- **Many topics**: limit concurrent uploaders and/or jitter `interval_seconds` to avoid synchronized spikes.
 
 ### Config Example
 ```yaml
-wal_cloud:
-  uploader:
-    enabled: true
-    interval_seconds: 300
-    root_prefix: "/danube-data"
-    max_object_bytes: 1073741824  # 1 GiB
-    # max_object_messages: 1000000  # optional
+uploader:
+  interval_seconds: 1200       # 20 minutes per your example
+  max_object_mb: 1024          # 1 GiB bound
 ```
 
-### Observability
-- Add counters/gauges:
-  - `uploader_bytes_per_object`
-  - `uploader_msgs_per_object`
-  - `uploader_objects_created_total`
-  - `uploader_failures_total`
+### Tests
+- Unit tests in `cloud/uploader_test.rs` should cover:
+  - Aggregation across multiple WAL files in a single tick.
+  - Stop at `max_object_mb` boundary and finalize.
+  - Correct `(next_seq, next_pos)` and sparse index spanning files.
 
 ---
 

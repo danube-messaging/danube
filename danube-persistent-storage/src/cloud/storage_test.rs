@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{CloudStore, BackendConfig, CloudBackend, LocalBackend};
+    use crate::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
     use std::collections::HashMap;
 
     /// Test: Memory backend basic put/get operations
@@ -23,7 +23,8 @@ mod tests {
         let store = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Memory,
             root: "test-prefix".to_string(),
-        }).expect("create memory store");
+        })
+        .expect("create memory store");
 
         let test_data = b"hello world";
         let path = "test/object.bin";
@@ -53,7 +54,8 @@ mod tests {
         let store = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Memory,
             root: "my-prefix".to_string(),
-        }).expect("create memory store");
+        })
+        .expect("create memory store");
 
         let test_data = b"prefixed data";
         let path = "nested/path/object.bin";
@@ -86,7 +88,8 @@ mod tests {
         let store = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Fs,
             root: root_path,
-        }).expect("create fs store");
+        })
+        .expect("create fs store");
 
         let test_data = b"filesystem test data";
         let path = "fs-test/object.bin";
@@ -173,15 +176,21 @@ mod tests {
     #[test]
     fn test_split_bucket_prefix_table() {
         let cases: Vec<(&str, Option<(&str, &str)>)> = vec![
-            ("s3://my-bucket/some/prefix", Some(("my-bucket", "some/prefix"))),
-            ("s3://my-bucket",              Some(("my-bucket", ""))),
-            ("gcs://another-bucket/deep/nested/prefix", Some(("another-bucket", "deep/nested/prefix"))),
-            ("just-bucket-name",            Some(("just-bucket-name", ""))),
-            ("s3:///prefix",                None),
+            (
+                "s3://my-bucket/some/prefix",
+                Some(("my-bucket", "some/prefix")),
+            ),
+            ("s3://my-bucket", Some(("my-bucket", ""))),
+            (
+                "gcs://another-bucket/deep/nested/prefix",
+                Some(("another-bucket", "deep/nested/prefix")),
+            ),
+            ("just-bucket-name", Some(("just-bucket-name", ""))),
+            ("s3:///prefix", None),
         ];
 
         for (input, expected) in cases {
-            let res = crate::cloud::storage::split_bucket_prefix(input);
+            let res = crate::cloud::storage_config::split_bucket_prefix(input);
             match expected {
                 Some((eb, ep)) => {
                     let (b, p) = res.expect("expected Ok");
@@ -209,11 +218,11 @@ mod tests {
     fn test_split_fs_root_table() {
         let cases: Vec<(&str, &str, &str)> = vec![
             ("file:///tmp/danube/storage", "/tmp/danube/storage", ""),
-            ("/var/lib/danube",            "/var/lib/danube",     ""),
+            ("/var/lib/danube", "/var/lib/danube", ""),
         ];
 
         for (input, expected_root, expected_prefix) in cases {
-            let res = crate::cloud::storage::split_fs_root(input).expect("expected Ok");
+            let res = crate::cloud::storage_config::split_fs_root(input).expect("expected Ok");
             assert_eq!(res.0, expected_root);
             assert_eq!(res.1, expected_prefix);
         }
@@ -237,10 +246,11 @@ mod tests {
         let store = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Memory,
             root: "root-prefix".to_string(),
-        }).expect("create memory store");
+        })
+        .expect("create memory store");
 
         let test_data = b"path joining test";
-        
+
         // Various path formats should all work
         let paths = vec![
             "simple.txt",
@@ -271,7 +281,8 @@ mod tests {
         let store = CloudStore::new(BackendConfig::Local {
             backend: LocalBackend::Memory,
             root: "test".to_string(),
-        }).expect("create memory store");
+        })
+        .expect("create memory store");
 
         let result = store.get_object("nonexistent/object.bin").await;
         assert!(result.is_err(), "Should fail to get nonexistent object");

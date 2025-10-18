@@ -124,6 +124,7 @@ impl Uploader {
             &wal_ckpt,
             up_ckpt.last_read_file_seq,
             up_ckpt.last_read_byte_position,
+            self.cfg.max_object_mb,
         )
         .await?
         {
@@ -216,6 +217,7 @@ impl Uploader {
 #[derive(Debug, Clone)]
 pub struct UploaderBaseConfig {
     pub interval_seconds: u64,
+    pub max_object_mb: Option<u64>,
 }
 
 /// Per-topic uploader configuration.
@@ -229,6 +231,7 @@ pub struct UploaderConfig {
     pub interval_seconds: u64,
     pub topic_path: String,  // e.g., "ns/topic"
     pub root_prefix: String, // e.g., "/danube"
+    pub max_object_mb: Option<u64>,
 }
 
 impl UploaderConfig {
@@ -237,6 +240,7 @@ impl UploaderConfig {
             interval_seconds: base.interval_seconds,
             topic_path,
             root_prefix,
+            max_object_mb: base.max_object_mb,
         }
     }
 }
@@ -245,6 +249,7 @@ impl Default for UploaderBaseConfig {
     fn default() -> Self {
         Self {
             interval_seconds: 300,
+            max_object_mb: None,
         }
     }
 }
@@ -255,6 +260,7 @@ impl Default for UploaderConfig {
             interval_seconds: 300,
             topic_path: "default/topic".to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         }
     }
 }

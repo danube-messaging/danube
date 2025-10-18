@@ -136,6 +136,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: "test/topic".to_string(),
             root_prefix: "/test".to_string(),
+            max_object_mb: None,
         };
 
         let uploader = Uploader::new(config.clone(), cloud, meta, Some(store));
@@ -177,6 +178,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: "test/topic".to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
 
         let uploader =
@@ -290,6 +292,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: "test/resume".to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
 
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
@@ -341,6 +344,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: "test/empty".to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
 
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
@@ -390,6 +394,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: "test/naming".to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
 
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));

@@ -93,7 +93,7 @@ Test the cloud-ready persistent storage capabilities:
 docker exec -it danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
-  --count 20 \
+  --count 1000 \
   --message "Persistent message" \
   --reliable
 ```
@@ -118,7 +118,7 @@ docker exec -it danube-cli danube-cli consume \
 docker exec -it danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
-  --count 20 \
+  --count 100 \
   --message "Hello from Danube Docker!"
 ```
 
@@ -140,7 +140,7 @@ docker exec -it danube-cli danube-cli consume \
 docker exec -it danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
-  --count 20 \
+  --count 100 \
   --schema json \
   --json-schema '{"type":"object","properties":{"message":{"type":"string"},"timestamp":{"type":"number"}}}' \
   --message '{"message":"Hello JSON","timestamp":1640995200}'

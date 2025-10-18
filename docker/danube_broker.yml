@@ -58,8 +58,10 @@ wal_cloud:
   # Uploader configuration for background S3 uploads
   uploader:
     enabled: true
-    interval_seconds: 10       # Default: Upload every 10 seconds for testing, Default is every 5 minutes
+    interval_seconds: 60       # Default: Upload every 60 seconds for testing, Default is every 5 minutes
     root_prefix: "/danube-data"
+    # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
+    max_object_mb: 1024
 
   # Cloud storage backend - MinIO S3 configuration
   cloud:

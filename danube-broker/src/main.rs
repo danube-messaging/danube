@@ -135,6 +135,7 @@ async fn main() -> Result<()> {
     // Create UploaderBaseConfig from broker configuration
     let uploader_base_cfg = UploaderBaseConfig {
         interval_seconds: wal_cfg.uploader.interval_seconds,
+        max_object_mb: wal_cfg.uploader.max_object_mb,
     };
 
     // Build DeleterConfig (retention) from broker configuration (defaults handled in factory layer if needed)
