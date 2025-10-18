@@ -22,7 +22,7 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
   - `max_batch_bytes`: max batched bytes before forcing a flush
   - `dir`, `file_name`: enable file-backed WAL
 - `WalStorageFactory`:
-  - `new_with_backend(WalConfig, BackendConfig, MetadataStorage, etcd_root) -> WalStorageFactory`
+  - `new(WalConfig, BackendConfig, MetadataStorage, etcd_root, UploaderBaseConfig, DeleterConfig) -> WalStorageFactory`
   - `for_topic("/ns/topic") -> WalStorage` (starts per-topic uploader once)
 
 ## Usage
@@ -31,7 +31,8 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
 
 ```rust
 use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{BackendConfig, LocalBackend, WalStorageFactory};
+use danube_persistent_storage::{BackendConfig, LocalBackend, WalStorageFactory, UploaderBaseConfig};
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_metadata_store::MetadataStorage;
 
 // Base WAL config: factory will create per-topic WALs under <wal_root>/<ns>/<topic>/
@@ -47,8 +48,21 @@ let backend = BackendConfig::Local { backend: LocalBackend::Fs, root: "/tmp/danu
 // Metadata storage for object descriptors (e.g., etcd or in-memory)
 let metadata_store: MetadataStorage = /* constructed in broker */;
 
+// Uploader base config (per-topic uploader interval)
+let uploader_base = UploaderBaseConfig { interval_seconds: 300 };
+
+// Deleter (WAL retention) config
+let deleter_cfg = DeleterConfig { check_interval_minutes: 5, retention_time_minutes: None, retention_size_mb: None };
+
 // Create factory (constructs CloudStore + EtcdMetadata internally)
-let factory = WalStorageFactory::new_with_backend(wal_base_cfg, backend, metadata_store.clone(), "/danube");
+let factory = WalStorageFactory::new(
+    wal_base_cfg,
+    backend,
+    metadata_store.clone(),
+    "/danube",
+    uploader_base,
+    deleter_cfg,
+);
 
 // Per-topic storage used by TopicStore
 let topic_name = "/default/my-topic";
@@ -139,9 +153,26 @@ Key details
 - `Wal`/`WalConfig`: per-topic WAL instances with optional file durability, replay cache, rotation, checkpoints
 - `WalStorage`: per-topic `PersistentStorage` implementing append and reader with Cloud→WAL chaining
 - `WalStorageFactory`: process-global facade that creates per-topic `WalStorage` and starts per-topic uploaders
-- `CloudStore`: backed by `opendal` with `S3`, `Gcs`, `Fs`, `Memory` implementations
+- `CloudStore`: backed by OpenDAL with `S3`, `Gcs`, `Azblob`, `Fs`, `Memory` implementations
 - `EtcdMetadata`: writes/reads per-object descriptors using `danube-metadata-store::MetadataStorage`
 - `Uploader`: periodic batches from WAL cache to cloud objects and descriptor updates (single-writer per topic)
+
+### Cloud uploader behavior
+
+- Each uploader tick creates at most one cloud object per topic.
+- Frames are streamed sequentially across multiple WAL files into a single object per tick.
+- Optional cap `max_object_mb` bounds object size (e.g., 1024 for ~1 GiB).
+- Object lifecycle: `data-<start>-pending.dnb1` → finalize to `data-<start>-<end>.dnb1` and write descriptor to metadata.
+
+Example YAML (broker uploader):
+
+```yaml
+wal_cloud:
+  uploader:
+    interval_seconds: 300
+    root_prefix: "/danube-data"
+    max_object_mb: 1024
+```
 
 ## Tests
 
