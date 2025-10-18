@@ -123,6 +123,7 @@ mod tests {
             assert_eq!(m.payload, format!("cloud-{}", 2500 + i as u64).into_bytes());
         }
     }
+
     /// Test: CloudReader range reads from memory backend
     ///
     /// Purpose

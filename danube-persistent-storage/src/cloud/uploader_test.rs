@@ -196,7 +196,7 @@ mod tests {
         assert!(ok, "uploader did not advance offset in time");
         handle.abort();
 
-        // Verify object was created and contains raw frame(s)
+        // Verify object was created
         let prefix = "/danube/storage/topics/test/topic/objects";
         let children = mem.get_childrens(prefix).await.expect("get children");
         let objects: Vec<_> = children
@@ -209,7 +209,7 @@ mod tests {
             "Should have created at least one object"
         );
 
-        // Get the first object
+        // Get the first object and basic checks
         let object_key = &objects[0];
         let desc_value = mem
             .get(object_key, danube_metadata_store::MetaOptions::None)
@@ -219,6 +219,12 @@ mod tests {
 
         let desc: crate::etcd_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
+
+        // let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
+        // let data = cloud.get_object(&object_path).await.expect("get object");
+        // assert!(data.len() >= 16);
+        // let off = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        // assert_eq!(off, 0);
 
         // Verify object exists in cloud
         let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
@@ -288,12 +294,9 @@ mod tests {
 
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
 
-        // Verify uploader starts from correct offset
         assert_eq!(uploader.test_last_uploaded_offset(), 0);
-
         let handle = uploader.clone().start();
 
-        // Wait for upload and validate via metadata store
         let ok = wait_for_condition(
             || {
                 let mem = mem.clone();
@@ -315,8 +318,6 @@ mod tests {
         handle.abort();
     }
 
-    // Batch size limits test removed: uploader uses internal adaptive batching without external knob.
-
     /// Test: Uploader behavior with empty WAL
     ///
     /// Purpose
@@ -336,7 +337,6 @@ mod tests {
     async fn test_uploader_empty_wal() {
         let (_wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
-        // Don't add any messages to WAL
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/empty".to_string(),
@@ -346,11 +346,9 @@ mod tests {
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
-        // Wait for tick
         tokio::time::sleep(Duration::from_millis(1200)).await;
         handle.abort();
 
-        // Should not create any objects
         let prefix = "/danube/storage/topics/test/empty/objects";
         let children = mem.get_childrens(prefix).await.unwrap_or_default();
         let objects: Vec<_> = children
@@ -383,7 +381,6 @@ mod tests {
     async fn test_uploader_object_naming() {
         let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
 
-        // Add messages with specific offsets
         for i in 10..13u64 {
             wal.append(&make_message(i)).await.expect("append message");
         }
@@ -398,7 +395,6 @@ mod tests {
         let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
         let handle = uploader.clone().start();
 
-        // Wait for object creation deterministically
         let ok = wait_for_condition(
             || {
                 let mem = mem.clone();
@@ -419,7 +415,6 @@ mod tests {
         assert!(ok, "Should have created objects");
         handle.abort();
 
-        // Get descriptor and verify object_id format
         let prefix = "/danube/storage/topics/test/naming/objects";
         let children = mem.get_childrens(prefix).await.expect("get children");
         let objects: Vec<_> = children
@@ -436,12 +431,9 @@ mod tests {
         let desc: crate::etcd_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
 
-        // Object ID should follow pattern and offsets should match WAL-assigned offsets [0..=2]
         assert!(desc.object_id.starts_with("data-"));
         assert!(desc.object_id.ends_with(".dnb1"));
         assert_eq!(desc.start_offset, 0);
         assert_eq!(desc.end_offset, 2);
     }
-
-    // Removed: test_uploader_config_clone (trivial config clone adds little behavioral value)
 }

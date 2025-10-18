@@ -1,9 +1,9 @@
 use crate::checkpoint::WalCheckpoint;
-use crate::cloud_store::CloudStore;
+use crate::cloud::CloudStore;
 use crate::frames::{
     extract_offsets_in_prefix, scan_safe_frame_boundary_with_crc, FRAME_HEADER_SIZE,
 };
-use crate::CloudWriter;
+use crate::cloud::CloudWriter;
 use danube_core::storage::PersistentStorageError;
 use tokio::io::AsyncReadExt;
 

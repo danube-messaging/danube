@@ -61,7 +61,7 @@
   - If `start_offset < wal_start_offset`: chain CloudReader → WAL for seamless streaming
 - Methods: `append_message()`, `create_reader()`, `ack_checkpoint()`, `flush()`
 
-**Uploader** (`uploader.rs`):
+**Uploader** (`cloud/uploader.rs`):
 - Per-topic background task uploading WAL frames to cloud storage
 - Periodic upload cycles (configurable interval, default 300s)
 - Resumes from `UploaderCheckpoint` tracking `(last_read_file_seq, last_read_byte_position)`
@@ -69,14 +69,14 @@
 - Writes `ObjectDescriptor` to ETCD after successful upload
 - Never flushes WAL (read-only consumer of WAL files)
 
-**CloudReader** (`cloud_reader.rs`):
+**CloudReader** (`cloud/reader.rs`):
 - Reads historical messages from cloud objects uploaded by Uploader
 - Queries ETCD for `ObjectDescriptor` list, filters by offset range
 - Sparse index support: uses `offset_index: Vec<(u64, u64)>` for efficient seeks
 - Streams frames with CRC32 validation, returns async `TopicStream`
 - Chunked reading (4 MiB default) with incremental frame parsing
 
-**CloudStore** (`cloud_store.rs`):
+**CloudStore** (`cloud/storage.rs`):
 - Abstraction over `opendal::Operator` for S3/GCS/local-fs/memory backends
 - Supports: `put_object()`, `get_object()`, `copy_object()`, `delete_object()`
 - Streaming APIs: `open_streaming_writer()`, `open_ranged_reader()`
@@ -288,7 +288,7 @@ struct UploaderCheckpoint {
      - Filters duplicates using watermark
    - All phases chained into single stream
 
-4. **Cloud Reader** (`cloud_reader.rs`):
+4. **Cloud Reader** (`cloud/reader.rs`):
    - Queries ETCD: `get_object_descriptors(topic_path)`
    - Filters by offset range overlap
    - For each object:
@@ -767,7 +767,7 @@ let chained = cloud_stream.chain(wal_stream);
 
 ## Implemented Background Uploader
 
-### Architecture (`uploader.rs` + `uploader_stream.rs`)
+### Architecture (`cloud/uploader.rs` + `cloud/uploader_stream.rs`)
 **Per-topic background task:**
 - Single tokio task spawned by `WalStorageFactory::for_topic()`
 - Runs independently per topic (no shared state between topics)

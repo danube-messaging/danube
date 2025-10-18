@@ -28,10 +28,7 @@ mod tests {
         let test_data = b"hello world";
         let path = "test/object.bin";
 
-        // Put object
         store.put_object(path, test_data).await.expect("put object");
-
-        // Get object
         let retrieved = store.get_object(path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
@@ -128,7 +125,6 @@ mod tests {
             options,
         });
 
-        // Should create successfully (even if we can't connect)
         assert!(result.is_ok());
     }
 
@@ -158,7 +154,6 @@ mod tests {
             options,
         });
 
-        // Should create successfully (even if we can't connect)
         assert!(result.is_ok());
     }
 
@@ -186,7 +181,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let res = crate::cloud_store::split_bucket_prefix(input);
+            let res = crate::cloud::storage::split_bucket_prefix(input);
             match expected {
                 Some((eb, ep)) => {
                     let (b, p) = res.expect("expected Ok");
@@ -218,12 +213,25 @@ mod tests {
         ];
 
         for (input, expected_root, expected_prefix) in cases {
-            let res = crate::cloud_store::split_fs_root(input).expect("expected Ok");
+            let res = crate::cloud::storage::split_fs_root(input).expect("expected Ok");
             assert_eq!(res.0, expected_root);
             assert_eq!(res.1, expected_prefix);
         }
     }
 
+    /// Test: Path joining behavior coverage
+    ///
+    /// Purpose
+    /// - Validate internal path joining logic accepts various formats
+    /// - Ensure leading slashes and nested paths are handled consistently
+    ///
+    /// Flow
+    /// - Put/get using multiple path variants
+    /// - Verify data integrity on retrieval for each variant
+    ///
+    /// Expected
+    /// - All path variants succeed for put/get
+    /// - Retrieved data matches original
     #[tokio::test]
     async fn test_path_joining() {
         let store = CloudStore::new(BackendConfig::Local {
@@ -231,7 +239,6 @@ mod tests {
             root: "root-prefix".to_string(),
         }).expect("create memory store");
 
-        // Test internal path joining logic through put/get
         let test_data = b"path joining test";
         
         // Various path formats should all work
@@ -249,6 +256,16 @@ mod tests {
         }
     }
 
+    /// Test: Get nonexistent object behavior
+    ///
+    /// Purpose
+    /// - Validate error path when retrieving missing object
+    ///
+    /// Flow
+    /// - Attempt to get a key that was never written
+    ///
+    /// Expected
+    /// - Operation returns an error
     #[tokio::test]
     async fn test_nonexistent_object() {
         let store = CloudStore::new(BackendConfig::Local {

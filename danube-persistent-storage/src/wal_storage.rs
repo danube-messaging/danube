@@ -4,8 +4,7 @@ use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosit
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
-use crate::cloud_reader::CloudReader;
-use crate::cloud_store::CloudStore;
+use crate::cloud::{CloudReader, CloudStore};
 use crate::etcd_metadata::EtcdMetadata;
 use crate::wal::Wal;
 

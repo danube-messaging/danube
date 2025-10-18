@@ -2,7 +2,7 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
 use crate::etcd_metadata::EtcdMetadata;
-use crate::{CloudRangeReader, CloudStore};
+use crate::cloud::{CloudRangeReader, CloudStore};
 use std::collections::VecDeque;
 use tracing::error;
 use crate::frames::FRAME_HEADER_SIZE;

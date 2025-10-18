@@ -10,24 +10,35 @@ pub use checkpoint::{CheckPoint, UploaderCheckpoint, WalCheckpoint};
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
-mod cloud_store;
-pub use cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
-pub use cloud_store::{CloudRangeReader, CloudWriter};
+// New flat cloud module entry
+pub mod cloud;
+pub use cloud::{
+    BackendConfig, CloudBackend, CloudRangeReader, CloudReader, CloudStore, CloudWriter,
+    LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig,
+};
+
+// Backward-compatibility shims for legacy module paths used by tests/consumers.
+// These re-export from the new cloud entry so existing `use crate::cloud_store::*` keeps working.
+pub mod cloud_store {
+    pub use crate::cloud::{
+        BackendConfig, CloudBackend, CloudRangeReader, CloudStore, CloudWriter, LocalBackend,
+    };
+}
+pub mod cloud_reader {
+    pub use crate::cloud::CloudReader;
+}
+pub mod uploader {
+    pub use crate::cloud::{Uploader, UploaderBaseConfig, UploaderConfig};
+}
+pub mod uploader_stream {
+    pub use crate::cloud::uploader_stream::*;
+}
 
 // Shared frame utilities (header size, CRC-checked scanning)
 mod frames;
 
-mod uploader;
-pub use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};
-
-// Uploader streaming internals
-mod uploader_stream;
-
 mod etcd_metadata;
 pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
-
-mod cloud_reader;
-pub use cloud_reader::CloudReader;
 
 // WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
 mod wal_factory;
@@ -36,11 +47,5 @@ pub use wal_factory::WalStorageFactory;
 // Unit tests
 #[cfg(test)]
 mod checkpoints_test;
-#[cfg(test)]
-mod cloud_reader_test;
-#[cfg(test)]
-mod cloud_store_test;
-#[cfg(test)]
-mod uploader_test;
 #[cfg(test)]
 mod wal_test;

@@ -4,9 +4,8 @@ use tokio::task::JoinHandle;
 
 use crate::checkpoint::CheckpointStore;
 use crate::{
-    cloud_store::{BackendConfig, CloudBackend, CloudStore, LocalBackend},
+    cloud::{BackendConfig, CloudBackend, CloudStore, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig},
     etcd_metadata::EtcdMetadata,
-    uploader::{Uploader, UploaderBaseConfig, UploaderConfig},
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
