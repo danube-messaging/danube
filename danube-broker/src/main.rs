@@ -21,9 +21,6 @@ mod topic;
 mod topic_worker;
 mod utils;
 
-#[cfg(test)]
-mod async_performance_test;
-
 use std::{fs::read_to_string, path::Path, sync::Arc};
 
 use crate::{
@@ -37,9 +34,9 @@ use crate::{
 
 use anyhow::{Context, Result};
 use danube_metadata_store::{EtcdStore, MetadataStorage};
+use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
-use danube_persistent_storage::wal::deleter::DeleterConfig;
 use std::net::SocketAddr;
 
 use tracing::info;
@@ -148,7 +145,11 @@ async fn main() -> Result<()> {
             retention_size_mb: ret.size_mb,
         }
     } else {
-        DeleterConfig { check_interval_minutes: 5, retention_time_minutes: None, retention_size_mb: None }
+        DeleterConfig {
+            check_interval_minutes: 5,
+            retention_time_minutes: None,
+            retention_size_mb: None,
+        }
     };
 
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
