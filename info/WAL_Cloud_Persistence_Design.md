@@ -1,4 +1,4 @@
-# Danube WAL + Cloud Persistence Design (S3/GCS via opendal)
+# Danube WAL + Cloud Persistence Design (S3/GCS/Azblob via OpenDAL)
 
 ## Status
 - **IMPLEMENTED** - Production-ready implementation in `danube-persistent-storage` crate
@@ -8,7 +8,7 @@
 
 ## Goals
 - Replace segment-based storage with a WAL-first architecture.
-- Persist data to cloud object storage using `opendal` (S3, GCS and local disk for single-broker). Memory for tests.
+- Persist data to cloud object storage using `OpenDAL` (S3, GCS, Azblob; plus local fs and memory for tests).
 - Maintain subscription progress and object metadata in ETCD (ETCD is already in use for cluster coordination).
 - Keep dispatch path sub-second by serving from in-memory/WAL cache.
 - Batch uploads every ~10 seconds (tunable) from WAL to per-topic objects in cloud.
@@ -77,7 +77,7 @@
 - Chunked reading (4 MiB default) with incremental frame parsing
 
 **CloudStore** (`cloud/storage.rs`):
-- Abstraction over `opendal::Operator` for S3/GCS/local-fs/memory backends
+- Abstraction over `OpenDAL` Operator for S3/GCS/Azblob/local-fs/memory backends
 - Supports: `put_object()`, `get_object()`, `copy_object()`, `delete_object()`
 - Streaming APIs: `open_streaming_writer()`, `open_ranged_reader()`
 - Configuration via `BackendConfig` enum (Cloud or Local variants)
@@ -378,8 +378,8 @@ pub struct UploaderConfig {
 ```rust
 pub enum BackendConfig {
     Cloud {
-        backend: CloudBackend,  // S3 | Gcs
-        root: String,           // e.g., "s3://bucket/prefix"
+        backend: CloudBackend,  // S3 | Gcs | Azblob
+        root: String,           // e.g., "s3://bucket/prefix" or "container/prefix" for Azblob
         options: HashMap<String, String>,
     },
     Local {
@@ -426,12 +426,12 @@ let wal_config = WalConfig {
 };
 
 let backend_config = BackendConfig::Cloud {
-    backend: CloudBackend::S3,
-    root: "s3://my-bucket/danube".to_string(),
+    backend: CloudBackend::Azblob,
+    root: "my-container/danube".to_string(),
     options: HashMap::from([
-        ("region".to_string(), "us-east-1".to_string()),
-        ("access_key".to_string(), env::var("AWS_ACCESS_KEY_ID").unwrap()),
-        ("secret_key".to_string(), env::var("AWS_SECRET_ACCESS_KEY").unwrap()),
+        ("endpoint".to_string(), "https://<account>.blob.core.windows.net".to_string()),
+        ("account_name".to_string(), env::var("AZURE_STORAGE_ACCOUNT").unwrap()),
+        ("account_key".to_string(), env::var("AZURE_STORAGE_KEY").unwrap()),
     ]),
 };
 
@@ -786,7 +786,8 @@ let chained = cloud_stream.chain(wal_stream);
    - `WalCheckpoint`: current WAL state for watermark
 2. Call `uploader_stream::stream_frames_to_cloud()`:
    - Streams frames directly from WAL files to cloud
-   - One file per cycle (bounded latency)
+   - Aggregates across multiple WAL files within a single tick
+   - Respects optional `max_object_mb` cap to finalize object size
    - Returns `None` if no complete frames available
 3. On success:
    - Write `ObjectDescriptor` to ETCD
@@ -813,7 +814,7 @@ pub async fn stream_frames_to_cloud(
 
 **Stream processing:**
 1. Open WAL file at `(start_seq, start_pos)` - precise resume
-2. Read chunks (10MB) incrementally
+2. Read chunks (50MB) incrementally
 3. Scan for safe frame boundaries with CRC validation
 4. On first complete frame:
    - Extract start_offset from frame header
@@ -821,7 +822,7 @@ pub async fn stream_frames_to_cloud(
 5. Build sparse index (every 1000 messages)
 6. Stream safe prefix to cloud writer
 7. Update position: `(seq, current_file_position)`
-8. Repeat until file exhausted (one file per cycle)
+8. Repeat across files until size cap reached or no more frames in snapshot
 9. Finalize: copy `pending` → `data-<start>-<end>.dnb1`
 
 **Frame boundary scanning:**

@@ -1,9 +1,9 @@
 use crate::checkpoint::WalCheckpoint;
 use crate::cloud::CloudStore;
+use crate::cloud::CloudWriter;
 use crate::frames::{
     extract_offsets_in_prefix, scan_safe_frame_boundary_with_crc, FRAME_HEADER_SIZE,
 };
-use crate::cloud::CloudWriter;
 use danube_core::storage::PersistentStorageError;
 use tokio::io::AsyncReadExt;
 
@@ -75,6 +75,7 @@ pub async fn stream_frames_to_cloud(
     wal_ckpt: &WalCheckpoint,
     start_seq: u64,
     start_pos: u64,
+    max_object_mb: Option<u64>,
 ) -> Result<
     Option<(
         String,            // final_object_id
@@ -94,16 +95,21 @@ pub async fn stream_frames_to_cloud(
     let mut state = UploadState::new(start_seq, start_pos);
     let mut carry: Vec<u8> = Vec::new();
 
-    // 3) Process files starting from the resume point; stop after first file that produced frames
+    // 3) Process files starting from the resume point; continue across files while under cap
+    let cap_bytes: Option<u64> = max_object_mb.map(|mb| mb.saturating_mul(1024 * 1024));
     for (seq, path) in files.into_iter().filter(|(s, _)| *s >= start_seq) {
         process_file_and_upload_once(
             cloud, topic_path, seq, &path, start_seq, start_pos, &mut carry, &mut state,
         )
         .await?;
 
-        // Process only one file per cycle to bound latency
+        // Stop if we have started and hit size cap
         if state.first_offset.is_some() {
-            break;
+            if let Some(cap) = cap_bytes {
+                if state.total_bytes_uploaded >= cap {
+                    break;
+                }
+            }
         }
     }
 
@@ -164,7 +170,7 @@ async fn process_file_and_upload_once(
             .map_err(|_| PersistentStorageError::Other("seek failed".into()))?;
     }
 
-    let chunk_size = 10 * 1024 * 1024; // 10 MiB file read buffer
+    let chunk_size = 50 * 1024 * 1024; // 50 MiB file read buffer
     let mut buf = vec![0u8; chunk_size];
 
     loop {

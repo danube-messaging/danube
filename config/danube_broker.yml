@@ -64,6 +64,8 @@ wal_cloud:
     enabled: true
     interval_seconds: 300       # Default: Upload every 5 minutes
     root_prefix: "/danube-data"
+    # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
+    max_object_mb: 1024
   
   # Cloud storage backend - Default: memory for development
   cloud:
@@ -140,3 +142,12 @@ policies:
 #    project: "my-gcp-project"
 #    credentials_json: null                             # inline JSON (string)
 #    credentials_path: "/path/to/creds.json"          # or a path to credentials file
+
+# Example: Azure Blob Storage backend
+#wal_cloud:
+#  cloud:
+#    backend: "azblob"
+#    root: "my-container/prefix"                       # container or container/prefix
+#    endpoint: "https://<account>.blob.core.windows.net" # or Azurite: http://127.0.0.1:10000/devstoreaccount1
+#    account_name: "<account_name>"
+#    account_key: "<account_key>"

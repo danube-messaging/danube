@@ -83,6 +83,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: topic_path.to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
         let uploader = Arc::new(
             Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
@@ -186,6 +187,7 @@ mod tests {
             interval_seconds: 1,
             topic_path: topic_path.to_string(),
             root_prefix: "/danube".to_string(),
+            max_object_mb: None,
         };
         let uploader = Arc::new(
             Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),

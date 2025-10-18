@@ -162,6 +162,8 @@ pub(crate) struct UploaderNode {
     pub(crate) root_prefix: Option<String>,
     /// Optional enable switch for uploader (defaults to true)
     pub(crate) enabled: Option<bool>,
+    /// Optional max object size per tick in megabytes (Option A-lite). If None, no cap.
+    pub(crate) max_object_mb: Option<u64>,
 }
 
 /// Cloud configuration enum (tagged by `backend`)
@@ -193,6 +195,15 @@ pub(crate) enum CloudConfig {
         project: Option<String>,
         credentials_json: Option<String>,
         credentials_path: Option<String>,
+    },
+    #[serde(rename = "azblob")]
+    Azblob {
+        /// Root format: "container" or "container/prefix"
+        root: String,
+        /// Example: http://127.0.0.1:10000/devstoreaccount1 or https://<account>.blob.core.windows.net
+        endpoint: Option<String>,
+        account_name: Option<String>,
+        account_key: Option<String>,
     },
 }
 
@@ -279,6 +290,28 @@ impl From<&CloudConfig> for BackendConfig {
                 }
                 BackendConfig::Cloud {
                     backend: CloudBackend::Gcs,
+                    root: root.clone(),
+                    options,
+                }
+            }
+            CloudConfig::Azblob {
+                root,
+                endpoint,
+                account_name,
+                account_key,
+            } => {
+                let mut options: HashMap<String, String> = HashMap::new();
+                if let Some(v) = endpoint {
+                    options.insert("endpoint".into(), v.clone());
+                }
+                if let Some(v) = account_name {
+                    options.insert("account_name".into(), v.clone());
+                }
+                if let Some(v) = account_key {
+                    options.insert("account_key".into(), v.clone());
+                }
+                BackendConfig::Cloud {
+                    backend: CloudBackend::Azblob,
                     root: root.clone(),
                     options,
                 }

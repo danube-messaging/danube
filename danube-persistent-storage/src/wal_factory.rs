@@ -3,13 +3,16 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use crate::checkpoint::CheckpointStore;
+use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::{
-    cloud::{BackendConfig, CloudBackend, CloudStore, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig},
+    cloud::{
+        BackendConfig, CloudBackend, CloudStore, LocalBackend, Uploader, UploaderBaseConfig,
+        UploaderConfig,
+    },
     etcd_metadata::EtcdMetadata,
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
-use crate::wal::deleter::{Deleter, DeleterConfig};
 use danube_core::storage::PersistentStorageError;
 use danube_metadata_store::MetadataStorage;
 use tracing::{info, warn};
@@ -128,9 +131,12 @@ impl WalStorageFactory {
             );
             // clone the checkpoint store so we can still use it below for the deleter
             let ckpt_for_uploader = ckpt_store.clone();
-            if let Ok(uploader) =
-                Uploader::new(cfg, self.cloud.clone(), self.etcd.clone(), ckpt_for_uploader)
-            {
+            if let Ok(uploader) = Uploader::new(
+                cfg,
+                self.cloud.clone(),
+                self.etcd.clone(),
+                ckpt_for_uploader,
+            ) {
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic uploader");
                 let handle = Arc::new(uploader).start();
                 self.uploaders.insert(topic_path.clone(), handle);
@@ -237,6 +243,7 @@ fn format_backend_string(backend: &BackendConfig) -> String {
             let b = match backend {
                 CloudBackend::S3 => "s3",
                 CloudBackend::Gcs => "gcs",
+                CloudBackend::Azblob => "azblob",
             };
             format!("{} root={}", b, root)
         }

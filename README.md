@@ -1,6 +1,6 @@
 # ![D from Danube](Danube_logo_2.png) Danube
 
-**A lightweight and scalable Cloud-Native Messaging Platform with S3-Compatible Storage**
+**A lightweight and scalable Cloud-Native Messaging Platform with Cloud Object Storage (S3/GCS/Azure)**
 
 Danube is an open-source distributed messaging broker platform inspired by Apache Pulsar, designed to be cloud-native and cost-effective. Built with a Write-Ahead Log (WAL) architecture and persistent object storage integration, Danube delivers sub-second dispatch with cloud economics.
 
@@ -64,7 +64,7 @@ docker exec -it danube-cli danube-cli consume \
 ### ⚡ **Performance & Scalability**
 - **Hot path optimization**: Messages served from in-memory WAL cache
 - **Horizontal scaling**: Add brokers in seconds
-- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob (soon), MinIO
+- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
 
 ### 🔄 **Intelligent Data Management**
 - **Automatic tiering**: Hot data in WAL, cold data in object storage
