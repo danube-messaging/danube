@@ -7,8 +7,8 @@ use tracing::{info, error};
 use crate::checkpoint::CheckpointStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 use crate::wal::UploaderCheckpoint;
-use crate::CloudStore;
-use crate::uploader_stream;
+use crate::cloud::CloudStore;
+use crate::cloud::uploader_stream;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
 /// to ETCD. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,

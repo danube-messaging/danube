@@ -3,43 +3,14 @@ use opendal::services::{Fs, Gcs, Memory, S3};
 use opendal::Operator;
 use tracing::warn;
 
-#[derive(Debug, Clone)]
-pub enum CloudBackend {
-    S3,
-    Gcs,
-}
-
-#[derive(Debug, Clone)]
-pub enum LocalBackend {
-    Fs,
-    Memory,
-}
-
-#[derive(Debug, Clone)]
-pub enum BackendConfig {
-    /// Cloud backends hosted out of process (S3, GCS)
-    Cloud {
-        backend: CloudBackend,
-        /// A URI-like root, e.g. s3://bucket/prefix, gcs://bucket/prefix
-        root: String,
-        /// Optional backend-specific options (endpoint, region, credentials, etc.)
-        options: std::collections::HashMap<String, String>,
-    },
-    /// Local backends colocated with the broker (fs, memory)
-    Local {
-        backend: LocalBackend,
-        /// For fs: an absolute directory like file:///var/lib/danube or /var/lib/danube
-        /// For memory: a logical namespace like memory:// (prefix is used as a virtual root)
-        root: String,
-    },
-}
+use crate::cloud::storage_config::{BackendConfig, CloudBackend, LocalBackend};
 
 #[derive(Debug, Clone)]
 pub struct CloudStore {
     /// Optional extra prefix for key joining (used by Local backends)
-    root_prefix: String,
+    pub(crate) root_prefix: String,
     /// Opendal operator
-    op: Operator,
+    pub(crate) op: Operator,
 }
 
 fn warn_unknown_options(
@@ -50,7 +21,7 @@ fn warn_unknown_options(
     for k in options.keys() {
         if !allowed.contains(&k.as_str()) {
             warn!(
-                target: "cloud_store",
+                target = "cloud_store",
                 "unknown {} option '{}'; accepted keys: {:?}",
                 service,
                 k,
