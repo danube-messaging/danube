@@ -19,24 +19,56 @@ The setup includes:
 
 ## Quick Start
 
-1. **Clone and navigate to the docker directory**:
-   ```bash
-   cd danube/docker
-   ```
+### Step 1: Setup (Choose One Option)
 
-2. **Start the entire cluster**:
-   ```bash
-   docker-compose up -d
-   ```
+**Option 1: Download Docker Compose Files (Recommended for running the broker)**
 
-3. **Verify all services are healthy**:
-   ```bash
-   docker-compose ps
-   ```
+Create a directory and download the required files:
+
+```bash
+mkdir danube-docker && cd danube-docker
+```
+
+Download the docker-compose file:
+
+```bash
+curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/docker-compose.yml
+```
+
+Download the broker configuration file:
+
+```bash
+curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/danube_broker.yml
+```
+
+**Option 2: Clone Repository (Recommended for development and building from source)**
+
+```bash
+git clone https://github.com/danube-messaging/danube.git
+cd danube/docker
+```
+
+### Step 2: Start the Cluster
+
+Start the entire cluster:
+
+```bash
+docker-compose up -d
+```
+
+### Step 3: Verify all services are healthy
+
+Verify all services are running:
+
+```bash
+docker-compose ps
+```
+
+Expected output:
 
 ```bash
 ✗ docker-compose ps
-NAME   IMAGE    COMMAND   SERVICE    CREATED     STATUS     PORTS
+NAME        IMAGE        COMMAND       SERVICE         CREATED        STATUS       PORTS
 
 danube-broker1   docker-broker1                             "/usr/local/bin/danu…"   broker1      About a minute ago   Up 6 seconds (health: starting)   0.0.0.0:6650->6650/tcp, [::]:6650->6650/tcp, 0.0.0.0:9040->9040/tcp, [::]:9040->9040/tcp, 0.0.0.0:50051->50051/tcp, [::]:50051->50051/tcp
 
@@ -51,7 +83,7 @@ danube-mc        minio/mc:RELEASE.2024-09-16T17-43-14Z      "/bin/sh -c ' echo '
 danube-minio     minio/minio:RELEASE.2025-07-23T15-54-02Z   "/usr/bin/docker-ent…"   minio        About a minute ago   Up About a minute (healthy)       0.0.0.0:9000-9001->9000-9001/tcp, [::]:9000-9001->9000-9001/tcp
 ```
 
-4. **Check logs** (optional):
+**Check logs** (optional):
    ```bash
    # View all logs
    docker-compose logs -f

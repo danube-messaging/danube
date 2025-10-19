@@ -25,7 +25,14 @@ services:
     volumes:
       - etcd_data:/etcd-data
     healthcheck:
-      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      test:
+        [
+          "CMD",
+          "etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,8 +47,8 @@ services:
       - MINIO_ROOT_PASSWORD=minioadmin123
       - MINIO_DOMAIN=minio
     ports:
-      - "9000:9000"  # MinIO API
-      - "9001:9001"  # MinIO Console
+      - "9000:9000" # MinIO API
+      - "9001:9001" # MinIO Console
     command: ["server", "/data", "--console-address", ":9001"]
     networks:
       - danube_net
@@ -82,7 +89,10 @@ services:
   # Danube Broker 1
   broker1:
     container_name: "danube-broker1"
-    image: ghcr.io/danube-messaging/danube-broker:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
     depends_on:
       etcd:
         condition: service_healthy
@@ -101,16 +111,22 @@ services:
     networks:
       - danube_net
     ports:
-      - "6650:6650"   # Broker gRPC
+      - "6650:6650" # Broker gRPC
       - "50051:50051" # Admin API
-      - "9040:9040"   # Prometheus metrics
-    command: [
-      "--config-file", "/etc/danube_broker.yml",
-      "--broker-addr", "0.0.0.0:6650",
-      "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040",
-      "--advertised-addr", "broker1:6650"
-    ]
+      - "9040:9040" # Prometheus metrics
+    command:
+      [
+        "--config-file",
+        "/etc/danube_broker.yml",
+        "--broker-addr",
+        "0.0.0.0:6650",
+        "--admin-addr",
+        "0.0.0.0:50051",
+        "--prom-exporter",
+        "0.0.0.0:9040",
+        "--advertised-addr",
+        "broker1:6650",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
       interval: 30s
@@ -121,7 +137,10 @@ services:
   # Danube Broker 2
   broker2:
     container_name: "danube-broker2"
-    image: ghcr.io/danube-messaging/danube-broker:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
     depends_on:
       etcd:
         condition: service_healthy
@@ -140,16 +159,22 @@ services:
     networks:
       - danube_net
     ports:
-      - "6651:6650"   # Broker gRPC
+      - "6651:6650" # Broker gRPC
       - "50052:50051" # Admin API
-      - "9041:9040"   # Prometheus metrics
-    command: [
-      "--config-file", "/etc/danube_broker.yml",
-      "--broker-addr", "0.0.0.0:6650",
-      "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040",
-      "--advertised-addr", "broker2:6650"
-    ]
+      - "9041:9040" # Prometheus metrics
+    command:
+      [
+        "--config-file",
+        "/etc/danube_broker.yml",
+        "--broker-addr",
+        "0.0.0.0:6650",
+        "--admin-addr",
+        "0.0.0.0:50051",
+        "--prom-exporter",
+        "0.0.0.0:9040",
+        "--advertised-addr",
+        "broker2:6650",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
       interval: 30s
@@ -160,7 +185,10 @@ services:
   # Danube CLI for testing within Docker network
   danube-cli:
     container_name: "danube-cli"
-    image: ghcr.io/danube-messaging/danube-cli:latest
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: cli # We'll need to add this target
     depends_on:
       broker1:
         condition: service_started
@@ -170,7 +198,7 @@ services:
       - danube_net
     stdin_open: true
     tty: true
-    command: ["sleep", "infinity"]  # Keep container running for interactive use
+    command: ["sleep", "infinity"] # Keep container running for interactive use
 
 networks:
   danube_net:
