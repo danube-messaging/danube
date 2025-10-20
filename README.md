@@ -13,10 +13,23 @@ Danube is an open-source distributed messaging broker platform inspired by Apach
 
 **Quick Start with Docker Compose** - Deploy a cluster in seconds:
 
+Create a directory and download the required files:
+
 ```bash
-# Clone and start the cluster
-git clone https://github.com/danube-messaging/danube.git
-cd danube/docker
+mkdir danube-docker && cd danube-docker
+```
+
+Download the docker-compose and broker configuration file:
+
+```bash
+curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/docker-compose.yml
+
+curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/danube_broker.yml
+```
+
+Start the danube cluster:
+
+```bash
 docker-compose up -d
 ```
 
@@ -53,6 +66,14 @@ docker exec -it danube-cli danube-cli consume \
 
 ## Architecture
 
+### 🏗️ **Cluster & Broker Characteristics**
+- **Stateless brokers**: Metadata in ETCD and data in WAL/Object Storage
+- **Horizontal scaling**: Add brokers in seconds; partitions rebalance automatically
+- **Leader election & HA**: Automatic failover and coordination via ETCD
+- **Rolling upgrades**: Restart or replace brokers with minimal disruption
+- **Multi-tenancy**: Isolated namespaces with policy controls
+- **Security-ready**: TLS/mTLS support in Admin and data paths
+
 **Cloud-Native by Design** - Danube's architecture separates compute from storage, enabling:
 
 ### 🌩️ **Write-Ahead Log + Cloud Persistence**
@@ -63,15 +84,8 @@ docker exec -it danube-cli danube-cli consume \
 
 ### ⚡ **Performance & Scalability**
 - **Hot path optimization**: Messages served from in-memory WAL cache
-- **Horizontal scaling**: Add brokers in seconds
+- **Stream per subscription**: WAL + cloud storage from selected offset 
 - **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
-
-### 🔄 **Intelligent Data Management**
-- **Automatic tiering**: Hot data in WAL, cold data in object storage
-- **Background compaction**: Efficient storage utilization
-- **Stream per topic**: WAL + cloud storage from selected offset 
-- **Cross-region replication**: Built-in disaster recovery
-
 
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
@@ -99,12 +113,12 @@ docker exec -it danube-cli danube-cli consume \
 - **Shared**: Load-balanced message distribution across consumers
 - **Failover**: Automatic consumer failover with ordered delivery
 
+![Producers Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
+
 ### 🛠️ **Developer Experience**
 - **Multi-language clients**: [Rust](https://crates.io/crates/danube-client), [Go](https://pkg.go.dev/github.com/danrusei/danube-go)
 - **[CLI Tools](danube-cli/)**: Message publishing and consumption
 - **[Admin CLI](danube-admin-cli/)**: Cluster, namespace, and topic management
-
-![Producers Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
 
 ## Community & Clients
 
