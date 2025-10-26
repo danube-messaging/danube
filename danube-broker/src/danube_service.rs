@@ -366,10 +366,8 @@ impl DanubeService {
                                                 continue;
                                             }
                                             
-                                            match broker_service
-                                                .create_topic_locally(&topic_name)
-                                                .await
-                                            {
+                                            let manager = broker_service.topic_manager.clone();
+                                            match manager.ensure_local(&topic_name).await {
                                                 Ok((disp_strategy, schema_type)) => info!(
                                                     "Topic '{}' created on broker {} - Strategy: {}, Schema: {}", 
                                                     topic_name, 
@@ -399,8 +397,8 @@ impl DanubeService {
                                             // Need at least 6 parts for full path
                                             // Format: namespace/topic
                                             let topic_name = format!("{}/{}", parts[4], parts[5]);
-                                            // wait a sec so the LocalCache receive the updates from the persistent metadata
-                                            match broker_service.delete_topic(&topic_name).await {
+                                            let manager = broker_service.topic_manager.clone();
+                                            match manager.delete_local(&topic_name).await {
                                     Ok(_) => info!(
                                         "The topic {} , was successfully deleted from the broker {}",
                                         topic_name, broker_id

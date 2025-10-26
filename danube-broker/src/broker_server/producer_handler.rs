@@ -7,7 +7,6 @@ use danube_core::proto::{
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
-use dashmap::mapref::entry::Entry;
 use metrics::histogram;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -127,19 +126,17 @@ impl ProducerService for DanubeServerImpl {
         let service = self.service.as_ref();
 
         // check if the producer exist
-        match service
-            .producer_index
-            .entry(stream_message.msg_id.producer_id)
+        if !service
+            .topic_manager
+            .producers
+            .contains(stream_message.msg_id.producer_id)
         {
-            Entry::Vacant(_) => {
-                let status = Status::not_found(format!(
-                    "The producer with id {} does not exist",
-                    stream_message.msg_id.producer_id
-                ));
-                return Err(status);
-            }
-            Entry::Occupied(_) => (),
-        };
+            let status = Status::not_found(format!(
+                "The producer with id {} does not exist",
+                stream_message.msg_id.producer_id
+            ));
+            return Err(status);
+        }
 
         let req_id = stream_message.request_id;
         let producer_id = stream_message.msg_id.producer_id;

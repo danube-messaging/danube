@@ -9,7 +9,13 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::{message::AckMessage, subscription::SubscriptionOptions, topic::Topic};
+use crate::{
+    dispatch_strategy::DispatchStrategy,
+    message::AckMessage,
+    subscription::SubscriptionOptions,
+    topic::Topic,
+};
+use danube_core::proto::DispatchStrategy as ProtoDispatchStrategy;
 
 /// Message types that can be sent to topic workers
 #[derive(Debug)]
@@ -361,6 +367,21 @@ impl TopicWorkerPool {
     pub fn contains_topic(&self, topic_name: &str) -> bool {
         let worker_id = self.router.route_topic(topic_name);
         self.workers[worker_id].topics.contains_key(topic_name)
+    }
+
+    /// Verify that the requested dispatch strategy matches the topic's configured strategy.
+    /// Returns None if the topic is not found; Some(true/false) otherwise.
+    pub fn strategies_match(
+        &self,
+        topic_name: &str,
+        requested: ProtoDispatchStrategy,
+    ) -> Option<bool> {
+        let topic = self.get_topic(topic_name)?;
+        let expected = match requested {
+            ProtoDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
+            ProtoDispatchStrategy::Reliable => DispatchStrategy::Reliable,
+        };
+        Some(std::mem::discriminant(&topic.dispatch_strategy) == std::mem::discriminant(&expected))
     }
 
     /// Shutdown all workers
