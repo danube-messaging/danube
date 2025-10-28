@@ -161,7 +161,7 @@ impl Discovery for DanubeServerImpl {
             }
         };
 
-        let proto_schema = service.get_schema(first_partition);
+        let proto_schema = service.get_schema_async(first_partition).await;
 
         // should I inform the client that the topic is not served by this broker ?
         // as the get_schema is local to this broker

@@ -228,7 +228,7 @@ impl TopicAdmin for DanubeAdminImpl {
 
         // Schema
         let service = self.broker_service.as_ref();
-        let schema = service.get_schema(&req.name);
+        let schema = service.get_schema_async(&req.name).await;
 
         let (type_schema, schema_data) = if let Some(s) = schema {
             (s.type_schema, s.schema_data)

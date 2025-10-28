@@ -20,6 +20,8 @@ mod subscription;
 mod topic;
 mod topic_worker;
 mod utils;
+mod topic_control;
+mod topic_cluster;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
 

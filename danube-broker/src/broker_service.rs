@@ -1,67 +1,89 @@
 use anyhow::{anyhow, Result};
-use danube_core::{dispatch_strategy::ConfigDispatchStrategy, message::StreamMessage};
+use danube_core::message::StreamMessage;
 use danube_persistent_storage::WalStorageFactory;
-use dashmap::DashMap;
-use metrics::gauge;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tonic::{Code, Status};
-use tracing::{info, warn};
+use tracing::info;
 
 use danube_core::proto::{
     DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
 };
 
 use crate::{
-    broker_metrics::{BROKER_TOPICS, TOPIC_CONSUMERS, TOPIC_PRODUCERS},
     error_message::create_error_status,
     message::AckMessage,
-    policies::Policies,
     resources::Resources,
-    schema::SchemaType,
     subscription::{ConsumerInfo, SubscriptionOptions},
-    topic::Topic,
+    topic_cluster::TopicCluster,
+    topic_control::{ConsumerRegistry, ProducerRegistry, TopicManager},
     topic_worker::TopicWorkerPool,
     utils::get_random_id,
 };
 
-// BrokerService - owns the topics and manages their lifecycle.
-// It also facilitates the creation of producers, subscriptions, and consumers,
-// ensuring that producers can publish messages to topics and consumers can consume messages from topics.
+/// BrokerService is the broker API surface.
+///
+/// It acts as a thin orchestrator:
+/// - Delegates local topic lifecycle and producer/consumer ops to `TopicManager`.
+/// - Delegates cluster-level operations (metadata) to `TopicCluster`.
+/// - Delegates message flow to `TopicWorkerPool`.
+///
+/// This keeps the entrypoint clean while heavy lifting is done in specialized modules.
 #[derive(Debug)]
 pub(crate) struct BrokerService {
-    // Read-only fields (no mutex needed)
+    /// Unique identifier for this broker instance.
     pub(crate) broker_id: u64,
-    pub(crate) wal_factory: WalStorageFactory,
-
-    // Already thread-safe (no mutex needed)
-    pub(crate) producer_index: Arc<DashMap<u64, String>>,
-    pub(crate) consumer_index: Arc<DashMap<u64, (String, String)>>,
+    /// Worker pool that owns and executes per-topic operations.
     pub(crate) topic_worker_pool: Arc<TopicWorkerPool>,
+    /// Manager for local topic lifecycle and producer/consumer management.
+    pub(crate) topic_manager: TopicManager,
+    /// Cluster/metadata accessor for topic lifecycle at cluster scope.
+    pub(crate) topic_cluster: TopicCluster,
 
-    // Only wrap mutable operations
+    /// Shared resources (Local Cache views over cluster/namespace/topic metadata).
     pub(crate) resources: Arc<Mutex<Resources>>,
-    /// Whether producers are allowed to auto-create topics when missing
+    /// Whether producers are allowed to auto-create topics when missing.
     pub(crate) auto_create_topics: bool,
 }
 
 impl BrokerService {
+    /// Constructs a new BrokerService and wires its delegates (TopicManager, WorkerPool, Resources).
     pub(crate) fn new(
         resources: Resources,
         wal_factory: WalStorageFactory,
         auto_create_topics: bool,
     ) -> Self {
         let broker_id = get_random_id();
+
+        let producers = ProducerRegistry::new();
+        let consumers = ConsumerRegistry::new();
+        let topic_worker_pool = Arc::new(TopicWorkerPool::new(None));
+        let resources_arc = Arc::new(Mutex::new(resources));
+
+        let topic_manager = TopicManager::new(
+            broker_id,
+            topic_worker_pool.clone(),
+            wal_factory.clone(),
+            resources_arc.clone(),
+            producers.clone(),
+            consumers.clone(),
+        );
+
+        let topic_cluster = TopicCluster::new(resources_arc.clone());
+
         BrokerService {
             broker_id,
-            wal_factory,
-            producer_index: Arc::new(DashMap::new()),
-            consumer_index: Arc::new(DashMap::new()),
-            topic_worker_pool: Arc::new(TopicWorkerPool::new(None)),
-            resources: Arc::new(Mutex::new(resources)),
+            topic_worker_pool,
+            topic_manager,
+            topic_cluster,
+            resources: resources_arc,
             auto_create_topics,
         }
     }
+
+    // =====================================================================
+    // Client lookup and topic access
+    // =====================================================================
 
     // The broker checks if it is the owner of the topic. If it is not, but the topic exist in the cluster,
     // the broker instruct the client to redo the lookup request.
@@ -71,430 +93,128 @@ impl BrokerService {
     //
     // The Leader Broker will be informed about the new topic creation and assign the topic to a broker.
     // The selected Broker will be informed through watch mechanism and will host the topic.
+    /// Validates topic format, checks local presence and dispatch strategy, and
+    /// optionally triggers cluster auto-create. Returns true if local; otherwise
+    /// returns an error with appropriate retry/redirection semantics.
     pub(crate) async fn get_topic(
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
     ) -> Result<bool, Status> {
-        // The topic format is /{namespace_name}/{topic_name}
+        // Validate topic format
         if !validate_topic_format(topic_name) {
             let error_string = format!(
                 "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
                 topic_name
             );
-            let status = create_error_status(
+            return Err(create_error_status(
                 Code::InvalidArgument,
                 ErrorType::InvalidTopicName,
                 &error_string,
                 None,
-            );
-            return Err(status);
+            ));
         }
 
-        // check if topic is served by this broker and validate strategy if provided
+        // Fast path: topic is local
         if self.topic_worker_pool.contains_topic(topic_name) {
             if let Some(req_ds) = dispatch_strategy {
-                if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-                    let topic_ds = &topic.dispatch_strategy;
-                    let expected = match req_ds {
-                        ProtoDispatchStrategy::NonReliable => {
-                            crate::dispatch_strategy::DispatchStrategy::NonReliable
-                        }
-                        ProtoDispatchStrategy::Reliable => {
-                            crate::dispatch_strategy::DispatchStrategy::Reliable
-                        }
-                    };
-                    if std::mem::discriminant(topic_ds) != std::mem::discriminant(&expected) {
-                        let status = create_error_status(
-                            Code::FailedPrecondition,
-                            ErrorType::UnknownError,
-                            "Producer requested dispatch strategy does not match topic strategy",
-                            None,
-                        );
-                        return Err(status);
-                    }
+                if let Some(false) = self.topic_worker_pool.strategies_match(topic_name, req_ds) {
+                    return Err(create_error_status(
+                        Code::FailedPrecondition,
+                        ErrorType::UnknownError,
+                        "Producer requested dispatch strategy does not match topic strategy",
+                        None,
+                    ));
                 }
             }
             return Ok(true);
         }
 
-        let ns_name = get_nsname_from_topic(topic_name);
-
-        // check if Topic already exist in the namespace, if exist, inform the client to redo the Lookup request
-        {
-            let resources = self.resources.lock().await;
-            if resources
-                .namespace
-                .check_if_topic_exist(ns_name, topic_name)
-            {
-                let error_string = "The topic exist on the namespace but it is served by another broker, redo the Lookup request";
-                let status = create_error_status(
-                    Code::Unavailable,
-                    ErrorType::ServiceNotReady,
-                    error_string,
-                    None,
-                );
-                return Err(status);
-            }
+        // If topic exists in namespace but is not local, ask client to redo lookup
+        let cluster = TopicCluster::new(self.resources.clone());
+        if cluster.exists_topic_in_namespace(topic_name).await {
+            return Err(create_error_status(
+                Code::Unavailable,
+                ErrorType::ServiceNotReady,
+                "The topic exists but is served by another broker, redo the Lookup request",
+                None,
+            ));
         }
 
-        // If the topic does not exist and auto-create is disabled by broker config
+        // Auto-create path if enabled
         if !self.auto_create_topics {
             let error_string = &format!("Unable to find the topic: {}", topic_name);
-            let status = create_error_status(
+            return Err(create_error_status(
                 Code::InvalidArgument,
                 ErrorType::TopicNotFound,
                 error_string,
                 None,
-            );
-            return Err(status);
-        };
+            ));
+        }
 
         match self
             .create_topic_cluster(topic_name, dispatch_strategy, schema)
             .await
         {
-            Ok(()) => {
-                let error_string =
-            "The topic metadata was created, need to redo the lookup to find the correct broker";
-                let status = create_error_status(
-                    Code::Unavailable,
-                    ErrorType::ServiceNotReady,
-                    error_string,
-                    None,
-                );
-                return Err(status);
-            }
-            Err(err) => return Err(err),
+            Ok(()) => Err(create_error_status(
+                Code::Unavailable,
+                ErrorType::ServiceNotReady,
+                "The topic metadata was created, need to redo the lookup to find the correct broker",
+                None,
+            )),
+            Err(err) => Err(err),
         }
     }
 
-    // get all the topics currently served by the Broker
+    /// Returns the list of topic names currently served by this broker.
     pub(crate) fn get_topics(&self) -> Vec<String> {
         self.topic_worker_pool.get_all_topics()
     }
 
-    // Creates a topic on the cluster
-    // and leave to the Leader Broker to assign to one of the active brokers
+    // =====================================================================
+    // Cluster operations
+    // =====================================================================
+
+    /// Creates a topic in the cluster metadata. Load Manager will assign it to a broker.
     pub(crate) async fn create_topic_cluster(
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
     ) -> Result<(), Status> {
-        // The topic format is /{namespace_name}/{topic_name}
-        if !validate_topic_format(topic_name) {
-            let error_string = format!(
-                "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
-                topic_name
-            );
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::InvalidTopicName,
-                &error_string,
-                None,
-            );
-            return Err(status);
-        }
-
-        if schema.is_none() {
-            let error_string = "Unable to create a topic without specifying the Schema";
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::UnknownError,
-                error_string,
-                None,
-            );
-            return Err(status);
-        }
-
-        if dispatch_strategy.is_none() {
-            let error_string = "Dispatch strategy is missing";
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::UnknownError,
-                error_string,
-                None,
-            );
-            return Err(status);
-        }
-
-        let ns_name = get_nsname_from_topic(topic_name);
-
-        if let Ok(false) = {
-            let mut resources = self.resources.lock().await;
-            resources.namespace.namespace_exist(ns_name).await
-        } {
-            let status = Status::unavailable(&format!(
-                "Unable to find the namespace {}, the topic can be created only for an exisiting namespace", ns_name
-            ));
-            return Err(status);
-        }
-
-        match self
-            .post_new_topic(
-                topic_name,
-                dispatch_strategy.unwrap(),
-                schema.unwrap(),
-                None,
-            )
+        self
+            .topic_cluster
+            .create_on_cluster(topic_name, dispatch_strategy, schema, None)
             .await
-        {
-            Ok(()) => return Ok(()),
-
-            Err(err) => {
-                let status = Status::internal(&format!(
-                    "The broker unable to post the topic to metadata store, due to error: {}",
-                    err,
-                ));
-                return Err(status);
-            }
-        };
     }
 
-    // post the Topic resources to Metadata Store
-    pub(crate) async fn post_new_topic(
-        &self,
-        topic_name: &str,
-        dispatch_strategy: ProtoDispatchStrategy,
-        schema: ProtoSchema,
-        policies: Option<Policies>,
-    ) -> Result<()> {
-        // store the topic to unassigned queue for the Load Manager to assign to a broker
-        // Load Manager will decide which broker is going to serve the new created topic
-        // so it will not be added to local list, yet.
-        let mut resources = self.resources.lock().await;
-        resources.cluster.new_unassigned_topic(topic_name).await?;
+    // (removed) post_new_topic moved to TopicCluster
 
-        // store the new topic to namespace path: /namespaces/{namespace}/topics/
-        resources.namespace.create_new_topic(topic_name).await?;
-
-        // store new topic retention strategy: /topics/{namespace}/{topic}/retention
-        let dispatch_strategy: ConfigDispatchStrategy = match dispatch_strategy {
-            ProtoDispatchStrategy::NonReliable => ConfigDispatchStrategy::NonReliable,
-            ProtoDispatchStrategy::Reliable => ConfigDispatchStrategy::Reliable,
-        };
-        resources
-            .topic
-            .add_topic_delivery(topic_name, dispatch_strategy)
-            .await?;
-
-        // store new topic policy: /topics/{namespace}/{topic}/policy
-        if let Some(policies) = policies {
-            resources
-                .topic
-                .add_topic_policy(topic_name, policies)
-                .await?;
-        }
-
-        // store new topic schema: /topics/{namespace}/{topic}/schema
-        resources
-            .topic
-            .add_topic_schema(topic_name, schema.into())
-            .await?;
-
-        Ok(())
-    }
-
-    // Post topic deletion request to Metadata Store
+    /// Schedules deletion of a topic in the cluster metadata (triggers host broker cleanup).
     pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
-        // find the broker owning the topic
-
-        let broker_id = match self
-            .resources
-            .lock()
-            .await
-            .cluster
-            .get_broker_for_topic(topic_name)
-            .await
-        {
-            Some(broker_id) => broker_id,
-            None => return Err(anyhow!("Unable to find topic")),
-        };
-
-        // Remove the topic from the metadata store in three steps:
-        // 1. Remove from assigned broker:
-        // this will trigger the watch event on the hosting broker to proceed with the deletion
-        {
-            let mut resources = self.resources.lock().await;
-            resources
-                .cluster
-                .schedule_topic_deletion(&broker_id, topic_name)
-                .await?;
-        }
-
-        // 2. delete the topic from the namespace (from /namespaces)
-        {
-            let mut resources = self.resources.lock().await;
-            resources.namespace.delete_topic(topic_name).await?;
-        }
-
-        // 3. delete the topic schema (from /topics)
-        {
-            let mut resources = self.resources.lock().await;
-            resources.topic.delete_topic_schema(topic_name).await?;
-        }
-
-        Ok(())
+        self.topic_cluster.post_delete_topic(topic_name).await
     }
 
-    // creates the topic on the local broker
-    // assumes that it was received from legitimate sources, like ETCDWatchEvent
-    // so we know that the topic was checked before and assigned to this broker by load manager
-    pub(crate) async fn create_topic_locally(
-        &self,
-        topic_name: &str,
-    ) -> Result<(ConfigDispatchStrategy, SchemaType)> {
-        //get retention strategy from local_cache
-        let dispatch_strategy = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_dispatch_strategy(topic_name)
-        };
-        if dispatch_strategy.is_none() {
-            warn!("Unable to create topic without a valid dispatch strategy");
-            return Err(anyhow!(
-                "Unable to create topic without a valid dispatch strategy"
-            ));
-        }
-
-        let dispatch_strategy = dispatch_strategy.unwrap();
-
-        // Build per-topic WalStorage with Cloud handoff via the factory
-        let wal_storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
-            Some(self.wal_factory.for_topic(topic_name).await?)
-        } else {
-            None
-        };
-
-        let mut new_topic = Topic::new(
-            topic_name,
-            dispatch_strategy.clone(),
-            wal_storage,
-            Some({
-                let resources = self.resources.lock().await;
-                resources.topic.clone()
-            }),
-        );
-
-        let schema = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_schema(topic_name)
-        };
-        if schema.is_none() {
-            warn!("Unable to create topic without a valid schema");
-            return Err(anyhow!("Unable to create topic without a valid schema"));
-        }
-        let schema = schema.unwrap();
-        let _ = new_topic.add_schema(schema.clone());
-
-        // get policies from local_cache
-        let policies = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_policies(topic_name)
-        };
-
-        if let Some(with_policies) = policies {
-            let _ = new_topic.policies_update(with_policies);
-        } else {
-            // get namespace policies
-            let parts: Vec<_> = topic_name.split('/').collect();
-            let ns_name = format!("/{}", parts[1]);
-
-            let ns_policies = {
-                let resources = self.resources.lock().await;
-                resources.namespace.get_policies(&ns_name)
-            };
-            if let Ok(ns_policies) = ns_policies {
-                let _ = new_topic.policies_update(ns_policies);
-            }
-        }
-
-        // Wrap topic in Arc for concurrent access
-        let new_topic_arc = Arc::new(new_topic);
-
-        // Add topic to worker pool (single source of truth)
-        self.topic_worker_pool
-            .add_topic_to_worker(topic_name.to_string(), new_topic_arc);
-
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).increment(1);
-
-        Ok((dispatch_strategy, schema.type_schema))
-    }
-
-    // deletes the topic
-    pub(crate) async fn delete_topic(&self, topic_name: &str) -> Result<Arc<Topic>> {
-        // First check if topic exists
-        if !self.topic_worker_pool.contains_topic(topic_name) {
-            return Err(anyhow!(
-                "The topic {} does not exist on the broker {}",
-                topic_name,
-                self.broker_id
-            ));
-        }
-
-        // Remove from worker pool (single source of truth) to prevent new operations
-        let topic = self
-            .topic_worker_pool
-            .remove_topic_from_worker(topic_name)
-            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
-
-        // Disconnect all attached producers/consumers and clean indices
-        // Note: Topic::close() is async and uses interior mutability; Arc<Topic> is fine
-        let (producers, consumers) = topic.close().await?;
-
-        for producer_id in producers {
-            self.producer_index.remove(&producer_id);
-        }
-
-        for consumer_id in consumers {
-            self.consumer_index.remove(&consumer_id);
-        }
-
-        info!(
-            "The topic {} was removed from the broker {}",
-            topic.topic_name, self.broker_id
-        );
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
-
-        Ok(topic)
-    }
-
-    // search for the broker socket address that serve this topic
+    // =====================================================================
+    // Lookups and partitions
+    // =====================================================================
+    /// Looks up the broker serving `topic_name`. Returns (is_local, addr).
     pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String)> {
-        // check if it is served by the this broker
+        // Served locally
         if self.topic_worker_pool.contains_topic(topic_name) {
-            return Some((true, "".to_string()));
+            return Some((true, String::new()));
         }
 
-        // if not search in Local Metadata for the broker that serve the topic
-        let broker_id = match self
-            .resources
-            .lock()
+        // Ask cluster for serving broker address
+        self
+            .topic_cluster
+            .find_serving_broker(topic_name)
             .await
-            .cluster
-            .get_broker_for_topic(topic_name)
-            .await
-        {
-            Some(broker_id) => broker_id,
-            None => return None,
-        };
-
-        if let Some(broker_addr) = self
-            .resources
-            .lock()
-            .await
-            .cluster
-            .get_broker_addr(&broker_id)
-        {
-            return Some((false, broker_addr));
-        }
-
-        None
+            .map(|addr| (false, addr))
     }
 
-    // retrieves the topic partitions names for a topic, if topic is partioned
-    // so for /default/topic1 , returns all partitions like /default/topic1-part-1, /default/topic1-part-2 etc..
+    /// Retrieves partition names if `topic_name` is partitioned, or returns the single topic.
     pub(crate) async fn topic_partitions(&self, topic_name: &str) -> Vec<String> {
         let mut topics = Vec::new();
         let ns_name = get_nsname_from_topic(topic_name);
@@ -527,18 +247,20 @@ impl BrokerService {
         topics
     }
 
-    pub(crate) fn get_schema(&self, topic_name: &str) -> Option<ProtoSchema> {
-        let result = {
-            // Read-only access; short lock
-            let resources = futures::executor::block_on(self.resources.lock());
-            resources.topic.get_schema(topic_name)
-        };
-        if let Some(schema) = result {
-            return Some(ProtoSchema::from(schema));
-        }
-        None
+    // =====================================================================
+    // Producer operations (delegated to TopicManager)
+    // =====================================================================
+
+    /// Returns the topic schema from Local Cache as core proto schema (async).
+    pub(crate) async fn get_schema_async(&self, topic_name: &str) -> Option<ProtoSchema> {
+        let resources = self.resources.lock().await;
+        resources
+            .topic
+            .get_schema(topic_name)
+            .map(ProtoSchema::from)
     }
 
+    /// Returns an existing producer id if a producer with `producer_name` is already attached.
     pub(crate) async fn check_if_producer_exist(
         &self,
         topic_name: &str,
@@ -554,14 +276,12 @@ impl BrokerService {
         None
     }
 
+    /// Returns true if the producer with `producer_id` is currently healthy.
     pub(crate) async fn health_producer(&self, producer_id: u64) -> bool {
-        if let Some(topic) = self.find_topic_by_producer(producer_id) {
-            return topic.get_producer_status(producer_id).await;
-        }
-        false
+        self.topic_manager.health_producer(producer_id).await
     }
 
-    // create a new producer and attach to the topic
+    /// Creates and attaches a new producer to `topic_name`.
     pub(crate) async fn create_new_producer(
         &self,
         producer_name: &str,
@@ -569,147 +289,56 @@ impl BrokerService {
         producer_access_mode: i32,
         topic_name: &str,
     ) -> Result<u64> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-            // Add producer to the topic's producers map using proper async interior mutability
-            let producer_config = topic
-                .create_producer(producer_id, producer_name, producer_access_mode)
-                .await?;
-
-            // insert into producer_index for efficient searches and retrievals
-            self.producer_index
-                .insert(producer_id, topic_name.to_string());
-
-            //metrics, number of producers per topic
-            gauge!(TOPIC_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
-
-            // create a metadata store entry for newly created producer
-            {
-                let mut resources = self.resources.lock().await;
-                resources
-                    .topic
-                    .create_producer(producer_id, topic_name, producer_config)
-                    .await?;
-            }
-        } else {
-            return Err(anyhow!("Unable to find the topic: {}", topic_name));
-        }
-
-        Ok(producer_id)
+        self.topic_manager
+            .create_producer(producer_name, producer_id, producer_access_mode, topic_name)
+            .await
     }
 
-    // finding a Topic by Producer ID
-    pub(crate) fn find_topic_by_producer(&self, producer_id: u64) -> Option<Arc<Topic>> {
-        if let Some(topic_name_ref) = self.producer_index.get(&producer_id) {
-            let topic_name = topic_name_ref.value().clone();
-            drop(topic_name_ref);
-            self.topic_worker_pool.get_topic(&topic_name)
-        } else {
-            None
-        }
-    }
+    // finding a Topic by Producer ID (moved to TopicManager; keep wrapper if needed)
 
-    // finding the ConsumerInfo for the provided consumer_id
+    // =====================================================================
+    // Consumer operations (delegated to TopicManager)
+    // =====================================================================
+
+    /// Returns consumer info for `consumer_id` if present.
     pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<ConsumerInfo> {
-        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
-            let (topic_name, subscription_name) = consumer_ref.value().clone();
-            drop(consumer_ref);
-
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
-                {
-                    return subscription.get_consumer_info(consumer_id);
-                }
-            }
-        }
-        None
+        self.topic_manager.find_consumer_by_id(consumer_id).await
     }
 
     /// Combined accessor: returns both ConsumerInfo and its receiver for the given consumer_id.
+    /// Returns consumer info and its receiver for `consumer_id` if present.
     pub(crate) async fn find_consumer_and_rx(
         &self,
         consumer_id: u64,
     ) -> Option<(ConsumerInfo, Arc<Mutex<mpsc::Receiver<StreamMessage>>>)> {
-        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
-            let (topic_name, subscription_name) = consumer_ref.value().clone();
-            drop(consumer_ref);
-
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
-                {
-                    let info = subscription.get_consumer_info(consumer_id)?;
-                    let rx = subscription.get_consumer_rx(consumer_id)?;
-                    return Some((info, rx));
-                }
-            }
-        }
-        None
+        self.topic_manager.find_consumer_and_rx(consumer_id).await
     }
 
+    /// Returns true if the consumer with `consumer_id` is currently healthy.
     pub(crate) async fn health_consumer(&self, consumer_id: u64) -> bool {
-        if let Some(consumer) = self.find_consumer_by_id(consumer_id).await {
-            return consumer.get_status().await;
-        }
-        false
+        self.topic_manager.health_consumer(consumer_id).await
     }
 
-    /// Trigger the dispatcher to resume polling when a consumer reconnects.
-    /// This is essential for reliable dispatch mode where the dispatcher may be idle.
+    /// Triggers the dispatcher to resume polling when a consumer reconnects (reliable mode).
     pub(crate) async fn trigger_dispatcher_on_reconnect(&self, consumer_id: u64) {
-        if let Some(consumer_ref) = self.consumer_index.get(&consumer_id) {
-            let (topic_name, subscription_name) = consumer_ref.value().clone();
-            drop(consumer_ref);
-
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                // First, reset any pending state in the dispatcher (critical for reliable mode)
-                let subscriptions = topic.subscriptions.lock().await;
-                if let Some(subscription) = subscriptions.get(&subscription_name) {
-                    if let Some(dispatcher) = &subscription.dispatcher {
-                        if let Err(e) = dispatcher.reset_pending().await {
-                            tracing::warn!("Failed to reset pending state: {}", e);
-                        }
-                    }
-                }
-                drop(subscriptions);
-
-                // Then notify all registered notifiers for this topic (for reliable dispatch)
-                let notifier_guard = topic.notifiers.lock().await;
-                let notifier_count = notifier_guard.len();
-                tracing::trace!(
-                    "Triggering {} dispatcher notifier(s) for consumer {} on topic {}",
-                    notifier_count,
-                    consumer_id,
-                    topic_name
-                );
-                for notifier in notifier_guard.iter() {
-                    notifier.notify_one();
-                }
-            } else {
-                tracing::warn!(
-                    "Topic not found when trying to trigger dispatcher for consumer {}",
-                    consumer_id
-                );
-            }
-        } else {
-            tracing::warn!(
-                "Consumer {} not found in consumer_index when trying to trigger dispatcher",
-                consumer_id
-            );
-        }
+        self.topic_manager
+            .trigger_dispatcher_on_reconnect(consumer_id)
+            .await
     }
 
+    /// Returns an existing consumer id if allowed and already registered for the subscription.
     pub(crate) async fn check_if_consumer_exist(
         &self,
         consumer_name: &str,
         subscription_name: &str,
         topic_name: &str,
     ) -> Option<u64> {
-        let topic = self.topic_worker_pool.get_topic(topic_name)?;
-        topic
-            .validate_consumer(subscription_name, consumer_name)
+        self.topic_manager
+            .check_if_consumer_exist(consumer_name, subscription_name, topic_name)
             .await
     }
 
-    //validate if the consumer is allowed to create new subscription
+    /// Validates whether policies allow creating a new subscription for `topic_name`.
     pub(crate) fn allow_subscription_creation(&self, topic_name: impl Into<String>) -> bool {
         // check the topic policies here
         let _topic = self
@@ -722,7 +351,11 @@ impl BrokerService {
         true
     }
 
-    // Async version of message publishing using topic worker pool
+    // =====================================================================
+    // Messaging (delegated to TopicWorkerPool)
+    // =====================================================================
+
+    /// Publishes a message asynchronously via the worker pool.
     pub async fn publish_message_async(
         &self,
         topic_name: String,
@@ -740,73 +373,34 @@ impl BrokerService {
         topic_name: String,
         subscription_options: SubscriptionOptions,
     ) -> Result<u64> {
-        let consumer_id = self
-            .topic_worker_pool
-            .subscribe_async(topic_name.clone(), subscription_options.clone())
-            .await?;
-
-        // Update consumer index
-        let sub_name_clone = subscription_options.subscription_name.clone();
-        self.consumer_index
-            .insert(consumer_id, (topic_name.clone(), sub_name_clone));
-
-        // Increment metrics for number of consumers per topic
-        gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
-
-        // Create a metadata store entry for newly created subscription
-        // TODO: avoid overwriting when not necessary
-        let sub_options = serde_json::to_value(&subscription_options)?;
-        {
-            let mut resources = self.resources.lock().await;
-            resources
-                .topic
-                .create_subscription(
-                    &subscription_options.subscription_name,
-                    &topic_name,
-                    sub_options,
-                )
-                .await?;
-        }
-
-        Ok(consumer_id)
+        self.topic_manager
+            .subscribe(topic_name, subscription_options)
+            .await
     }
 
-    // Async version of message acknowledgment
+    /// Acknowledges a message asynchronously via the worker pool.
     pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
         self.topic_worker_pool.ack_message_async(ack_msg).await
     }
 
     // unsubscribe subscription from topic
     // only if subscription is empty, so no consumers attached
+    /// Unsubscribes a subscription from a topic if safe (no active consumers).
     pub(crate) async fn unsubscribe(
         &self,
         subscription_name: &str,
         topic_name: &str,
     ) -> Result<()> {
-        // works if topic is local
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-            if let Some(value) = topic.check_subscription(subscription_name).await {
-                if value == false {
-                    topic.unsubscribe(subscription_name).await;
-                    // Best-effort delete from metadata store
-                    let _ = {
-                        let mut resources = self.resources.lock().await;
-                        resources
-                            .topic
-                            .delete_subscription(subscription_name, topic_name)
-                            .await
-                    };
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Unable to unsubscribe as the subscription {} has active consumers",
-            subscription_name
-        ))
+        self.topic_manager
+            .unsubscribe(subscription_name, topic_name)
+            .await
     }
 
+    // =====================================================================
+    // Namespace management (admin helpers)
+    // =====================================================================
+
+    /// Creates a namespace if it doesn't already exist.
     pub(crate) async fn create_namespace_if_absent(&self, namespace_name: &str) -> Result<()> {
         match {
             let mut resources = self.resources.lock().await;
@@ -831,6 +425,7 @@ impl BrokerService {
     }
 
     // deletes only empty namespaces (with no topics)
+    /// Deletes a namespace (only if empty based on backend rules).
     pub(crate) async fn delete_namespace(&self, ns_name: &str) -> Result<()> {
         let mut resources = self.resources.lock().await;
         resources.namespace.delete_namespace(ns_name).await?;
@@ -840,6 +435,7 @@ impl BrokerService {
 
     // Shutdown the broker service and all worker threads
     #[allow(dead_code)]
+    /// Shuts down the worker pool gracefully.
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
         let topic_count = self.topic_worker_pool.get_all_topics().len();
         info!("Shutting down BrokerService with {} topics", topic_count);
@@ -856,6 +452,10 @@ impl BrokerService {
 }
 
 // Topics string representation:  /{namespace}/{topic-name}
+// =====================================================================
+// Utilities
+// =====================================================================
+/// Validates that the topic string has the required format `/namespace/topic-name`.
 pub(crate) fn validate_topic_format(input: &str) -> bool {
     let parts: Vec<&str> = input.split('/').collect();
 
@@ -877,6 +477,7 @@ pub(crate) fn validate_topic_format(input: &str) -> bool {
 
 // extract the namespace from a topic
 // example from topic /ns_name/topic_name returns the  ns_name
+/// Extracts the namespace component from a validated topic string.
 fn get_nsname_from_topic(topic_name: &str) -> &str {
     // assuming that the topic name has already been validated.
     let parts: Vec<&str> = topic_name.split('/').collect();
