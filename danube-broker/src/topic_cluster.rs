@@ -188,10 +188,16 @@ impl TopicCluster {
             resources.namespace.delete_topic(topic_name).await?;
         }
 
-        // 3) delete schema
+        // 3) delete topic metadata: producers, subscriptions, delivery, policy, schema, root
         {
             let mut resources = self.resources.lock().await;
-            resources.topic.delete_topic_schema(topic_name).await?;
+            // best-effort cleanup; continue even if individual steps fail
+            let _ = resources.topic.delete_all_producers(topic_name).await;
+            let _ = resources.topic.delete_all_subscriptions(topic_name).await;
+            let _ = resources.topic.delete_topic_delivery(topic_name).await;
+            let _ = resources.topic.delete_topic_policy(topic_name).await;
+            let _ = resources.topic.delete_topic_schema(topic_name).await;
+            let _ = resources.topic.delete_topic_root(topic_name).await;
         }
 
         Ok(())

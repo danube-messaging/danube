@@ -395,8 +395,8 @@ impl DanubeService {
                                         let parts: Vec<_> = key_str.split('/').collect();
                                         if parts.len() >= 6 {
                                             // Need at least 6 parts for full path
-                                            // Format: namespace/topic
-                                            let topic_name = format!("{}/{}", parts[4], parts[5]);
+                                            // Format: /namespace/topic (leading slash required)
+                                            let topic_name = format!("/{}/{}", parts[4], parts[5]);
                                             let manager = broker_service.topic_manager.clone();
                                             match manager.delete_local(&topic_name).await {
                                     Ok(_) => info!(
