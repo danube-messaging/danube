@@ -450,6 +450,15 @@ impl LoadManager {
                     ),
                 }
 
+                // Delete the unassigned entry after successful assignment to keep the path clean
+                let unassigned_key = key_str.to_string();
+                if let Err(err) = self.meta_store.delete(&unassigned_key).await {
+                    warn!(
+                        "Failed to delete unassigned entry {} after assignment: {}",
+                        unassigned_key, err
+                    );
+                }
+
                 // Update internal state
                 let mut brokers_usage = self.brokers_usage.lock().await;
                 if let Some(load_report) = brokers_usage.get_mut(&broker_id) {

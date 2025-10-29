@@ -3,9 +3,11 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use metrics::gauge;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::broker_metrics::{TOPIC_CONSUMERS, TOPIC_PRODUCERS};
+use crate::resources::BASE_TOPICS_PATH;
+use crate::utils::join_path;
 use crate::{
     broker_metrics::BROKER_TOPICS,
     resources::Resources,
@@ -191,6 +193,38 @@ impl TopicManager {
                     "delete_storage_metadata failed during delete for {}: {}",
                     topic_name, e
                 );
+            }
+
+            // Remove subscription cursors under /topics/<ns>/<topic>/subscriptions/*/cursor
+            let subs = {
+                let resources = self.resources.lock().await;
+                resources.topic.get_subscription_for_topic(topic_name).await
+            };
+            let mut resources = self.resources.lock().await;
+            // Build correct path: /topics/<ns>/<topic>/subscriptions/<sub>/cursor
+            let trimmed = topic_name.trim_start_matches('/');
+            let mut parts = trimmed.split('/');
+            let ns = parts.next().unwrap_or("");
+            let topic = parts.next().unwrap_or("");
+            for sub in subs {
+                let cursor_path = join_path(&[
+                    BASE_TOPICS_PATH,
+                    ns,
+                    topic,
+                    "subscriptions",
+                    &sub,
+                    "cursor",
+                ]);
+                if let Err(e) = resources.topic.delete(&cursor_path).await {
+                    warn!(
+                        "Failed to delete reliable cursor for {}/{} subscription {} at {}: {}",
+                        ns,
+                        topic,
+                        sub,
+                        cursor_path,
+                        e
+                    );
+                }
             }
         }
 

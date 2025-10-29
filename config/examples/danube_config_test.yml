@@ -62,7 +62,7 @@ wal_cloud:
   # Uploader, runs every interval_seconds, reads raw WAL frames, writes to configured cloud storage
   uploader:
     enabled: true
-    interval_seconds: 300 # Default: Upload every 5 minutes
+    interval_seconds: 30 # Default: Upload every 5 minutes
     root_prefix: "/danube-data"
     # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
     max_object_mb: 1024
