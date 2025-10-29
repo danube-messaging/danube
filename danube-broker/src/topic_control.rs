@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use metrics::gauge;
+use tracing::error;
 
 use crate::broker_metrics::{TOPIC_CONSUMERS, TOPIC_PRODUCERS};
 use crate::{
@@ -136,6 +137,23 @@ impl TopicManager {
         Ok((dispatch_strategy, schema.type_schema))
     }
 
+    /// Flush and seal persistent storage (WAL/uploader/deleter).
+    pub(crate) async fn flush_and_seal(&self, topic_name: &str) -> Result<()> {
+        self.wal_factory
+            .flush_and_seal(topic_name, self.broker_id)
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!("flush_and_seal failed: {}", e))
+    }
+
+    /// Delete ETCD storage metadata for a reliable topic.
+    pub(crate) async fn delete_storage_metadata(&self, topic_name: &str) -> Result<()> {
+        self.wal_factory
+            .delete_storage_metadata(topic_name)
+            .await
+            .map_err(|e| anyhow!("delete_storage_metadata failed: {}", e))
+    }
+
     /// Removes a topic from this broker, disconnects producers/consumers, and updates indices.
     pub(crate) async fn delete_local(&self, topic_name: &str) -> Result<Arc<Topic>> {
         // First check if topic exists
@@ -145,6 +163,35 @@ impl TopicManager {
                 topic_name,
                 self.broker_id
             ));
+        }
+
+        // Mark topic as unavailable to reject new publishes during deletion
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+            topic.unavailable_topic().await;
+        }
+
+        // If reliable, ensure persistent storage is sealed and storage metadata removed
+        let is_reliable = {
+            let resources = self.resources.lock().await;
+            resources
+                .topic
+                .get_dispatch_strategy(topic_name)
+                .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
+                .unwrap_or(false)
+        };
+        if is_reliable {
+            if let Err(e) = self.flush_and_seal(topic_name).await {
+                error!(
+                    "flush_and_seal failed during delete for {}: {}",
+                    topic_name, e
+                );
+            }
+            if let Err(e) = self.delete_storage_metadata(topic_name).await {
+                error!(
+                    "delete_storage_metadata failed during delete for {}: {}",
+                    topic_name, e
+                );
+            }
         }
 
         // Remove from worker pool (single source of truth) to prevent new operations

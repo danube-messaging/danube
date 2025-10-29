@@ -163,6 +163,10 @@ impl UnifiedSingleDispatcher {
                                         }
                                     }
                                     DispatcherCommand::DisconnectAllConsumers => {
+                                        // Reliable: best-effort flush progress and pause
+                                        if let Err(e) = engine.lock().await.flush_progress_now().await {
+                                            warn!("DisconnectAllConsumers: flush progress failed: {}", e);
+                                        }
                                         consumers.clear();
                                         active_consumer = None;
                                     }

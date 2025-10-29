@@ -29,6 +29,13 @@ mod topic_tests;
 
 pub(crate) static SYSTEM_TOPIC: &str = "/system/_events_topic";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopicState {
+    Active,
+    Draining,
+    Closed,
+}
+
 // Topic
 //
 // Manage its own producers and subscriptions. This includes maintaining the state of producers
@@ -55,6 +62,8 @@ pub(crate) struct Topic {
     resources_topic: Option<TopicResources>,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
+    // topic state for orchestrations like unload
+    state: Mutex<TopicState>,
 }
 
 impl Topic {
@@ -80,6 +89,7 @@ impl Topic {
             notifiers: Mutex::new(Vec::new()),
             resources_topic,
             topic_store,
+            state: Mutex::new(TopicState::Active),
         }
     }
 
@@ -141,6 +151,16 @@ impl Topic {
 
     // Asynchronous version of publish_message for better performance
     pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
+        // Block publishes when draining
+        {
+            let state = self.state.lock().await;
+            if *state == TopicState::Draining || *state == TopicState::Closed {
+                return Err(anyhow!(
+                    "Topic {} is draining or closed; retry lookup/moved",
+                    self.topic_name
+                ));
+            }
+        }
         // Validate producer without blocking
         let producer_id = stream_message.msg_id.producer_id;
         {
@@ -218,6 +238,14 @@ impl Topic {
 
         Ok(())
     }
+
+    /// Transition topic to Draining: new publishes will be rejected.
+    pub(crate) async fn unavailable_topic(&self) {
+        let mut st = self.state.lock().await;
+        *st = TopicState::Draining;
+    }
+
+    // Note: pausing is handled via dispatcher disconnect on each subscription.
 
     // Best-effort deletion of subscription from metadata store
     async fn delete_subscription_metadata(&self, subscription_name: &str) {

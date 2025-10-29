@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint::CheckpointStore;
 use crate::wal::deleter::{Deleter, DeleterConfig};
@@ -31,6 +32,8 @@ pub struct WalStorageFactory {
     topics: Arc<DashMap<String, Wal>>,
     // topic_path (ns/topic) -> uploader task handle
     uploaders: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
+    // topic_path (ns/topic) -> uploader cancellation token
+    uploader_tokens: Arc<DashMap<String, CancellationToken>>,
     // Static namespace root for metadata paths
     root_prefix: String,
     // Base uploader configuration from broker config
@@ -39,6 +42,14 @@ pub struct WalStorageFactory {
     deleter_cfg: DeleterConfig,
     // topic_path (ns/topic) -> deleter task handle
     deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
+    // topic_path (ns/topic) -> deleter cancellation token
+    deleter_tokens: Arc<DashMap<String, CancellationToken>>,
+    // (no per-topic checkpoint map needed with cancel-and-drain uploader)
+}
+
+#[derive(Debug, Clone)]
+pub struct SealInfo {
+    pub last_committed_offset: u64,
 }
 
 impl WalStorageFactory {
@@ -72,10 +83,12 @@ impl WalStorageFactory {
             cloud,
             etcd,
             uploaders: Arc::new(DashMap::new()),
+            uploader_tokens: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
             uploader_base_cfg,
             deleter_cfg,
             deleters: Arc::new(DashMap::new()),
+            deleter_tokens: Arc::new(DashMap::new()),
         }
     }
 
@@ -94,10 +107,12 @@ impl WalStorageFactory {
             cloud,
             etcd,
             uploaders: Arc::new(DashMap::new()),
+            uploader_tokens: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
             uploader_base_cfg,
             deleter_cfg,
             deleters: Arc::new(DashMap::new()),
+            deleter_tokens: Arc::new(DashMap::new()),
         }
     }
 
@@ -138,8 +153,11 @@ impl WalStorageFactory {
                 ckpt_for_uploader,
             ) {
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic uploader");
-                let handle = Arc::new(uploader).start();
+                let arc_up = Arc::new(uploader);
+                let cancel = CancellationToken::new();
+                let handle = arc_up.clone().start_with_cancel(cancel.clone());
                 self.uploaders.insert(topic_path.clone(), handle);
+                self.uploader_tokens.insert(topic_path.clone(), cancel);
             } else {
                 warn!(target = "wal_factory", topic = %topic_path, "failed to initialize uploader for topic");
             }
@@ -149,8 +167,11 @@ impl WalStorageFactory {
         if !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(store)) = (resolved_dir.clone(), ckpt_store.clone()) {
                 let deleter = Deleter::new(topic_path.clone(), store, self.deleter_cfg.clone());
-                let handle = Arc::new(deleter).start();
+                let arc_del = Arc::new(deleter);
+                let cancel = CancellationToken::new();
+                let handle = arc_del.clone().start_with_cancel(cancel.clone());
                 self.deleters.insert(topic_path.clone(), handle);
+                self.deleter_tokens.insert(topic_path.clone(), cancel);
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic deleter");
             }
         }
@@ -214,8 +235,73 @@ impl WalStorageFactory {
     /// Best-effort shutdown: currently does not signal tasks, just drops handles.
     /// Can be extended to add a stop signal to Uploader.
     pub async fn shutdown(&self) {
+        // best-effort cancel and clear
+        for item in self.uploader_tokens.iter() {
+            item.value().cancel();
+        }
+        for item in self.deleter_tokens.iter() {
+            item.value().cancel();
+        }
         self.uploaders.clear();
         self.deleters.clear();
+        self.uploader_tokens.clear();
+        self.deleter_tokens.clear();
+    }
+
+    /// Flush WAL, drain and stop uploader, stop deleter, and persist sealed state to etcd.
+    pub async fn flush_and_seal(
+        &self,
+        topic_name: &str,
+        broker_id: u64,
+    ) -> Result<SealInfo, PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        // Ensure WAL exists
+        let wal = match self.topics.get(&topic_path) {
+            Some(w) => w.clone(),
+            None => {
+                return Err(PersistentStorageError::Other(
+                    "no WAL for topic".to_string(),
+                ))
+            }
+        };
+        // Flush WAL writer
+        wal.flush().await?;
+        // Cancel uploader and await completion (uploader drains on cancel)
+        if let Some(cancel) = self.uploader_tokens.get(&topic_path) {
+            cancel.cancel();
+        }
+        if let Some(handle) = self.uploaders.remove(&topic_path) {
+            let _ = handle.1.await;
+        }
+        // Cancel deleter and await completion (no drain needed)
+        if let Some(cancel) = self.deleter_tokens.get(&topic_path) {
+            cancel.cancel();
+        }
+        if let Some(handle) = self.deleters.remove(&topic_path) {
+            let _ = handle.1.await;
+        }
+        // After WAL flush and uploader drain, WAL tip reflects last committed offset boundary
+        let last_committed_offset = wal.current_offset().saturating_sub(1);
+        // Persist sealed state
+        let state = crate::etcd_metadata::StorageStateSealed {
+            sealed: true,
+            last_committed_offset,
+            broker_id,
+            timestamp: chrono::Utc::now().timestamp() as u64,
+        };
+        self.etcd
+            .put_storage_state_sealed(&topic_path, &state)
+            .await?;
+
+        Ok(SealInfo {
+            last_committed_offset,
+        })
+    }
+
+    /// Delete ETCD storage metadata for a topic (objects, cur pointer, state).
+    pub async fn delete_storage_metadata(&self, topic_name: &str) -> Result<(), PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        self.etcd.delete_storage_topic(&topic_path).await
     }
 }
 

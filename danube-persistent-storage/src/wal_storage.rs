@@ -143,6 +143,6 @@ impl PersistentStorage for WalStorage {
     }
 
     async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
-        Ok(())
+        self.wal.flush().await
     }
 }
