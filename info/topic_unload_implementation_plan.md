@@ -33,10 +33,7 @@ This document outlines the implementation plan for the `unload_topic` admin comm
 
 **Deleted for Non-Reliable Topics Only:**
 ```
-/namespaces/{namespace}/topics/{namespace}/{topic}          - Namespace topic entry
-/topics/{namespace}/{topic}/delivery                        - Delivery strategy
-/topics/{namespace}/{topic}/schema                          - Schema
-/topics/{namespace}/{topic}/subscriptions/**                - All subscriptions
+/topics/{namespace}/{topic}/subscriptions/**                - All subscriptions (optional)
 ```
 
 **Created for Reassignment:**
@@ -54,9 +51,10 @@ This document outlines the implementation plan for the `unload_topic` admin comm
 ### Metadata Strategy
 
 **Non-Reliable Topics:**
-- Delete ALL metadata to allow clean recreation on new broker
-- Producers/consumers will recreate subscriptions on reconnection
-- Prevents misalignment between old and new broker state
+- Preserve minimal metadata needed for immediate reassignment hosting:
+  - Keep: delivery (dispatch strategy), schema, and namespace topic entry
+  - Delete: producer metadata; optionally delete subscriptions metadata
+  - Rationale: ensures new broker can materialize topic instantly while producers/consumers reattach cleanly
 
 **Reliable Topics:**
 - Keep ONLY essential data for continuity:
@@ -331,8 +329,7 @@ async fn assign_topic_to_different_broker(
                         "Cannot reassign topic {} for unload: {}",
                         topic_name, e
                     );
-                    // Delete unassigned marker since we cannot proceed
-                    let _ = self.meta_store.delete(key_str).await;
+                    // Keep unassigned marker so reassignment can occur later
                     return;
                 }
             };
@@ -556,7 +553,7 @@ Note: `SubscriptionEngine::flush_progress_now()` already exists (line 136-148).
 | WAL flush fails | `Status::internal` | Abort - data integrity critical |
 | Cursor flush partial failure | Log warning | Continue - best effort |
 | Cursor flush total failure | Log error | Continue - acceptable data loss |
-| Load Manager can't find alternative broker | Log error, delete unassigned marker | Abort reassignment |
+| Load Manager can't find alternative broker | Log error, keep unassigned marker | Abort reassignment (marker retained for future assignment) |
 
 ---
 
