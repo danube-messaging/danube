@@ -112,6 +112,13 @@ pub(crate) enum TopicsCommands {
         #[arg(short, long)]
         subscription: String,
     },
+    #[command(about = "Unload a topic from its current broker to be reassigned to a different broker", after_help = "Example:\n  danube-admin-cli topics unload /default/mytopic\n  danube-admin-cli topics unload mytopic --namespace default", arg_required_else_help = true)]
+    Unload {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+    },
 }
 
 #[allow(unreachable_code)]
@@ -237,6 +244,13 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
             let request = SubscriptionRequest { topic: name, subscription };
             let response = client.unsubscribe(request).await?;
             println!("Unsubscribed: {:?}", response.into_inner().success);
+        }
+        // Unload a topic
+        TopicsCommands::Unload { topic, namespace } => {
+            let name = normalize_topic(&topic, namespace.as_deref())?;
+            let request = TopicRequest { name };
+            let response = client.unload_topic(request).await?;
+            println!("Topic Unloaded: {:?}", response.into_inner().success);
         }
     }
 

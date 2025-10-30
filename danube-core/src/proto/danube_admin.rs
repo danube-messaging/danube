@@ -687,6 +687,27 @@ pub mod topic_admin_client {
                 .insert(GrpcMethod::new("danube_admin.TopicAdmin", "DeleteTopic"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn unload_topic(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TopicRequest>,
+        ) -> std::result::Result<tonic::Response<super::TopicResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/UnloadTopic",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "UnloadTopic"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn list_subscriptions(
             &mut self,
             request: impl tonic::IntoRequest<super::TopicRequest>,
@@ -1411,6 +1432,10 @@ pub mod topic_admin_server {
             &self,
             request: tonic::Request<super::TopicRequest>,
         ) -> std::result::Result<tonic::Response<super::TopicResponse>, tonic::Status>;
+        async fn unload_topic(
+            &self,
+            request: tonic::Request<super::TopicRequest>,
+        ) -> std::result::Result<tonic::Response<super::TopicResponse>, tonic::Status>;
         async fn list_subscriptions(
             &self,
             request: tonic::Request<super::TopicRequest>,
@@ -1673,6 +1698,49 @@ pub mod topic_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeleteTopicSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/UnloadTopic" => {
+                    #[allow(non_camel_case_types)]
+                    struct UnloadTopicSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<T: TopicAdmin> tonic::server::UnaryService<super::TopicRequest>
+                    for UnloadTopicSvc<T> {
+                        type Response = super::TopicResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TopicRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::unload_topic(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UnloadTopicSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

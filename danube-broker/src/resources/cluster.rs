@@ -43,6 +43,21 @@ impl ClusterResources {
         Ok(())
     }
 
+    /// Mark a topic for unload by creating an unassigned entry with an unload marker.
+    /// Value format: {"reason":"unload", "from_broker": <broker_id>}
+    pub(crate) async fn mark_topic_for_unload(
+        &mut self,
+        topic_name: &str,
+        from_broker_id: u64,
+    ) -> Result<()> {
+        let marker = serde_json::json!({
+            "reason": "unload",
+            "from_broker": from_broker_id
+        });
+        let path = join_path(&[BASE_UNASSIGNED_PATH, topic_name]);
+        self.create(&path, marker).await
+    }
+
     pub(crate) async fn schedule_topic_deletion(
         &mut self,
         broker_id: &str,

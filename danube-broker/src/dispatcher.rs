@@ -80,4 +80,16 @@ impl Dispatcher {
             }
         }
     }
+
+    /// Force flush durable subscription progress for reliable dispatchers. No-op for non-reliable.
+    pub(crate) async fn flush_progress_now(&self) -> Result<()> {
+        match self {
+            Dispatcher::UnifiedOneConsumer(dispatcher) => {
+                Ok(dispatcher.flush_progress_now().await?)
+            }
+            Dispatcher::UnifiedMultipleConsumers(dispatcher) => {
+                Ok(dispatcher.flush_progress_now().await?)
+            }
+        }
+    }
 }

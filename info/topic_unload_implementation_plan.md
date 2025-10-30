@@ -566,6 +566,36 @@ Note: `SubscriptionEngine::flush_progress_now()` already exists (line 136-148).
 
 ---
 
+## Implementation Status
+
+Phases implemented:
+- **Phase 1: Admin CLI Command**
+  - Added `topics unload` subcommand in `danube-admin-cli/src/topics.rs` calling `UnloadTopic`.
+- **Phase 2: Proto Definition**
+  - Added `rpc UnloadTopic(TopicRequest) returns (TopicResponse)` to `TopicAdmin`.
+- **Phase 3: Broker Admin Handler**
+  - `unload_topic` implemented in `danube-broker/src/admin/topics_admin.rs`.
+  - Delegates to cluster via `TopicCluster::post_unload_topic`; checks single-broker precondition.
+- **Phase 4: Dispatcher wrapper**
+  - Added non-disruptive `flush_progress_now()` to both `unified_single.rs` and `unified_multiple.rs` and delegator in `dispatcher.rs`.
+- **Phase 5: Load Manager**
+  - `assign_topic_to_broker` parses unload markers and excludes `from_broker` via `get_next_broker_excluding`.
+  - Leaves unassigned marker intact if reassignment fails.
+- **Phase 6: TopicManager unload flow**
+  - Implemented `unload_topic`, `unload_non_reliable_topic`, `unload_reliable_topic`, and `flush_subscription_cursors` in `topic_control.rs`.
+  - Broker watcher updated to call `unload_topic` on unload-driven deletions.
+- **Cluster resources helper**
+  - Added `mark_topic_for_unload` in `resources/cluster.rs`.
+- **TopicCluster orchestration**
+  - Added `post_unload_topic` to create unload marker and schedule assignment deletion for the hosting broker.
+
+Remaining work:
+- **E2E tests** for unload scenarios (non-reliable and reliable), including cursors and WAL sealing verification.
+- **Telemetry/logging polish** around unload flows and error cases.
+- **Edge cases**: partitioned topics handling (if applicable) and retries/backoff tuning.
+
+---
+
 ## Design Decisions (Clarified)
 
 ### ✅ Single Broker Cluster

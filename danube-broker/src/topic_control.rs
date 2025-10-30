@@ -249,6 +249,106 @@ impl TopicManager {
         Ok(topic)
     }
 
+    /// Unload a topic from this broker, preserving required metadata so it can be reassigned.
+    /// - Non-reliable: keep delivery, schema, namespace; delete producer metadata (optionally subscriptions)
+    /// - Reliable: flush cursors, seal storage, delete producer metadata; keep subscriptions/cursors/storage
+    pub(crate) async fn unload_topic(&self, topic_name: &str) -> Result<()> {
+        if !self.topic_worker_pool.contains_topic(topic_name) {
+            return Err(anyhow!(
+                "The topic {} does not exist on the broker {}",
+                topic_name, self.broker_id
+            ));
+        }
+
+        let is_reliable = {
+            let resources = self.resources.lock().await;
+            resources
+                .topic
+                .get_dispatch_strategy(topic_name)
+                .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
+                .unwrap_or(false)
+        };
+
+        if is_reliable {
+            self.unload_reliable_topic(topic_name).await
+        } else {
+            self.unload_non_reliable_topic(topic_name).await
+        }
+    }
+
+    async fn unload_non_reliable_topic(&self, topic_name: &str) -> Result<()> {
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+            topic.unavailable_topic().await;
+        }
+
+        let topic = self
+            .topic_worker_pool
+            .remove_topic_from_worker(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
+        let (producers, consumers) = topic.close().await?;
+
+        for producer_id in producers {
+            self.producers.remove(&producer_id);
+        }
+        for consumer_id in consumers {
+            self.consumers.remove(&consumer_id);
+        }
+
+        // Delete producer metadata; keep delivery/schema/namespace; optionally cleanup subscriptions
+        {
+            let mut resources = self.resources.lock().await;
+            let _ = resources.topic.delete_all_producers(topic_name).await;
+            let _ = resources.topic.delete_all_subscriptions(topic_name).await;
+        }
+
+        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
+        Ok(())
+    }
+
+    async fn unload_reliable_topic(&self, topic_name: &str) -> Result<()> {
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+            topic.unavailable_topic().await;
+        }
+
+        let _ = self.flush_subscription_cursors(topic_name).await;
+        self.flush_and_seal(topic_name).await?;
+
+        let topic = self
+            .topic_worker_pool
+            .remove_topic_from_worker(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
+        let (producers, consumers) = topic.close().await?;
+
+        for producer_id in producers {
+            self.producers.remove(&producer_id);
+        }
+        for consumer_id in consumers {
+            self.consumers.remove(&consumer_id);
+        }
+
+        // Delete only producer metadata
+        {
+            let mut resources = self.resources.lock().await;
+            let _ = resources.topic.delete_all_producers(topic_name).await;
+        }
+
+        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
+        Ok(())
+    }
+
+    /// Best-effort flush of all subscription cursors for a topic (reliable only).
+    async fn flush_subscription_cursors(&self, topic_name: &str) -> Result<()> {
+        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+            let subscriptions = topic.subscriptions.lock().await;
+            for (_sub_name, subscription) in subscriptions.iter() {
+                if let Some(dispatcher) = &subscription.dispatcher {
+                    let _ = dispatcher.flush_progress_now().await;
+                }
+            }
+        }
+        Ok(())
+    }
+
     //======================== Producer Ops ========================
     /// Creates and registers a producer on the given topic and updates metadata/metrics.
     pub(crate) async fn create_producer(

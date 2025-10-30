@@ -244,4 +244,35 @@ impl TopicAdmin for DanubeAdminImpl {
         };
         Ok(tonic::Response::new(response))
     }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn unload_topic(
+        &self,
+        request: Request<TopicRequest>,
+    ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        trace!("Admin: unload the topic: {}", req.name);
+        let service = self.broker_service.as_ref();
+
+        // 1) Ensure there is an alternative broker available (cluster size >= 2)
+        let brokers = self.resources.cluster.get_brokers().await;
+        if brokers.len() < 2 {
+            return Err(Status::failed_precondition(
+                "Cannot unload topic: single broker cluster detected. Unload requires at least 2 brokers.",
+            ));
+        }
+
+        // 2) Delegate unload to cluster: this will
+        //    - create an unload marker under /cluster/unassigned with from_broker
+        //    - schedule deletion of the current assignment at the hosting broker
+        // The hosting broker will observe the deletion via watch and perform local unload safely.
+        match service.topic_cluster.post_unload_topic(&req.name).await {
+            Ok(()) => Ok(Response::new(TopicResponse { success: true })),
+            Err(e) => Err(Status::not_found(format!(
+                "Unable to unload the topic {} due to {}",
+                req.name, e
+            ))),
+        }
+    }
 }
