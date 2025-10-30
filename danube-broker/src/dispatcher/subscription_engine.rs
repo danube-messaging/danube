@@ -130,6 +130,22 @@ impl SubscriptionEngine {
         }
         Ok(())
     }
+
+    /// Immediately flush the last_acked progress to metadata (best-effort).
+    /// Used during unload pause to persist cursor without waiting for debounce.
+    pub(crate) async fn flush_progress_now(&mut self) -> Result<()> {
+        if let (Some(off), Some(res_mx), Some(topic)) =
+            (self.last_acked, self.progress_resources.as_ref(), self.topic_name.clone())
+        {
+            let mut res = res_mx.lock().await;
+            let _ = res
+                .set_subscription_cursor(&self._subscription_name, &topic, off)
+                .await;
+            self.dirty = false;
+            self.last_flush_at = Instant::now();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

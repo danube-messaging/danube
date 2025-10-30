@@ -2,13 +2,14 @@ use danube_core::storage::PersistentStorageError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{info, error};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 
 use crate::checkpoint::CheckpointStore;
+use crate::cloud::uploader_stream;
+use crate::cloud::CloudStore;
 use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 use crate::wal::UploaderCheckpoint;
-use crate::cloud::CloudStore;
-use crate::cloud::uploader_stream;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
 /// to ETCD. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,
@@ -39,11 +40,21 @@ impl Uploader {
         })
     }
 
-    /// Start a background periodic task that uploads batches.
+    /// Backward-compatible start without an explicit cancellation token.
+    /// Used by tests; for production, prefer start_with_cancel so callers can cancel.
+    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
+        let token = CancellationToken::new();
+        self.start_with_cancel(token)
+    }
+
+    /// Start a background periodic task that uploads batches with explicit cancellation token.
     ///
     /// Best-effort semantics: single-writer assumption (no distributed lease).
     /// On start, attempts to resume from the last uploader checkpoint.
-    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
+    pub fn start_with_cancel(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<Result<(), PersistentStorageError>> {
         tokio::spawn(async move {
             info!(
                 target = "uploader",
@@ -81,18 +92,28 @@ impl Uploader {
             let mut ticker =
                 tokio::time::interval(std::time::Duration::from_secs(self.cfg.interval_seconds));
             loop {
-                ticker.tick().await;
-
-                // Idle tick if no items; otherwise process a batch
-                if let Err(e) = self.run_once().await {
-                    error!(
-                        target = "uploader",
-                        topic = %self.cfg.topic_path,
-                        error = %format!("{}", e),
-                        "uploader run_once failed"
-                    );
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        // graceful drain before exiting
+                        loop {
+                            match self.run_once().await? { true => continue, false => break }
+                        }
+                        info!(target = "uploader", topic = %self.cfg.topic_path, "uploader stopped after drain (cancel)");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(e) = self.run_once().await {
+                            error!(
+                                target = "uploader",
+                                topic = %self.cfg.topic_path,
+                                error = %format!("{}", e),
+                                "uploader run_once failed"
+                            );
+                        }
+                    }
                 }
             }
+            Ok(())
         })
     }
 
@@ -211,6 +232,13 @@ impl Uploader {
     pub(crate) fn test_last_uploaded_offset(&self) -> u64 {
         self.last_uploaded_offset.load(Ordering::Acquire)
     }
+
+    /// Returns current uploaded offset watermark.
+    pub fn last_uploaded_offset(&self) -> u64 {
+        self.last_uploaded_offset.load(Ordering::Acquire)
+    }
+
+    // drain_and_stop/request_stop are no longer needed; cooperative shutdown via CancellationToken
 }
 
 /// Base (broker-level) uploader configuration applied to all per-topic uploaders.

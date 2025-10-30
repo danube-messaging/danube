@@ -80,6 +80,46 @@ impl TopicResources {
         Ok(())
     }
 
+    pub(crate) async fn delete_topic_delivery(&mut self, topic_name: &str) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "delivery"]);
+        self.delete(&path).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_topic_policy(&mut self, topic_name: &str) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "policy"]);
+        self.delete(&path).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_all_producers(&mut self, topic_name: &str) -> Result<()> {
+        let prefix = join_path(&[BASE_TOPICS_PATH, topic_name, "producers"]);
+        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        for key in keys {
+            // delete each producer key
+            self.delete(&key).await?;
+        }
+        // also delete the producers directory marker if present
+        let _ = self.delete(&prefix).await;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_all_subscriptions(&mut self, topic_name: &str) -> Result<()> {
+        let prefix = join_path(&[BASE_TOPICS_PATH, topic_name, "subscriptions"]);
+        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        for key in keys {
+            self.delete(&key).await?;
+        }
+        let _ = self.delete(&prefix).await;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_topic_root(&mut self, topic_name: &str) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name]);
+        self.delete(&path).await?;
+        Ok(())
+    }
+
     pub(crate) async fn create_topic(
         &mut self,
         topic_name: &str,

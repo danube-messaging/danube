@@ -9,7 +9,7 @@ BASE_PROM_PORT := 9040
 NUM_BROKERS := 3
 
 # Path to configuration file
-CONFIG_FILE := ./config/danube_broker.yml
+CONFIG_FILE := ./config/examples/danube_config_test.yml
 
 # ETCD configuration
 ETCD_NAME := etcd-danube

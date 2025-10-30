@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use tokio::task::JoinHandle;
 use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::checkpoint::{CheckpointStore, UploaderCheckpoint, WalCheckpoint};
@@ -34,15 +35,18 @@ pub struct Deleter {
 }
 
 impl Deleter {
-    pub fn new(
-        topic_path: String,
-        ckpt_store: Arc<CheckpointStore>,
-        cfg: DeleterConfig,
-    ) -> Self {
-        Self { topic_path, ckpt_store, cfg }
+    pub fn new(topic_path: String, ckpt_store: Arc<CheckpointStore>, cfg: DeleterConfig) -> Self {
+        Self {
+            topic_path,
+            ckpt_store,
+            cfg,
+        }
     }
 
-    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
+    pub fn start_with_cancel(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<Result<(), PersistentStorageError>> {
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(self.cfg.check_interval_minutes * 60));
             // run immediately
@@ -50,12 +54,26 @@ impl Deleter {
                 warn!(target = "wal_deleter", topic = %self.topic_path, error = %format!("{}", e), "initial retention cycle failed");
             }
             loop {
-                ticker.tick().await;
-                if let Err(e) = self.run_cycle().await {
-                    warn!(target = "wal_deleter", topic = %self.topic_path, error = %format!("{}", e), "retention cycle failed");
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        info!(target = "wal_deleter", topic = %self.topic_path, "deleter stopping by cancel");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(e) = self.run_cycle().await {
+                            warn!(target = "wal_deleter", topic = %self.topic_path, error = %format!("{}", e), "retention cycle failed");
+                        }
+                    }
                 }
             }
+            Ok(())
         })
+    }
+
+    /// Backward-compatible start without explicit cancellation token (used by tests).
+    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
+        let token = CancellationToken::new();
+        self.start_with_cancel(token)
     }
 
     pub(crate) async fn run_cycle(&self) -> Result<(), PersistentStorageError> {
@@ -100,7 +118,9 @@ impl Deleter {
 
         // Update rotated_files by removing deleted and recompute start_offset
         wal_ckpt.rotated_files.retain(|(seq, path, _first)| {
-            !to_delete.iter().any(|(dseq, dpath, _size, _first, _mtime)| dseq == seq && dpath == path)
+            !to_delete
+                .iter()
+                .any(|(dseq, dpath, _size, _first, _mtime)| dseq == seq && dpath == path)
         });
 
         // Compute new start_offset: min first_offset from remaining rotated files, else active file first_offset
@@ -122,7 +142,16 @@ impl Deleter {
         &self,
         wal_ckpt: &WalCheckpoint,
         uploader_ckpt: &UploaderCheckpoint,
-    ) -> Result<Vec<(u64, PathBuf, u64 /*size*/, u64 /*first_offset*/, Option<SystemTime>)>, PersistentStorageError> {
+    ) -> Result<
+        Vec<(
+            u64,
+            PathBuf,
+            u64, /*size*/
+            u64, /*first_offset*/
+            Option<SystemTime>,
+        )>,
+        PersistentStorageError,
+    > {
         let mut out = Vec::new();
         // Only rotated files strictly older than the uploader's current file are eligible
         for (seq, path, first) in wal_ckpt.rotated_files.iter() {
@@ -170,7 +199,9 @@ impl Deleter {
                 let mut freed: u64 = 0;
                 let excess = total - limit_bytes;
                 for cand in candidates.iter() {
-                    if freed >= excess { break; }
+                    if freed >= excess {
+                        break;
+                    }
                     if !to_delete.iter().any(|d| d.0 == cand.0 && d.1 == cand.1) {
                         to_delete.push(cand.clone());
                         freed += cand.2;
@@ -181,4 +212,6 @@ impl Deleter {
 
         Ok(to_delete)
     }
+
+    // Cooperative stop handled via CancellationToken in start()
 }

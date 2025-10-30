@@ -23,6 +23,14 @@ pub struct ObjectDescriptor {
     pub offset_index: Option<Vec<(u64, u64)>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageStateSealed {
+    pub sealed: bool,
+    pub last_committed_offset: u64,
+    pub broker_id: u64,
+    pub timestamp: u64,
+}
+
 impl EtcdMetadata {
     pub fn new(store: MetadataStorage, root: String) -> Self {
         Self { store, root }
@@ -114,5 +122,43 @@ impl EtcdMetadata {
         }
         out.sort_by_key(|d| d.start_offset);
         Ok(out)
+    }
+
+    /// Write sealed state marker under `/storage/topics/<ns>/<topic>/state`.
+    pub async fn put_storage_state_sealed(
+        &self,
+        topic_path: &str,
+        state: &StorageStateSealed,
+    ) -> Result<(), PersistentStorageError> {
+        let key = format!("{}/storage/topics/{}/state", self.root, topic_path);
+        let value = serde_json::to_value(state)
+            .map_err(|e| PersistentStorageError::Other(e.to_string()))?;
+        self.store
+            .put(&key, value, MetaOptions::None)
+            .await
+            .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Delete all storage metadata for a topic under `/storage/topics/<topic_path>/`.
+    /// This includes object descriptors, current pointer, and sealed state.
+    pub async fn delete_storage_topic(
+        &self,
+        topic_path: &str,
+    ) -> Result<(), PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/{}/", self.root, topic_path);
+        let kvs = self
+            .store
+            .get_bulk(&prefix)
+            .await
+            .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
+        for kv in kvs {
+            let _ = self
+                .store
+                .delete(&kv.key)
+                .await
+                .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
+        }
+        Ok(())
     }
 }

@@ -183,8 +183,7 @@ impl BrokerService {
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema: Option<ProtoSchema>,
     ) -> Result<(), Status> {
-        self
-            .topic_cluster
+        self.topic_cluster
             .create_on_cluster(topic_name, dispatch_strategy, schema, None)
             .await
     }
@@ -192,6 +191,7 @@ impl BrokerService {
     // (removed) post_new_topic moved to TopicCluster
 
     /// Schedules deletion of a topic in the cluster metadata (triggers host broker cleanup).
+    /// Owning broker performs local cleanup via watch_events_for_broker upon receiving delete.
     pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
         self.topic_cluster.post_delete_topic(topic_name).await
     }
@@ -207,8 +207,7 @@ impl BrokerService {
         }
 
         // Ask cluster for serving broker address
-        self
-            .topic_cluster
+        self.topic_cluster
             .find_serving_broker(topic_name)
             .await
             .map(|addr| (false, addr))

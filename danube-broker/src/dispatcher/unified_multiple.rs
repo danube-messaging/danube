@@ -168,6 +168,10 @@ impl UnifiedMultipleDispatcher {
                                         consumers.retain(|c| c.consumer_id != id);
                                     }
                                     DispatcherCommand::DisconnectAllConsumers => {
+                                        // Reliable: best-effort flush progress and pause
+                                        if let Err(e) = engine.lock().await.flush_progress_now().await {
+                                            warn!("DisconnectAllConsumers: flush progress failed: {}", e);
+                                        }
                                         consumers.clear();
                                     }
                                     DispatcherCommand::MessageAcked(ack_msg) => {
