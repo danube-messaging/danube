@@ -13,8 +13,19 @@ use crate::{
 
 /// Monitors broker-specific topic assignment events from the metadata store
 ///
-/// - Put: assign topic to this broker, ensure local
-/// - Delete: remove/unload topic from this broker
+/// ## Purpose:
+/// Watches for topic assignments directed to this broker and handles local
+/// topic creation/deletion based on LoadManager decisions.
+///
+/// ## Event Processing:
+/// - **Put Events**: Creates topics locally when assigned by LoadManager
+/// - **Delete Events**: Removes topics when reassigned to other brokers
+///
+/// ## Process Flow:
+/// 1. **Setup Watch**: Monitors `/cluster/brokers/{broker_id}/` path
+/// 2. **Parse Events**: Extracts namespace/topic from assignment paths
+/// 3. **Cache Verification**: Ensures metadata readiness before topic creation
+/// 4. **Local Operations**: Creates/deletes topics in broker's local state
 pub(crate) async fn watch_events_for_broker(
     meta_store: MetadataStorage,
     broker_service: Arc<BrokerService>,
@@ -62,6 +73,12 @@ pub(crate) async fn watch_events_for_broker(
     }
 }
 
+/// Handles a Put watch event under `/cluster/brokers/{broker_id}/...`
+///
+/// - Processes a topic assignment directed to this broker.
+/// - Bounces the assignment if the broker is not active (draining/drained) by deleting the
+///   assignment and posting an `unassigned` marker with reason `drain_redirect`.
+/// - Verifies LocalCache readiness (dispatch/schema/policies) before ensuring the topic locally.
 async fn handle_put_event(
     meta_store: &MetadataStorage,
     broker_service: &Arc<BrokerService>,
@@ -87,6 +104,8 @@ async fn handle_put_event(
         return;
     }
 
+    // Cache readiness verification with fallback
+    // Verify required metadata is available before creating topic
     if let Err(err) = verify_cache_readiness_with_retry(
         broker_service,
         &topic_name,
@@ -114,6 +133,12 @@ async fn handle_put_event(
     }
 }
 
+/// Handles a Delete watch event under `/cluster/brokers/{broker_id}/...`
+///
+/// - Cleans up local topic state when the assignment is removed.
+/// - If there is an `unassigned` marker with reason `unload`, performs a graceful unload
+///   (e.g., flush/seal without deleting durable metadata). Otherwise, deletes the local topic.
+/// - When broker is in `draining` mode, auto-transitions to `drained` if no local topics remain.
 async fn handle_delete_event(
     meta_store: &MetadataStorage,
     broker_service: &Arc<BrokerService>,
