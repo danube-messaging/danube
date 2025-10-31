@@ -24,6 +24,28 @@ pub(crate) enum BrokersCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
         output: Option<String>,
     },
+    #[command(about = "Unload a broker by migrating all hosted topics off it")]
+    Unload {
+        #[arg(long, help = "Target broker id. If omitted, unloads the broker you are connected to.")]
+        broker_id: Option<String>,
+        #[arg(long, default_value_t = 1, help = "Max topics to unload in parallel")]
+        max_parallel: u32,
+        #[arg(long, help = "Namespaces to include (repeatable)")]
+        namespaces_include: Vec<String>,
+        #[arg(long, help = "Namespaces to exclude (repeatable)")]
+        namespaces_exclude: Vec<String>,
+        #[arg(long, default_value_t = false, help = "Dry run: only list topics to be unloaded")]
+        dry_run: bool,
+        #[arg(long, default_value_t = 60, help = "Per-topic timeout seconds")]
+        timeout_seconds: u32,
+    },
+    #[command(about = "Activate a broker (set state to active)")]
+    Activate {
+        #[arg(long, help = "Target broker id")]
+        broker_id: String,
+        #[arg(long, default_value = "admin_activate", help = "Reason for auditability")]
+        reason: String,
+    },
 }
 
 pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::Error>> {
@@ -83,6 +105,41 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                     println!("Namespace: {}", namespace);
                 }
             }
+        }
+        BrokersCommands::Unload {
+            broker_id,
+            max_parallel,
+            namespaces_include,
+            namespaces_exclude,
+            dry_run,
+            timeout_seconds,
+        } => {
+            use danube_core::admin_proto::UnloadBrokerRequest;
+            let request = UnloadBrokerRequest {
+                broker_id: broker_id.unwrap_or_default(),
+                max_parallel,
+                namespaces_include,
+                namespaces_exclude,
+                dry_run,
+                timeout_seconds,
+            };
+            let resp = client.unload_broker(request).await?.into_inner();
+            println!(
+                "UnloadBroker started={} total={} succeeded={} failed={} pending={}",
+                resp.started, resp.total, resp.succeeded, resp.failed, resp.pending
+            );
+            if !resp.failed_topics.is_empty() {
+                eprintln!("Failed topics:");
+                for t in resp.failed_topics {
+                    eprintln!("  {}", t);
+                }
+            }
+        }
+        BrokersCommands::Activate { broker_id, reason } => {
+            use danube_core::admin_proto::ActivateBrokerRequest;
+            let req = ActivateBrokerRequest { broker_id, reason };
+            let resp = client.activate_broker(req).await?.into_inner();
+            println!("ActivateBroker success={}", resp.success);
         }
     }
 

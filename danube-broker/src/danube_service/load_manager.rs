@@ -529,7 +529,19 @@ impl LoadManager {
     /// 3. **Update State**: Atomically updates the `next_broker` field for tracking
     pub async fn get_next_broker(&mut self) -> u64 {
         let rankings = self.rankings.lock().await;
-        let next_broker = rankings.get(0).unwrap().0;
+        // pick first active broker from rankings
+        let mut chosen: Option<u64> = None;
+        for (bid, _) in rankings.iter() {
+            if self.is_broker_active(*bid).await {
+                chosen = Some(*bid);
+                break;
+            }
+        }
+        let next_broker = chosen.unwrap_or_else(|| {
+            // fallback to current atomic value if none active found (should be rare)
+            self.next_broker
+                .load(std::sync::atomic::Ordering::SeqCst)
+        });
 
         let _ = self
             .next_broker
@@ -538,17 +550,30 @@ impl LoadManager {
         next_broker
     }
 
-    /// Select next broker excluding a specific broker id.
+    /// Select next broker excluding a specific broker id, and skipping non-active brokers.
     async fn get_next_broker_excluding(&self, exclude_id: u64) -> Result<u64> {
         let rankings = self.rankings.lock().await;
         for (broker_id, _) in rankings.iter() {
-            if *broker_id != exclude_id {
+            if *broker_id != exclude_id && self.is_broker_active(*broker_id).await {
                 return Ok(*broker_id);
             }
         }
         Err(anyhow!(
-            "Cannot unload topic: no alternative broker available. Unload requires at least 2 brokers in the cluster."
+            "Cannot unload topic: no alternative active broker available. Unload requires at least 2 active brokers in the cluster."
         ))
+    }
+
+    /// Returns true if broker state is active or missing (default active); false for draining/drained.
+    async fn is_broker_active(&self, broker_id: u64) -> bool {
+        let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
+        match self.meta_store.get(&state_path, MetaOptions::None).await {
+            Ok(Some(val)) => val
+                .get("mode")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "active")
+                .unwrap_or(true),
+            _ => true,
+        }
     }
 
     /// Handles broker failover by cleaning up topic assignments and creating reassignment entries

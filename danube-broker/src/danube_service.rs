@@ -154,6 +154,16 @@ impl DanubeService {
         )
         .await?;
 
+        // Initialize broker state to active
+        if let Err(e) = self
+            .resources
+            .cluster
+            .set_broker_state(&self.broker_id.to_string(), "active", Some("boot"))
+            .await
+        {
+            warn!("Failed to set initial broker state to active: {}", e);
+        }
+
         //create the default Namespace
         create_namespace_if_absent(
             &mut self.resources,
@@ -359,6 +369,26 @@ impl DanubeService {
                                             // Format: namespace/topic
                                             let topic_name = format!("/{}/{}", parts[4], parts[5]);
                                             
+                                            // Guard: if broker is draining/drained, bounce assignment
+                                            let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
+                                            let is_active = match meta_store.get(&state_path, danube_metadata_store::MetaOptions::None).await {
+                                                Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()).map(|m| m == "active").unwrap_or(true),
+                                                _ => true,
+                                            };
+                                            if !is_active {
+                                                // Delete the assignment entry and re-post unassigned with drain_redirect marker
+                                                if let Err(e) = meta_store.delete(key_str).await {
+                                                    warn!("Failed to delete assignment during drain redirect: {}", e);
+                                                    continue;
+                                                }
+                                                let unassigned_path = join_path(&[BASE_UNASSIGNED_PATH, &topic_name]);
+                                                let marker = serde_json::json!({"reason":"drain_redirect","from_broker": broker_id});
+                                                if let Err(e) = meta_store.put(&unassigned_path, marker, danube_metadata_store::MetaOptions::None).await {
+                                                    warn!("Failed to post unassigned drain_redirect marker: {}", e);
+                                                }
+                                                continue;
+                                            }
+
                                             // Cache readiness verification with fallback
                                             // Verify required metadata is available before creating topic
                                             if let Err(err) = Self::verify_cache_readiness_with_retry(&broker_service, &topic_name, 3, Duration::from_millis(500)).await {
@@ -426,6 +456,24 @@ impl DanubeService {
                                                     ),
                                                     Err(err) => {
                                                         error!("Unable to delete the topic due to error: {}", err)
+                                                    }
+                                                }
+                                            }
+
+                                            // Auto-transition to drained when broker is draining and has no topics left
+                                            let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
+                                            let is_draining = match meta_store.get(&state_path, danube_metadata_store::MetaOptions::None).await {
+                                                Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()) == Some("draining"),
+                                                _ => false,
+                                            };
+                                            if is_draining {
+                                                let topics_left = broker_service.get_topics();
+                                                if topics_left.is_empty() {
+                                                    let drained = serde_json::json!({"mode":"drained","reason":"drain_complete"});
+                                                    if let Err(e) = meta_store.put(&state_path, drained, danube_metadata_store::MetaOptions::None).await {
+                                                        warn!("Failed to set broker {} state to drained: {}", broker_id, e);
+                                                    } else {
+                                                        info!("Broker {} transitioned to drained (no topics remaining)", broker_id);
                                                     }
                                                 }
                                             }

@@ -15,6 +15,8 @@ service BrokerAdmin {
   rpc ListBrokers(Empty) returns (BrokerListResponse);
   rpc GetLeaderBroker(Empty) returns (BrokerResponse);
   rpc ListNamespaces(Empty) returns (NamespaceListResponse);
+  rpc UnloadBroker(UnloadBrokerRequest) returns (UnloadBrokerResponse);
+  rpc ActivateBroker(ActivateBrokerRequest) returns (ActivateBrokerResponse);
   
 }
 
@@ -122,4 +124,40 @@ message DescribeTopicResponse {
   int32 type_schema = 2;
   bytes schema_data = 3;
   repeated string subscriptions = 4;
+}
+
+// Broker Unload
+message UnloadBrokerRequest {
+  // Target broker to unload (string id as published under /cluster/brokers/{broker_id})
+  string broker_id = 1;
+  // Unload concurrency (default: 1)
+  uint32 max_parallel = 2;
+  // Optional filters
+  repeated string namespaces_include = 3;
+  repeated string namespaces_exclude = 4;
+  // Dry-run does not perform changes; returns the topics to be affected
+  bool dry_run = 5;
+  // Per-topic timeout (seconds)
+  uint32 timeout_seconds = 6;
+}
+
+message UnloadBrokerResponse {
+  bool started = 1; // true if accepted/started
+  uint32 total = 2;
+  uint32 succeeded = 3;
+  uint32 failed = 4;
+  uint32 pending = 5;
+  repeated string failed_topics = 6;
+}
+
+// Activate Broker
+message ActivateBrokerRequest {
+  // Target broker to activate (string id as published under /cluster/brokers/{broker_id})
+  string broker_id = 1;
+  // Optional reason for auditability
+  string reason = 2;
+}
+
+message ActivateBrokerResponse {
+  bool success = 1;
 }

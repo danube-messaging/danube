@@ -118,6 +118,58 @@ pub struct DescribeTopicResponse {
     #[prost(string, repeated, tag = "4")]
     pub subscriptions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// Broker Unload
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnloadBrokerRequest {
+    /// Target broker to unload (string id as published under /cluster/brokers/{broker_id})
+    #[prost(string, tag = "1")]
+    pub broker_id: ::prost::alloc::string::String,
+    /// Unload concurrency (default: 1)
+    #[prost(uint32, tag = "2")]
+    pub max_parallel: u32,
+    /// Optional filters
+    #[prost(string, repeated, tag = "3")]
+    pub namespaces_include: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "4")]
+    pub namespaces_exclude: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Dry-run does not perform changes; returns the topics to be affected
+    #[prost(bool, tag = "5")]
+    pub dry_run: bool,
+    /// Per-topic timeout (seconds)
+    #[prost(uint32, tag = "6")]
+    pub timeout_seconds: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnloadBrokerResponse {
+    /// true if accepted/started
+    #[prost(bool, tag = "1")]
+    pub started: bool,
+    #[prost(uint32, tag = "2")]
+    pub total: u32,
+    #[prost(uint32, tag = "3")]
+    pub succeeded: u32,
+    #[prost(uint32, tag = "4")]
+    pub failed: u32,
+    #[prost(uint32, tag = "5")]
+    pub pending: u32,
+    #[prost(string, repeated, tag = "6")]
+    pub failed_topics: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// Activate Broker
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActivateBrokerRequest {
+    /// Target broker to activate (string id as published under /cluster/brokers/{broker_id})
+    #[prost(string, tag = "1")]
+    pub broker_id: ::prost::alloc::string::String,
+    /// Optional reason for auditability
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ActivateBrokerResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+}
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -304,6 +356,54 @@ pub mod broker_admin_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "ListNamespaces"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn unload_broker(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UnloadBrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UnloadBrokerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/UnloadBroker",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "UnloadBroker"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn activate_broker(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ActivateBrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ActivateBrokerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/ActivateBroker",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "ActivateBroker"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -814,6 +914,20 @@ pub mod broker_admin_server {
             tonic::Response<super::NamespaceListResponse>,
             tonic::Status,
         >;
+        async fn unload_broker(
+            &self,
+            request: tonic::Request<super::UnloadBrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UnloadBrokerResponse>,
+            tonic::Status,
+        >;
+        async fn activate_broker(
+            &self,
+            request: tonic::Request<super::ActivateBrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ActivateBrokerResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct BrokerAdminServer<T> {
@@ -1005,6 +1119,96 @@ pub mod broker_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListNamespacesSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.BrokerAdmin/UnloadBroker" => {
+                    #[allow(non_camel_case_types)]
+                    struct UnloadBrokerSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::UnloadBrokerRequest>
+                    for UnloadBrokerSvc<T> {
+                        type Response = super::UnloadBrokerResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UnloadBrokerRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::unload_broker(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UnloadBrokerSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.BrokerAdmin/ActivateBroker" => {
+                    #[allow(non_camel_case_types)]
+                    struct ActivateBrokerSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::ActivateBrokerRequest>
+                    for ActivateBrokerSvc<T> {
+                        type Response = super::ActivateBrokerResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ActivateBrokerRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::activate_broker(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ActivateBrokerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
