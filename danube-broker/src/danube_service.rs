@@ -1,4 +1,5 @@
 mod broker_register;
+mod broker_watcher;
 mod leader_election;
 mod load_manager;
 mod local_cache;
@@ -11,14 +12,13 @@ pub(crate) use load_manager::LoadManager;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use danube_client::DanubeClient;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent};
-use futures::StreamExt;
+use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use std::sync::Arc;
- 
-use tokio::time::{self, sleep, Duration};
-use tracing::{error, info, trace, warn};
+
+use tokio::time::{self, Duration};
+use tracing::{info, trace, warn};
 
 use crate::{
     admin::DanubeAdminImpl,
@@ -26,9 +26,7 @@ use crate::{
     broker_server,
     broker_service::BrokerService,
     policies::Policies,
-    resources::{
-        Resources, BASE_BROKER_LOAD_PATH, BASE_BROKER_PATH, BASE_UNASSIGNED_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE,
-    },
+    resources::{Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE},
     service_configuration::ServiceConfiguration,
     topic::SYSTEM_TOPIC,
     utils::join_path,
@@ -277,8 +275,12 @@ impl DanubeService {
         // Watch for events of Broker's interest
         let broker_service_cloned = Arc::clone(&self.broker);
         let meta_store_cloned = self.meta_store.clone();
-        self.watch_events_for_broker(meta_store_cloned, broker_service_cloned)
-            .await;
+        broker_watcher::watch_events_for_broker(
+            meta_store_cloned,
+            broker_service_cloned,
+            self.broker_id,
+        )
+        .await;
 
         // Start the Danube Admin GRPC server
         //==========================================================================
@@ -319,225 +321,12 @@ impl DanubeService {
         Ok(())
     }
 
-    /// Monitors broker-specific topic assignment events from the metadata store
-    /// 
-    /// ## Purpose:
-    /// Watches for topic assignments directed to this broker and handles local
-    /// topic creation/deletion based on LoadManager decisions.
-    /// 
-    /// ## Event Processing:
-    /// - **Put Events**: Creates topics locally when assigned by LoadManager
-    /// - **Delete Events**: Removes topics when reassigned to other brokers
-    /// 
-    /// ## Process Flow:
-    /// 1. **Setup Watch**: Monitors `/cluster/brokers/{broker_id}/` path
-    /// 2. **Parse Events**: Extracts namespace/topic from assignment paths
-    /// 3. **Cache Verification**: Ensures metadata readiness before topic creation
-    /// 4. **Local Operations**: Creates/deletes topics in broker's local state
-    async fn watch_events_for_broker(
-        &self,
-        meta_store: MetadataStorage,
-        broker_service: Arc<BrokerService>,
-    ) {
-        // Create watch stream for broker-specific events
-        let topic_assignment_path = join_path(&[BASE_BROKER_PATH, &self.broker_id.to_string()]);
-        let broker_id = self.broker_id;
-
-        // Watch for broker's assigned topics
-        match meta_store.watch(&topic_assignment_path).await {
-            Ok(mut watch_stream) => {
-                // Process events in background task
-                tokio::spawn(async move {
-                    while let Some(result) = watch_stream.next().await {
-                        match result {
-                            Ok(event) => {
-                                info!("A new Watch event has been received {}", event);
-
-                                match event {
-                                    WatchEvent::Put { key, .. } => {
-                                        let key_str = match std::str::from_utf8(&key) {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                error!("Invalid UTF-8 in key: {}", e);
-                                                continue;
-                                            }
-                                        };
-
-                                        let parts: Vec<_> = key_str.split('/').collect();
-                                        if parts.len() >= 6 {
-                                            // Need at least 6 parts for full path
-                                            // Format: namespace/topic
-                                            let topic_name = format!("/{}/{}", parts[4], parts[5]);
-                                            
-                                            // Guard: if broker is draining/drained, bounce assignment
-                                            let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
-                                            let is_active = match meta_store.get(&state_path, danube_metadata_store::MetaOptions::None).await {
-                                                Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()).map(|m| m == "active").unwrap_or(true),
-                                                _ => true,
-                                            };
-                                            if !is_active {
-                                                // Delete the assignment entry and re-post unassigned with drain_redirect marker
-                                                if let Err(e) = meta_store.delete(key_str).await {
-                                                    warn!("Failed to delete assignment during drain redirect: {}", e);
-                                                    continue;
-                                                }
-                                                let unassigned_path = join_path(&[BASE_UNASSIGNED_PATH, &topic_name]);
-                                                let marker = serde_json::json!({"reason":"drain_redirect","from_broker": broker_id});
-                                                if let Err(e) = meta_store.put(&unassigned_path, marker, danube_metadata_store::MetaOptions::None).await {
-                                                    warn!("Failed to post unassigned drain_redirect marker: {}", e);
-                                                }
-                                                continue;
-                                            }
-
-                                            // Cache readiness verification with fallback
-                                            // Verify required metadata is available before creating topic
-                                            if let Err(err) = Self::verify_cache_readiness_with_retry(&broker_service, &topic_name, 3, Duration::from_millis(500)).await {
-                                                error!("Cache readiness verification failed for {}: {}", topic_name, err);
-                                                continue;
-                                            }
-                                            
-                                            let manager = broker_service.topic_manager.clone();
-                                            match manager.ensure_local(&topic_name).await {
-                                                Ok((disp_strategy, schema_type)) => info!(
-                                                    "Topic '{}' created on broker {} - Strategy: {}, Schema: {}", 
-                                                    topic_name, 
-                                                    broker_id,
-                                                    disp_strategy,
-                                                    schema_type
-                                                    ),
-                                                Err(err) => {
-                                                    error!("Unable to create the topic due to error: {}", err)
-                                                }
-                                            }
-                                        } else {
-                                            warn!("Invalid topic path format: {}", key_str);
-                                        }
-                                    }
-                                    WatchEvent::Delete { key, .. } => {
-                                        let key_str = match std::str::from_utf8(&key) {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                error!("Invalid UTF-8 in key: {}", e);
-                                                continue;
-                                            }
-                                        };
-
-                                        let parts: Vec<_> = key_str.split('/').collect();
-                                        if parts.len() >= 6 {
-                                            // Need at least 6 parts for full path
-                                            // Format: /namespace/topic (leading slash required)
-                                            let topic_name = format!("/{}/{}", parts[4], parts[5]);
-                                            let manager = broker_service.topic_manager.clone();
-                                            // Determine if this Delete is part of an unload by inspecting unassigned marker
-                                            let unassigned_key = join_path(&[BASE_UNASSIGNED_PATH, &topic_name]);
-                                            let is_unload = match meta_store.get(&unassigned_key, MetaOptions::None).await {
-                                                Ok(Some(value)) => {
-                                                    // Expect JSON object with {"reason":"unload", "from_broker": <id>}
-                                                    value.get("reason").and_then(|r| r.as_str()) == Some("unload")
-                                                }
-                                                _ => false,
-                                            };
-
-                                            if is_unload {
-                                                match manager.unload_topic(&topic_name).await {
-                                                    Ok(()) => info!(
-                                                        "Topic '{}' unloaded locally on broker {}",
-                                                        topic_name, broker_id
-                                                    ),
-                                                    Err(err) => {
-                                                        error!("Unable to unload the topic due to error: {}", err)
-                                                    }
-                                                }
-                                            } else {
-                                                match manager.delete_local(&topic_name).await {
-                                                    Ok(_) => info!(
-                                                        "The topic {} , was successfully deleted from the broker {}",
-                                                        topic_name, broker_id
-                                                    ),
-                                                    Err(err) => {
-                                                        error!("Unable to delete the topic due to error: {}", err)
-                                                    }
-                                                }
-                                            }
-
-                                            // Auto-transition to drained when broker is draining and has no topics left
-                                            let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
-                                            let is_draining = match meta_store.get(&state_path, danube_metadata_store::MetaOptions::None).await {
-                                                Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()) == Some("draining"),
-                                                _ => false,
-                                            };
-                                            if is_draining {
-                                                let topics_left = broker_service.get_topics();
-                                                if topics_left.is_empty() {
-                                                    let drained = serde_json::json!({"mode":"drained","reason":"drain_complete"});
-                                                    if let Err(e) = meta_store.put(&state_path, drained, danube_metadata_store::MetaOptions::None).await {
-                                                        warn!("Failed to set broker {} state to drained: {}", broker_id, e);
-                                                    } else {
-                                                        info!("Broker {} transitioned to drained (no topics remaining)", broker_id);
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            warn!("Invalid topic path format: {}", key_str);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Error receiving watch event: {}", e);
-                            }
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                error!("Failed to create watch stream: {}", e);
-            }
-        }
-    }
-
     // Checks whether the broker owns a specific topic
     #[allow(dead_code)]
     pub(crate) async fn check_topic_ownership(&self, topic_name: &str) -> bool {
         self.load_manager
             .check_ownership(self.broker_id, topic_name)
             .await
-    }
-
-    // Phase 1: Cache readiness verification with retry and fallback
-    // Verifies that required metadata (policy/schema/dispatch config) is available in LocalCache
-    // before calling create_topic_locally() to avoid watcher ordering races
-    async fn verify_cache_readiness_with_retry(
-        broker_service: &Arc<BrokerService>,
-        topic_name: &str,
-        max_retries: u32,
-        retry_delay: Duration,
-    ) -> Result<()> {
-        for attempt in 0..max_retries {
-            // Check if required metadata is available in LocalCache
-            let (has_dispatch, has_schema, has_policies) = {
-                let resources = broker_service.resources.lock().await;
-                let dispatch_strategy = resources.topic.get_dispatch_strategy(topic_name);
-                let schema = resources.topic.get_schema(topic_name);
-                let policies = resources.topic.get_policies(topic_name);
-                
-                (dispatch_strategy.is_some(), schema.is_some(), policies.is_some())
-            };
-
-            if has_dispatch && has_schema {
-                trace!("Cache readiness verified for topic {} on attempt {}", topic_name, attempt + 1);
-                return Ok(());
-            }
-
-            if attempt < max_retries - 1 {
-                trace!("Cache not ready for topic {} (dispatch: {}, schema: {}, policies: {}), retrying in {:?}", 
-                      topic_name, has_dispatch, has_schema, has_policies, retry_delay);
-                sleep(retry_delay).await;
-            }
-        }
-
-        warn!("Cache readiness verification failed for topic {} after {} attempts", topic_name, max_retries);
-        Err(anyhow!("Required metadata not available in LocalCache after {} retries", max_retries))
     }
 }
 
@@ -561,25 +350,22 @@ pub(crate) async fn create_namespace_if_absent(
 }
 
 /// Periodically publishes broker load reports to the metadata store
-/// 
+///
 /// ## Purpose:
 /// Continuously reports broker resource utilization and topic assignments
 /// to enable LoadManager load balancing decisions across the cluster.
-/// 
+///
 /// ## Reporting Cycle:
 /// - **Interval**: Every 30 seconds
 /// - **Data Collection**: Current topic count and assignments
 /// - **Publication**: Stores report at `/cluster/load/{broker_id}`
-/// 
+///
 /// ## Load Report Contents:
 /// Generated by `generate_load_report()` containing:
 /// - Number of assigned topics
 /// - List of topic names
 /// - Resource utilization metrics
-async fn post_broker_load_report(
-    broker_service: Arc<BrokerService>,
-    meta_store: MetadataStorage,
-) {
+async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store: MetadataStorage) {
     let mut topics: Vec<String>;
     let mut broker_id;
     let mut interval = time::interval(Duration::from_secs(30));
