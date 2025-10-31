@@ -32,6 +32,7 @@ service TopicAdmin {
   rpc CreateTopic(NewTopicRequest) returns (TopicResponse);
   rpc CreatePartitionedTopic(PartitionedTopicRequest) returns (TopicResponse);
   rpc DeleteTopic(TopicRequest) returns (TopicResponse);
+  rpc UnloadTopic(TopicRequest) returns (TopicResponse);
   rpc ListSubscriptions(TopicRequest) returns (SubscriptionListResponse);
   rpc Unsubscribe(SubscriptionRequest) returns (SubscriptionResponse);
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);

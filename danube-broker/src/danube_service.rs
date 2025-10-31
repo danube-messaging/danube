@@ -27,7 +27,7 @@ use crate::{
     broker_service::BrokerService,
     policies::Policies,
     resources::{
-        Resources, BASE_BROKER_LOAD_PATH, BASE_BROKER_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE,
+        Resources, BASE_BROKER_LOAD_PATH, BASE_BROKER_PATH, BASE_UNASSIGNED_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE,
     },
     service_configuration::ServiceConfiguration,
     topic::SYSTEM_TOPIC,
@@ -398,15 +398,37 @@ impl DanubeService {
                                             // Format: /namespace/topic (leading slash required)
                                             let topic_name = format!("/{}/{}", parts[4], parts[5]);
                                             let manager = broker_service.topic_manager.clone();
-                                            match manager.delete_local(&topic_name).await {
-                                    Ok(_) => info!(
-                                        "The topic {} , was successfully deleted from the broker {}",
-                                        topic_name, broker_id
-                                    ),
-                                    Err(err) => {
-                                        error!("Unable to delete the topic due to error: {}", err)
-                                    }
-                                }
+                                            // Determine if this Delete is part of an unload by inspecting unassigned marker
+                                            let unassigned_key = join_path(&[BASE_UNASSIGNED_PATH, &topic_name]);
+                                            let is_unload = match meta_store.get(&unassigned_key, MetaOptions::None).await {
+                                                Ok(Some(value)) => {
+                                                    // Expect JSON object with {"reason":"unload", "from_broker": <id>}
+                                                    value.get("reason").and_then(|r| r.as_str()) == Some("unload")
+                                                }
+                                                _ => false,
+                                            };
+
+                                            if is_unload {
+                                                match manager.unload_topic(&topic_name).await {
+                                                    Ok(()) => info!(
+                                                        "Topic '{}' unloaded locally on broker {}",
+                                                        topic_name, broker_id
+                                                    ),
+                                                    Err(err) => {
+                                                        error!("Unable to unload the topic due to error: {}", err)
+                                                    }
+                                                }
+                                            } else {
+                                                match manager.delete_local(&topic_name).await {
+                                                    Ok(_) => info!(
+                                                        "The topic {} , was successfully deleted from the broker {}",
+                                                        topic_name, broker_id
+                                                    ),
+                                                    Err(err) => {
+                                                        error!("Unable to delete the topic due to error: {}", err)
+                                                    }
+                                                }
+                                            }
                                         } else {
                                             warn!("Invalid topic path format: {}", key_str);
                                         }

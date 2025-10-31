@@ -153,12 +153,55 @@ impl TopicCluster {
         Ok(())
     }
 
+    /// Posts an unload instruction for a topic without deleting essential metadata.
+    /// Steps:
+    /// 1. Resolve the hosting broker id for the topic.
+    /// 2. Create an unassigned entry with an unload marker {reason:"unload", from_broker:<id>}.
+    /// 3. Schedule deletion of the broker assignment at the hosting broker (watch will trigger local detach).
+    pub(crate) async fn post_unload_topic(&self, topic_name: &str) -> Result<()> {
+        // find the broker owning the topic
+        let broker_id = match self
+            .resources
+            .lock()
+            .await
+            .cluster
+            .get_broker_for_topic(topic_name)
+            .await
+        {
+            Some(broker_id) => broker_id,
+            None => return Err(anyhow!("Unable to find topic")),
+        };
+
+        // 1) create unload marker under /cluster/unassigned/{topic}
+        {
+            let mut resources = self.resources.lock().await;
+            // broker_id is stored as string in metadata; try to parse to u64
+            let from_broker_num = broker_id
+                .parse::<u64>()
+                .map_err(|_| anyhow!("Invalid broker id format: {}", broker_id))?;
+            resources
+                .cluster
+                .mark_topic_for_unload(topic_name, from_broker_num)
+                .await?;
+        }
+
+        // 2) schedule deletion at assigned broker (triggers local unload via watch)
+        {
+            let mut resources = self.resources.lock().await;
+            resources
+                .cluster
+                .schedule_topic_deletion(&broker_id, topic_name)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     /// Schedules deletion of a topic and removes associated metadata entries.
     ///
     /// Steps:
     /// 1. Schedule deletion at assigned broker (watch triggers cleanup there).
     /// 2. Remove topic from namespace topics list.
-    /// 3. Remove schema entry.
     pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
         // find the broker owning the topic
         let broker_id = match self

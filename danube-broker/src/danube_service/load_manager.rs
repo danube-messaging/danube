@@ -416,7 +416,7 @@ impl LoadManager {
     // to be further read and processed by the selected broker
     async fn assign_topic_to_broker(&mut self, event: WatchEvent) {
         match event {
-            WatchEvent::Put { key, .. } => {
+            WatchEvent::Put { key, value, .. } => {
                 // recalculate the rankings after the topic was assigned
                 self.calculate_rankings_simple().await;
 
@@ -432,7 +432,34 @@ impl LoadManager {
                 let parts: Vec<_> = key_str.split(BASE_UNASSIGNED_PATH).collect();
                 let topic_name = parts[1];
 
-                let broker_id = self.get_next_broker().await;
+                // Try to parse unload marker to exclude originating broker
+                let mut exclude_broker: Option<u64> = None;
+                if !value.is_empty() {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
+                        if let Some(obj) = val.as_object() {
+                            if obj.get("reason").and_then(|v| v.as_str()) == Some("unload") {
+                                if let Some(from_broker) =
+                                    obj.get("from_broker").and_then(|v| v.as_u64())
+                                {
+                                    exclude_broker = Some(from_broker);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let broker_id = if let Some(ex) = exclude_broker {
+                    match self.get_next_broker_excluding(ex).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            error!("Cannot reassign topic {} for unload: {}", topic_name, e);
+                            // Keep unassigned marker for future reassignment
+                            return;
+                        }
+                    }
+                } else {
+                    self.get_next_broker().await
+                };
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
 
                 match self
@@ -509,6 +536,19 @@ impl LoadManager {
             .swap(next_broker, std::sync::atomic::Ordering::SeqCst);
 
         next_broker
+    }
+
+    /// Select next broker excluding a specific broker id.
+    async fn get_next_broker_excluding(&self, exclude_id: u64) -> Result<u64> {
+        let rankings = self.rankings.lock().await;
+        for (broker_id, _) in rankings.iter() {
+            if *broker_id != exclude_id {
+                return Ok(*broker_id);
+            }
+        }
+        Err(anyhow!(
+            "Cannot unload topic: no alternative broker available. Unload requires at least 2 brokers in the cluster."
+        ))
     }
 
     /// Handles broker failover by cleaning up topic assignments and creating reassignment entries

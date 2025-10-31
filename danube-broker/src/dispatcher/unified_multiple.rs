@@ -36,6 +36,7 @@ enum DispatcherCommand {
     // Reliable-only
     PollAndDispatch,
     ResetPending, // Clear pending flag to allow retry after consumer disconnect
+    FlushProgressNow, // Force flush subscription progress (reliable only)
 }
 
 impl UnifiedMultipleDispatcher {
@@ -110,6 +111,9 @@ impl UnifiedMultipleDispatcher {
                     DispatcherCommand::PollAndDispatch => {}
                     DispatcherCommand::ResetPending => {
                         // non-reliable has no pending state
+                    }
+                    DispatcherCommand::FlushProgressNow => {
+                        // non-reliable: no-op
                     }
                 }
             }
@@ -264,6 +268,11 @@ impl UnifiedMultipleDispatcher {
                                         // Trigger immediate poll attempt to failover the buffered message
                                         let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
                                     }
+                                    DispatcherCommand::FlushProgressNow => {
+                                        if let Err(e) = engine.lock().await.flush_progress_now().await {
+                                            warn!("FlushProgressNow: failed to flush subscription progress: {}", e);
+                                        }
+                                    }
                                 }
                             }
                             None => {
@@ -368,6 +377,17 @@ impl UnifiedMultipleDispatcher {
                 .map_err(|_| anyhow!("Failed to send reset pending command"))
         } else {
             // Non-reliable: no-op
+            Ok(())
+        }
+    }
+
+    /// Force flush durable progress for reliable subscriptions. No-op for non-reliable mode.
+    pub(crate) async fn flush_progress_now(&self) -> Result<()> {
+        if let Some(tx) = &self.reliable {
+            tx.send(DispatcherCommand::FlushProgressNow)
+                .await
+                .map_err(|_| anyhow!("Failed to send flush progress command"))
+        } else {
             Ok(())
         }
     }
