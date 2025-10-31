@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use serde_json::Value;
 
@@ -106,6 +106,54 @@ impl ClusterResources {
         }
 
         broker_ids
+    }
+
+    /// Sets the broker state under /cluster/brokers/{broker_id}/state with a small JSON payload
+    /// Example: {"mode":"draining","reason":"admin_unload"}
+    pub(crate) async fn set_broker_state(
+        &self,
+        broker_id: &str,
+        mode: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let path = join_path(&[BASE_BROKER_PATH, broker_id, "state"]);
+        let value = if let Some(r) = reason {
+            serde_json::json!({"mode": mode, "reason": r})
+        } else {
+            serde_json::json!({"mode": mode})
+        };
+        self.store.put(&path, value, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    /// Returns the list of topics currently assigned to the given broker as /namespace/topic strings
+    pub(crate) async fn get_topics_for_broker(&self, broker_id: &str) -> Vec<String> {
+        let prefix = join_path(&[BASE_BROKER_PATH, broker_id]);
+        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let mut topics = Vec::new();
+        for key in keys {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 6 {
+                // /cluster/brokers/{broker_id}/{ns}/{topic}
+                let ns = parts[4];
+                let topic = parts[5];
+                topics.push(format!("/{}/{}", ns, topic));
+            }
+        }
+        topics
+    }
+
+    /// Returns true if broker state is active; if state key is missing, default to active
+    pub(crate) async fn is_broker_active(&self, broker_id: &str) -> bool {
+        let path = join_path(&[BASE_BROKER_PATH, broker_id, "state"]);
+        match self.store.get(&path, MetaOptions::None).await {
+            Ok(Some(val)) => val
+                .get("mode")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "active")
+                .unwrap_or(true),
+            _ => true,
+        }
     }
 
     pub(crate) fn get_broker_addr(&self, broker_id: &str) -> Option<String> {
