@@ -313,10 +313,6 @@ impl DanubeService {
         if let Err(e) = result_admin {
             eprintln!("Danube Admin failed: {:?}", e);
         }
-        //server_handle.await?;
-
-        //TODO! evalueate other backgroud services like PublishRateLimiter, DispatchRateLimiter,
-        // compaction, innactivity monitor
 
         Ok(())
     }
