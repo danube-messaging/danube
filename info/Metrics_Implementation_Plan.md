@@ -48,6 +48,39 @@ Files: `danube-broker/src/topic.rs`, `danube-broker/src/subscription.rs`, `danub
 - **Consumer / Subscription**
   - `danube_consumer_subscribe_total` (Counter)
     - Labels: namespace, topic, subscription, sub_type, result
+
+### Policy and Rate-Limiter Metrics (deferred wiring; quick wins)
+
+These complement the core metrics and are easy to add when we enable metrics work. They align with the "Metrics to Add" section below; this subsection records exact hook points in code.
+
+- `POLICY_VIOLATION_COUNTER` (Counter: `danube_policy_violation_total`)
+  - Labels: policy_type, topic_name, violation_reason
+  - Hooks:
+    - `topic.rs`: on `create_producer`/`subscribe`/`publish_message_async` when policy checks fail (producer/subscription/consumers/message_size).
+    - `broker_server/producer_handler.rs`, `broker_server/consumer_handler.rs`: mirror early rejects for fast-fail visibility.
+
+- `RATE_LIMIT_THROTTLE_COUNTER` (Counter: `danube_rate_limit_throttle_total`)
+  - Labels: rate_type (publish|nonreliable_dispatch|reliable_dispatch), topic_name[, subscription_name]
+  - Hooks:
+    - `topic.rs`: `publish_message_async` when publish limiter denies (warn-only path).
+    - `subscription.rs`: `send_message_to_dispatcher` when per-sub limiter denies (warn-only for NonReliable).
+    - `dispatcher/subscription_engine.rs`: `poll_next()` when pacing (Reliable) backs off due to limiter (increment once per backoff cycle).
+
+- `MESSAGE_SIZE_HISTOGRAM` (Histogram: `danube_topic_message_size_bytes`)
+  - Labels: namespace, topic
+  - Hook: `topic.rs` at entry of `publish_message_async` (observe `payload.len()` before checks/persist).
+
+- `PRODUCER_COUNT_GAUGE` (Gauge: `danube_topic_active_producers`)
+  - Labels: namespace, topic
+  - Hooks: `topic.rs` after successful `create_producer` (++) and on producer close/cleanup (--).
+
+- `CONSUMER_COUNT_GAUGE` (Gauge: `danube_subscription_active_consumers`)
+  - Labels: namespace, topic, subscription
+  - Hooks: `subscription.rs` after successful `add_consumer` (++) and on `remove_consumer`/drop (--).
+
+- `RATE_LIMITER_UTILIZATION_GAUGE` (Gauge: `danube_rate_limiter_utilization`)
+  - Labels: rate_type, topic_name
+  - Note: optional follow-up; requires exposing utilization (e.g., tokens remaining vs capacity or rolling acquire rate).
     - Hook: Subscribe RPC handler
   - `danube_consumer_active` (Gauge)
     - Labels: namespace, topic, subscription, sub_type
