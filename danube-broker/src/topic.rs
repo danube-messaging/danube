@@ -36,6 +36,8 @@ pub(crate) enum TopicState {
     Closed,
 }
 
+// (moved helper/validation methods after struct definition)
+
 // Topic
 //
 // Manage its own producers and subscriptions. This includes maintaining the state of producers
@@ -100,6 +102,8 @@ impl Topic {
         producer_name: &str,
         producer_access_mode: i32,
     ) -> Result<serde_json::Value> {
+        // Policy: max_producers_per_topic
+        self.can_add_producer().await?;
         let mut producer_config = serde_json::Value::String(String::new());
         let mut producers = self.producers.lock().await;
 
@@ -122,7 +126,6 @@ impl Topic {
                 return Err(anyhow!(" the producer already exist"));
             }
         }
-
         Ok(producer_config)
     }
 
@@ -161,6 +164,8 @@ impl Topic {
                 ));
             }
         }
+        // Policy: max_message_size
+        self.validate_message_size(stream_message.payload.len())?;
         // Validate producer without blocking
         let producer_id = stream_message.msg_id.producer_id;
         {
@@ -285,15 +290,20 @@ impl Topic {
         //maybe for user internal business, management and montoring
         let sub_metadata = HashMap::new();
 
-        let mut subscriptions_lock = self.subscriptions.lock().await;
+        // Check if subscription already exists without holding the lock across awaits
+        let is_new = {
+            let subs = self.subscriptions.lock().await;
+            !subs.contains_key(&options.subscription_name)
+        };
 
-        let subscription = if let std::collections::hash_map::Entry::Vacant(entry) =
-            subscriptions_lock.entry(options.subscription_name.clone())
-        {
+        if is_new {
+            // Policy: max_subscriptions_per_topic (only when creating a new subscription)
+            self.can_add_subscription().await?;
+
+            // Build the subscription and dispatcher without holding the lock
             let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
 
-            // Handle additional logic for reliable storage
             if let DispatchStrategy::Reliable = &self.dispatch_strategy {
                 let notifier = new_subscription
                     .create_new_dispatcher(
@@ -304,7 +314,6 @@ impl Topic {
                         Some(Duration::from_secs(10)),
                     )
                     .await?;
-
                 if let Some(notifier) = notifier {
                     self.notifiers.lock().await.push(notifier);
                 }
@@ -320,19 +329,25 @@ impl Topic {
                     .await?;
             }
 
-            entry.insert(new_subscription)
-        } else {
-            subscriptions_lock
-                .get_mut(&options.subscription_name)
-                .unwrap()
-        };
+            // Insert the new subscription
+            let mut subs = self.subscriptions.lock().await;
+            subs.insert(options.subscription_name.clone(), new_subscription);
+        }
+
+        // Policy: consumer limits (per-subscription and per-topic)
+        self.can_add_consumer_to_subscription(&options.subscription_name)
+            .await?;
+
+        // Retrieve the subscription and proceed
+        let mut subs = self.subscriptions.lock().await;
+        let subscription = subs
+            .get_mut(&options.subscription_name)
+            .expect("subscription must exist at this point");
 
         if subscription.is_exclusive() && !subscription.get_consumers_info().is_empty() {
             warn!("Not allowed to add the Consumer: {}, the Exclusive subscription can't be shared with other consumers", options.consumer_name);
             return Err(anyhow!("Not allowed to add the Consumer: {}, the Exclusive subscription can't be shared with other consumers", options.consumer_name));
         }
-
-        //Todo! Check the topic policies with max_consumers per topic
 
         let consumer_id = subscription.add_consumer(topic_name, options).await?;
 
@@ -403,6 +418,121 @@ impl Topic {
     #[allow(dead_code)]
     pub(crate) fn delete_schema(&self, _schema: Schema) -> Result<()> {
         todo!()
+    }
+}
+
+impl Topic {
+    // ===== Helper counters =====
+    pub(crate) async fn producer_count(&self) -> usize {
+        let producers = self.producers.lock().await;
+        producers.len()
+    }
+
+    pub(crate) async fn subscription_count(&self) -> usize {
+        let subscriptions = self.subscriptions.lock().await;
+        subscriptions.len()
+    }
+
+    pub(crate) async fn total_consumer_count(&self) -> usize {
+        let subscriptions = self.subscriptions.lock().await;
+        let mut total = 0usize;
+        for (_name, sub) in subscriptions.iter() {
+            total += sub.get_consumers_info().len();
+        }
+        total
+    }
+
+    // ===== Policy validations =====
+    pub(crate) async fn can_add_producer(&self) -> Result<()> {
+        let limit = self
+            .topic_policies
+            .as_ref()
+            .map(|p| p.get_max_producers_per_topic())
+            .unwrap_or(0);
+        if limit == 0 {
+            return Ok(());
+        }
+        let current = self.producer_count().await as u32;
+        if current >= limit {
+            return Err(anyhow!(
+                "Producer limit reached for topic {}. Current: {}, Limit: {}",
+                self.topic_name, current, limit
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn can_add_subscription(&self) -> Result<()> {
+        let limit = self
+            .topic_policies
+            .as_ref()
+            .map(|p| p.get_max_subscriptions_per_topic())
+            .unwrap_or(0);
+        if limit == 0 {
+            return Ok(());
+        }
+        let current = self.subscription_count().await as u32;
+        if current >= limit {
+            return Err(anyhow!(
+                "Subscription limit reached for topic {}. Current: {}, Limit: {}",
+                self.topic_name, current, limit
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn can_add_consumer_to_subscription(&self, sub_name: &str) -> Result<()> {
+        // Per-subscription limit
+        let per_sub_limit = self
+            .topic_policies
+            .as_ref()
+            .map(|p| p.get_max_consumers_per_subscription())
+            .unwrap_or(0);
+        if per_sub_limit > 0 {
+            let subscriptions = self.subscriptions.lock().await;
+            if let Some(sub) = subscriptions.get(sub_name) {
+                let current = sub.get_consumers_info().len() as u32;
+                if current >= per_sub_limit {
+                    return Err(anyhow!(
+                        "Consumer limit per subscription reached on topic {} subscription {}. Current: {}, Limit: {}",
+                        self.topic_name, sub_name, current, per_sub_limit
+                    ));
+                }
+            }
+        }
+        let topic_limit = self
+            .topic_policies
+            .as_ref()
+            .map(|p| p.get_max_consumers_per_topic())
+            .unwrap_or(0);
+        if topic_limit > 0 {
+            let current_total = self.total_consumer_count().await as u32;
+            if current_total >= topic_limit {
+                return Err(anyhow!(
+                    "Consumer limit per topic reached for {}. Current: {}, Limit: {}",
+                    self.topic_name, current_total, topic_limit
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_message_size(&self, size: usize) -> Result<()> {
+        let max = self
+            .topic_policies
+            .as_ref()
+            .map(|p| p.get_max_message_size())
+            .unwrap_or(0);
+        if max == 0 {
+            return Ok(());
+        }
+        if (size as u32) > max {
+            return Err(anyhow!(
+                "Message size {} exceeds maximum allowed {} for topic {}",
+                size, max, self.topic_name
+            ));
+        }
+        Ok(())
     }
 }
 

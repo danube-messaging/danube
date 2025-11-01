@@ -338,15 +338,24 @@ impl BrokerService {
     }
 
     /// Validates whether policies allow creating a new subscription for `topic_name`.
-    pub(crate) fn allow_subscription_creation(&self, topic_name: impl Into<String>) -> bool {
-        // check the topic policies here
-        let _topic = self
-            .topic_worker_pool
-            .get_topic(&topic_name.into())
-            .expect("unable to find the topic");
-
-        //TODO! once the policies Topic&Namespace Policies are in place we can verify if it is allowed
-
+    pub(crate) async fn allow_subscription_creation(
+        &self,
+        topic_name: impl Into<String>,
+    ) -> bool {
+        let topic_name = topic_name.into();
+        if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+            let limit = topic
+                .topic_policies
+                .as_ref()
+                .map(|p| p.get_max_subscriptions_per_topic())
+                .unwrap_or(0);
+            if limit == 0 {
+                return true;
+            }
+            let current = topic.subscription_count().await as u32;
+            return current < limit;
+        }
+        // If topic not found locally, conservatively allow (caller ensured locality via get_topic)
         true
     }
 
