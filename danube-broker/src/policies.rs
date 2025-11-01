@@ -69,7 +69,6 @@ impl Policies {
         self.max_publish_rate
     }
 
-
     pub fn get_max_subscription_dispatch_rate(&self) -> u32 {
         self.max_subscription_dispatch_rate
     }
@@ -132,7 +131,6 @@ impl Policies {
                     }
                     found_fields.insert("max_publish_rate");
                 }
-                
                 "max_subscription_dispatch_rate" => {
                     if let Some(val) = value.as_u64() {
                         policies.max_subscription_dispatch_rate = val as u32;
