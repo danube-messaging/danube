@@ -1,14 +1,3 @@
-//! Test: TopicStore WAL store/read and latest tailing
-//!
-//! Purpose
-//! - Validate the broker's TopicStore facade over WalStorage supports:
-//!   - Appending messages and reading back from a specific offset
-//!   - Tailing from StartPosition::Latest to only receive post-subscription messages
-//!
-//! Notes
-//! - These are unit tests colocated with the crate to access pub(crate) TopicStore
-//! - Uses in-memory WAL (temp dir) and PersistentStorage trait methods
-
 use std::collections::HashMap;
 
 use danube_core::message::{MessageID, StreamMessage};
@@ -17,7 +6,211 @@ use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 use futures::StreamExt;
 
+use crate::danube_service::LocalCache;
+use crate::policies::Policies;
+use crate::resources::TopicResources;
+use crate::subscription::SubscriptionOptions;
+use crate::topic::Topic;
 use crate::topic::TopicStore;
+use anyhow::Result as AnyResult;
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
+use danube_metadata_store::{MemoryStore, MetadataStorage};
+use serde_json::{Number, Value};
+
+fn mk_policies(entries: &[(&str, u32)]) -> Policies {
+    let mut map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    // Populate all required fields with defaults (0 means unlimited; message size default 10 MiB)
+    map.insert(
+        "max_producers_per_topic".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_subscriptions_per_topic".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_consumers_per_topic".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_consumers_per_subscription".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_publish_rate".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_subscription_dispatch_rate".to_string(),
+        Value::Number(Number::from(0)),
+    );
+    map.insert(
+        "max_message_size".to_string(),
+        Value::Number(Number::from(10485760)),
+    );
+    // Override with provided entries
+    for (k, v) in entries {
+        map.insert((*k).to_string(), Value::Number(Number::from(*v as u64)));
+    }
+    Policies::from_hashmap(map).expect("valid policies map")
+}
+
+async fn mk_topic(name: &str) -> Topic {
+    // In-memory metadata store and local cache for tests
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let local_cache = LocalCache::new(store.clone());
+    let topic_resources = TopicResources::new(local_cache, store);
+    Topic::new(
+        name,
+        ConfigDispatchStrategy::NonReliable,
+        None,
+        topic_resources,
+    )
+}
+
+fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
+    SubscriptionOptions {
+        subscription_name: sub.to_string(),
+        subscription_type: sub_type,
+        consumer_id: None,
+        consumer_name: consumer.to_string(),
+    }
+}
+
+/// What this test validates
+///
+/// - Scenario: topic with `max_producers_per_topic = 2`.
+/// - Expectation: creating two producers succeeds; the third creation fails with a policy error.
+///
+/// Why this matters
+/// - Guards against producer fan-in over a single topic exhausting resources.
+#[tokio::test]
+async fn policy_limit_max_producers_per_topic() -> AnyResult<()> {
+    let mut topic = mk_topic("/default/policy_producers").await;
+    let pol = mk_policies(&[("max_producers_per_topic", 2)]);
+    topic.policies_update(pol)?;
+
+    let _ = topic.create_producer(1, "p1", 0).await?;
+    let _ = topic.create_producer(2, "p2", 0).await?;
+    let err = topic.create_producer(3, "p3", 0).await.unwrap_err();
+    assert!(err.to_string().contains("Producer limit"));
+    Ok(())
+}
+
+/// What this test validates
+///
+/// - Scenario: topic with `max_subscriptions_per_topic = 1`.
+/// - Expectation: first subscription succeeds; second subscription creation is rejected.
+///
+/// Why this matters
+/// - Caps the number of independent consumer groups on a topic.
+#[tokio::test]
+async fn policy_limit_max_subscriptions_per_topic() -> AnyResult<()> {
+    let mut topic = mk_topic("/default/policy_subs").await;
+    let pol = mk_policies(&[("max_subscriptions_per_topic", 1)]);
+    topic.policies_update(pol)?;
+
+    let _ = topic
+        .subscribe("/default/policy_subs", sub_opts("s1", "c1", 1))
+        .await?;
+    let err = topic
+        .subscribe("/default/policy_subs", sub_opts("s2", "c2", 1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Subscription limit"));
+    Ok(())
+}
+
+/// What this test validates
+///
+/// - Scenario: topic with `max_consumers_per_subscription = 1`.
+/// - Expectation: first consumer on a subscription succeeds; the second is rejected.
+///
+/// Why this matters
+/// - Prevents accidental fan-out on a subscription intended to be limited (e.g., single active consumer).
+#[tokio::test]
+async fn policy_limit_max_consumers_per_subscription() -> AnyResult<()> {
+    let mut topic = mk_topic("/default/policy_cons_per_sub").await;
+    let pol = mk_policies(&[("max_consumers_per_subscription", 1)]);
+    topic.policies_update(pol)?;
+
+    let _ = topic
+        .subscribe("/default/policy_cons_per_sub", sub_opts("s", "c1", 1))
+        .await?;
+    let err = topic
+        .subscribe("/default/policy_cons_per_sub", sub_opts("s", "c2", 1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Consumer limit per subscription"));
+    Ok(())
+}
+
+/// What this test validates
+///
+/// - Scenario: topic with `max_consumers_per_topic = 2` total across subscriptions.
+/// - Expectation: two consumers across any subs succeed; the third consumer is rejected.
+///
+/// Why this matters
+/// - Protects topic-level dispatch and state from excessive concurrent consumers.
+#[tokio::test]
+async fn policy_limit_max_consumers_per_topic() -> AnyResult<()> {
+    let mut topic = mk_topic("/default/policy_cons_per_topic").await;
+    let pol = mk_policies(&[("max_consumers_per_topic", 2)]);
+    topic.policies_update(pol)?;
+
+    let _ = topic
+        .subscribe("/default/policy_cons_per_topic", sub_opts("s1", "c1", 1))
+        .await?;
+    let _ = topic
+        .subscribe("/default/policy_cons_per_topic", sub_opts("s2", "c2", 1))
+        .await?;
+    let err = topic
+        .subscribe("/default/policy_cons_per_topic", sub_opts("s3", "c3", 1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Consumer limit per topic"));
+    Ok(())
+}
+
+/// What this test validates
+///
+/// - Scenario: topic with `max_message_size = 8` bytes.
+/// - Expectation: publish of a 9-byte payload is rejected before dispatch/persist.
+///
+/// Why this matters
+/// - Prevents oversize messages from consuming bandwidth/storage and violating limits.
+#[tokio::test]
+async fn policy_limit_max_message_size() -> AnyResult<()> {
+    use danube_core::message::MessageID;
+
+    let mut topic = mk_topic("/default/policy_msg_size").await;
+    let pol = mk_policies(&[("max_message_size", 8)]); // 8 bytes
+    topic.policies_update(pol)?;
+
+    // Need a producer attached for publish
+    let _ = topic.create_producer(42, "p", 0).await?;
+
+    // Build a message exceeding size
+    let msg = StreamMessage {
+        request_id: 1,
+        msg_id: MessageID {
+            producer_id: 42,
+            topic_name: "/default/policy_msg_size".to_string(),
+            broker_addr: "127.0.0.1:0".to_string(),
+            topic_offset: 0,
+        },
+        payload: b"too-large".to_vec(), // 9 bytes
+        publish_time: 0,
+        producer_name: "p".to_string(),
+        subscription_name: None,
+        attributes: HashMap::new(),
+    };
+
+    let err = topic.publish_message_async(msg).await.unwrap_err();
+    assert!(err.to_string().contains("Message size"));
+    Ok(())
+}
 
 fn make_msg(i: u64, topic: &str) -> StreamMessage {
     StreamMessage {
@@ -36,6 +229,13 @@ fn make_msg(i: u64, topic: &str) -> StreamMessage {
     }
 }
 
+/// What this test validates
+///
+/// - Scenario: append three messages and read from offset 1.
+/// - Expectation: reader yields only messages at offsets 1 and 2.
+///
+/// Why this matters
+/// - Ensures TopicStore correctly addresses WAL by absolute offsets.
 #[tokio::test]
 async fn topic_store_wal_store_and_read_from_offset() {
     // Temp WAL (file-backed in temp dir)
@@ -65,6 +265,13 @@ async fn topic_store_wal_store_and_read_from_offset() {
     assert_eq!(m2.payload, b"wal-hello-2");
 }
 
+/// What this test validates
+///
+/// - Scenario: start a reader at `Latest`, then append two messages.
+/// - Expectation: reader yields only messages appended after the reader was created.
+///
+/// Why this matters
+/// - Confirms tailing semantics required by subscribers joining an active topic.
 #[tokio::test]
 async fn topic_store_wal_latest_tailing() {
     // Temp WAL (file-backed in temp dir)

@@ -11,6 +11,7 @@ mod dispatch_strategy;
 mod dispatcher;
 mod error_message;
 mod message;
+mod rate_limiter;
 mod policies;
 mod producer;
 mod resources;

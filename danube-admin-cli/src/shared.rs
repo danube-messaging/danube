@@ -17,8 +17,6 @@ pub(crate) struct Policies {
 
     // Defines the Max publish rate (number of messages and/or bytes per second) for producers publishing to the topic.
     max_publish_rate: Option<u32>,
-    // Defines the Max dispatch rate (number of messages and/or bytes per second) for the topic.
-    max_dispatch_rate: Option<u32>,
     // Defines the dispatch rate for each subscription on the topic.
     max_subscription_dispatch_rate: Option<u32>,
 
@@ -48,10 +46,6 @@ pub(crate) fn display_policies(policies: &Policies) {
     match policies.max_publish_rate {
         Some(value) => println!("Max publish rate: {}", value),
         None => println!("Max publish rate Not Set"),
-    }
-    match policies.max_dispatch_rate {
-        Some(value) => println!("The dispatch rate: {}", value),
-        None => println!("The dispatch rate Not Set"),
     }
 
     match policies.max_subscription_dispatch_rate {

@@ -89,10 +89,10 @@ impl TopicManager {
             topic_name,
             dispatch_strategy.clone(),
             wal_storage,
-            Some({
+            {
                 let resources = self.resources.lock().await;
                 resources.topic.clone()
-            }),
+            },
         );
 
         let schema = {

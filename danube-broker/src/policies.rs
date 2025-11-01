@@ -26,10 +26,6 @@ pub struct Policies {
     /// Default is 0, unlimited.
     #[serde(default)]
     max_publish_rate: u32,
-    /// Defines the Max dispatch rate (number of messages and/or bytes per second) for the topic.
-    /// Default is 0, unlimited.
-    #[serde(default)]
-    max_dispatch_rate: u32,
     /// Defines the dispatch rate for each subscription on the topic.
     /// Default is 0, unlimited.
     #[serde(default)]
@@ -51,6 +47,36 @@ impl Policies {
             ..Default::default()
         }
     }
+
+    // Read-only getters for policy fields
+    pub fn get_max_producers_per_topic(&self) -> u32 {
+        self.max_producers_per_topic
+    }
+
+    pub fn get_max_subscriptions_per_topic(&self) -> u32 {
+        self.max_subscriptions_per_topic
+    }
+
+    pub fn get_max_consumers_per_topic(&self) -> u32 {
+        self.max_consumers_per_topic
+    }
+
+    pub fn get_max_consumers_per_subscription(&self) -> u32 {
+        self.max_consumers_per_subscription
+    }
+
+    pub fn get_max_publish_rate(&self) -> u32 {
+        self.max_publish_rate
+    }
+
+    pub fn get_max_subscription_dispatch_rate(&self) -> u32 {
+        self.max_subscription_dispatch_rate
+    }
+
+    pub fn get_max_message_size(&self) -> u32 {
+        self.max_message_size
+    }
+
     #[allow(dead_code)]
     pub(crate) fn get_fields_as_map(&self) -> Map<String, Value> {
         let serialized = serde_json::to_value(self).unwrap();
@@ -69,7 +95,6 @@ impl Policies {
             "max_consumers_per_topic",
             "max_consumers_per_subscription",
             "max_publish_rate",
-            "max_dispatch_rate",
             "max_subscription_dispatch_rate",
             "max_message_size",
         ];
@@ -105,12 +130,6 @@ impl Policies {
                         policies.max_publish_rate = val as u32;
                     }
                     found_fields.insert("max_publish_rate");
-                }
-                "max_dispatch_rate" => {
-                    if let Some(val) = value.as_u64() {
-                        policies.max_dispatch_rate = val as u32;
-                    }
-                    found_fields.insert("max_dispatch_rate");
                 }
                 "max_subscription_dispatch_rate" => {
                     if let Some(val) = value.as_u64() {

@@ -96,9 +96,6 @@ policies:
   # Allow high publish rate for performance testing
   max_publish_rate: 0
 
-  # Allow high dispatch rate for performance testing
-  max_dispatch_rate: 0
-
   # Allow high subscription dispatch rate for performance testing
   max_subscription_dispatch_rate: 0
 

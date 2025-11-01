@@ -80,6 +80,13 @@ impl ProducerService for DanubeServerImpl {
             return Ok(tonic::Response::new(response));
         }
 
+        // Early policy check: max_producers_per_topic
+        if let Some(topic) = service.topic_worker_pool.get_topic(&req.topic_name) {
+            if let Err(e) = topic.can_add_producer().await {
+                return Err(Status::resource_exhausted(e.to_string()));
+            }
+        }
+
         let new_producer_id = service
             .create_new_producer(
                 &req.producer_name,
@@ -141,6 +148,13 @@ impl ProducerService for DanubeServerImpl {
         let req_id = stream_message.request_id;
         let producer_id = stream_message.msg_id.producer_id;
         let topic_name = stream_message.msg_id.topic_name.clone();
+
+        // Early policy check: max_message_size
+        if let Some(topic) = service.topic_worker_pool.get_topic(&topic_name) {
+            if let Err(e) = topic.validate_message_size(stream_message.payload.len()) {
+                return Err(Status::invalid_argument(e.to_string()));
+            }
+        }
 
         // Use async message publishing through the performance-enhanced pipeline
         service

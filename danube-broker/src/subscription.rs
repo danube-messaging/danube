@@ -5,17 +5,19 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::{
     broker_metrics::TOPIC_CONSUMERS,
     consumer::Consumer,
     dispatch_strategy::DispatchStrategy,
+    dispatcher::subscription_engine::SubscriptionEngine,
     dispatcher::{
         unified_multiple::UnifiedMultipleDispatcher, unified_single::UnifiedSingleDispatcher,
         Dispatcher,
     },
     message::AckMessage,
+    rate_limiter::RateLimiter,
     resources::TopicResources,
     topic::TopicStore,
     utils::get_random_id,
@@ -31,6 +33,8 @@ pub(crate) struct Subscription {
     pub(crate) topic_name: String,
     pub(crate) dispatcher: Option<Dispatcher>,
     pub(crate) consumers: HashMap<u64, ConsumerInfo>,
+    // Phase 2/3: optional per-subscription dispatch limiter (messages/sec)
+    pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +95,12 @@ impl Subscription {
             topic_name: topic_name.into(),
             dispatcher: None,
             consumers: HashMap::new(),
+            dispatch_rate_limiter: None,
         }
+    }
+    // Phase 2: setter to install a limiter created by Topic based on policies
+    pub(crate) fn set_dispatch_rate_limiter(&mut self, limiter: Option<Arc<RateLimiter>>) {
+        self.dispatch_rate_limiter = limiter;
     }
     // Adds a consumer to the subscription
     pub(crate) async fn add_consumer(
@@ -142,7 +151,7 @@ impl Subscription {
         options: SubscriptionOptions,
         dispatch_strategy: &DispatchStrategy,
         topic_store: Option<TopicStore>,
-        progress_resources: Option<TopicResources>,
+        topic_resources: Option<TopicResources>,
         sub_progress_flush_interval: Option<Duration>,
     ) -> Result<Option<Arc<Notify>>> {
         let (new_dispatcher, notifier) = match dispatch_strategy {
@@ -178,20 +187,17 @@ impl Subscription {
                 match options.subscription_type {
                     // Exclusive
                     0 => {
-                        let engine = if let Some(pr) = progress_resources.clone() {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
-                                options.subscription_name.clone(),
-                                self.topic_name.clone(),
-                                Arc::new(ts.clone()),
-                                pr,
-                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
-                            )
-                        } else {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
-                                options.subscription_name.clone(),
-                                Arc::new(ts.clone()),
-                            )
-                        };
+                        let tr = topic_resources
+                            .clone()
+                            .expect("progress resources must be provided for reliable dispatcher");
+                        let engine = SubscriptionEngine::new_with_progress(
+                            options.subscription_name.clone(),
+                            self.topic_name.clone(),
+                            Arc::new(ts.clone()),
+                            tr,
+                            sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            self.dispatch_rate_limiter.clone(),
+                        );
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         // Ensure reliable dispatcher is initialized before exposing notifier
                         new_dispatcher.ready().await;
@@ -204,20 +210,17 @@ impl Subscription {
 
                     // Shared
                     1 => {
-                        let engine = if let Some(pr) = progress_resources.clone() {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
-                                options.subscription_name.clone(),
-                                self.topic_name.clone(),
-                                Arc::new(ts.clone()),
-                                pr,
-                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
-                            )
-                        } else {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
-                                options.subscription_name.clone(),
-                                Arc::new(ts.clone()),
-                            )
-                        };
+                        let tr = topic_resources
+                            .clone()
+                            .expect("progress resources must be provided for reliable dispatcher");
+                        let engine = SubscriptionEngine::new_with_progress(
+                            options.subscription_name.clone(),
+                            self.topic_name.clone(),
+                            Arc::new(ts.clone()),
+                            tr,
+                            sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            self.dispatch_rate_limiter.clone(),
+                        );
                         let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
                         // Ensure reliable dispatcher is initialized before exposing notifier
                         new_dispatcher.ready().await;
@@ -230,20 +233,17 @@ impl Subscription {
 
                     // Failover (treat as single active consumer)
                     2 => {
-                        let engine = if let Some(pr) = progress_resources.clone() {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new_with_progress(
-                                options.subscription_name.clone(),
-                                self.topic_name.clone(),
-                                Arc::new(ts.clone()),
-                                pr,
-                                sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
-                            )
-                        } else {
-                            crate::dispatcher::subscription_engine::SubscriptionEngine::new(
-                                options.subscription_name.clone(),
-                                Arc::new(ts.clone()),
-                            )
-                        };
+                        let tr = topic_resources
+                            .clone()
+                            .expect("progress resources must be provided for reliable dispatcher");
+                        let engine = SubscriptionEngine::new_with_progress(
+                            options.subscription_name.clone(),
+                            self.topic_name.clone(),
+                            Arc::new(ts.clone()),
+                            tr,
+                            sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            self.dispatch_rate_limiter.clone(),
+                        );
                         let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
                         (
@@ -265,6 +265,16 @@ impl Subscription {
     }
 
     pub(crate) async fn send_message_to_dispatcher(&self, message: StreamMessage) -> Result<()> {
+        // Non-reliable path uses this method. If a per-subscription limiter exists and denies,
+        // warn-only and proceed (do not drop) per request.
+        if let Some(lim) = &self.dispatch_rate_limiter {
+            if !lim.try_acquire(1).await {
+                warn!(
+                    "Dispatch rate limit exceeded for subscription {} on topic {} (warn-only)",
+                    self.subscription_name, self.topic_name
+                );
+            }
+        }
         // Try to send the message
         if let Some(dispatcher) = self.dispatcher.as_ref() {
             dispatcher.dispatch_message(message).await?;

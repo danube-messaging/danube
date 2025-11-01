@@ -99,10 +99,6 @@ policies:
   # Default is 0, unlimited.
   max_publish_rate: 0
 
-  # Defines the Max dispatch rate (number of messages and/or bytes per second) for the topic.
-  # Default is 0, unlimited.
-  max_dispatch_rate: 0
-
   # Defines the dispatch rate for each subscription on the topic.
   # Default is 0, unlimited.
   max_subscription_dispatch_rate: 0

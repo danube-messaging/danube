@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::select;
 use tokio::time::{Duration, Instant};
 
+use crate::rate_limiter::RateLimiter;
 use crate::resources::TopicResources;
 use crate::topic::TopicStore;
 
@@ -23,6 +24,8 @@ pub(crate) struct SubscriptionEngine {
     pub(crate) dirty: bool,
     pub(crate) last_flush_at: Instant,
     pub(crate) sub_progress_flush_interval: Duration,
+    // Phase 3: optional per-subscription dispatch limiter (messages/sec)
+    pub(crate) dispatch_rate_limiter: Option<std::sync::Arc<RateLimiter>>,
 }
 
 impl SubscriptionEngine {
@@ -37,6 +40,7 @@ impl SubscriptionEngine {
             dirty: false,
             last_flush_at: Instant::now(),
             sub_progress_flush_interval: Duration::from_secs(5),
+            dispatch_rate_limiter: None,
         }
     }
 
@@ -46,13 +50,17 @@ impl SubscriptionEngine {
         topic_store: Arc<TopicStore>,
         progress_resources: TopicResources,
         sub_progress_flush_interval: Duration,
+        limiter: Option<std::sync::Arc<RateLimiter>>,
     ) -> Self {
         let mut s = Self::new(subscription_name, topic_store);
         s.topic_name = Some(topic_name);
         s.progress_resources = Some(tokio::sync::Mutex::new(progress_resources));
         s.sub_progress_flush_interval = sub_progress_flush_interval;
+        s.dispatch_rate_limiter = limiter;
         s
     }
+
+    // with_progress_and_limiter removed in favor of unified new_with_progress
 
     /// Initialize underlying stream. For a brand-new subscription we default to Latest.
     pub(crate) async fn init_stream_latest(&mut self) -> Result<()> {
@@ -86,15 +94,34 @@ impl SubscriptionEngine {
     }
 
     /// Polls next message from the underlying stream.
+    /// Reliable pacing: if a message is ready but the limiter denies, wait and retry
+    /// instead of returning None. This preserves reliability and provides smooth pacing.
     pub(crate) async fn poll_next(&mut self) -> Result<Option<StreamMessage>> {
         let stream = match &mut self.stream {
             Some(s) => s,
             None => return Ok(None),
         };
-        select! {
-            maybe_msg = stream.next() => {
-                Ok(maybe_msg.transpose()?)
+        let mut backoff = Duration::from_millis(10);
+        loop {
+            let msg_opt = select! {
+                maybe_msg = stream.next() => {
+                    maybe_msg.transpose()?
+                }
+            };
+            if let Some(_msg) = &msg_opt {
+                if let Some(lim) = &self.dispatch_rate_limiter {
+                    if !lim.try_acquire(1).await {
+                        // Pacing: wait and retry until allowed
+                        tokio::time::sleep(backoff).await;
+                        // Optional: cap backoff to a reasonable upper bound
+                        if backoff < Duration::from_millis(100) {
+                            backoff = backoff.saturating_mul(2).min(Duration::from_millis(100));
+                        }
+                        continue;
+                    }
+                }
             }
+            return Ok(msg_opt);
         }
     }
 
@@ -134,9 +161,11 @@ impl SubscriptionEngine {
     /// Immediately flush the last_acked progress to metadata (best-effort).
     /// Used during unload pause to persist cursor without waiting for debounce.
     pub(crate) async fn flush_progress_now(&mut self) -> Result<()> {
-        if let (Some(off), Some(res_mx), Some(topic)) =
-            (self.last_acked, self.progress_resources.as_ref(), self.topic_name.clone())
-        {
+        if let (Some(off), Some(res_mx), Some(topic)) = (
+            self.last_acked,
+            self.progress_resources.as_ref(),
+            self.topic_name.clone(),
+        ) {
             let mut res = res_mx.lock().await;
             let _ = res
                 .set_subscription_cursor(&self._subscription_name, &topic, off)
@@ -199,6 +228,7 @@ mod tests {
             Arc::new(ts),
             topic_resources,
             Duration::from_millis(50),
+            None,
         );
 
         // First ack (should mark dirty but not flush immediately)

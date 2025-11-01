@@ -67,13 +67,31 @@ impl ConsumerService for DanubeServerImpl {
         // If the consumer doesn't exist, attempt to create it below
 
         // check if the topic policies allow the creation of the subscription
-        if !service.allow_subscription_creation(&req.topic_name) {
+        if !service.allow_subscription_creation(&req.topic_name).await {
             let status = Status::permission_denied(format!(
                 "Not allowed to create the subscription for the topic: {}",
                 &req.topic_name
             ));
 
             return Err(status);
+        }
+
+        // Early policy check: max_consumers_per_topic
+        if let Some(topic) = service.topic_worker_pool.get_topic(&req.topic_name) {
+            let limit = topic
+                .topic_policies
+                .as_ref()
+                .map(|p| p.get_max_consumers_per_topic())
+                .unwrap_or(0);
+            if limit > 0 {
+                let current = topic.total_consumer_count().await as u32;
+                if current >= limit {
+                    return Err(Status::resource_exhausted(format!(
+                        "Consumer limit per topic reached for {}. Current: {}, Limit: {}",
+                        &req.topic_name, current, limit
+                    )));
+                }
+            }
         }
 
         let subscription_options = SubscriptionOptions {
