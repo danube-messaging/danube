@@ -16,6 +16,7 @@ use crate::{
     broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
     dispatch_strategy::DispatchStrategy,
     message::AckMessage,
+    rate_limiter::RateLimiter,
     policies::Policies,
     producer::Producer,
     resources::TopicResources,
@@ -61,11 +62,13 @@ pub(crate) struct Topic {
     pub(crate) dispatch_strategy: DispatchStrategy,
     pub(crate) notifiers: Mutex<Vec<Arc<Notify>>>,
     // handle to metadata topic resources for cleanup operations
-    resources_topic: Option<TopicResources>,
+    resources_topic: TopicResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
     // topic state for orchestrations like unload
     state: Mutex<TopicState>,
+    // Phase 2: optional topic-level publish rate limiter (messages/sec)
+    pub(crate) publish_rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl Topic {
@@ -73,7 +76,7 @@ impl Topic {
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
         wal_storage: Option<WalStorage>,
-        resources_topic: Option<TopicResources>,
+        resources_topic: TopicResources,
     ) -> Self {
         let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
@@ -92,6 +95,7 @@ impl Topic {
             resources_topic,
             topic_store,
             state: Mutex::new(TopicState::Active),
+            publish_rate_limiter: None,
         }
     }
 
@@ -162,6 +166,12 @@ impl Topic {
                     "Topic {} is draining or closed; retry lookup/moved",
                     self.topic_name
                 ));
+            }
+        }
+        // Phase 3: publish rate limiting (if configured)
+        if let Some(lim) = &self.publish_rate_limiter {
+            if !lim.try_acquire(1).await {
+                warn!("Publish rate limit exceeded for topic {} (warn-only)", self.topic_name);
             }
         }
         // Policy: max_message_size
@@ -254,11 +264,10 @@ impl Topic {
 
     // Best-effort deletion of subscription from metadata store
     async fn delete_subscription_metadata(&self, subscription_name: &str) {
-        if let Some(mut topic_res) = self.resources_topic.clone() {
-            let _ = topic_res
-                .delete_subscription(subscription_name, &self.topic_name)
-                .await;
-        }
+        let mut topic_res = self.resources_topic.clone();
+        let _ = topic_res
+            .delete_subscription(subscription_name, &self.topic_name)
+            .await;
     }
 
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
@@ -303,6 +312,14 @@ impl Topic {
             // Build the subscription and dispatcher without holding the lock
             let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
+            // Phase 2: install per-subscription dispatch limiter if configured
+            if let Some(pol) = &self.topic_policies {
+                let sub_rate = pol.get_max_subscription_dispatch_rate();
+                if sub_rate > 0 {
+                    new_subscription
+                        .set_dispatch_rate_limiter(Some(Arc::new(RateLimiter::new(sub_rate))));
+                }
+            }
 
             if let DispatchStrategy::Reliable = &self.dispatch_strategy {
                 let notifier = new_subscription
@@ -310,7 +327,7 @@ impl Topic {
                         options.clone(),
                         &self.dispatch_strategy,
                         self.topic_store.clone(),
-                        self.resources_topic.clone(),
+                        Some(self.resources_topic.clone()),
                         Some(Duration::from_secs(10)),
                     )
                     .await?;
@@ -398,7 +415,15 @@ impl Topic {
     // Update Topic Policies
     pub(crate) fn policies_update(&mut self, policies: Policies) -> Result<()> {
         self.topic_policies = Some(policies);
-
+        // Initialize optional limiters based on policies (>0)
+        if let Some(p) = &self.topic_policies {
+            let pub_rate = p.get_max_publish_rate();
+            self.publish_rate_limiter = if pub_rate > 0 {
+                Some(Arc::new(RateLimiter::new(pub_rate)))
+            } else {
+                None
+            };
+        }
         Ok(())
     }
 

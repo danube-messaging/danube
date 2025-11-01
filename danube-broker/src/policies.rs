@@ -26,10 +26,6 @@ pub struct Policies {
     /// Default is 0, unlimited.
     #[serde(default)]
     max_publish_rate: u32,
-    /// Defines the Max dispatch rate (number of messages and/or bytes per second) for the topic.
-    /// Default is 0, unlimited.
-    #[serde(default)]
-    max_dispatch_rate: u32,
     /// Defines the dispatch rate for each subscription on the topic.
     /// Default is 0, unlimited.
     #[serde(default)]
@@ -73,9 +69,6 @@ impl Policies {
         self.max_publish_rate
     }
 
-    pub fn get_max_dispatch_rate(&self) -> u32 {
-        self.max_dispatch_rate
-    }
 
     pub fn get_max_subscription_dispatch_rate(&self) -> u32 {
         self.max_subscription_dispatch_rate
@@ -103,7 +96,6 @@ impl Policies {
             "max_consumers_per_topic",
             "max_consumers_per_subscription",
             "max_publish_rate",
-            "max_dispatch_rate",
             "max_subscription_dispatch_rate",
             "max_message_size",
         ];
@@ -140,12 +132,7 @@ impl Policies {
                     }
                     found_fields.insert("max_publish_rate");
                 }
-                "max_dispatch_rate" => {
-                    if let Some(val) = value.as_u64() {
-                        policies.max_dispatch_rate = val as u32;
-                    }
-                    found_fields.insert("max_dispatch_rate");
-                }
+                
                 "max_subscription_dispatch_rate" => {
                     if let Some(val) = value.as_u64() {
                         policies.max_subscription_dispatch_rate = val as u32;

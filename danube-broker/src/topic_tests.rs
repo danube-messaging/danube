@@ -6,12 +6,15 @@ use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 use futures::StreamExt;
 
+use crate::danube_service::LocalCache;
 use crate::policies::Policies;
+use crate::resources::TopicResources;
 use crate::subscription::SubscriptionOptions;
 use crate::topic::Topic;
 use crate::topic::TopicStore;
 use anyhow::Result as AnyResult;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
+use danube_metadata_store::{MemoryStore, MetadataStorage};
 use serde_json::{Number, Value};
 
 fn mk_policies(entries: &[(&str, u32)]) -> Policies {
@@ -38,10 +41,6 @@ fn mk_policies(entries: &[(&str, u32)]) -> Policies {
         Value::Number(Number::from(0)),
     );
     map.insert(
-        "max_dispatch_rate".to_string(),
-        Value::Number(Number::from(0)),
-    );
-    map.insert(
         "max_subscription_dispatch_rate".to_string(),
         Value::Number(Number::from(0)),
     );
@@ -56,8 +55,18 @@ fn mk_policies(entries: &[(&str, u32)]) -> Policies {
     Policies::from_hashmap(map).expect("valid policies map")
 }
 
-fn mk_topic(name: &str) -> Topic {
-    Topic::new(name, ConfigDispatchStrategy::NonReliable, None, None)
+async fn mk_topic(name: &str) -> Topic {
+    // In-memory metadata store and local cache for tests
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let local_cache = LocalCache::new(store.clone());
+    let topic_resources = TopicResources::new(local_cache, store);
+    Topic::new(
+        name,
+        ConfigDispatchStrategy::NonReliable,
+        None,
+        topic_resources,
+    )
 }
 
 fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
@@ -78,7 +87,7 @@ fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
 /// - Guards against producer fan-in over a single topic exhausting resources.
 #[tokio::test]
 async fn policy_limit_max_producers_per_topic() -> AnyResult<()> {
-    let mut topic = mk_topic("/default/policy_producers");
+    let mut topic = mk_topic("/default/policy_producers").await;
     let pol = mk_policies(&[("max_producers_per_topic", 2)]);
     topic.policies_update(pol)?;
 
@@ -98,7 +107,7 @@ async fn policy_limit_max_producers_per_topic() -> AnyResult<()> {
 /// - Caps the number of independent consumer groups on a topic.
 #[tokio::test]
 async fn policy_limit_max_subscriptions_per_topic() -> AnyResult<()> {
-    let mut topic = mk_topic("/default/policy_subs");
+    let mut topic = mk_topic("/default/policy_subs").await;
     let pol = mk_policies(&[("max_subscriptions_per_topic", 1)]);
     topic.policies_update(pol)?;
 
@@ -122,7 +131,7 @@ async fn policy_limit_max_subscriptions_per_topic() -> AnyResult<()> {
 /// - Prevents accidental fan-out on a subscription intended to be limited (e.g., single active consumer).
 #[tokio::test]
 async fn policy_limit_max_consumers_per_subscription() -> AnyResult<()> {
-    let mut topic = mk_topic("/default/policy_cons_per_sub");
+    let mut topic = mk_topic("/default/policy_cons_per_sub").await;
     let pol = mk_policies(&[("max_consumers_per_subscription", 1)]);
     topic.policies_update(pol)?;
 
@@ -146,7 +155,7 @@ async fn policy_limit_max_consumers_per_subscription() -> AnyResult<()> {
 /// - Protects topic-level dispatch and state from excessive concurrent consumers.
 #[tokio::test]
 async fn policy_limit_max_consumers_per_topic() -> AnyResult<()> {
-    let mut topic = mk_topic("/default/policy_cons_per_topic");
+    let mut topic = mk_topic("/default/policy_cons_per_topic").await;
     let pol = mk_policies(&[("max_consumers_per_topic", 2)]);
     topic.policies_update(pol)?;
 
@@ -175,7 +184,7 @@ async fn policy_limit_max_consumers_per_topic() -> AnyResult<()> {
 async fn policy_limit_max_message_size() -> AnyResult<()> {
     use danube_core::message::MessageID;
 
-    let mut topic = mk_topic("/default/policy_msg_size");
+    let mut topic = mk_topic("/default/policy_msg_size").await;
     let pol = mk_policies(&[("max_message_size", 8)]); // 8 bytes
     topic.policies_update(pol)?;
 
