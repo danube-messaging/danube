@@ -1,5 +1,5 @@
 use crate::utils::get_random_id;
-use crate::{broker_metrics::{PRODUCER_SEND_LATENCY_MS, BROKER_RPC_TOTAL}, broker_server::DanubeServerImpl};
+use crate::{broker_metrics::{PRODUCER_SEND_LATENCY_MS, BROKER_RPC_TOTAL, PRODUCER_SEND_TOTAL}, broker_server::DanubeServerImpl};
 use danube_core::proto::{
     producer_service_server::ProducerService, DispatchStrategy as ProtoDispatchStrategy,
     MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
@@ -151,23 +151,34 @@ impl ProducerService for DanubeServerImpl {
         }
 
         let req_id = stream_message.request_id;
-        let producer_id = stream_message.msg_id.producer_id;
         let topic_name = stream_message.msg_id.topic_name.clone();
 
         // Early policy check: max_message_size
         if let Some(topic) = service.topic_worker_pool.get_topic(&topic_name) {
             if let Err(e) = topic.validate_message_size(stream_message.payload.len()) {
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
+                counter!(
+                    PRODUCER_SEND_TOTAL.name,
+                    "topic"=> topic_name.clone(),
+                    "result"=> "error",
+                    "error_code"=> "InvalidArgument"
+                ).increment(1);
                 return Err(Status::invalid_argument(e.to_string()));
             }
         }
 
         // Use async message publishing through the performance-enhanced pipeline
         service
-            .publish_message_async(topic_name, stream_message)
+            .publish_message_async(topic_name.clone(), stream_message)
             .await
             .map_err(|err| {
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
+                counter!(
+                    PRODUCER_SEND_TOTAL.name,
+                    "topic"=> topic_name.clone(),
+                    "result"=> "error",
+                    "error_code"=> "PermissionDenied"
+                ).increment(1);
                 Status::permission_denied(format!("Unable to publish the message: {}", err))
             })?;
 
@@ -175,11 +186,17 @@ impl ProducerService for DanubeServerImpl {
         let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
 
         // Record the producer send latency (ms)
-        histogram!(PRODUCER_SEND_LATENCY_MS.name, "producer" => producer_id.to_string())
+        histogram!(PRODUCER_SEND_LATENCY_MS.name, "topic"=> topic_name.clone())
             .record(elapsed_ms);
 
         let response = MessageResponse { request_id: req_id };
         counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"ok").increment(1);
+        counter!(
+            PRODUCER_SEND_TOTAL.name,
+            "topic"=> topic_name,
+            "result"=> "ok",
+            "error_code"=> "OK"
+        ).increment(1);
         Ok(tonic::Response::new(response))
     }
 }

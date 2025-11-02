@@ -16,46 +16,48 @@ Files: `danube-broker/src/danube_service/load_manager.rs`, RPC servers
 
 - `danube_broker_topics_owned` (Gauge) — broker_id
 - `danube_broker_assignments_total` (Counter) — broker_id, action
-- `danube_leader_election_state` (Gauge) — state
-- `danube_broker_rpc_total` / `danube_admin_rpc_total` (Counter) — method, result
-- `danube_rpc_errors_total` (Counter) — service, code
-- `danube_client_redirects_total` (Counter) — service, reason
-- `danube_retry_attempts_total` (Counter) — component, reason
+- `danube_leader_election_state` (Gauge) — state (per broker: 0 follower/NoLeader, 1 leader)
+- `danube_broker_rpc_total` (Counter) — service, method, result
+- `danube_client_redirects_total` (Counter) — reason
+
+Notes:
+- rpc_errors_total and retry_attempts_total are intentionally not implemented.
 
 ## Phase 1 — Broker Core (Topics, Producers, Consumers)
 Files: `danube-broker/src/topic.rs`, `danube-broker/src/subscription.rs`, `danube-broker/src/dispatcher.rs`, `danube-broker/src/topic_worker.rs`, RPC handlers
 
 - **Topic**
   - `danube_topic_messages_in_total` (Counter)
-    - Labels: namespace, topic, partition, producer_name
+    - Labels: topic
     - Hook: `Topic.publish_message_async()`
   - `danube_topic_bytes_in_total` (Counter)
-    - Labels: namespace, topic, partition, producer_name
+    - Labels: topic
     - Hook: `Topic.publish_message_async()`
   - `danube_topic_active_producers` (Gauge)
-    - Labels: namespace, topic
+    - Labels: topic
     - Hook: producer create/close
   - `danube_topic_active_subscriptions` (Gauge)
-    - Labels: namespace, topic
-    - Hook: subscription create/remove
-  - `danube_topic_dispatch_latency_ms` (Histogram)
-    - Labels: namespace, topic, subscription, sub_type, reliable
-    - Hook: before `send_message_to_dispatcher()` to post-enqueue/ack-gate
+    - Labels: topic
+    - Hook: subscription create/remove; bulk decrement on topic close
+  - `danube_topic_message_size_bytes` (Histogram)
+    - Labels: topic
+    - Hook: entry of `publish_message_async()` (observe payload length)
 
 - **Producer (broker-side behavior)**
-  - `danube_producer_create_total` (Counter)
-    - Labels: namespace, topic, result, error_type
-    - Hook: Producer RPC Create handler
   - `danube_producer_send_total` (Counter)
-    - Labels: namespace, topic, partition, result, error_type, reliable
+    - Labels: topic, result, error_code
     - Hook: Producer RPC Send handler
   - `danube_producer_send_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition, reliable
+    - Labels: topic
     - Hook: around send (append/dispatch)
 
 - **Consumer / Subscription**
-  - `danube_consumer_subscribe_total` (Counter)
-    - Labels: namespace, topic, subscription, sub_type, result
+  - `danube_subscription_active_consumers` (Gauge)
+    - Labels: topic, subscription
+    - Hook: `Subscription.add_consumer()` (++) and on remove/disconnect (--)
+  - `danube_consumer_messages_out_total` / `danube_consumer_bytes_out_total` (Counters)
+    - Labels: topic, subscription
+    - Hook: when a message is delivered to consumer (Consumer::send_message)
 
 ### Policy and Rate-Limiter Metrics (deferred wiring; quick wins)
 
@@ -75,15 +77,15 @@ These complement the core metrics and are easy to add when we enable metrics wor
     - `dispatcher/subscription_engine.rs`: `poll_next()` when pacing (Reliable) backs off due to limiter (increment once per backoff cycle).
 
 - `MESSAGE_SIZE_HISTOGRAM` (Histogram: `danube_topic_message_size_bytes`)
-  - Labels: namespace, topic
+  - Labels: topic
   - Hook: `topic.rs` at entry of `publish_message_async` (observe `payload.len()` before checks/persist).
 
 - `PRODUCER_COUNT_GAUGE` (Gauge: `danube_topic_active_producers`)
-  - Labels: namespace, topic
+  - Labels: topic
   - Hooks: `topic.rs` after successful `create_producer` (++) and on producer close/cleanup (--).
 
 - `CONSUMER_COUNT_GAUGE` (Gauge: `danube_subscription_active_consumers`)
-  - Labels: namespace, topic, subscription
+  - Labels: topic, subscription
   - Hooks: `subscription.rs` after successful `add_consumer` (++) and on `remove_consumer`/drop (--).
 
 - `RATE_LIMITER_UTILIZATION_GAUGE` (Gauge: `danube_rate_limiter_utilization`)
