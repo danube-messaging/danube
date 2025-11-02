@@ -44,6 +44,8 @@ pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
 mod wal_factory;
 pub use wal_factory::WalStorageFactory;
 
+mod persistent_metrics;
+
 // Unit tests
 #[cfg(test)]
 mod checkpoints_test;

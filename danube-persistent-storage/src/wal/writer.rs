@@ -9,6 +9,11 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use metrics::{counter, histogram};
+use crate::persistent_metrics::{
+    WAL_FLUSH_LATENCY_MS,
+    WAL_FSYNC_TOTAL,
+    WAL_FILE_ROTATE_TOTAL,
+};
 use std::time::Instant;
 
 /// Commands sent from `Wal::append()` (and friends) to the background writer task.
@@ -127,11 +132,11 @@ impl WriterState {
                 // Metrics: flush latency and fsync count
                 let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                 if let Some(t) = &self.topic_name {
-                    histogram!("danube_wal_flush_latency_ms", "topic"=> t.clone()).record(elapsed_ms);
-                    counter!("danube_wal_fsync_total", "topic"=> t.clone()).increment(1);
+                    histogram!(WAL_FLUSH_LATENCY_MS.name, "topic"=> t.clone()).record(elapsed_ms);
+                    counter!(WAL_FSYNC_TOTAL.name, "topic"=> t.clone()).increment(1);
                 } else {
-                    histogram!("danube_wal_flush_latency_ms").record(elapsed_ms);
-                    counter!("danube_wal_fsync_total").increment(1);
+                    histogram!(WAL_FLUSH_LATENCY_MS.name).record(elapsed_ms);
+                    counter!(WAL_FSYNC_TOTAL.name).increment(1);
                 }
                 // On explicit flush, also persist a checkpoint if we know a last offset
                 if let Some(off) = self.last_offset_written {
@@ -147,9 +152,9 @@ impl WriterState {
         if let Some(max_bytes) = self.rotate_max_bytes {
             if self.bytes_in_file >= max_bytes {
                 if let Some(t) = &self.topic_name {
-                    counter!("danube_wal_file_rotate_total", "topic"=> t.clone(), "reason"=> "size").increment(1);
+                    counter!(WAL_FILE_ROTATE_TOTAL.name, "topic"=> t.clone(), "reason"=> "size").increment(1);
                 } else {
-                    counter!("danube_wal_file_rotate_total", "reason"=> "size").increment(1);
+                    counter!(WAL_FILE_ROTATE_TOTAL.name, "reason"=> "size").increment(1);
                 }
                 self.rotate_file().await?;
                 return Ok(());
@@ -158,9 +163,9 @@ impl WriterState {
         if let Some(max_secs) = self.rotate_max_seconds {
             if self.file_started.elapsed() >= std::time::Duration::from_secs(max_secs) {
                 if let Some(t) = &self.topic_name {
-                    counter!("danube_wal_file_rotate_total", "topic"=> t.clone(), "reason"=> "time").increment(1);
+                    counter!(WAL_FILE_ROTATE_TOTAL.name, "topic"=> t.clone(), "reason"=> "time").increment(1);
                 } else {
-                    counter!("danube_wal_file_rotate_total", "reason"=> "time").increment(1);
+                    counter!(WAL_FILE_ROTATE_TOTAL.name, "reason"=> "time").increment(1);
                 }
                 self.rotate_file().await?;
                 return Ok(());

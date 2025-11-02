@@ -9,6 +9,13 @@ use tokio::io::AsyncReadExt;
 
 use std::path::PathBuf;
 use tokio::io::{AsyncSeekExt, SeekFrom};
+use metrics::{counter, histogram};
+use crate::persistent_metrics::{
+    CLOUD_UPLOAD_OBJECTS_TOTAL,
+    CLOUD_UPLOAD_BYTES_TOTAL,
+    CLOUD_UPLOAD_LATENCY_MS,
+};
+use std::time::Instant;
 
 /// Internal mutable state for a single streaming cycle.
 struct UploadState {
@@ -21,6 +28,7 @@ struct UploadState {
     index_entries: Vec<(u64, u64)>,
     next_seq_out: u64,
     next_pos_out: u64,
+    start_instant: Option<Instant>,
 }
 
 impl UploadState {
@@ -35,6 +43,7 @@ impl UploadState {
             index_entries: Vec::new(),
             next_seq_out: start_seq,
             next_pos_out: start_pos,
+            start_instant: None,
         }
     }
 }
@@ -122,6 +131,14 @@ pub async fn stream_frames_to_cloud(
     // 4) Finalize uploaded object and return
     let (final_object_id, end, meta) =
         finalize_uploaded_object(cloud, topic_path, &mut state).await?;
+    // Metrics: upload latency, bytes, objects (ok)
+    let provider = cloud.provider().to_string();
+    if let Some(start) = state.start_instant.take() {
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        histogram!(CLOUD_UPLOAD_LATENCY_MS.name, "provider"=> provider.clone()).record(elapsed_ms);
+    }
+    counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> topic_path.to_string(), "provider"=> provider.clone(), "result"=> "ok").increment(1);
+    counter!(CLOUD_UPLOAD_BYTES_TOTAL.name, "topic"=> topic_path.to_string(), "provider"=> provider).increment(meta.content_length());
 
     Ok(Some((
         final_object_id,
@@ -200,6 +217,7 @@ async fn process_file_and_upload_once(
                         .await?;
                     state.cloud_writer = Some(writer);
                     state.object_id = Some(obj);
+                    state.start_instant = Some(Instant::now());
                 }
             } else {
                 // Update last_offset as we extend

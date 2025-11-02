@@ -3,6 +3,12 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use tokio_stream::StreamExt;
 use metrics::counter;
+use crate::persistent_metrics::{
+    WAL_APPEND_TOTAL,
+    WAL_APPEND_BYTES_TOTAL,
+    WAL_READER_CREATE_TOTAL,
+    CLOUD_HANDOFF_TO_WAL_TOTAL,
+};
 use tracing::{info, warn};
 
 use crate::cloud::{CloudReader, CloudStore};
@@ -60,8 +66,8 @@ impl PersistentStorage for WalStorage {
         let payload_len = msg.payload.len() as u64;
         let res = self.wal.append(&msg).await;
         if let Ok(_off) = res {
-            counter!("danube_wal_append_total", "topic"=> topic_name.to_string()).increment(1);
-            counter!("danube_wal_append_bytes_total", "topic"=> topic_name.to_string()).increment(payload_len);
+            counter!(WAL_APPEND_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
+            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string()).increment(payload_len);
         }
         res
     }
@@ -91,7 +97,7 @@ impl PersistentStorage for WalStorage {
                 );
                 let stream = self.wal.tail_reader(from, live).await;
                 if stream.is_ok() {
-                    counter!("danube_wal_reader_create_total", "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+                    counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
                 }
                 return stream;
             }
@@ -121,7 +127,7 @@ impl PersistentStorage for WalStorage {
             );
             let stream = self.wal.tail_reader(start_offset, live).await;
             if stream.is_ok() {
-                counter!("danube_wal_reader_create_total", "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+                counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
             }
             stream
         } else {
@@ -147,7 +153,8 @@ impl PersistentStorage for WalStorage {
 
             // Chain them together to provide a single, seamless stream to the consumer.
             let chained = cloud_stream.chain(wal_stream);
-            counter!("danube_wal_reader_create_total", "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
+            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
+            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
             Ok(Box::pin(chained))
         }
     }

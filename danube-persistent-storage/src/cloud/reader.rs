@@ -1,11 +1,15 @@
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
-use crate::etcd_metadata::EtcdMetadata;
 use crate::cloud::{CloudRangeReader, CloudStore};
+use crate::etcd_metadata::EtcdMetadata;
+use crate::frames::FRAME_HEADER_SIZE;
+use crate::persistent_metrics::{
+    CLOUD_OBJECTS_READ_TOTAL, CLOUD_READER_ERRORS_TOTAL, CLOUD_READ_BYTES_TOTAL,
+};
+use metrics::counter;
 use std::collections::VecDeque;
 use tracing::error;
-use crate::frames::FRAME_HEADER_SIZE;
 
 /// CloudReader reads historical messages for a topic from cloud objects
 /// that contain raw WAL frames as uploaded by the Uploader.
@@ -100,14 +104,20 @@ impl CloudReader {
                         }
                         _ => 0u64,
                     };
+                    let provider = cloud.provider().to_string();
                     let reader = cloud.open_ranged_reader(&key, start_byte).await?;
+                    counter!(CLOUD_OBJECTS_READ_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(1);
                     cur_reader = Some(reader);
                     carry.clear();
                 }
 
                 // Read next chunk from current reader
                 let reader = cur_reader.as_mut().unwrap();
+                let provider = cloud.provider().to_string();
                 let chunk = reader.read_chunk(chunk_size).await?;
+                if !chunk.is_empty() {
+                    counter!(CLOUD_READ_BYTES_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(chunk.len() as u64);
+                }
                 if chunk.is_empty() {
                     // End of current object
                     cur_reader = None;
@@ -117,7 +127,12 @@ impl CloudReader {
 
                 // Parse complete frames from carry, leave remainder in carry
                 let mut parsed: Vec<(u64, StreamMessage)> = Vec::new();
-                parse_frames_from_carry(&mut carry, &mut parsed)?;
+                if let Err(e) = parse_frames_from_carry(&mut carry, &mut parsed, &provider) {
+                    // Increment error counter with a coarse reason derived below
+                    let reason = if e.to_string().contains("CRC mismatch") { "crc" } else { "decode" };
+                    counter!(CLOUD_READER_ERRORS_TOTAL.name, "provider"=> provider.clone(), "reason"=> reason).increment(1);
+                    Err(e)?;
+                }
                 // Filter by requested offset range and push into emit buffer (reverse for pop())
                 for (_off, msg) in parsed
                     .into_iter()
@@ -138,6 +153,7 @@ impl CloudReader {
 fn parse_frames_from_carry(
     carry: &mut Vec<u8>,
     out: &mut Vec<(u64, StreamMessage)>,
+    _provider: &str,
 ) -> Result<(), PersistentStorageError> {
     let mut idx = 0usize;
     while idx + FRAME_HEADER_SIZE <= carry.len() {
