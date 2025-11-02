@@ -1,9 +1,10 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use futures::{Future, Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
 use tracing::{info, warn};
 
 use danube_core::message::StreamMessage;
@@ -102,14 +103,20 @@ impl Stream for StatefulReader {
                 ReaderPhase::Live { stream } => match Pin::new(stream).poll_next(cx) {
                     Poll::Ready(Some(Ok(msg))) => {
                         // Drop duplicates only if we have yielded at least once.
-                        if self.last_yielded != u64::MAX && msg.msg_id.topic_offset <= self.last_yielded {
+                        if self.last_yielded != u64::MAX
+                            && msg.msg_id.topic_offset <= self.last_yielded
+                        {
                             continue;
                         }
                         // Detect gaps due to late subscription to broadcast: if we observe an
                         // offset greater than the next expected, fall back to cache to fill the gap
                         // starting from last_yielded + 1. We intentionally drop this broadcast item
                         // because it is present in the cache (cache is updated before broadcast in append()).
-                        let expected = if self.last_yielded == u64::MAX { 0 } else { self.last_yielded + 1 };
+                        let expected = if self.last_yielded == u64::MAX {
+                            0
+                        } else {
+                            self.last_yielded + 1
+                        };
                         if msg.msg_id.topic_offset > expected {
                             warn!(
                                 target = "stateful_reader",
@@ -207,8 +214,16 @@ impl StatefulReader {
         };
 
         // Initialize last_yielded to sentinel when starting from 0 so we can compute expected correctly.
-        let last = if from_offset == 0 { u64::MAX } else { from_offset - 1 };
-        Ok(Self { wal_inner, phase, last_yielded: last })
+        let last = if from_offset == 0 {
+            u64::MAX
+        } else {
+            from_offset - 1
+        };
+        Ok(Self {
+            wal_inner,
+            phase,
+            last_yielded: last,
+        })
     }
 
     #[inline]

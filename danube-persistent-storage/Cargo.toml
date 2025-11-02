@@ -16,7 +16,6 @@ danube-metadata-store = { path = "../danube-metadata-store" }
 async-trait = {workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
-futures = { workspace = true}
 tonic = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

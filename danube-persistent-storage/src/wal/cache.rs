@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use danube_core::message::StreamMessage;
 use danube_core::storage::TopicStream;
-use futures::StreamExt;
+use tokio_stream::StreamExt;
 
 /// Ordered in-memory cache keyed by WAL offset.
 ///
@@ -22,7 +22,7 @@ pub(crate) async fn build_cache_stream(
     mut from_offset: u64,
     batch_size: usize,
 ) -> TopicStream {
-    use futures::stream;
+    use tokio_stream::iter;
 
     let mut segments: Vec<TopicStream> = Vec::new();
     loop {
@@ -41,7 +41,7 @@ pub(crate) async fn build_cache_stream(
         if let Some(last) = batch.last() {
             from_offset = last.msg_id.topic_offset.saturating_add(1);
         }
-        let seg = Box::pin(stream::iter(batch.into_iter().map(Ok))) as TopicStream;
+        let seg = Box::pin(iter(batch.into_iter().map(Ok))) as TopicStream;
         segments.push(seg);
         if segments.len() >= 32 {
             break;
@@ -55,7 +55,7 @@ pub(crate) async fn build_cache_stream(
         }
         acc
     } else {
-        Box::pin(futures::stream::empty())
+        Box::pin(tokio_stream::empty())
     }
 }
 
