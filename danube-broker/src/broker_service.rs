@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tonic::{Code, Status};
 use tracing::info;
+use metrics::counter;
+use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 
 use danube_core::proto::{
     DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
@@ -134,6 +136,13 @@ impl BrokerService {
         // If topic exists in namespace but is not local, ask client to redo lookup
         let cluster = TopicCluster::new(self.resources.clone());
         if cluster.exists_topic_in_namespace(topic_name).await {
+            // Count redirect when topic exists but is not local
+            let ns = get_nsname_from_topic(topic_name).to_string();
+            counter!(
+                CLIENT_REDIRECTS_TOTAL.name,
+                "reason" => "not_local",
+                "topic_ns" => ns
+            ).increment(1);
             return Err(create_error_status(
                 Code::Unavailable,
                 ErrorType::ServiceNotReady,
@@ -157,12 +166,21 @@ impl BrokerService {
             .create_topic_cluster(topic_name, dispatch_strategy, schema)
             .await
         {
-            Ok(()) => Err(create_error_status(
+            Ok(()) => {
+                // Count redirect after auto-create path
+                let ns = get_nsname_from_topic(topic_name).to_string();
+                counter!(
+                    CLIENT_REDIRECTS_TOTAL.name,
+                    "reason" => "post_create",
+                    "topic_ns" => ns
+                ).increment(1);
+                Err(create_error_status(
                 Code::Unavailable,
                 ErrorType::ServiceNotReady,
                 "The topic metadata was created, need to redo the lookup to find the correct broker",
                 None,
-            )),
+                ))
+            },
             Err(err) => Err(err),
         }
     }

@@ -6,16 +6,20 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 4] = [
+pub(crate) const COUNTERS: [Metric; 7] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
     CONSUMER_BYTES_OUT_TOTAL,
+    BROKER_ASSIGNMENTS_TOTAL,
+    BROKER_RPC_TOTAL,
+    CLIENT_REDIRECTS_TOTAL,
 ];
-pub(crate) const GAUGES: [Metric; 3] = [
+pub(crate) const GAUGES: [Metric; 4] = [
     BROKER_TOPICS_OWNED,
     TOPIC_ACTIVE_PRODUCERS,
     TOPIC_ACTIVE_CONSUMERS,
+    LEADER_ELECTION_STATE,
 ];
 pub(crate) const HISTOGRAMS: [Metric; 1] = [PRODUCER_SEND_LATENCY_MS];
 
@@ -24,6 +28,26 @@ pub(crate) const HISTOGRAMS: [Metric; 1] = [PRODUCER_SEND_LATENCY_MS];
 pub(crate) const BROKER_TOPICS_OWNED: Metric = Metric {
     name: "danube_broker_topics_owned",
     description: "Total number of topics served by broker",
+};
+
+pub(crate) const BROKER_ASSIGNMENTS_TOTAL: Metric = Metric {
+    name: "danube_broker_assignments_total",
+    description: "Total number of topic assignment operations performed (assign/unassign)",
+};
+
+pub(crate) const LEADER_ELECTION_STATE: Metric = Metric {
+    name: "danube_leader_election_state",
+    description: "Leader election state of this broker (0=follower,1=leader)",
+};
+
+pub(crate) const BROKER_RPC_TOTAL: Metric = Metric {
+    name: "danube_broker_rpc_total",
+    description: "Total RPC requests handled by the broker",
+};
+
+pub(crate) const CLIENT_REDIRECTS_TOTAL: Metric = Metric {
+    name: "danube_client_redirects_total",
+    description: "Total number of client redirects suggested by the broker during lookup",
 };
 
 // TOPIC Metrics --------------------------

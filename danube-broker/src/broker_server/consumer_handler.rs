@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+use metrics::counter;
+use crate::broker_metrics::BROKER_RPC_TOTAL;
 use tracing::{info, trace, warn, Level};
 
 #[tonic::async_trait]
@@ -37,6 +39,7 @@ impl ConsumerService for DanubeServerImpl {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
             Err(status) => {
                 info!("Error topic request: {}", status.message());
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"subscribe", "result"=>"error").increment(1);
                 return Err(status);
             }
         }
@@ -73,6 +76,7 @@ impl ConsumerService for DanubeServerImpl {
                 &req.topic_name
             ));
 
+            counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"subscribe", "result"=>"error").increment(1);
             return Err(status);
         }
 
@@ -107,6 +111,7 @@ impl ConsumerService for DanubeServerImpl {
             .subscribe_async(req.topic_name.clone(), subscription_options)
             .await
             .map_err(|err| {
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"subscribe", "result"=>"error").increment(1);
                 Status::permission_denied(format!(
                     "Not able to subscribe to the topic {} due to {}",
                     &req.topic_name, err
@@ -124,6 +129,7 @@ impl ConsumerService for DanubeServerImpl {
             consumer_name: req.consumer_name,
         };
 
+        counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"subscribe", "result"=>"ok").increment(1);
         Ok(tonic::Response::new(response))
     }
 
@@ -150,6 +156,7 @@ impl ConsumerService for DanubeServerImpl {
                 "The consumer with the id {} does not exist",
                 consumer_id
             ));
+            counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"receive_messages", "result"=>"error").increment(1);
             return Err(status);
         };
 
@@ -221,6 +228,7 @@ impl ConsumerService for DanubeServerImpl {
             }
         });
 
+        counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"receive_messages", "result"=>"ok").increment(1);
         Ok(Response::new(ReceiverStream::new(grpc_rx)))
     }
 
@@ -246,10 +254,12 @@ impl ConsumerService for DanubeServerImpl {
         match service.ack_message_async(ack).await {
             Ok(()) => {
                 trace!("Message with id: {} was acknowledged", msg_id);
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"ack", "result"=>"ok").increment(1);
                 Ok(tonic::Response::new(AckResponse { request_id }))
             }
             Err(err) => {
                 let status = Status::internal(format!("Error acknowledging message: {}", err));
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"ack", "result"=>"error").increment(1);
                 Err(status)
             }
         }

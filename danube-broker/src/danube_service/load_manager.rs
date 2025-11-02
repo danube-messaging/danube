@@ -13,6 +13,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, trace, warn};
+use metrics::counter;
+use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
 
 use crate::{
     resources::{
@@ -467,10 +469,17 @@ impl LoadManager {
                     .put(&path, serde_json::Value::Null, MetaOptions::None)
                     .await
                 {
-                    Ok(_) => info!(
+                    Ok(_) => {
+                        info!(
                         "The topic {} was successfully assign to broker {}",
                         topic_name, broker_id
-                    ),
+                        );
+                        counter!(
+                            BROKER_ASSIGNMENTS_TOTAL.name,
+                            "broker_id" => broker_id.to_string(),
+                            "action" => "assign"
+                        ).increment(1);
+                    },
                     Err(err) => warn!(
                         "Unable to assign topic {} to the broker {}, due to error: {}",
                         topic_name, broker_id, err
@@ -617,6 +626,11 @@ impl LoadManager {
                     "Successfully deleted broker assignment: {}",
                     full_assignment_path
                 );
+                counter!(
+                    BROKER_ASSIGNMENTS_TOTAL.name,
+                    "broker_id" => broker_id.to_string(),
+                    "action" => "unassign"
+                ).increment(1);
             }
 
             // Extract namespace and topic from the full path

@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Interval};
 use tracing::{debug, error, warn};
+use metrics::gauge;
+use crate::broker_metrics::LEADER_ELECTION_STATE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LeaderElectionState {
@@ -50,6 +52,12 @@ impl LeaderElection {
         let mut state = self.state.lock().await;
         if *state != new_state {
             *state = new_state;
+            // 0 = Following/NoLeader, 1 = Leading
+            let value = match *state {
+                LeaderElectionState::Leading => 1.0,
+                _ => 0.0,
+            };
+            gauge!(LEADER_ELECTION_STATE.name).set(value);
         }
     }
 

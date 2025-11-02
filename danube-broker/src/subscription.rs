@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
 use crate::{
-    broker_metrics::TOPIC_CONSUMERS,
+    broker_metrics::TOPIC_ACTIVE_CONSUMERS,
     consumer::Consumer,
     dispatch_strategy::DispatchStrategy,
     dispatcher::subscription_engine::SubscriptionEngine,
@@ -326,7 +326,7 @@ impl Subscription {
                 consumer_info.set_status_false().await;
                 consumers_id.push(*consumer_id);
             }
-            gauge!(TOPIC_CONSUMERS.name, "topic" => self.topic_name.to_string()).decrement(1);
+            gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string()).decrement(1);
         }
 
         // Disconnect all consumers

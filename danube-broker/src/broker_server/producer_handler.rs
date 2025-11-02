@@ -1,5 +1,5 @@
 use crate::utils::get_random_id;
-use crate::{broker_metrics::PRODUCER_SEND_LATENCY_MS, broker_server::DanubeServerImpl};
+use crate::{broker_metrics::{PRODUCER_SEND_LATENCY_MS, BROKER_RPC_TOTAL}, broker_server::DanubeServerImpl};
 use danube_core::proto::{
     producer_service_server::ProducerService, DispatchStrategy as ProtoDispatchStrategy,
     MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
@@ -7,7 +7,7 @@ use danube_core::proto::{
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
-use metrics::histogram;
+use metrics::{histogram, counter};
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, Level};
@@ -55,6 +55,7 @@ impl ProducerService for DanubeServerImpl {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
             Err(status) => {
                 info!("Error topic request: {}", status.message());
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"error").increment(1);
                 return Err(status);
             }
         }
@@ -83,6 +84,7 @@ impl ProducerService for DanubeServerImpl {
         // Early policy check: max_producers_per_topic
         if let Some(topic) = service.topic_worker_pool.get_topic(&req.topic_name) {
             if let Err(e) = topic.can_add_producer().await {
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"error").increment(1);
                 return Err(Status::resource_exhausted(e.to_string()));
             }
         }
@@ -96,6 +98,7 @@ impl ProducerService for DanubeServerImpl {
             )
             .await
             .map_err(|err| {
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"error").increment(1);
                 Status::permission_denied(format!("Not able to create the Producer: {}", err))
             })?;
 
@@ -110,6 +113,7 @@ impl ProducerService for DanubeServerImpl {
             producer_id: new_producer_id,
         };
 
+        counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"ok").increment(1);
         Ok(tonic::Response::new(response))
     }
 
@@ -142,6 +146,7 @@ impl ProducerService for DanubeServerImpl {
                 "The producer with id {} does not exist",
                 stream_message.msg_id.producer_id
             ));
+            counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
             return Err(status);
         }
 
@@ -152,6 +157,7 @@ impl ProducerService for DanubeServerImpl {
         // Early policy check: max_message_size
         if let Some(topic) = service.topic_worker_pool.get_topic(&topic_name) {
             if let Err(e) = topic.validate_message_size(stream_message.payload.len()) {
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
                 return Err(Status::invalid_argument(e.to_string()));
             }
         }
@@ -161,6 +167,7 @@ impl ProducerService for DanubeServerImpl {
             .publish_message_async(topic_name, stream_message)
             .await
             .map_err(|err| {
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
                 Status::permission_denied(format!("Unable to publish the message: {}", err))
             })?;
 
@@ -172,7 +179,7 @@ impl ProducerService for DanubeServerImpl {
             .record(elapsed_ms);
 
         let response = MessageResponse { request_id: req_id };
-
+        counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"ok").increment(1);
         Ok(tonic::Response::new(response))
     }
 }
