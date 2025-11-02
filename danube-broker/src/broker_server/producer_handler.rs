@@ -1,5 +1,5 @@
 use crate::utils::get_random_id;
-use crate::{broker_metrics::PRODUCER_MSG_OUT_RATE, broker_server::DanubeServerImpl};
+use crate::{broker_metrics::PRODUCER_SEND_LATENCY_MS, broker_server::DanubeServerImpl};
 use danube_core::proto::{
     producer_service_server::ProducerService, DispatchStrategy as ProtoDispatchStrategy,
     MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
@@ -164,12 +164,12 @@ impl ProducerService for DanubeServerImpl {
                 Status::permission_denied(format!("Unable to publish the message: {}", err))
             })?;
 
-        // Measure the elapsed time
-        let elapsed_time = start_time.elapsed().as_secs_f64();
+        // Measure the elapsed time in milliseconds
+        let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
 
-        // Record the producer rate (messages per second) into the histogram
-        histogram!(PRODUCER_MSG_OUT_RATE.name, "producer" => producer_id.to_string())
-            .record(elapsed_time);
+        // Record the producer send latency (ms)
+        histogram!(PRODUCER_SEND_LATENCY_MS.name, "producer" => producer_id.to_string())
+            .record(elapsed_ms);
 
         let response = MessageResponse { request_id: req_id };
 

@@ -13,7 +13,7 @@ use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
-    broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
+    broker_metrics::{TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL},
     dispatch_strategy::DispatchStrategy,
     message::AckMessage,
     rate_limiter::RateLimiter,
@@ -190,8 +190,8 @@ impl Topic {
         }
 
         // Update metrics
-        counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(1);
-        counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(stream_message.payload.len() as u64);
+        counter!(TOPIC_MESSAGES_IN_TOTAL.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(1);
+        counter!(TOPIC_BYTES_IN_TOTAL.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(stream_message.payload.len() as u64);
 
         // Process message based on dispatch strategy
         match &self.dispatch_strategy {

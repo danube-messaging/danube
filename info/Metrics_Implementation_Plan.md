@@ -11,6 +11,17 @@
 - Gauges: `danube_<area>_<thing>`
 - Histograms: `danube_<area>_<thing>_{ms|bytes}`
 
+## Cluster & RPC
+Files: `danube-broker/src/danube_service/load_manager.rs`, RPC servers
+
+- `danube_broker_topics_owned` (Gauge) — broker_id
+- `danube_broker_assignments_total` (Counter) — broker_id, action
+- `danube_leader_election_state` (Gauge) — state
+- `danube_broker_rpc_total` / `danube_admin_rpc_total` (Counter) — method, result
+- `danube_rpc_errors_total` (Counter) — service, code
+- `danube_client_redirects_total` (Counter) — service, reason
+- `danube_retry_attempts_total` (Counter) — component, reason
+
 ## Phase 1 — Broker Core (Topics, Producers, Consumers)
 Files: `danube-broker/src/topic.rs`, `danube-broker/src/subscription.rs`, `danube-broker/src/dispatcher.rs`, `danube-broker/src/topic_worker.rs`, RPC handlers
 
@@ -30,9 +41,6 @@ Files: `danube-broker/src/topic.rs`, `danube-broker/src/subscription.rs`, `danub
   - `danube_topic_dispatch_latency_ms` (Histogram)
     - Labels: namespace, topic, subscription, sub_type, reliable
     - Hook: before `send_message_to_dispatcher()` to post-enqueue/ack-gate
-  - `danube_topic_backlog_messages` (Gauge)
-    - Labels: namespace, topic, subscription, reliable
-    - Hook: non-reliable: dispatcher queue depth; reliable: WAL end − sub progress
 
 - **Producer (broker-side behavior)**
   - `danube_producer_create_total` (Counter)
@@ -167,16 +175,6 @@ Files: dispatcher engines / progress persistence (if present)
 - `danube_sub_redelivery_total` (Counter)
   - Labels: namespace, topic, subscription, reason={timeout,nack}
 
-## Cluster & RPC
-Files: `danube-broker/src/danube_service/load_manager.rs`, RPC servers
-
-- `danube_broker_topics_owned` (Gauge) — broker_id
-- `danube_broker_assignments_total` (Counter) — broker_id, action
-- `danube_leader_election_state` (Gauge) — state
-- `danube_broker_rpc_total` / `danube_admin_rpc_total` (Counter) — method, result
-- `danube_rpc_errors_total` (Counter) — service, code
-- `danube_client_redirects_total` (Counter) — service, reason
-- `danube_retry_attempts_total` (Counter) — component, reason
 
 ## Export & Dashboards
 - Add Prometheus `/metrics` HTTP endpoint in broker process.

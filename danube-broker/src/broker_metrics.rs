@@ -7,59 +7,63 @@ pub(crate) struct Metric {
 }
 
 pub(crate) const COUNTERS: [Metric; 4] = [
-    TOPIC_MSG_IN_COUNTER,
-    TOPIC_BYTES_IN_COUNTER,
-    CONSUMER_MSG_OUT_COUNTER,
-    CONSUMER_BYTES_OUT_COUNTER,
+    TOPIC_MESSAGES_IN_TOTAL,
+    TOPIC_BYTES_IN_TOTAL,
+    CONSUMER_MESSAGES_OUT_TOTAL,
+    CONSUMER_BYTES_OUT_TOTAL,
 ];
-pub(crate) const GAUGES: [Metric; 3] = [BROKER_TOPICS, TOPIC_PRODUCERS, TOPIC_CONSUMERS];
-pub(crate) const HISTOGRAMS: [Metric; 1] = [PRODUCER_MSG_OUT_RATE];
+pub(crate) const GAUGES: [Metric; 3] = [
+    BROKER_TOPICS_OWNED,
+    TOPIC_ACTIVE_PRODUCERS,
+    TOPIC_ACTIVE_CONSUMERS,
+];
+pub(crate) const HISTOGRAMS: [Metric; 1] = [PRODUCER_SEND_LATENCY_MS];
 
 // BROKER Metrics --------------------------
 
-pub(crate) const BROKER_TOPICS: Metric = Metric {
-    name: "danube_broker_topics",
+pub(crate) const BROKER_TOPICS_OWNED: Metric = Metric {
+    name: "danube_broker_topics_owned",
     description: "Total number of topics served by broker",
 };
 
 // TOPIC Metrics --------------------------
 
-pub(crate) const TOPIC_MSG_IN_COUNTER: Metric = Metric {
-    name: "danube_topic_msg_in_counter",
+pub(crate) const TOPIC_MESSAGES_IN_TOTAL: Metric = Metric {
+    name: "danube_topic_messages_in_total",
     description: "Total messages published to the topic (msg).",
 };
 
-pub(crate) const TOPIC_BYTES_IN_COUNTER: Metric = Metric {
-    name: "danube_topic_bytes_in_counter",
+pub(crate) const TOPIC_BYTES_IN_TOTAL: Metric = Metric {
+    name: "danube_topic_bytes_in_total",
     description: "Total bytes published to the topic (bytes)",
 };
 
-pub(crate) const TOPIC_PRODUCERS: Metric = Metric {
-    name: "danube_topic_producers",
+pub(crate) const TOPIC_ACTIVE_PRODUCERS: Metric = Metric {
+    name: "danube_topic_active_producers",
     description: "Total number of producers per topic",
 };
 
-pub(crate) const TOPIC_CONSUMERS: Metric = Metric {
-    name: "danube_topic_consumers",
+pub(crate) const TOPIC_ACTIVE_CONSUMERS: Metric = Metric {
+    name: "danube_topic_active_consumers",
     description: "Total number of consumers per topic",
 };
 
 // PRODUCER Metrics --------------------------
 
-pub(crate) const PRODUCER_MSG_OUT_RATE: Metric = Metric {
-    name: "danube_producer_msg_out_rate",
-    description: "Histogram with the messages delivered per producer.",
+pub(crate) const PRODUCER_SEND_LATENCY_MS: Metric = Metric {
+    name: "danube_producer_send_latency_ms",
+    description: "End-to-end producer send latency in milliseconds (broker-side).",
 };
 
 // CONSUMER Metrics --------------------------
 
-pub(crate) const CONSUMER_MSG_OUT_COUNTER: Metric = Metric {
-    name: "danube_consumer_msg_out_counter",
+pub(crate) const CONSUMER_MESSAGES_OUT_TOTAL: Metric = Metric {
+    name: "danube_consumer_messages_out_total",
     description: "Total messages delivered to consumer (msg).",
 };
 
-pub(crate) const CONSUMER_BYTES_OUT_COUNTER: Metric = Metric {
-    name: "danube_consumer_bytes_out_counter",
+pub(crate) const CONSUMER_BYTES_OUT_TOTAL: Metric = Metric {
+    name: "danube_consumer_bytes_out_total",
     description: "Total bytes delivered to consumer (bytes)",
 };
 
