@@ -5,7 +5,7 @@ use danube_core::{
     storage::{PersistentStorage, StartPosition, TopicStream},
 };
 use danube_persistent_storage::WalStorage;
-use metrics::counter;
+use metrics::{counter, histogram, gauge};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
@@ -13,7 +13,7 @@ use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
-    broker_metrics::{TOPIC_BYTES_IN_COUNTER, TOPIC_MSG_IN_COUNTER},
+    broker_metrics::{TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL, TOPIC_MESSAGE_SIZE_BYTES, TOPIC_ACTIVE_SUBSCRIPTIONS},
     dispatch_strategy::DispatchStrategy,
     message::AckMessage,
     rate_limiter::RateLimiter,
@@ -148,11 +148,17 @@ impl Topic {
         }
 
         // Disconnect all the topic subscriptions
-        for (_, subscription) in self.subscriptions.lock().await.iter_mut() {
+        let mut subs_guard = self.subscriptions.lock().await;
+        for (_, subscription) in subs_guard.iter_mut() {
             let mut consumers = subscription.disconnect().await?;
             disconnected_consumers.append(&mut consumers);
         }
-
+        // Decrement subscriptions gauge for all existing
+        let subs_len = subs_guard.len();
+        if subs_len > 0 {
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).decrement(subs_len as f64);
+        }
+        
         Ok((disconnected_producers, disconnected_consumers))
     }
 
@@ -174,6 +180,12 @@ impl Topic {
                 warn!("Publish rate limit exceeded for topic {} (warn-only)", self.topic_name);
             }
         }
+        // Record message size distribution early (bytes)
+        histogram!(
+            TOPIC_MESSAGE_SIZE_BYTES.name,
+            "topic" => self.topic_name.clone()
+        ).record(stream_message.payload.len() as f64);
+
         // Policy: max_message_size
         self.validate_message_size(stream_message.payload.len())?;
         // Validate producer without blocking
@@ -189,9 +201,15 @@ impl Topic {
             }
         }
 
-        // Update metrics
-        counter!(TOPIC_MSG_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(1);
-        counter!(TOPIC_BYTES_IN_COUNTER.name, "topic"=> self.topic_name.clone() , "producer" => producer_id.to_string()).increment(stream_message.payload.len() as u64);
+        // Update ingress counters (topic only)
+        counter!(
+            TOPIC_MESSAGES_IN_TOTAL.name,
+            "topic"=> self.topic_name.clone()
+        ).increment(1);
+        counter!(
+            TOPIC_BYTES_IN_TOTAL.name,
+            "topic"=> self.topic_name.clone()
+        ).increment(stream_message.payload.len() as u64);
 
         // Process message based on dispatch strategy
         match &self.dispatch_strategy {
@@ -349,6 +367,8 @@ impl Topic {
             // Insert the new subscription
             let mut subs = self.subscriptions.lock().await;
             subs.insert(options.subscription_name.clone(), new_subscription);
+            // Gauge: topic active subscriptions ++
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).increment(1.0);
         }
 
         // Policy: consumer limits (per-subscription and per-topic)
@@ -374,7 +394,10 @@ impl Topic {
     // Unsubscribes the specified subscription from the topic
     // should be called if all consumers are disconnected
     pub(crate) async fn unsubscribe(&self, subscription_name: &str) {
-        let _ = self.subscriptions.lock().await.remove(subscription_name);
+        let removed = self.subscriptions.lock().await.remove(subscription_name);
+        if removed.is_some() {
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).decrement(1.0);
+        }
     }
 
     pub(crate) async fn validate_consumer(

@@ -38,8 +38,8 @@ pub enum BackendConfig {
 
 impl BackendConfig {
     /// Build an OpenDAL Operator and return it along with an optional root prefix
-    /// to be prepended to object keys (used by some local backends).
-    pub fn build_operator(&self) -> Result<(Operator, String), PersistentStorageError> {
+    /// to be prepended to object keys (used by some local backends), and a provider string.
+    pub fn build_operator(&self) -> Result<(Operator, String, String), PersistentStorageError> {
         match self {
             BackendConfig::Cloud {
                 backend,
@@ -83,7 +83,7 @@ impl BackendConfig {
                             PersistentStorageError::Other(format!("opendal s3 builder: {}", e))
                         })?
                         .finish();
-                    Ok((op, String::new()))
+                    Ok((op, String::new(), "s3".to_string()))
                 }
                 CloudBackend::Gcs => {
                     // Expect root like gcs://bucket or gcs://bucket/prefix
@@ -106,7 +106,7 @@ impl BackendConfig {
                             PersistentStorageError::Other(format!("opendal gcs builder: {}", e))
                         })?
                         .finish();
-                    Ok((op, String::new()))
+                    Ok((op, String::new(), "gcs".to_string()))
                 }
                 CloudBackend::Azblob => {
                     // Expect root like "container" or "container/prefix"
@@ -137,7 +137,7 @@ impl BackendConfig {
                             PersistentStorageError::Other(format!("opendal azblob builder: {}", e))
                         })?
                         .finish();
-                    Ok((op, String::new()))
+                    Ok((op, String::new(), "azblob".to_string()))
                 }
             },
             BackendConfig::Local { backend, root } => match backend {
@@ -151,7 +151,7 @@ impl BackendConfig {
                             PersistentStorageError::Other(format!("opendal fs builder: {}", e))
                         })?
                         .finish();
-                    Ok((op, prefix))
+                    Ok((op, prefix, "fs".to_string()))
                 }
                 LocalBackend::Memory => {
                     // Memory service ignores root but we keep a logical prefix
@@ -161,7 +161,7 @@ impl BackendConfig {
                             PersistentStorageError::Other(format!("opendal memory builder: {}", e))
                         })?
                         .finish();
-                    Ok((op, normalize_prefix(root)))
+                    Ok((op, normalize_prefix(root), "memory".to_string()))
                 }
             },
         }

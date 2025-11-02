@@ -2,6 +2,13 @@ use async_trait::async_trait;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use tokio_stream::StreamExt;
+use metrics::counter;
+use crate::persistent_metrics::{
+    WAL_APPEND_TOTAL,
+    WAL_APPEND_BYTES_TOTAL,
+    WAL_READER_CREATE_TOTAL,
+    CLOUD_HANDOFF_TO_WAL_TOTAL,
+};
 use tracing::{info, warn};
 
 use crate::cloud::{CloudReader, CloudStore};
@@ -51,15 +58,23 @@ impl WalStorage {
 impl PersistentStorage for WalStorage {
     async fn append_message(
         &self,
-        _topic_name: &str,
+        topic_name: &str,
         msg: StreamMessage,
     ) -> Result<u64, PersistentStorageError> {
-        self.wal.append(&msg).await
+        // Ensure writer has topic for metrics
+        self.wal.set_topic_for_metrics(topic_name.to_string()).await;
+        let payload_len = msg.payload.len() as u64;
+        let res = self.wal.append(&msg).await;
+        if let Ok(_off) = res {
+            counter!(WAL_APPEND_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
+            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string()).increment(payload_len);
+        }
+        res
     }
 
     async fn create_reader(
         &self,
-        _topic_name: &str,
+        topic_name: &str,
         start: StartPosition,
     ) -> Result<TopicStream, PersistentStorageError> {
         // This function requires cloud and etcd to be configured for the tiered reading logic.
@@ -80,7 +95,11 @@ impl PersistentStorage for WalStorage {
                     start = from,
                     "cloud is not configured; creating reader from WAL only"
                 );
-                return self.wal.tail_reader(from, live).await;
+                let stream = self.wal.tail_reader(from, live).await;
+                if stream.is_ok() {
+                    counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+                }
+                return stream;
             }
         };
 
@@ -106,7 +125,11 @@ impl PersistentStorage for WalStorage {
                 wal_start = wal_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            self.wal.tail_reader(start_offset, live).await
+            let stream = self.wal.tail_reader(start_offset, live).await;
+            if stream.is_ok() {
+                counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+            }
+            stream
         } else {
             // CASE 2: The read must start from the cloud and then hand off to the WAL.
             let handoff_offset = wal_start_offset;
@@ -130,6 +153,8 @@ impl PersistentStorage for WalStorage {
 
             // Chain them together to provide a single, seamless stream to the consumer.
             let chained = cloud_stream.chain(wal_stream);
+            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
+            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
             Ok(Box::pin(chained))
         }
     }

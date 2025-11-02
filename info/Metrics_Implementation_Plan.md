@@ -11,43 +11,53 @@
 - Gauges: `danube_<area>_<thing>`
 - Histograms: `danube_<area>_<thing>_{ms|bytes}`
 
+## Cluster & RPC
+Files: `danube-broker/src/danube_service/load_manager.rs`, RPC servers
+
+- `danube_broker_topics_owned` (Gauge) — broker_id
+- `danube_broker_assignments_total` (Counter) — broker_id, action
+- `danube_leader_election_state` (Gauge) — state (per broker: 0 follower/NoLeader, 1 leader)
+- `danube_broker_rpc_total` (Counter) — service, method, result
+- `danube_client_redirects_total` (Counter) — reason
+
+Notes:
+- rpc_errors_total and retry_attempts_total are intentionally not implemented.
+
 ## Phase 1 — Broker Core (Topics, Producers, Consumers)
 Files: `danube-broker/src/topic.rs`, `danube-broker/src/subscription.rs`, `danube-broker/src/dispatcher.rs`, `danube-broker/src/topic_worker.rs`, RPC handlers
 
 - **Topic**
   - `danube_topic_messages_in_total` (Counter)
-    - Labels: namespace, topic, partition, producer_name
+    - Labels: topic
     - Hook: `Topic.publish_message_async()`
   - `danube_topic_bytes_in_total` (Counter)
-    - Labels: namespace, topic, partition, producer_name
+    - Labels: topic
     - Hook: `Topic.publish_message_async()`
   - `danube_topic_active_producers` (Gauge)
-    - Labels: namespace, topic
+    - Labels: topic
     - Hook: producer create/close
   - `danube_topic_active_subscriptions` (Gauge)
-    - Labels: namespace, topic
-    - Hook: subscription create/remove
-  - `danube_topic_dispatch_latency_ms` (Histogram)
-    - Labels: namespace, topic, subscription, sub_type, reliable
-    - Hook: before `send_message_to_dispatcher()` to post-enqueue/ack-gate
-  - `danube_topic_backlog_messages` (Gauge)
-    - Labels: namespace, topic, subscription, reliable
-    - Hook: non-reliable: dispatcher queue depth; reliable: WAL end − sub progress
+    - Labels: topic
+    - Hook: subscription create/remove; bulk decrement on topic close
+  - `danube_topic_message_size_bytes` (Histogram)
+    - Labels: topic
+    - Hook: entry of `publish_message_async()` (observe payload length)
 
 - **Producer (broker-side behavior)**
-  - `danube_producer_create_total` (Counter)
-    - Labels: namespace, topic, result, error_type
-    - Hook: Producer RPC Create handler
   - `danube_producer_send_total` (Counter)
-    - Labels: namespace, topic, partition, result, error_type, reliable
+    - Labels: topic, result, error_code
     - Hook: Producer RPC Send handler
   - `danube_producer_send_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition, reliable
+    - Labels: topic
     - Hook: around send (append/dispatch)
 
 - **Consumer / Subscription**
-  - `danube_consumer_subscribe_total` (Counter)
-    - Labels: namespace, topic, subscription, sub_type, result
+  - `danube_subscription_active_consumers` (Gauge)
+    - Labels: topic, subscription
+    - Hook: `Subscription.add_consumer()` (++) and on remove/disconnect (--)
+  - `danube_consumer_messages_out_total` / `danube_consumer_bytes_out_total` (Counters)
+    - Labels: topic, subscription
+    - Hook: when a message is delivered to consumer (Consumer::send_message)
 
 ### Policy and Rate-Limiter Metrics (deferred wiring; quick wins)
 
@@ -67,15 +77,15 @@ These complement the core metrics and are easy to add when we enable metrics wor
     - `dispatcher/subscription_engine.rs`: `poll_next()` when pacing (Reliable) backs off due to limiter (increment once per backoff cycle).
 
 - `MESSAGE_SIZE_HISTOGRAM` (Histogram: `danube_topic_message_size_bytes`)
-  - Labels: namespace, topic
+  - Labels: topic
   - Hook: `topic.rs` at entry of `publish_message_async` (observe `payload.len()` before checks/persist).
 
 - `PRODUCER_COUNT_GAUGE` (Gauge: `danube_topic_active_producers`)
-  - Labels: namespace, topic
+  - Labels: topic
   - Hooks: `topic.rs` after successful `create_producer` (++) and on producer close/cleanup (--).
 
 - `CONSUMER_COUNT_GAUGE` (Gauge: `danube_subscription_active_consumers`)
-  - Labels: namespace, topic, subscription
+  - Labels: topic, subscription
   - Hooks: `subscription.rs` after successful `add_consumer` (++) and on `remove_consumer`/drop (--).
 
 - `RATE_LIMITER_UTILIZATION_GAUGE` (Gauge: `danube_rate_limiter_utilization`)
@@ -108,35 +118,38 @@ These complement the core metrics and are easy to add when we enable metrics wor
 ## Phase 2 — Reliable Storage (WAL)
 Files: `danube-persistent-storage/src/wal_storage.rs`, `wal.rs`, `wal/writer.rs`, `wal/stateful_reader.rs`, `wal/cache.rs`, `wal/deleter.rs`
 
-- **Append/Flush/Rotate**
+- Implemented (topic-labeled):
   - `danube_wal_append_total` (Counter)
-    - Labels: namespace, topic, partition, file_seq
-    - Hook: successful frame append
+    - Labels: topic
+    - Hook: `WalStorage::append_message` on success
   - `danube_wal_append_bytes_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_append_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition
-    - Hook: enqueue→fsync, or fsync batch latency
+    - Labels: topic
+    - Hook: `WalStorage::append_message` on success
+  - `danube_wal_flush_latency_ms` (Histogram)
+    - Labels: topic
+    - Hook: `writer::process_flush` around write+flush
   - `danube_wal_fsync_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_fsync_batch_bytes` (Histogram)
-    - Labels: namespace, topic, partition
+    - Labels: topic
+    - Hook: `writer::process_flush` after flush
   - `danube_wal_file_rotate_total` (Counter)
-    - Labels: namespace, topic, partition, reason={size,time}
-  - `danube_wal_checkpoint_write_total` (Counter)
-    - Labels: namespace, topic, partition
-
-- **Readers / Cache / Deleter**
+    - Labels: topic, reason in {size,time}
+    - Hook: `writer::rotate_if_needed`
   - `danube_wal_reader_create_total` (Counter)
-    - Labels: namespace, topic, partition, start_pos
-  - `danube_wal_reader_read_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_reader_read_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition
-  - `danube_wal_cache_hits_total` / `danube_wal_cache_misses_total` (Counters)
-    - Labels: namespace, topic, partition
+    - Labels: topic, mode in {wal_only,cloud_then_wal}
+    - Hook: `WalStorage::create_reader`
   - `danube_wal_delete_total` (Counter)
-    - Labels: namespace, topic, partition, reason={retention,compaction}
+    - Labels: topic, reason="retention"
+    - Hook: `wal/deleter.rs::run_cycle` after deletions
+
+- Skipped by design:
+  - `danube_wal_fsync_batch_bytes`
+  - `danube_wal_checkpoint_write_total`
+  - `danube_wal_reader_phase_transitions_total`
+  - `danube_wal_delete_bytes_total`
+
+Next Steps:
+- Implement Phase 3 Cloud metrics and handoff.
+- Implement Phase 4 Subscription progress metrics and dashboards.
 
 ## Phase 3 — Cloud Tier (OpenDAL)
 Files: `danube-persistent-storage/src/cloud/storage.rs`, `cloud/uploader_stream.rs`, `cloud/uploader.rs`
@@ -167,16 +180,6 @@ Files: dispatcher engines / progress persistence (if present)
 - `danube_sub_redelivery_total` (Counter)
   - Labels: namespace, topic, subscription, reason={timeout,nack}
 
-## Cluster & RPC
-Files: `danube-broker/src/danube_service/load_manager.rs`, RPC servers
-
-- `danube_broker_topics_owned` (Gauge) — broker_id
-- `danube_broker_assignments_total` (Counter) — broker_id, action
-- `danube_leader_election_state` (Gauge) — state
-- `danube_broker_rpc_total` / `danube_admin_rpc_total` (Counter) — method, result
-- `danube_rpc_errors_total` (Counter) — service, code
-- `danube_client_redirects_total` (Counter) — service, reason
-- `danube_retry_attempts_total` (Counter) — component, reason
 
 ## Export & Dashboards
 - Add Prometheus `/metrics` HTTP endpoint in broker process.

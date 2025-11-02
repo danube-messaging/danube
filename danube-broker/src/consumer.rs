@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{trace, warn};
 
-use crate::broker_metrics::{CONSUMER_BYTES_OUT_COUNTER, CONSUMER_MSG_OUT_COUNTER};
+use crate::broker_metrics::{CONSUMER_BYTES_OUT_TOTAL, CONSUMER_MESSAGES_OUT_TOTAL};
 
 /// Represents a consumer connected and associated with a Subscription.
 #[allow(dead_code)]
@@ -15,6 +15,7 @@ pub(crate) struct Consumer {
     pub(crate) consumer_name: String,
     pub(crate) subscription_type: i32,
     pub(crate) topic_name: String,
+    pub(crate) subscription_name: String,
     pub(crate) tx_cons: mpsc::Sender<StreamMessage>,
     // status = true -> consumer OK, status = false -> Close the consumer
     pub(crate) status: Arc<Mutex<bool>>,
@@ -26,6 +27,7 @@ impl Consumer {
         consumer_name: &str,
         subscription_type: i32,
         topic_name: &str,
+        subscription_name: &str,
         tx_cons: mpsc::Sender<StreamMessage>,
         status: Arc<Mutex<bool>>,
     ) -> Self {
@@ -34,6 +36,7 @@ impl Consumer {
             consumer_name: consumer_name.into(),
             subscription_type,
             topic_name: topic_name.into(),
+            subscription_name: subscription_name.into(),
             tx_cons,
             status,
         }
@@ -52,8 +55,8 @@ impl Consumer {
             );
         } else {
             trace!("Sending the message over channel to {}", self.consumer_id);
-            counter!(CONSUMER_MSG_OUT_COUNTER.name, "topic"=> self.topic_name.clone() , "consumer" => self.consumer_id.to_string()).increment(1);
-            counter!(CONSUMER_BYTES_OUT_COUNTER.name, "topic"=> self.topic_name.clone() , "consumer" => self.consumer_id.to_string()).increment(payload_size as u64);
+            counter!(CONSUMER_MESSAGES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(1);
+            counter!(CONSUMER_BYTES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(payload_size as u64);
         }
 
         // info!("Consumer task ended for consumer_id: {}", self.consumer_id);

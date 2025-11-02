@@ -6,6 +6,8 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use metrics::counter;
+use crate::persistent_metrics::WAL_DELETE_TOTAL;
 
 use crate::checkpoint::{CheckpointStore, UploaderCheckpoint, WalCheckpoint};
 use danube_core::storage::PersistentStorageError;
@@ -135,6 +137,9 @@ impl Deleter {
 
         self.ckpt_store.update_wal(&wal_ckpt).await?;
         info!(target = "wal_deleter", topic = %self.topic_path, deleted_count, deleted_bytes, new_start_offset = new_start, "retention cycle completed");
+        if deleted_count > 0 {
+            counter!(WAL_DELETE_TOTAL.name, "topic"=> self.topic_path.clone(), "reason"=> "retention").increment(deleted_count as u64);
+        }
         Ok(())
     }
 

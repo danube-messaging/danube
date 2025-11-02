@@ -9,13 +9,18 @@ pub struct CloudStore {
     pub(crate) root_prefix: String,
     /// Opendal operator
     pub(crate) op: Operator,
+    /// Provider identifier for metrics labeling (e.g., s3, gcs, azblob, fs, memory)
+    pub(crate) provider: String,
 }
 
 impl CloudStore {
     pub fn new(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
-        let (op, root_prefix) = cfg.build_operator()?;
-        Ok(Self { root_prefix, op })
+        let (op, root_prefix, provider) = cfg.build_operator()?;
+        Ok(Self { root_prefix, op, provider })
     }
+
+    #[inline]
+    pub fn provider(&self) -> &str { &self.provider }
 
     pub async fn put_object(&self, path: &str, bytes: &[u8]) -> Result<(), PersistentStorageError> {
         // Use Writer-based API to allow backend MPU and return Metadata; discard it here.

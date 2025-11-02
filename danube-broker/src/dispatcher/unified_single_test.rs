@@ -21,9 +21,9 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::Consumer;
-use crate::message::AckMessage;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedSingleDispatcher;
+use crate::message::AckMessage;
 use crate::topic::TopicStore;
 
 fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
@@ -62,7 +62,7 @@ async fn reliable_single_ack_gating() {
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
     let status = Arc::new(Mutex::new(true));
-    let consumer = Consumer::new(42, "c1", 0, topic, tx, status);
+    let consumer = Consumer::new(42, "c1", 0, topic, "sub", tx, status);
     dispatcher
         .add_consumer(consumer)
         .await
@@ -87,11 +87,12 @@ async fn reliable_single_ack_gating() {
     assert!(none_second.is_err(), "should not receive second before ack");
 
     // Ack the first; then the second should arrive
-    let ack = AckMessage { request_id: first.request_id, msg_id: first.msg_id.clone(), subscription_name: "test-sub".to_string() };
-    dispatcher
-        .ack_message(ack)
-        .await
-        .expect("ack");
+    let ack = AckMessage {
+        request_id: first.request_id,
+        msg_id: first.msg_id.clone(),
+        subscription_name: "test-sub".to_string(),
+    };
+    dispatcher.ack_message(ack).await.expect("ack");
 
     // Append the second message NOW; then notify to trigger next dispatch
     ts.store_message(make_msg(101, 1, topic)).await.unwrap();
@@ -114,7 +115,7 @@ async fn non_reliable_single_immediate_dispatch() {
     let topic = "/default/unified_single_non_reliable";
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
     let status = Arc::new(Mutex::new(true));
-    let consumer = Consumer::new(43, "c1", 0, topic, tx, status);
+    let consumer = Consumer::new(43, "c1", 0, topic, "sub", tx, status);
     dispatcher
         .add_consumer(consumer)
         .await

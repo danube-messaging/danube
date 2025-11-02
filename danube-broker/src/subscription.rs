@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
 use crate::{
-    broker_metrics::TOPIC_CONSUMERS,
+    broker_metrics::{TOPIC_ACTIVE_CONSUMERS, SUBSCRIPTION_ACTIVE_CONSUMERS},
     consumer::Consumer,
     dispatch_strategy::DispatchStrategy,
     dispatcher::subscription_engine::SubscriptionEngine,
@@ -118,6 +118,7 @@ impl Subscription {
             &options.consumer_name,
             options.subscription_type,
             topic_name,
+            &self.subscription_name,
             tx_cons,
             consumer_status.clone(),
         );
@@ -136,6 +137,13 @@ impl Subscription {
 
         // Insert the consumer into the subscription's consumer list
         self.consumers.insert(consumer_id, consumer_info.clone());
+
+        // Gauge: active consumers per subscription ++
+        gauge!(
+            SUBSCRIPTION_ACTIVE_CONSUMERS.name,
+            "topic" => self.topic_name.to_string(),
+            "subscription" => self.subscription_name.clone()
+        ).increment(1.0);
 
         trace!(
             "A dispatcher {:?} has been added on subscription {}",
@@ -326,7 +334,8 @@ impl Subscription {
                 consumer_info.set_status_false().await;
                 consumers_id.push(*consumer_id);
             }
-            gauge!(TOPIC_CONSUMERS.name, "topic" => self.topic_name.to_string()).decrement(1);
+            gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string()).decrement(1);
+            gauge!(SUBSCRIPTION_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string(), "subscription" => self.subscription_name.clone()).decrement(1);
         }
 
         // Disconnect all consumers

@@ -60,12 +60,12 @@ async fn reliable_multiple_round_robin_ack_gating() {
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);
     let status1 = Arc::new(Mutex::new(true));
-    let c1 = Consumer::new(1, "c1", 1, topic, tx1, status1);
+    let c1 = Consumer::new(1, "c1", 1, topic, "sub", tx1, status1);
     dispatcher.add_consumer(c1).await.expect("add c1");
 
     let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
     let status2 = Arc::new(Mutex::new(true));
-    let c2 = Consumer::new(2, "c2", 1, topic, tx2, status2);
+    let c2 = Consumer::new(2, "c2", 1, topic, "sub", tx2, status2);
     dispatcher.add_consumer(c2).await.expect("add c2");
 
     // Wait for reliable dispatcher readiness (stream initialized)
@@ -129,12 +129,12 @@ async fn non_reliable_multiple_round_robin() {
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);
     let status1 = Arc::new(Mutex::new(true));
-    let c1 = Consumer::new(11, "c1", 1, topic, tx1, status1);
+    let c1 = Consumer::new(11, "c1", 1, topic, "sub", tx1, status1);
     dispatcher.add_consumer(c1).await.expect("add c1");
 
     let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
     let status2 = Arc::new(Mutex::new(true));
-    let c2 = Consumer::new(12, "c2", 1, topic, tx2, status2);
+    let c2 = Consumer::new(12, "c2", 1, topic, "sub", tx2, status2);
     dispatcher.add_consumer(c2).await.expect("add c2");
 
     // Dispatch 4 messages -> expect alternating delivery

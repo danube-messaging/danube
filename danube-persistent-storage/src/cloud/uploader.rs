@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+use metrics::counter;
+use crate::persistent_metrics::CLOUD_UPLOAD_OBJECTS_TOTAL;
 
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::uploader_stream;
@@ -87,6 +89,8 @@ impl Uploader {
                     error = %format!("{}", e),
                     "uploader run_once failed on startup"
                 );
+                let provider = self.cloud.provider().to_string();
+                counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> self.cfg.topic_path.clone(), "provider"=> provider, "result"=> "error").increment(1);
             }
 
             let mut ticker =
@@ -109,6 +113,8 @@ impl Uploader {
                                 error = %format!("{}", e),
                                 "uploader run_once failed"
                             );
+                            let provider = self.cloud.provider().to_string();
+                            counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> self.cfg.topic_path.clone(), "provider"=> provider, "result"=> "error").increment(1);
                         }
                     }
                 }

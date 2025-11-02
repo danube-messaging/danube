@@ -5,11 +5,11 @@ use dashmap::DashMap;
 use metrics::gauge;
 use tracing::{error, warn};
 
-use crate::broker_metrics::{TOPIC_CONSUMERS, TOPIC_PRODUCERS};
+use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::resources::BASE_TOPICS_PATH;
 use crate::utils::join_path;
 use crate::{
-    broker_metrics::BROKER_TOPICS,
+    broker_metrics::BROKER_TOPICS_OWNED,
     resources::Resources,
     schema::SchemaType,
     subscription::{ConsumerInfo, SubscriptionOptions},
@@ -134,7 +134,7 @@ impl TopicManager {
         self.topic_worker_pool
             .add_topic_to_worker(topic_name.to_string(), new_topic_arc);
 
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).increment(1);
+        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).increment(1);
 
         Ok((dispatch_strategy, schema.type_schema))
     }
@@ -244,7 +244,7 @@ impl TopicManager {
             self.consumers.remove(&consumer_id);
         }
 
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
 
         Ok(topic)
     }
@@ -301,7 +301,7 @@ impl TopicManager {
             let _ = resources.topic.delete_all_subscriptions(topic_name).await;
         }
 
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
         Ok(())
     }
 
@@ -332,7 +332,7 @@ impl TopicManager {
             let _ = resources.topic.delete_all_producers(topic_name).await;
         }
 
-        gauge!(BROKER_TOPICS.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
         Ok(())
     }
 
@@ -365,7 +365,7 @@ impl TopicManager {
 
             self.producers.insert(producer_id, topic_name.to_string());
 
-            gauge!(TOPIC_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
+            gauge!(TOPIC_ACTIVE_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
 
             {
                 let mut resources = self.resources.lock().await;
@@ -414,7 +414,7 @@ impl TopicManager {
         self.consumers
             .insert(consumer_id, topic_name.clone(), sub_name_clone);
 
-        gauge!(TOPIC_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
+        gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
 
         let sub_options = serde_json::to_value(&subscription_options)?;
         {
