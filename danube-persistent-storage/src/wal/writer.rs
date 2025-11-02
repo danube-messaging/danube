@@ -8,6 +8,8 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
+use metrics::{counter, histogram};
+use std::time::Instant;
 
 /// Commands sent from `Wal::append()` (and friends) to the background writer task.
 ///
@@ -21,6 +23,8 @@ pub(crate) enum LogCommand {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// Set the topic name used for labeling writer metrics (optional).
+    SetTopic(String),
     #[allow(dead_code)]
     Flush,
     #[allow(dead_code)]
@@ -65,6 +69,8 @@ struct WriterState {
     last_offset_written: Option<u64>,
     // Track the first offset written in the current active file
     current_file_first_offset: Option<u64>,
+    // Optional topic name for metrics labeling
+    topic_name: Option<String>,
 }
 
 impl WriterState {
@@ -107,6 +113,7 @@ impl WriterState {
     async fn process_flush(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(writer) = self.writer.as_mut() {
             if !self.write_buf.is_empty() {
+                let start = Instant::now();
                 writer
                     .write_all(&self.write_buf)
                     .await
@@ -117,6 +124,15 @@ impl WriterState {
                     .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
+                // Metrics: flush latency and fsync count
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                if let Some(t) = &self.topic_name {
+                    histogram!("danube_wal_flush_latency_ms", "topic"=> t.clone()).record(elapsed_ms);
+                    counter!("danube_wal_fsync_total", "topic"=> t.clone()).increment(1);
+                } else {
+                    histogram!("danube_wal_flush_latency_ms").record(elapsed_ms);
+                    counter!("danube_wal_fsync_total").increment(1);
+                }
                 // On explicit flush, also persist a checkpoint if we know a last offset
                 if let Some(off) = self.last_offset_written {
                     self.write_checkpoint(off).await.ok();
@@ -130,12 +146,22 @@ impl WriterState {
     async fn rotate_if_needed(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(max_bytes) = self.rotate_max_bytes {
             if self.bytes_in_file >= max_bytes {
+                if let Some(t) = &self.topic_name {
+                    counter!("danube_wal_file_rotate_total", "topic"=> t.clone(), "reason"=> "size").increment(1);
+                } else {
+                    counter!("danube_wal_file_rotate_total", "reason"=> "size").increment(1);
+                }
                 self.rotate_file().await?;
                 return Ok(());
             }
         }
         if let Some(max_secs) = self.rotate_max_seconds {
             if self.file_started.elapsed() >= std::time::Duration::from_secs(max_secs) {
+                if let Some(t) = &self.topic_name {
+                    counter!("danube_wal_file_rotate_total", "topic"=> t.clone(), "reason"=> "time").increment(1);
+                } else {
+                    counter!("danube_wal_file_rotate_total", "reason"=> "time").increment(1);
+                }
                 self.rotate_file().await?;
                 return Ok(());
             }
@@ -257,6 +283,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         ckpt_store: init.ckpt_store,
         last_offset_written: None,
         current_file_first_offset: None,
+        topic_name: None,
     };
 
     debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
@@ -269,6 +296,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
                     Some(cmd) => {
                         let res = match cmd {
                             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
+                            LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) },
                             LogCommand::Flush => state.process_flush().await,
                             LogCommand::Rotate => state.rotate_if_needed().await,
                             LogCommand::Shutdown(ack_tx) => {

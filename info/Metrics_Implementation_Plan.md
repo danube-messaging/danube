@@ -118,35 +118,38 @@ These complement the core metrics and are easy to add when we enable metrics wor
 ## Phase 2 — Reliable Storage (WAL)
 Files: `danube-persistent-storage/src/wal_storage.rs`, `wal.rs`, `wal/writer.rs`, `wal/stateful_reader.rs`, `wal/cache.rs`, `wal/deleter.rs`
 
-- **Append/Flush/Rotate**
+- Implemented (topic-labeled):
   - `danube_wal_append_total` (Counter)
-    - Labels: namespace, topic, partition, file_seq
-    - Hook: successful frame append
+    - Labels: topic
+    - Hook: `WalStorage::append_message` on success
   - `danube_wal_append_bytes_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_append_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition
-    - Hook: enqueue→fsync, or fsync batch latency
+    - Labels: topic
+    - Hook: `WalStorage::append_message` on success
+  - `danube_wal_flush_latency_ms` (Histogram)
+    - Labels: topic
+    - Hook: `writer::process_flush` around write+flush
   - `danube_wal_fsync_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_fsync_batch_bytes` (Histogram)
-    - Labels: namespace, topic, partition
+    - Labels: topic
+    - Hook: `writer::process_flush` after flush
   - `danube_wal_file_rotate_total` (Counter)
-    - Labels: namespace, topic, partition, reason={size,time}
-  - `danube_wal_checkpoint_write_total` (Counter)
-    - Labels: namespace, topic, partition
-
-- **Readers / Cache / Deleter**
+    - Labels: topic, reason in {size,time}
+    - Hook: `writer::rotate_if_needed`
   - `danube_wal_reader_create_total` (Counter)
-    - Labels: namespace, topic, partition, start_pos
-  - `danube_wal_reader_read_total` (Counter)
-    - Labels: namespace, topic, partition
-  - `danube_wal_reader_read_latency_ms` (Histogram)
-    - Labels: namespace, topic, partition
-  - `danube_wal_cache_hits_total` / `danube_wal_cache_misses_total` (Counters)
-    - Labels: namespace, topic, partition
+    - Labels: topic, mode in {wal_only,cloud_then_wal}
+    - Hook: `WalStorage::create_reader`
   - `danube_wal_delete_total` (Counter)
-    - Labels: namespace, topic, partition, reason={retention,compaction}
+    - Labels: topic, reason="retention"
+    - Hook: `wal/deleter.rs::run_cycle` after deletions
+
+- Skipped by design:
+  - `danube_wal_fsync_batch_bytes`
+  - `danube_wal_checkpoint_write_total`
+  - `danube_wal_reader_phase_transitions_total`
+  - `danube_wal_delete_bytes_total`
+
+Next Steps:
+- Implement Phase 3 Cloud metrics and handoff.
+- Implement Phase 4 Subscription progress metrics and dashboards.
 
 ## Phase 3 — Cloud Tier (OpenDAL)
 Files: `danube-persistent-storage/src/cloud/storage.rs`, `cloud/uploader_stream.rs`, `cloud/uploader.rs`

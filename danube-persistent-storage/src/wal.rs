@@ -114,6 +114,7 @@ impl WalConfig {
             .unwrap_or_else(|| "wal.log".to_string());
         Some(dir.join(name))
     }
+
     /// Return the configured WAL directory, if any.
     fn wal_dir(&self) -> Option<PathBuf> {
         self.dir.clone()
@@ -349,6 +350,11 @@ impl Wal {
             stateful_reader::StatefulReader::new(self.inner.clone(), checkpoint_opt, from_offset)
                 .await?;
         Ok(Box::pin(reader))
+    }
+
+    /// Set topic name for writer metrics labeling. Best-effort.
+    pub async fn set_topic_for_metrics(&self, topic: String) {
+        let _ = self.inner.cmd_tx.send(LogCommand::SetTopic(topic)).await;
     }
 
     /// Snapshot cached messages with offsets `>= after_offset`.
