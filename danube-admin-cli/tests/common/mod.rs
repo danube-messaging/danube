@@ -1,5 +1,5 @@
 use assert_cmd::prelude::*;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, Rng};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,20 +17,24 @@ pub fn cli() -> Command {
 }
 
 pub fn unique_ns() -> String {
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let rand: String = rand::thread_rng().sample_iter(&Alphanumeric).take(6).map(char::from).collect();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let rand: String = rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(6)
+        .map(char::from)
+        .collect();
     format!("ns-{}-{}", ts, rand)
 }
 
 pub fn create_ns(ns: &str) {
     let mut cmd = cli();
-    cmd.args(["namespaces", "create", ns])
-        .assert()
-        .success();
+    cmd.args(["namespaces", "create", ns]).assert().success();
 }
 
 pub fn delete_ns(ns: &str) {
     let mut cmd = cli();
     let _ = cmd.args(["namespaces", "delete", ns]).output();
 }
-

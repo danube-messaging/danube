@@ -1,8 +1,7 @@
-use rand::Rng;
+use rand::{rng, Rng};
 
 pub(crate) fn get_random_id() -> u64 {
-    let mut rng = rand::thread_rng();
-    rng.gen::<u64>()
+    rng().random::<u64>()
 }
 
 pub(crate) fn join_path(parts: &[&str]) -> String {
