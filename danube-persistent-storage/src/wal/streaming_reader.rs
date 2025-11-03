@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::checkpoint::WalCheckpoint;
-use tracing::info;
-use crate::frames::FRAME_HEADER_SIZE;
 use crate::frames::scan_safe_frame_boundary_with_crc;
+use crate::frames::FRAME_HEADER_SIZE;
+use tracing::info;
 
 /// Build ordered list of WAL files from checkpoint: rotated files + active file, sorted by seq.
 fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
@@ -76,16 +76,20 @@ pub(crate) async fn stream_from_wal_files(
                 let safe_len = scan_safe_frame_boundary_with_crc(&carry);
                 while idx + FRAME_HEADER_SIZE <= safe_len {
                     let off = u64::from_le_bytes(carry[idx..idx + 8].try_into().unwrap());
-                    let len = u32::from_le_bytes(
-                        carry[idx + 8..idx + 12].try_into().unwrap(),
-                    ) as usize;
+                    let len =
+                        u32::from_le_bytes(carry[idx + 8..idx + 12].try_into().unwrap()) as usize;
                     let frame_end = idx + FRAME_HEADER_SIZE + len;
                     if frame_end > safe_len {
                         break;
                     }
                     if off >= from_offset {
                         let payload = &carry[idx + FRAME_HEADER_SIZE..frame_end];
-                        match bincode::deserialize::<StreamMessage>(payload) {
+                        match bincode::serde::decode_from_slice::<StreamMessage, _>(
+                            payload,
+                            bincode::config::standard(),
+                        )
+                        .map(|(v, _)| v)
+                        {
                             Ok(mut msg) => {
                                 msg.msg_id.topic_offset = off;
                                 if tx.send(Ok(msg)).await.is_err() {

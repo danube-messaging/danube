@@ -2,7 +2,7 @@ use crate::{
     errors::{decode_error_details, DanubeError, Result},
     DanubeClient,
 };
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use std::time::Duration;
 use tonic::{metadata::MetadataValue, transport::Uri, Code, Status};
 
@@ -81,7 +81,7 @@ impl RetryManager {
         // Linear backoff: base * (attempt + 1), capped at max
         let linear = self.base_backoff_ms.saturating_mul(attempt as u64 + 1);
         let backoff = linear.min(self.max_backoff_ms);
-        let jitter = thread_rng().gen_range(backoff / 2..=backoff); // 50-100% jitter
+        let jitter = rng().random_range(backoff / 2..=backoff); // 50-100% jitter
         Duration::from_millis(jitter)
     }
 }

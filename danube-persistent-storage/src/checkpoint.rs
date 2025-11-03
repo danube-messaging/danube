@@ -73,13 +73,14 @@ impl CheckPoint {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
         use tracing::warn;
-        let bytes = bincode::serialize(wal).map_err(|e| {
-            warn!(target = "wal", error = %e, "wal ckpt serialize failed");
-            danube_core::storage::PersistentStorageError::Io(format!(
-                "wal ckpt serialize failed: {}",
-                e
-            ))
-        })?;
+        let bytes =
+            bincode::serde::encode_to_vec(wal, bincode::config::standard()).map_err(|e| {
+                warn!(target = "wal", error = %e, "wal ckpt serialize failed");
+                danube_core::storage::PersistentStorageError::Io(format!(
+                    "wal ckpt serialize failed: {}",
+                    e
+                ))
+            })?;
         let tmp = path.with_extension("tmp");
         let mut f = OpenOptions::new()
             .create(true)
@@ -122,7 +123,7 @@ impl CheckPoint {
         use tracing::warn;
         match tokio::fs::read(path).await {
             Ok(bytes) => {
-                let ckpt: WalCheckpoint = bincode::deserialize(&bytes).map_err(|e| {
+                let ckpt: WalCheckpoint = bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).map(|(v, _)| v).map_err(|e| {
                     warn!(target = "wal", path = %path.display(), error = %e, "wal ckpt parse failed");
                     danube_core::storage::PersistentStorageError::Io(format!("wal ckpt parse failed: {}", e))
                 })?;
@@ -174,13 +175,14 @@ impl CheckPoint {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
         use tracing::warn;
-        let bytes = bincode::serialize(ckpt).map_err(|e| {
-            warn!(target = "wal", error = %e, "uploader ckpt serialize failed");
-            danube_core::storage::PersistentStorageError::Io(format!(
-                "uploader ckpt serialize failed: {}",
-                e
-            ))
-        })?;
+        let bytes =
+            bincode::serde::encode_to_vec(ckpt, bincode::config::standard()).map_err(|e| {
+                warn!(target = "wal", error = %e, "uploader ckpt serialize failed");
+                danube_core::storage::PersistentStorageError::Io(format!(
+                    "uploader ckpt serialize failed: {}",
+                    e
+                ))
+            })?;
         let tmp = path.with_extension("tmp");
         let mut f = OpenOptions::new()
             .create(true)
@@ -223,7 +225,7 @@ impl CheckPoint {
         use tracing::warn;
         match tokio::fs::read(path).await {
             Ok(bytes) => {
-                let ckpt: UploaderCheckpoint = bincode::deserialize(&bytes).map_err(|e| {
+                let ckpt: UploaderCheckpoint = bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).map(|(v, _)| v).map_err(|e| {
                     warn!(target = "wal", path = %path.display(), error = %e, "uploader ckpt parse failed");
                     danube_core::storage::PersistentStorageError::Io(format!("uploader ckpt parse failed: {}", e))
                 })?;

@@ -1,6 +1,6 @@
 use crate::{
     errors::{DanubeError, Result},
-    retry_manager::{RetryManager, status_to_danube_error},
+    retry_manager::{status_to_danube_error, RetryManager},
     ConsumerOptions, DanubeClient, SubType,
 };
 
@@ -12,11 +12,11 @@ use danube_core::proto::{
     ReceiveRequest, StreamMessage,
 };
 
-use futures_core::Stream;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
+use tokio_stream::Stream;
 use tonic::{transport::Uri, Status};
 
 /// Represents a Consumer
@@ -90,11 +90,11 @@ impl TopicConsumer {
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
         let mut attempts = 0;
         let max_retries = 5; // Default for consumers
-        
+
         loop {
             // Connect to current broker
             self.connect(&self.client.uri.clone()).await?;
-            
+
             let consumer_request = ConsumerRequest {
                 request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
                 topic_name: self.topic_name.clone(),
@@ -111,13 +111,15 @@ impl TopicConsumer {
                 Ok(resp) => {
                     let response = resp.into_inner();
                     self.consumer_id = Some(response.consumer_id);
-                    
+
                     // Start health check
                     let stop_signal = Arc::clone(&self.stop_signal);
-                    let _ = self.client.health_check_service
+                    let _ = self
+                        .client
+                        .health_check_service
                         .start_health_check(&self.client.uri, 1, response.consumer_id, stop_signal)
                         .await;
-                        
+
                     return Ok(response.consumer_id);
                 }
                 Err(status) => {
@@ -128,23 +130,28 @@ impl TopicConsumer {
                         );
                         return Err(status_to_danube_error(status));
                     }
-                    
+
                     let error = status_to_danube_error(status);
-                    
+
                     if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
-                    
+
                     attempts += 1;
                     if attempts > max_retries {
                         return Err(error);
                     }
-                    
+
                     // Perform lookup and backoff
-                    if let Ok(new_addr) = self.client.lookup_service.handle_lookup(&self.client.uri, &self.topic_name).await {
+                    if let Ok(new_addr) = self
+                        .client
+                        .lookup_service
+                        .handle_lookup(&self.client.uri, &self.topic_name)
+                        .await
+                    {
                         self.client.uri = new_addr;
                     }
-                    
+
                     let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
@@ -209,12 +216,10 @@ impl TopicConsumer {
         &self.topic_name
     }
 
-
     async fn connect(&mut self, addr: &Uri) -> Result<()> {
         let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
         let client = ConsumerServiceClient::new(grpc_cnx.grpc_cnx.clone());
         self.stream_client = Some(client);
         Ok(())
     }
-
 }

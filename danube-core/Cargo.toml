@@ -14,12 +14,13 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 thiserror = {workspace = true }
-tokio = { version = "1.42.0", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }
 futures-core = "0.3"
 
 [build-dependencies]
-tonic-build = "0.12.3"
+tonic-prost-build = "0.14.2"
 
 [lints]
 workspace = true
