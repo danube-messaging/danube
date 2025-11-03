@@ -1,5 +1,4 @@
 use anyhow::Result;
-use crossbeam::utils::Backoff;
 use danube_core::message::StreamMessage;
 use dashmap::DashMap;
 use flume::{Receiver, Sender};
@@ -66,8 +65,6 @@ impl TopicWorker {
         let handle = tokio::spawn(async move {
             info!("Topic worker {} started", worker_id);
 
-            let backoff = Backoff::new();
-
             loop {
                 match message_rx.recv_async().await {
                     Ok(TopicWorkerMessage::PublishMessage {
@@ -80,7 +77,7 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send publish response: {}", e);
                         }
-                        backoff.reset();
+                        
                     }
                     Ok(TopicWorkerMessage::Subscribe {
                         topic_name,
@@ -92,7 +89,7 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send subscribe response: {}", e);
                         }
-                        backoff.reset();
+                        
                     }
                     Ok(TopicWorkerMessage::AckMessage {
                         ack_msg,
@@ -102,7 +99,7 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send ack response: {}", e);
                         }
-                        backoff.reset();
+                        
                     }
                     Ok(TopicWorkerMessage::Shutdown) => {
                         info!("Topic worker {} shutting down", worker_id);

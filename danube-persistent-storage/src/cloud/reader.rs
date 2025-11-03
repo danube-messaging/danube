@@ -181,9 +181,15 @@ fn parse_frames_from_carry(
                 off, crc, computed
             )));
         }
-        let msg: StreamMessage = bincode::deserialize(rec).map_err(|e| {
-            PersistentStorageError::Other(format!("cloud_reader: bincode decode failed: {}", e))
-        })?;
+        let msg: StreamMessage =
+            bincode::serde::decode_from_slice(rec, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|e| {
+                    PersistentStorageError::Other(format!(
+                        "cloud_reader: bincode decode failed: {}",
+                        e
+                    ))
+                })?;
         out.push((off, msg));
         idx = next;
     }

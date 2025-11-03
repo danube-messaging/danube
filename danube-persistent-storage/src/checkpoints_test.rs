@@ -195,8 +195,12 @@ mod tests {
         };
 
         // Test that serialization/deserialization works with edge case values
-        let bytes = bincode::serialize(&checkpoint).expect("serialize");
-        let deserialized: UploaderCheckpoint = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = bincode::serde::encode_to_vec(&checkpoint, bincode::config::standard())
+            .expect("serialize");
+        let deserialized: UploaderCheckpoint =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                .map(|(v, _)| v)
+                .expect("deserialize");
 
         assert_eq!(deserialized.last_committed_offset, u64::MAX);
         assert_eq!(deserialized.last_object_id, checkpoint.last_object_id);

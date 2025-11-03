@@ -289,7 +289,7 @@ impl Wal {
         let mut stamped = msg.clone();
         stamped.msg_id.topic_offset = offset;
         // Serialize the stamped message for durability and enqueue to background writer
-        let bytes = bincode::serialize(&stamped)
+        let bytes = bincode::serde::encode_to_vec(&stamped, bincode::config::standard())
             .map_err(|e| PersistentStorageError::Io(format!("bincode serialize failed: {}", e)))?;
         // Update in-memory cache with single lock and evict oldest if over capacity
         {

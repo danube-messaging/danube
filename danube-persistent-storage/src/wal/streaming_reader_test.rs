@@ -34,7 +34,7 @@ mod tests {
         offset: u64,
         msg: &StreamMessage,
     ) -> Result<(), PersistentStorageError> {
-        let bytes = bincode::serialize(msg)
+        let bytes = bincode::serde::encode_to_vec(msg, bincode::config::standard())
             .map_err(|e| PersistentStorageError::Io(format!("serialize failed: {}", e)))?;
         let len = bytes.len() as u32;
         let crc = crc32fast::hash(&bytes);
@@ -204,7 +204,7 @@ mod tests {
 
         // Corrupt frame at 1 (wrong CRC)
         let msg = make_message(1);
-        let bytes = bincode::serialize(&msg).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let len = bytes.len() as u32;
         let wrong_crc = 0xDEADBEEFu32;
         file.write_all(&1u64.to_le_bytes()).await?;
