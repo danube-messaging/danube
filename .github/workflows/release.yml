@@ -210,6 +210,9 @@ jobs:
       deployments: read
       issues: read
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download Linux binaries
         uses: actions/download-artifact@v4
         with:
@@ -251,7 +254,77 @@ jobs:
           # Generate checksums
           cd release
           sha256sum * > checksums.txt
+
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          test -f CHANGELOG.md || { echo "CHANGELOG.md not found"; exit 1; }
+          # Extract block between markers and drop the markers themselves
+          sed -n '/<!-- '"${TAG}"' START -->/,/<!-- '"${TAG}"' END -->/p' CHANGELOG.md \
+            | sed '1d;$d' > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No notes found for ${TAG} in CHANGELOG.md" >&2
+            exit 1
+          fi
+
+      - name: Compose release body
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > RELEASE_STATIC.md <<'EOF'
+          ## Release Notes - Binaries
+
+          ## Danube Broker:
+          - **Linux**: [danube-broker-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-linux)
+          - **MacOS (Apple Silicon)**: [danube-broker-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-macos)
+          - **Windows**: [danube-broker-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-windows.exe)
+
+          ## Client CLI:
+          - **Linux**: [danube-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux)
+          - **MacOS (Apple Silicon)**: [danube-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos)
+          - **Windows**: [danube-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-windows.exe)
+
+          ## Admin CLI:
+          - **Linux**: [danube-admin-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-linux)
+          - **MacOS (Apple Silicon)**: [danube-admin-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos)
+          - **Windows**: [danube-admin-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-windows.exe)
+ 
+          ## Checksums:
+          - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt)
           
+          ## Docker Images:
+          - **Danube Broker**: `ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}`
+          - **Danube CLI**: `ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }}`
+          
+          ### Quick Start with Docker:
+          ```bash
+          # Run Danube Broker
+          docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}
+          
+          # Use Danube CLI
+          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-cli produce --help
+          
+          # Use Danube Admin CLI
+          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-admin-cli --help
+          
+          # Use with Docker Compose
+          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
+          docker-compose up -d
+          ```
+          
+          ### Verify Downloads:
+          ```bash
+          # Download and verify checksums
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux
+          sha256sum -c checksums.txt
+          ```
+          EOF
+          # Combine CHANGELOG section + static info
+          cat RELEASE_NOTES.md RELEASE_STATIC.md > RELEASE_BODY.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -270,51 +343,4 @@ jobs:
             release/danube-cli-windows.exe
             release/danube-admin-cli-windows.exe
             release/checksums.txt
-          body: |
-            ## Release Notes - Binaries
-
-            ## Danube Broker:
-            - **Linux**: [danube-broker-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-linux)
-            - **MacOS (Apple Silicon)**: [danube-broker-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-macos)
-            - **Windows**: [danube-broker-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-windows.exe)
-
-            ## Client CLI:
-            - **Linux**: [danube-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux)
-            - **MacOS (Apple Silicon)**: [danube-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos)
-            - **Windows**: [danube-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-windows.exe)
-
-            ## Admin CLI:
-            - **Linux**: [danube-admin-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-linux)
-            - **MacOS (Apple Silicon)**: [danube-admin-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos)
-            - **Windows**: [danube-admin-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-windows.exe)
- 
-            ## Checksums:
-            - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt)
-            
-            ## Docker Images:
-            - **Danube Broker**: `ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}`
-            - **Danube CLI**: `ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }}`
-            
-            ### Quick Start with Docker:
-            ```bash
-            # Run Danube Broker
-            docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}
-            
-            # Use Danube CLI
-            docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-cli produce --help
-            
-            # Use Danube Admin CLI
-            docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-admin-cli --help
-            
-            # Use with Docker Compose
-            curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
-            docker-compose up -d
-            ```
-            
-            ### Verify Downloads:
-            ```bash
-            # Download and verify checksums
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux
-            sha256sum -c checksums.txt
-            ```
+          body_path: RELEASE_BODY.md
