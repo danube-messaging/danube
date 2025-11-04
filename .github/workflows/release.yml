@@ -87,8 +87,18 @@ jobs:
             target/x86_64-pc-windows-msvc/release/danube-admin-cli.exe
             target/x86_64-pc-windows-msvc/release/danube-cli.exe
 
-  docker:
-    runs-on: ubuntu-latest
+  docker-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -117,6 +127,20 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable=true
 
+      - name: Build and push Danube Broker image (${{ matrix.arch }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: broker
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/danube-broker:latest-${{ matrix.arch }}
+          labels: ${{ steps.meta-broker.outputs.labels }}
+          cache-from: type=gha,scope=broker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=broker-${{ matrix.arch }}
+
       - name: Extract metadata for CLI
         id: meta-cli
         uses: docker/metadata-action@v5
@@ -126,32 +150,59 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable=true
 
-      - name: Build and push Danube Broker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          target: broker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-broker.outputs.tags }}
-          labels: ${{ steps.meta-broker.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push Danube CLI image
+      - name: Build and push Danube CLI image (${{ matrix.arch }})
         uses: docker/build-push-action@v5
         with:
           context: .
           target: cli
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta-cli.outputs.tags }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/danube-cli:latest-${{ matrix.arch }}
           labels: ${{ steps.meta-cli.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=cli-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=cli-${{ matrix.arch }}
+
+  docker-manifest:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          BROKER="ghcr.io/${{ github.repository_owner }}/danube-broker"
+          CLI="ghcr.io/${{ github.repository_owner }}/danube-cli"
+
+          docker buildx imagetools create \
+            -t ${BROKER}:${TAG} \
+            -t ${BROKER}:latest \
+            ${BROKER}:${TAG}-amd64 \
+            ${BROKER}:${TAG}-arm64
+
+          docker buildx imagetools create \
+            -t ${CLI}:${TAG} \
+            -t ${CLI}:latest \
+            ${CLI}:${TAG}-amd64 \
+            ${CLI}:${TAG}-arm64
 
   release:
-    needs: [build-linux, build-macos, build-windows, docker]
+    needs: [build-linux, build-macos, build-windows, docker-manifest]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,0 +1,51 @@
+# Reduce build context and improve cache hits
+# Keep Cargo sources and config/ included
+
+# VCS and CI
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Rust build outputs
+/target/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temp
+*.log
+/tmp/
+/temp/
+/cache/
+
+# Tests, docs, and misc not needed for image builds
+/tests/
+/examples/
+/benchmarks/
+/docs/
+/danube-data/
+**/*.md
+LICENSE
+CODEOWNERS
+
+# Node/other ecosystems (if present)
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Python cache (if present)
+__pycache__/
+*.pyc
+
+# Do NOT exclude app sources or runtime config
+!Cargo.toml
+!Cargo.lock
+!crates/**
+!src/**
+!config/**

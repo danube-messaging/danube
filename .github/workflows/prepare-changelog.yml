@@ -1,0 +1,83 @@
+name: Prepare Changelog
+
+on:
+  workflow_dispatch:
+    inputs:
+      next_tag:
+        description: "Next version tag (e.g., v1.2.3)"
+        required: true
+        type: string
+      base_branch:
+        description: "Base branch for the PR"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine previous tag
+        id: prev
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Find the most recent semver-like tag (v*.*.*)
+          prev_tag=$(git tag -l 'v*.*.*' --sort=-v:refname | sed -n '1p' || true)
+          echo "Previous tag: ${prev_tag:-<none>}"
+          echo "prev_tag=${prev_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes via GitHub API
+        id: gen
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const nextTag = process.env.next_tag;
+            const prevTag = process.env.prev_tag;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const params = { owner, repo, tag_name: nextTag };
+            if (prevTag) params.previous_tag_name = prevTag;
+            const res = await github.rest.repos.generateReleaseNotes(params);
+            core.setOutput('body', res.data.body || '');
+          result-encoding: string
+        env:
+          prev_tag: ${{ steps.prev.outputs.prev_tag }}
+          next_tag: ${{ inputs.next_tag }}
+
+      - name: Write release/CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          notes=${{ toJSON(steps.gen.outputs.body) }}
+          # Remove surrounding quotes from toJSON and interpret escapes
+          printf "%b" ${notes} > release/CHANGELOG.md
+          echo "Generated release/CHANGELOG.md:" && wc -c release/CHANGELOG.md
+
+      - name: Validate changelog not empty
+        run: |
+          test -s release/CHANGELOG.md || { echo "Generated changelog is empty" >&2; exit 1; }
+
+      - name: Create PR with prepared changelog
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/prepare-changelog-${{ inputs.next_tag }}
+          base: ${{ inputs.base_branch }}
+          title: "chore: prepare changelog for ${{ inputs.next_tag }}"
+          commit-message: "chore: prepare changelog for ${{ inputs.next_tag }}"
+          body: |
+            This PR prepares the changelog for `${{ inputs.next_tag }}`.
+            Please review and edit as needed before tagging a release.
+          add-paths: |
+            release/CHANGELOG.md
+          draft: false
