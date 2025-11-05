@@ -33,7 +33,7 @@ TMP_FILE=$(mktemp)
   echo "<!-- ${NEXT_TAG} START -->"
   echo "## ${NEXT_TAG} - $(date +%Y-%m-%d)"
   echo "### What's Changed"
-  git log "${RANGE}" --no-merges --pretty='format:* %s by @%an in %h'
+  git log "${RANGE}" --no-merges --pretty='format:* %s by @%an in %h' | sed -e 's/by @Dan Rusei/by @danrusei/g'
   echo
   echo "<!-- ${NEXT_TAG} END -->"
   echo
