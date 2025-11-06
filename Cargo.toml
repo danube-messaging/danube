@@ -14,17 +14,20 @@ members = [
     # -- Danube Metadata Store lib
     "danube-metadata-store", 
 
+    # -- Danube persistent storage
+    "danube-persistent-storage",
+
     # -- Danube lib client
     "danube-client",
+
+    # -- Danube client cli
+    "danube-cli", 
 
     # -- Danube admin cli
     "danube-admin-cli", 
     
-    # -- Danube client cli
-    "danube-cli", 
-
-    # -- Danube persistent storage
-    "danube-persistent-storage",
+    # -- Danube admin gateway (BFF for HTTP UI)
+    "danube-admin-gateway",
 ]
 
 [workspace.dependencies]
