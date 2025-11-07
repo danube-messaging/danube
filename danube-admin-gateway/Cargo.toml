@@ -1,0 +1,26 @@
+[package]
+name = "danube-admin-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+danube-core = { path = "../danube-core" }
+
+# workspace deps
+futures = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rustls = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+base64 = { workspace = true }
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"] }
+chrono = { version = "0.4", features = ["clock", "serde"] }
