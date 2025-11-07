@@ -11,14 +11,20 @@ use tracing::info;
 
 mod grpc_client;
 mod http;
+mod metrics;
+mod dto;
+mod ui {
+    pub mod cluster;
+    pub mod broker;
+    pub mod topic;
+}
 
 use crate::grpc_client::{AdminGrpcClient, GrpcClientOptions};
-use crate::http::{
-    brokers_handler, leader_handler, namespaces_handler, topic_desc_handler, topic_subs_handler,
-    topics_handler,
-};
 use danube_core::admin_proto as admin;
 use tokio::sync::Mutex;
+use crate::metrics::{MetricsClient, MetricsConfig};
+use crate::ui::{cluster::cluster_page, broker::broker_page, topic::topic_page};
+use crate::dto::{ClusterPageDto, BrokerPageDto, TopicPageDto};
 
 #[derive(Parser, Debug, Clone)]
 struct Config {
@@ -54,6 +60,16 @@ struct Config {
     grpc_cert: Option<String>,
     #[arg(long)]
     grpc_key: Option<String>,
+
+    // Metrics scraping configuration
+    #[arg(long, default_value = "http")]
+    metrics_scheme: String,
+    #[arg(long, default_value_t = 9040)]
+    metrics_port: u16,
+    #[arg(long, default_value = "/metrics")]
+    metrics_path: String,
+    #[arg(long, default_value_t = 800)]
+    metrics_timeout_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -73,6 +89,10 @@ pub struct AppState {
     pub brokers_cache: Mutex<Option<CacheEntry<admin::BrokerListResponse>>>,
     pub namespaces_cache: Mutex<Option<CacheEntry<admin::NamespaceListResponse>>>,
     pub topics_cache: Mutex<HashMap<String, CacheEntry<admin::TopicListResponse>>>,
+    pub metrics: MetricsClient,
+    pub cluster_page_cache: Mutex<Option<CacheEntry<ClusterPageDto>>>,
+    pub broker_page_cache: Mutex<HashMap<String, CacheEntry<BrokerPageDto>>>,
+    pub topic_page_cache: Mutex<HashMap<String, CacheEntry<TopicPageDto>>>,
 }
 
 #[tokio::main]
@@ -89,27 +109,31 @@ async fn main() -> Result<()> {
         key_path: cfg.grpc_key.clone(),
     };
     let client = AdminGrpcClient::connect(cfg.broker_endpoint.clone(), client_opts).await?;
+    let metrics_client = MetricsClient::new(MetricsConfig {
+        scheme: cfg.metrics_scheme.clone(),
+        port: cfg.metrics_port,
+        path: cfg.metrics_path.clone(),
+        timeout_ms: cfg.metrics_timeout_ms,
+    })?;
     let app_state = Arc::new(AppState {
         client,
         ttl: Duration::from_millis(cfg.per_endpoint_cache_ms),
         brokers_cache: Mutex::new(None),
         namespaces_cache: Mutex::new(None),
         topics_cache: Mutex::new(HashMap::new()),
+        metrics: metrics_client,
+        cluster_page_cache: Mutex::new(None),
+        broker_page_cache: Mutex::new(HashMap::new()),
+        topic_page_cache: Mutex::new(HashMap::new()),
     });
 
     let cors = CorsLayer::permissive();
 
     let app = Router::new()
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/brokers", get(brokers_handler))
-        .route("/api/v1/leader", get(leader_handler))
-        .route("/api/v1/namespaces", get(namespaces_handler))
-        .route("/api/v1/topics", get(topics_handler))
-        .route("/api/v1/topics/:topic", get(topic_desc_handler))
-        .route(
-            "/api/v1/topics/:topic/subscriptions",
-            get(topic_subs_handler),
-        )
+        .route("/ui/v1/health", get(health))
+        .route("/ui/v1/cluster", get(cluster_page))
+        .route("/ui/v1/brokers/{broker_id}", get(broker_page))
+        .route("/ui/v1/topics/{topic}", get(topic_page))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
