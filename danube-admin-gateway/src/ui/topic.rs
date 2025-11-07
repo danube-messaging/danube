@@ -57,7 +57,13 @@ pub async fn topic_page(Path(topic): Path<String>, State(state): State<Arc<AppSt
     };
 
     for br in brokers.brokers.iter() {
-        let host = br.broker_addr.split(':').next().unwrap_or(br.broker_addr.as_str());
+        // Extract host from broker_addr which may be http://host:port or host:port
+        let host = br.broker_addr
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .split(':')
+            .next()
+            .unwrap_or("localhost");
         match state.metrics.scrape(host).await {
             Ok(text) => {
                 let map = crate::metrics::parse_prometheus(&text);

@@ -38,19 +38,29 @@ pub async fn broker_page(Path(broker_id): Path<String>, State(state): State<Arc<
     };
 
     // Scrape metrics and topic list from Prometheus (port 9040 by default)
-    let host = broker_addr.split(':').next().unwrap_or(broker_addr.as_str());
+    // Extract host from broker_addr which may be http://host:port or host:port
+    let host = broker_addr
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split(':')
+        .next()
+        .unwrap_or("localhost");
     let (metrics, topics, scrape_err): (BrokerMetricsDto, Vec<BrokerTopicMiniDto>, Option<String>) = match state.metrics.scrape(host).await {
         Ok(text) => {
             let map = crate::metrics::parse_prometheus(&text);
+            // danube_broker_topics_owned{broker="..."} - look for labeled version with broker_id
             let topics_owned = map
                 .get("danube_broker_topics_owned")
-                .and_then(|v| v.first())
-                .map(|(_, val)| *val as u64)
+                .and_then(|series| {
+                    series.iter()
+                        .find(|(labels, _)| labels.get("broker").map(|b| b == &broker_id).unwrap_or(false))
+                        .map(|(_, val)| *val as u64)
+                })
                 .unwrap_or(0);
+            // danube_broker_rpc_total{...} - sum all labeled values
             let rpc_total = map
                 .get("danube_broker_rpc_total")
-                .and_then(|v| v.first())
-                .map(|(_, val)| *val as u64)
+                .map(|series| series.iter().map(|(_, val)| *val as u64).sum())
                 .unwrap_or(0);
 
             // Build topic list using topic-labeled gauges

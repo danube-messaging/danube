@@ -11,18 +11,18 @@ mod dispatch_strategy;
 mod dispatcher;
 mod error_message;
 mod message;
-mod rate_limiter;
 mod policies;
 mod producer;
+mod rate_limiter;
 mod resources;
 mod schema;
 mod service_configuration;
 mod subscription;
 mod topic;
+mod topic_cluster;
+mod topic_control;
 mod topic_worker;
 mod utils;
-mod topic_control;
-mod topic_cluster;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
 

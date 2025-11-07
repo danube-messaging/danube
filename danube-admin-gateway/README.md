@@ -1,30 +1,32 @@
 # danube-admin-gateway
 
-A minimal Backend-for-Frontend (BFF) service for the Danube Admin UI. It exposes a simple REST/JSON API and calls Danube brokers over gRPC using the existing Admin services defined in `danube-core/proto/DanubeAdmin.proto`.
+A Backend-for-Frontend (BFF) service that provides a unified HTTP/JSON API for the Danube Admin UI. It aggregates data from multiple sources—broker administrative endpoints and Prometheus metrics—and delivers page-ready payloads optimized for the frontend.
 
-## What it does (POC)
+## What it does
 
-- Provides read-only endpoints for cluster status, brokers, namespaces, topics, and subscriptions.
-- Reuses generated gRPC stubs from `danube-core/src/proto/danube_admin.rs`.
-- On-demand discovery: calls `BrokerAdmin.ListBrokers` when requested; no background refresh.
-- Request timeouts and HTTP error mapping.
-- Short TTL cache (default 3s) for `/brokers`, `/namespaces`, and per-namespace `/topics`.
+- **Single-call page endpoints**: Each UI page gets all its data in one request (cluster overview, broker details, topic metrics).
+- **Aggregated data**: Combines administrative metadata (brokers, topics, subscriptions) with real-time metrics (message counts, producer/consumer stats).
+- **Automatic discovery**: Finds all brokers in the cluster on-demand; no manual configuration required.
+- **Built-in caching**: Short TTL cache (default 3s) reduces load on brokers and speeds up responses.
+- **Configurable metrics scraping**: Pulls Prometheus metrics from brokers with configurable timeouts and endpoints.
+- **Error tolerance**: Returns partial results with error details when some brokers are unreachable.
 
 ## Build & run
 
 From workspace root:
 
-```
+```bash
 cargo run -p danube-admin-gateway -- \
   --broker-endpoint 127.0.0.1:50051 \
   --listen-addr 0.0.0.0:8080 \
   --request-timeout-ms 800 \
-  --per-endpoint-cache-ms 3000
+  --per-endpoint-cache-ms 3000 \
+  --metrics-port 9040
 ```
 
 With HTTPS for the HTTP listener:
 
-```
+```bash
 cargo run -p danube-admin-gateway -- \
   --broker-endpoint 127.0.0.1:50051 \
   --listen-addr 0.0.0.0:8443 \
@@ -34,7 +36,7 @@ cargo run -p danube-admin-gateway -- \
 
 With gRPC TLS/mTLS to brokers (CLI overrides env vars):
 
-```
+```bash
 cargo run -p danube-admin-gateway -- \
   --broker-endpoint https://broker.example.com:50051 \
   --grpc-enable-tls true \
@@ -44,99 +46,68 @@ cargo run -p danube-admin-gateway -- \
   --grpc-key ./client.key
 ```
 
-Environment variables (fallbacks):
-- `DANUBE_ADMIN_TLS=true` (enable TLS)
-- `DANUBE_ADMIN_DOMAIN` (TLS SNI/verification)
-- `DANUBE_ADMIN_CA` (PEM root CA)
-- `DANUBE_ADMIN_CERT` / `DANUBE_ADMIN_KEY` (mTLS client cert/key)
+## Configuration options
 
-## REST API (POC)
+### Admin gRPC connection
+- `--broker-endpoint` (required): Seed broker address (e.g., `127.0.0.1:50051`)
+- `--request-timeout-ms` (default: 800): Timeout for gRPC calls to brokers
+- `--grpc-enable-tls`, `--grpc-domain`, `--grpc-ca`, `--grpc-cert`, `--grpc-key`: TLS/mTLS config for broker connection
+
+### Metrics scraping
+- `--metrics-scheme` (default: http): Scheme for Prometheus endpoints
+- `--metrics-port` (default: 9040): Port where brokers expose Prometheus metrics
+- `--metrics-path` (default: /metrics): Path for Prometheus scrape
+- `--metrics-timeout-ms` (default: 800): Timeout per metrics scrape
+
+### Server & caching
+- `--listen-addr` (default: 0.0.0.0:8080): Gateway HTTP listen address
+- `--tls-cert`, `--tls-key`: Enable HTTPS for the gateway server
+- `--per-endpoint-cache-ms` (default: 3000): TTL for page-level caches
+
+### Environment variables (fallbacks for gRPC TLS)
+- `DANUBE_ADMIN_TLS=true`: Enable TLS for broker connections
+- `DANUBE_ADMIN_DOMAIN`: TLS SNI/verification domain
+- `DANUBE_ADMIN_CA`: Path to PEM root CA
+- `DANUBE_ADMIN_CERT` / `DANUBE_ADMIN_KEY`: mTLS client cert/key paths
+
+## API endpoints
 
 Base URL defaults to `http://localhost:8080`.
 
-- Health
-  - `GET /api/v1/health`
-  - Response:
-    ```json
-    { "status": "ok", "leader_reachable": true }
-    ```
+### GET /ui/v1/health
+Health check with broker leader reachability.
 
-- Brokers
-  - `GET /api/v1/brokers`
-  - Response (from `BrokerListResponse`):
-    ```json
-    [
-      { "broker_id": "...", "broker_addr": "host:port", "broker_role": "Leader|Follower" }
-    ]
-    ```
+### GET /ui/v1/cluster
+Cluster overview: all brokers with roles and aggregated metrics (topics owned, RPC totals, etc.).
 
-- Leader
-  - `GET /api/v1/leader`
-  - Response (from `BrokerResponse`):
-    ```json
-    { "leader": "broker-id" }
-    ```
+### GET /ui/v1/brokers/{broker_id}
+Detailed broker view: identity, metrics, and list of topics assigned to the broker with producer/consumer counts.
 
-- Namespaces
-  - `GET /api/v1/namespaces`
-  - Response (from `NamespaceListResponse`):
-    ```json
-    { "namespaces": ["/ns1", "/ns2"] }
-    ```
-
-- Topics in a namespace
-  - `GET /api/v1/topics?namespace=/ns1`
-  - Response (from `TopicListResponse`):
-    ```json
-    { "topics": ["/ns1/topic-a", "/ns1/topic-b"] }
-    ```
-
-- Topic description
-  - `GET /api/v1/topics/:topic`
-  - Response (from `DescribeTopicResponse`):
-    ```json
-    {
-      "name": "/ns1/topic-a",
-      "type_schema": 0,
-      "schema_data": "<base64>",
-      "subscriptions": ["sub-1", "sub-2"]
-    }
-    ```
-
-- Topic subscriptions
-  - `GET /api/v1/topics/:topic/subscriptions`
-  - Response (from `SubscriptionListResponse`):
-    ```json
-    { "subscriptions": ["sub-1", "sub-2"] }
-    ```
+### GET /ui/v1/topics/{topic}
+Topic details: schema, subscriptions, and aggregated metrics (messages in/out, active producers/consumers). Topic name must be URL-encoded (e.g., `/default/my-topic` becomes `%2Fdefault%2Fmy-topic`).
 
 ## curl examples
 
-Assuming the gateway runs on `http://localhost:8080` and a namespace `/public` with topic `/public/my-topic`:
+Assuming the gateway runs on `http://localhost:8080`:
 
-```
-# Health
-curl -s http://localhost:8080/api/v1/health | jq
+```bash
+# Health check
+curl -s http://localhost:8080/ui/v1/health | jq
 
-# Brokers
-curl -s http://localhost:8080/api/v1/brokers | jq
+# Cluster overview (all brokers + metrics)
+curl -s http://localhost:8080/ui/v1/cluster | jq
 
-# Leader broker id
-curl -s http://localhost:8080/api/v1/leader | jq
+# Broker details (replace broker_id with actual ID from cluster response)
+curl -s http://localhost:8080/ui/v1/brokers/63161296830406433 | jq
 
-# Namespaces
-curl -s http://localhost:8080/api/v1/namespaces | jq
+# Topic details (topic name /default/test_topic must be URL-encoded)
+curl -s http://localhost:8080/ui/v1/topics/%2Fdefault%2Ftest_topic | jq
 
-# Topics in a namespace
-curl -s "http://localhost:8080/api/v1/topics?namespace=/public" | jq
-
-# Describe topic
-curl -s http://localhost:8080/api/v1/topics/%2Fpublic%2Fmy-topic | jq
-
-# Topic subscriptions
-curl -s http://localhost:8080/api/v1/topics/%2Fpublic%2Fmy-topic/subscriptions | jq
+# Another topic example: /default/partitioned_topic-part-0
+curl -s http://localhost:8080/ui/v1/topics/%2Fdefault%2Fpartitioned_topic-part-0 | jq
 ```
 
-Notes:
-- URL-encode the `:topic` parameter if it contains slashes.
-- For HTTPS listener, use `https://` and `-k` if testing with self-signed certs.
+### Notes
+- **URL encoding**: Topic names include namespace prefix with slashes (e.g., `/default/my-topic`). Encode slashes as `%2F` in URLs.
+- **HTTPS**: For HTTPS listener, use `https://` and add `-k` if testing with self-signed certificates.
+- **jq**: Install `jq` for pretty JSON output, or omit `| jq` to see raw JSON.

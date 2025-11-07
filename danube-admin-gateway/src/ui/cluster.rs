@@ -32,25 +32,31 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
     };
 
     for br in brokers.brokers.iter() {
-        let host = br
-            .broker_addr
+        // Extract host from broker_addr which may be http://host:port or host:port
+        let host = br.broker_addr
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
             .split(':')
             .next()
-            .unwrap_or(br.broker_addr.as_str())
+            .unwrap_or("localhost")
             .to_string();
         let scrape = state.metrics.scrape(&host).await;
         let (topics_owned, rpc_total) = match scrape {
             Ok(text) => {
                 let map = crate::metrics::parse_prometheus(&text);
+                // danube_broker_topics_owned{broker="..."} - look for labeled version with broker_id
                 let topics_owned = map
                     .get("danube_broker_topics_owned")
-                    .and_then(|v| v.first())
-                    .map(|(_, val)| *val as u64)
+                    .and_then(|series| {
+                        series.iter()
+                            .find(|(labels, _)| labels.get("broker").map(|b| b == &br.broker_id).unwrap_or(false))
+                            .map(|(_, val)| *val as u64)
+                    })
                     .unwrap_or(0);
+                // danube_broker_rpc_total{...} - sum all labeled values
                 let rpc_total = map
                     .get("danube_broker_rpc_total")
-                    .and_then(|v| v.first())
-                    .map(|(_, val)| *val as u64)
+                    .map(|series| series.iter().map(|(_, val)| *val as u64).sum())
                     .unwrap_or(0);
                 (topics_owned, rpc_total)
             }
