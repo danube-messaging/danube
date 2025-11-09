@@ -126,6 +126,7 @@ message DescribeTopicResponse {
   int32 type_schema = 2;
   bytes schema_data = 3;
   repeated string subscriptions = 4;
+  string broker_id = 5;
 }
 
 // Broker Unload

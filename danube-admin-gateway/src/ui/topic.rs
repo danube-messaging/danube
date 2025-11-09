@@ -9,6 +9,7 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::app::{AppState, CacheEntry};
+use crate::ui::shared::resolve_metrics_endpoint;
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
@@ -63,9 +64,40 @@ pub async fn topic_page(
         }
     };
 
-    // Scrape topic metrics across all brokers; aggregate values for this topic label
-    let (msg_in_total, producers, consumers, errors) =
-        scrape_topic_metrics_across_brokers(&state, &topic).await;
+    // Scrape the hosting broker (broker_id is expected to be present)
+    let mut errors: Vec<String> = Vec::new();
+    let brokers = match state.client.list_brokers().await {
+        Ok(b) => b,
+        Err(e) => {
+            let (code, body) = crate::http::map_error(e);
+            return (code, body).into_response();
+        }
+    };
+    let host_br = if let Some(br) = brokers
+        .brokers
+        .iter()
+        .find(|b| b.broker_id == desc.broker_id)
+    {
+        br
+    } else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("hosting broker {} not found", desc.broker_id)})),
+        )
+            .into_response();
+    };
+    let (host, port) = resolve_metrics_endpoint(&state, host_br);
+    let (msg_in_total, producers, consumers) =
+        match scrape_topic_metrics_for_host(&state, &host, port, &topic).await {
+            Ok(vals) => vals,
+            Err(e) => {
+                errors.push(format!(
+                    "metrics scrape failed for host broker {}: {}",
+                    host_br.broker_id, e
+                ));
+                (0, 0, 0)
+            }
+        };
 
     // Populate only the requested metrics; others remain zero for now
     let metrics = TopicMetrics {
@@ -116,74 +148,44 @@ async fn fetch_core_topic_data(
     Ok((desc, subs))
 }
 
-async fn scrape_topic_metrics_across_brokers(
-    state: &AppState,
+fn parse_topic_metrics(
+    map: &std::collections::HashMap<String, Vec<(std::collections::HashMap<String, String>, f64)>>,
     topic: &str,
-) -> (u64, u64, u64, Vec<String>) {
-    let mut errors: Vec<String> = Vec::new();
+) -> (u64, u64, u64) {
     let mut msg_in_total: u64 = 0;
     let mut producers: u64 = 0;
     let mut consumers: u64 = 0;
-
-    match state.client.list_brokers().await {
-        Ok(brokers) => {
-            for br in brokers.brokers.iter() {
-                // Prefer metrics_addr if available else host from broker_addr
-                let (host, port) = if !br.metrics_addr.is_empty() {
-                    let maddr = br
-                        .metrics_addr
-                        .trim_start_matches("http://")
-                        .trim_start_matches("https://");
-                    let mut parts = maddr.split(':');
-                    let host = parts.next().unwrap_or("localhost").to_string();
-                    let port = parts
-                        .next()
-                        .and_then(|p| p.parse::<u16>().ok())
-                        .unwrap_or(state.metrics.base_port());
-                    (host, port)
-                } else {
-                    let addr = br
-                        .broker_addr
-                        .trim_start_matches("http://")
-                        .trim_start_matches("https://");
-                    let mut parts = addr.split(':');
-                    let host = parts.next().unwrap_or("localhost").to_string();
-                    (host, state.metrics.base_port())
-                };
-
-                match state.metrics.scrape_host_port(&host, port).await {
-                    Ok(text) => {
-                        let map = crate::metrics::parse_prometheus(&text);
-                        if let Some(series) = map.get("danube_topic_messages_in_total") {
-                            for (labels, value) in series.iter() {
-                                if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                                    msg_in_total += *value as u64;
-                                }
-                            }
-                        }
-                        if let Some(series) = map.get("danube_topic_active_producers") {
-                            for (labels, value) in series.iter() {
-                                if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                                    producers += *value as u64;
-                                }
-                            }
-                        }
-                        if let Some(series) = map.get("danube_topic_active_consumers") {
-                            for (labels, value) in series.iter() {
-                                if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                                    consumers += *value as u64;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("metrics scrape failed for {}: {}", br.broker_id, e))
-                    }
-                }
+    if let Some(series) = map.get("danube_topic_messages_in_total") {
+        for (labels, value) in series.iter() {
+            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
+                msg_in_total += *value as u64;
             }
         }
-        Err(e) => errors.push(format!("list_brokers failed: {}", e)),
     }
+    if let Some(series) = map.get("danube_topic_active_producers") {
+        for (labels, value) in series.iter() {
+            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
+                producers += *value as u64;
+            }
+        }
+    }
+    if let Some(series) = map.get("danube_topic_active_consumers") {
+        for (labels, value) in series.iter() {
+            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
+                consumers += *value as u64;
+            }
+        }
+    }
+    (msg_in_total, producers, consumers)
+}
 
-    (msg_in_total, producers, consumers, errors)
+async fn scrape_topic_metrics_for_host(
+    state: &AppState,
+    host: &str,
+    port: u16,
+    topic: &str,
+) -> anyhow::Result<(u64, u64, u64)> {
+    let text = state.metrics.scrape_host_port(host, port).await?;
+    let map = crate::metrics::parse_prometheus(&text);
+    Ok(parse_topic_metrics(&map, topic))
 }

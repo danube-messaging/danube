@@ -231,6 +231,12 @@ impl BrokerService {
             .map(|addr| (false, addr))
     }
 
+    /// Returns the broker_id that currently serves the topic, if any.
+    pub(crate) async fn get_topic_broker_id(&self, topic_name: &str) -> Option<String> {
+        let resources = self.resources.lock().await;
+        resources.cluster.get_broker_for_topic(topic_name).await
+    }
+
     /// Retrieves partition names if `topic_name` is partitioned, or returns the single topic.
     pub(crate) async fn topic_partitions(&self, topic_name: &str) -> Vec<String> {
         let mut topics = Vec::new();

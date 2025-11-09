@@ -33,6 +33,7 @@ async fn fetch_schema_json(topic: &str) -> Result<serde_json::Value, Box<dyn std
     let value = serde_json::json!({
         "name": resp.name,
         "type_schema": resp.type_schema,
+        "broker_id": resp.broker_id,
         // schema_data is bytes; render as string when possible, else base64
         "schema_data": String::from_utf8(resp.schema_data.clone()).unwrap_or_else(|_| general_purpose::STANDARD.encode(resp.schema_data.clone())),
     });
@@ -213,16 +214,19 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
 
             // schema via admin DescribeTopic
             let schema_value = fetch_schema_json(&name).await?;
+            let broker_id = schema_value.get("broker_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
             if matches!(output.as_deref(), Some("json")) {
                 let out = serde_json::json!({
                     "topic": name,
+                    "broker_id": broker_id,
                     "schema": schema_value,
                     "subscriptions": subscriptions,
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 println!("Topic: {}", name);
+                if !broker_id.is_empty() { println!("Broker ID: {}", broker_id); }
                 // Pretty schema: detect JSON data and pretty print
                 let schema_str = schema_value.get("schema_data").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if schema_str.trim_start().starts_with('{') || schema_str.trim_start().starts_with('[') {

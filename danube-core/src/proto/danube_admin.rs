@@ -121,6 +121,8 @@ pub struct DescribeTopicResponse {
     pub schema_data: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, repeated, tag = "4")]
     pub subscriptions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, tag = "5")]
+    pub broker_id: ::prost::alloc::string::String,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
