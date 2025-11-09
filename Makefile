@@ -91,7 +91,7 @@ admin:
 	@echo "Building Danube admin gateway..."
 	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-admin-gateway --bin danube-admin-gateway && \
 	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 ./target/release/danube-admin-gateway \
-	    --broker-endpoint 0.0.0.0:$(BASE_BROKER_PORT) \
+	    --broker-endpoint 0.0.0.0:$(BASE_ADMIN_PORT) \
 	    --listen-addr 0.0.0.0:8080 \
 	    --request-timeout-ms 800 \
 	    --per-endpoint-cache-ms 3000 \

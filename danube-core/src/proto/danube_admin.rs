@@ -74,6 +74,10 @@ pub struct BrokerInfo {
     pub broker_addr: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub broker_role: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub admin_addr: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub metrics_addr: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrokerResponse {

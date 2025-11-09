@@ -32,15 +32,29 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
     };
 
     for br in brokers.brokers.iter() {
-        // Extract host from broker_addr which may be http://host:port or host:port
-        let host = br.broker_addr
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .split(':')
-            .next()
-            .unwrap_or("localhost")
-            .to_string();
-        let scrape = state.metrics.scrape(&host).await;
+        // Prefer metrics_addr if provided by admin API; else derive from broker_addr host
+        let scrape = if !br.metrics_addr.is_empty() {
+            let maddr = br
+                .metrics_addr
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let mut parts = maddr.split(':');
+            let host = parts.next().unwrap_or("localhost").to_string();
+            let port = parts
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(state.metrics.base_port());
+            state.metrics.scrape_host_port(&host, port).await
+        } else {
+            let addr = br
+                .broker_addr
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let mut parts = addr.split(':');
+            let host = parts.next().unwrap_or("localhost").to_string();
+            let port = state.metrics.base_port();
+            state.metrics.scrape_host_port(&host, port).await
+        };
         let (topics_owned, rpc_total) = match scrape {
             Ok(text) => {
                 let map = crate::metrics::parse_prometheus(&text);
@@ -48,8 +62,14 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 let topics_owned = map
                     .get("danube_broker_topics_owned")
                     .and_then(|series| {
-                        series.iter()
-                            .find(|(labels, _)| labels.get("broker").map(|b| b == &br.broker_id).unwrap_or(false))
+                        series
+                            .iter()
+                            .find(|(labels, _)| {
+                                labels
+                                    .get("broker")
+                                    .map(|b| b == &br.broker_id)
+                                    .unwrap_or(false)
+                            })
                             .map(|(_, val)| *val as u64)
                     })
                     .unwrap_or(0);

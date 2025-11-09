@@ -1,7 +1,8 @@
 use crate::admin::DanubeAdminImpl;
 use danube_core::admin_proto::{
-    broker_admin_server::BrokerAdmin, BrokerInfo, BrokerListResponse, BrokerResponse, Empty,
-    NamespaceListResponse, UnloadBrokerRequest, UnloadBrokerResponse, ActivateBrokerRequest, ActivateBrokerResponse,
+    broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
+    BrokerListResponse, BrokerResponse, Empty, NamespaceListResponse, UnloadBrokerRequest,
+    UnloadBrokerResponse,
 };
 
 use tonic::{Request, Response};
@@ -21,15 +22,8 @@ impl BrokerAdmin for DanubeAdminImpl {
         let brokers = self.resources.cluster.get_brokers().await;
 
         for broker_id in brokers {
-            if let Some((broker_id, broker_addr, broker_role)) =
-                self.resources.cluster.get_broker_info(&broker_id)
-            {
-                let broker_info = BrokerInfo {
-                    broker_id,
-                    broker_addr,
-                    broker_role,
-                };
-                brokers_info.push(broker_info);
+            if let Some(info) = self.resources.cluster.get_broker_info(&broker_id) {
+                brokers_info.push(info);
             }
         }
 
@@ -218,7 +212,12 @@ impl BrokerAdmin for DanubeAdminImpl {
         let mut failed = 0u32;
         let mut failed_topics = Vec::new();
         for topic in topics.iter() {
-            match self.broker_service.topic_cluster.post_unload_topic(topic).await {
+            match self
+                .broker_service
+                .topic_cluster
+                .post_unload_topic(topic)
+                .await
+            {
                 Ok(()) => succeeded += 1,
                 Err(e) => {
                     failed += 1;

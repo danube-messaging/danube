@@ -41,6 +41,15 @@ impl MetricsClient {
         let body = resp.text().await?;
         Ok(body)
     }
+
+    pub async fn scrape_host_port(&self, host: &str, port: u16) -> Result<String> {
+        let url = format!("{}://{}:{}{}", self.cfg.scheme, host, port, self.cfg.path);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body = resp.text().await?;
+        Ok(body)
+    }
+
+    pub fn base_port(&self) -> u16 { self.cfg.port }
 }
 
 // Extremely simple Prometheus text parser for single-sample gauges/counters.
