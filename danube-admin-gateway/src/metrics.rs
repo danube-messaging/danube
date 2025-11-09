@@ -4,10 +4,10 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct MetricsConfig {
-    pub scheme: String,    // http or https
-    pub port: u16,         // default 9040
-    pub path: String,      // default /metrics
-    pub timeout_ms: u64,   // per-scrape timeout
+    pub scheme: String,  // http or https
+    pub port: u16,       // default 9040
+    pub path: String,    // default /metrics
+    pub timeout_ms: u64, // per-scrape timeout
 }
 
 impl Default for MetricsConfig {
@@ -35,13 +35,6 @@ impl MetricsClient {
         Ok(Self { cfg, http })
     }
 
-    pub async fn scrape(&self, host: &str) -> Result<String> {
-        let url = format!("{}://{}:{}{}", self.cfg.scheme, host, self.cfg.port, self.cfg.path);
-        let resp = self.http.get(&url).send().await?.error_for_status()?;
-        let body = resp.text().await?;
-        Ok(body)
-    }
-
     pub async fn scrape_host_port(&self, host: &str, port: u16) -> Result<String> {
         let url = format!("{}://{}:{}{}", self.cfg.scheme, host, port, self.cfg.path);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
@@ -49,7 +42,9 @@ impl MetricsClient {
         Ok(body)
     }
 
-    pub fn base_port(&self) -> u16 { self.cfg.port }
+    pub fn base_port(&self) -> u16 {
+        self.cfg.port
+    }
 }
 
 // Extremely simple Prometheus text parser for single-sample gauges/counters.
@@ -58,13 +53,15 @@ pub fn parse_prometheus(text: &str) -> HashMap<String, Vec<(HashMap<String, Stri
     let mut out: HashMap<String, Vec<(HashMap<String, String>, f64)>> = HashMap::new();
     for line in text.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         // Format: name{labels} value  OR name value
         if let Some((left, val_str)) = line.rsplit_once(' ') {
             if let Ok(value) = val_str.parse::<f64>() {
                 let (name, labels) = if let Some(idx) = left.find('{') {
                     let name = &left[..idx];
-                    let rest = &left[idx+1..];
+                    let rest = &left[idx + 1..];
                     if let Some(end_idx) = rest.find('}') {
                         let labels_str = &rest[..end_idx];
                         (name, parse_labels(labels_str))
@@ -74,7 +71,9 @@ pub fn parse_prometheus(text: &str) -> HashMap<String, Vec<(HashMap<String, Stri
                 } else {
                     (left, HashMap::new())
                 };
-                out.entry(name.to_string()).or_default().push((labels, value));
+                out.entry(name.to_string())
+                    .or_default()
+                    .push((labels, value));
             }
         }
     }
