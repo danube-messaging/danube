@@ -1,4 +1,5 @@
 use anyhow::Result;
+use danube_core::admin_proto::BrokerInfo;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use serde_json::Value;
 
@@ -161,8 +162,25 @@ impl ClusterResources {
         let value = self.local_cache.get(&path)?;
 
         match value {
-            Value::String(broker_addr) => return Some(broker_addr),
-            _ => return None,
+            Value::String(broker_addr) => Some(broker_addr),
+            Value::Object(map) => map
+                .get("broker_addr")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Returns the full registration JSON object stored under /cluster/register/{broker_id}
+    /// This is used to access additional fields like admin_addr and prom_exporter when available.
+    pub(crate) fn get_broker_register_info(
+        &self,
+        broker_id: &str,
+    ) -> Option<serde_json::Map<String, Value>> {
+        let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
+        match self.local_cache.get(&path)? {
+            Value::Object(map) => Some(map),
+            _ => None,
         }
     }
 
@@ -175,19 +193,41 @@ impl ClusterResources {
         }
     }
 
-    pub(crate) fn get_broker_info(&self, broker_id: &str) -> Option<(String, String, String)> {
-        let broker_addr = self.get_broker_addr(broker_id)?;
-        let mut cluster_leader = "None".to_string();
+    /// Returns the full registration JSON object stored under /cluster/register/{broker_id}
+    pub(crate) fn get_broker_info(&self, broker_id: &str) -> Option<BrokerInfo> {
+        // Determine role first
+        let mut broker_role = "None".to_string();
 
         if let Some(leader) = self.get_cluster_leader() {
             if leader.to_string() == broker_id {
-                cluster_leader = "Cluster_Leader".to_string();
+                broker_role = "Cluster_Leader".to_string();
             } else {
-                cluster_leader = "Cluster_Follower".to_string();
+                broker_role = "Cluster_Follower".to_string();
             }
         };
-
-        Some((broker_id.to_string(), broker_addr, cluster_leader))
+        // Read registration JSON and construct BrokerInfo. No legacy fallback.
+        let map = self.get_broker_register_info(broker_id)?;
+        let broker_addr = map
+            .get("broker_addr")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())?;
+        let admin_addr = map
+            .get("admin_addr")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let metrics_addr = map
+            .get("prom_exporter")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Some(BrokerInfo {
+            broker_id: broker_id.to_string(),
+            broker_addr,
+            broker_role,
+            admin_addr,
+            metrics_addr,
+        })
     }
 
     // get the cluster namespaces

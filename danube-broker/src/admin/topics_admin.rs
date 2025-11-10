@@ -236,11 +236,18 @@ impl TopicAdmin for DanubeAdminImpl {
             (0, Vec::new())
         };
 
+        // Identify serving broker id for this topic if known
+        let broker_id = service
+            .get_topic_broker_id(&req.name)
+            .await
+            .unwrap_or_default();
+
         let response = DescribeTopicResponse {
             name: req.name,
             type_schema,
             schema_data,
             subscriptions,
+            broker_id,
         };
         Ok(tonic::Response::new(response))
     }

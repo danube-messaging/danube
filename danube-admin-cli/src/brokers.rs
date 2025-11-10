@@ -62,7 +62,9 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                     .map(|b| serde_json::json!({
                         "broker_id": b.broker_id,
                         "broker_addr": b.broker_addr,
-                        "broker_role": b.broker_role
+                        "broker_role": b.broker_role,
+                        "admin_addr": b.admin_addr,
+                        "metrics_addr": b.metrics_addr,
                     }))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&serializable)?);
@@ -74,12 +76,16 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                     Cell::new("BROKER ID"),
                     Cell::new("BROKER ADDRESS"),
                     Cell::new("BROKER ROLE"),
+                    Cell::new("ADMIN ADDR"),
+                    Cell::new("METRICS ADDR"),
                 ]));
                 for broker in brokers {
                     table.add_row(Row::new(vec![
                         Cell::new(&broker.broker_id),
                         Cell::new(&broker.broker_addr),
                         Cell::new(&broker.broker_role),
+                        Cell::new(&broker.admin_addr),
+                        Cell::new(&broker.metrics_addr),
                     ]));
                 }
                 table.printstd();

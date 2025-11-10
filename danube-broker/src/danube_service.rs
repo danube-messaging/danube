@@ -143,10 +143,19 @@ impl DanubeService {
             || self.service_config.auth.mode == AuthMode::TlsWithJwt;
 
         let ttl = 32; // Time to live for the lease in seconds
+        let admin_addr = self.service_config.admin_addr.to_string();
+        let metrics_addr = self
+            .service_config
+            .prom_exporter
+            .as_ref()
+            .map(|a| a.to_string());
+
         register_broker(
             self.meta_store.clone(),
             &self.broker_id.to_string(),
             &advertised_addr,
+            &admin_addr,
+            metrics_addr.as_deref(),
             ttl,
             is_secure,
         )

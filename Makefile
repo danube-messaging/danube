@@ -20,7 +20,7 @@ ETCD_PORT := 2379
 HAPROXY_CONFIG := haproxy.cfg
 HAPROXY_PORT := 50051
 
-.PHONY: all brokers etcd haproxy etcd-clean brokers-clean haproxy-clean
+.PHONY: all brokers etcd haproxy etcd-clean brokers-clean haproxy-clean admin admin-clean
 
 no_target_specified:
 	@echo "Please specify a target to build. Available targets:"
@@ -29,6 +29,8 @@ no_target_specified:
 	@echo "etcd-clean    -- remove the ETCD instance"
 	@echo "brokers       -- compile the danube-broker and listen on 6650 6651 6652 ports"
 	@echo "brokers-clean -- remove the broker instances"
+	@echo "admin         -- compile the danube-admin-gateway and listen on 8080 port"
+	@echo "admin-clean   -- remove the admin gateway instance"
 #	@echo "haproxy       -- start an HAProxy instance with the haproxy.cfg config"
 #	@echo "haproxy-clean -- remove the HAProxy instance"
 
@@ -83,6 +85,29 @@ brokers-clean:
 		echo "Danube brokers cleaned up."; \
 	else \
 		echo "No Danube broker instances found."; \
+	fi
+
+admin:
+	@echo "Building Danube admin gateway..."
+	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-admin-gateway --bin danube-admin-gateway && \
+	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 ./target/release/danube-admin-gateway \
+	    --broker-endpoint 0.0.0.0:$(BASE_ADMIN_PORT) \
+	    --listen-addr 0.0.0.0:8080 \
+	    --request-timeout-ms 800 \
+	    --per-endpoint-cache-ms 3000 \
+	    --metrics-port $(BASE_PROM_PORT) \
+	    > temp/admin_gateway_8080.log 2>&1 & \
+	sleep 2
+	@echo "Danube admin gateway started on 0.0.0.0:8080 with metrics on $(BASE_PROM_PORT)"
+
+admin-clean:
+	@echo "Cleaning up Admin Gateway instances..."
+	@pids=$$(ps aux | grep '[d]anube-admin-gateway --broker-endpoint'); \
+	if [ -n "$$pids" ]; then \
+		echo "$$pids" | awk '{print $$2}' | xargs -r kill; \
+		echo "Danube admin gateway cleaned up."; \
+	else \
+		echo "No Danube admin gateway instances found."; \
 	fi
 
 # haproxy:
