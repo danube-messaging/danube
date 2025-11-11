@@ -57,13 +57,9 @@ struct Config {
     #[arg(long)]
     grpc_key: Option<String>,
 
-    // Metrics scraping configuration
-    #[arg(long, default_value = "http")]
-    metrics_scheme: String,
-    #[arg(long, default_value_t = 9040)]
-    metrics_port: u16,
-    #[arg(long, default_value = "/metrics")]
-    metrics_path: String,
+    // Prometheus configuration
+    #[arg(long, default_value = "http://localhost:9090")]
+    prometheus_base_url: String,
     #[arg(long, default_value_t = 800)]
     metrics_timeout_ms: u64,
 }
@@ -83,9 +79,7 @@ async fn main() -> Result<()> {
     };
     let client = AdminGrpcClient::connect(cfg.broker_endpoint.clone(), client_opts).await?;
     let metrics_client = MetricsClient::new(MetricsConfig {
-        scheme: cfg.metrics_scheme.clone(),
-        port: cfg.metrics_port,
-        path: cfg.metrics_path.clone(),
+        base_url: cfg.prometheus_base_url.clone(),
         timeout_ms: cfg.metrics_timeout_ms,
     })?;
     let app_state = Arc::new(AppState {

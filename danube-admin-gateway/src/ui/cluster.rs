@@ -5,7 +5,7 @@ use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
 
 use crate::app::{AppState, CacheEntry};
-use crate::ui::shared::{fetch_brokers, resolve_metrics_endpoint};
+use crate::ui::shared::fetch_brokers;
 
 #[derive(Clone, Serialize)]
 pub struct ClusterPage {
@@ -66,15 +66,13 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
     };
 
     for br in brokers.brokers.iter() {
-        let (host, port) = resolve_metrics_endpoint(&state, br);
-        let (topics_owned, rpc_total) =
-            match scrape_broker_metrics(&state, &host, port, &br.broker_id).await {
-                Ok(text) => text,
-                Err(e) => {
-                    errors.push(format!("metrics scrape failed for {}: {}", br.broker_id, e));
-                    (0, 0)
-                }
-            };
+        let (topics_owned, rpc_total) = match query_broker_metrics(&state, &br.broker_id).await {
+            Ok(vals) => vals,
+            Err(e) => {
+                errors.push(format!("metrics scrape failed for {}: {}", br.broker_id, e));
+                (0, 0)
+            }
+        };
 
         let stats = ClusterBrokerStats {
             topics_owned,
@@ -119,31 +117,25 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
 // shared helpers imported from crate::ui::shared
 
-async fn scrape_broker_metrics(
-    state: &AppState,
-    host: &str,
-    port: u16,
-    broker_id: &str,
-) -> anyhow::Result<(u64, u64)> {
-    let text = state.metrics.scrape_host_port(host, port).await?;
-    let map = crate::metrics::parse_prometheus(&text);
-    let topics_owned = map
-        .get("danube_broker_topics_owned")
-        .and_then(|series| {
-            series
-                .iter()
-                .find(|(labels, _)| {
-                    labels
-                        .get("broker")
-                        .map(|b| b == broker_id)
-                        .unwrap_or(false)
-                })
-                .map(|(_, val)| *val as u64)
-        })
-        .unwrap_or(0);
-    let rpc_total = map
-        .get("danube_broker_rpc_total")
-        .map(|series| series.iter().map(|(_, val)| *val as u64).sum())
-        .unwrap_or(0);
+async fn query_broker_metrics(state: &AppState, broker_id: &str) -> anyhow::Result<(u64, u64)> {
+    let q_topics = format!("danube_broker_topics_owned{{broker=\"{}\"}}", broker_id);
+    let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
+
+    let topics_resp = state.metrics.query_instant(&q_topics).await?;
+    let mut topics_owned: u64 = 0;
+    for r in topics_resp.data.result.iter() {
+        if let Ok(v) = r.value.1.parse::<f64>() {
+            topics_owned += v as u64;
+        }
+    }
+
+    let rpc_resp = state.metrics.query_instant(&q_rpc_total).await?;
+    let mut rpc_total: u64 = 0;
+    for r in rpc_resp.data.result.iter() {
+        if let Ok(v) = r.value.1.parse::<f64>() {
+            rpc_total += v as u64;
+        }
+    }
+
     Ok((topics_owned, rpc_total))
 }

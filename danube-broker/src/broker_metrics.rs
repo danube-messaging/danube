@@ -114,12 +114,13 @@ pub(crate) const CONSUMER_BYTES_OUT_TOTAL: Metric = Metric {
     description: "Total bytes delivered to consumer (bytes)",
 };
 
-pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>) {
+pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u64) {
     info!("Initializing metrics exporter");
 
     if let Some(addr) = prom_addr {
         PrometheusBuilder::new()
             .with_http_listener(addr)
+            .add_global_label("broker", broker_id.to_string())
             .install()
             .expect("failed to install Prometheus recorder");
     }

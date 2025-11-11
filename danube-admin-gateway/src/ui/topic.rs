@@ -9,7 +9,6 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::app::{AppState, CacheEntry};
-use crate::ui::shared::resolve_metrics_endpoint;
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
@@ -64,40 +63,15 @@ pub async fn topic_page(
         }
     };
 
-    // Scrape the hosting broker (broker_id is expected to be present)
+    // Query Prometheus for topic metrics
     let mut errors: Vec<String> = Vec::new();
-    let brokers = match state.client.list_brokers().await {
-        Ok(b) => b,
+    let (msg_in_total, producers, consumers) = match query_topic_metrics(&state, &topic).await {
+        Ok(vals) => vals,
         Err(e) => {
-            let (code, body) = crate::http::map_error(e);
-            return (code, body).into_response();
+            errors.push(format!("prometheus query failed for topic {}: {}", topic, e));
+            (0, 0, 0)
         }
     };
-    let host_br = if let Some(br) = brokers
-        .brokers
-        .iter()
-        .find(|b| b.broker_id == desc.broker_id)
-    {
-        br
-    } else {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("hosting broker {} not found", desc.broker_id)})),
-        )
-            .into_response();
-    };
-    let (host, port) = resolve_metrics_endpoint(&state, host_br);
-    let (msg_in_total, producers, consumers) =
-        match scrape_topic_metrics_for_host(&state, &host, port, &topic).await {
-            Ok(vals) => vals,
-            Err(e) => {
-                errors.push(format!(
-                    "metrics scrape failed for host broker {}: {}",
-                    host_br.broker_id, e
-                ));
-                (0, 0, 0)
-            }
-        };
 
     // Populate only the requested metrics; others remain zero for now
     let metrics = TopicMetrics {
@@ -148,44 +122,52 @@ async fn fetch_core_topic_data(
     Ok((desc, subs))
 }
 
-fn parse_topic_metrics(
-    map: &std::collections::HashMap<String, Vec<(std::collections::HashMap<String, String>, f64)>>,
-    topic: &str,
-) -> (u64, u64, u64) {
-    let mut msg_in_total: u64 = 0;
-    let mut producers: u64 = 0;
-    let mut consumers: u64 = 0;
-    if let Some(series) = map.get("danube_topic_messages_in_total") {
-        for (labels, value) in series.iter() {
-            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                msg_in_total += *value as u64;
-            }
-        }
-    }
-    if let Some(series) = map.get("danube_topic_active_producers") {
-        for (labels, value) in series.iter() {
-            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                producers += *value as u64;
-            }
-        }
-    }
-    if let Some(series) = map.get("danube_topic_active_consumers") {
-        for (labels, value) in series.iter() {
-            if labels.get("topic").map(|t| t == topic).unwrap_or(false) {
-                consumers += *value as u64;
-            }
-        }
-    }
-    (msg_in_total, producers, consumers)
-}
+async fn query_topic_metrics(state: &AppState, topic: &str) -> anyhow::Result<(u64, u64, u64)> {
+    let q_in = format!(
+        "sum(danube_topic_messages_in_total{{topic=\"{}\"}})",
+        topic
+    );
+    let q_prod = format!(
+        "sum(danube_topic_active_producers{{topic=\"{}\"}})",
+        topic
+    );
+    let q_cons = format!(
+        "sum(danube_topic_active_consumers{{topic=\"{}\"}})",
+        topic
+    );
 
-async fn scrape_topic_metrics_for_host(
-    state: &AppState,
-    host: &str,
-    port: u16,
-    topic: &str,
-) -> anyhow::Result<(u64, u64, u64)> {
-    let text = state.metrics.scrape_host_port(host, port).await?;
-    let map = crate::metrics::parse_prometheus(&text);
-    Ok(parse_topic_metrics(&map, topic))
+    let msg_in_total: u64 = state
+        .metrics
+        .query_instant(&q_in)
+        .await?
+        .data
+        .result
+        .iter()
+        .filter_map(|r| r.value.1.parse::<f64>().ok())
+        .map(|v| v as u64)
+        .sum();
+
+    let producers: u64 = state
+        .metrics
+        .query_instant(&q_prod)
+        .await?
+        .data
+        .result
+        .iter()
+        .filter_map(|r| r.value.1.parse::<f64>().ok())
+        .map(|v| v as u64)
+        .sum();
+
+    let consumers: u64 = state
+        .metrics
+        .query_instant(&q_cons)
+        .await?
+        .data
+        .result
+        .iter()
+        .filter_map(|r| r.value.1.parse::<f64>().ok())
+        .map(|v| v as u64)
+        .sum();
+
+    Ok((msg_in_total, producers, consumers))
 }

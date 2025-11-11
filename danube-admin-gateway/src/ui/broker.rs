@@ -8,7 +8,6 @@ use axum::{
 };
 
 use crate::app::{AppState, CacheEntry};
-use crate::ui::shared::resolve_metrics_endpoint;
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
@@ -61,7 +60,7 @@ pub async fn broker_page(
         drop(cache);
     }
 
-    // Resolve broker identity and metrics endpoint
+    // Resolve broker identity
     let br = match fetch_target_broker(&state, &broker_id).await {
         Ok(v) => v,
         Err(e) => {
@@ -72,11 +71,9 @@ pub async fn broker_page(
                 .into_response()
         }
     };
-    let (host, port) = resolve_metrics_endpoint(&state, &br);
 
-    // Scrape metrics and topic list
-    let (metrics, topics, scrape_err) =
-        scrape_metrics_and_topics(&state, &broker_id, &host, port).await;
+    // Query metrics and topic list
+    let (metrics, topics, scrape_err) = query_metrics_and_topics(&state, &broker_id).await;
 
     let mut errors = Vec::new();
     if let Some(err) = scrape_err {
@@ -120,100 +117,107 @@ async fn fetch_target_broker(
     Err(anyhow::anyhow!("unknown broker"))
 }
 
-async fn scrape_metrics_and_topics(
+async fn query_metrics_and_topics(
     state: &AppState,
     broker_id: &str,
-    host: &str,
-    port: u16,
 ) -> (BrokerMetrics, Vec<BrokerTopicMini>, Option<String>) {
-    match state.metrics.scrape_host_port(host, port).await {
-        Ok(text) => {
-            let map = crate::metrics::parse_prometheus(&text);
-            // danube_broker_topics_owned{broker="..."}
-            let topics_owned = map
-                .get("danube_broker_topics_owned")
-                .and_then(|series| {
-                    series
-                        .iter()
-                        .find(|(labels, _)| {
-                            labels
-                                .get("broker")
-                                .map(|b| b == broker_id)
-                                .unwrap_or(false)
-                        })
-                        .map(|(_, val)| *val as u64)
-                })
-                .unwrap_or(0);
-            // danube_broker_rpc_total{...} - sum all labeled values
-            let rpc_total = map
-                .get("danube_broker_rpc_total")
-                .map(|series| series.iter().map(|(_, val)| *val as u64).sum())
-                .unwrap_or(0);
+    let q_topics_owned = format!("danube_broker_topics_owned{{broker=\"{}\"}}", broker_id);
+    let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
+    let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
+    let q_cons = format!("danube_topic_active_consumers{{broker=\"{}\"}}", broker_id);
 
-            // Build topic list using topic-labeled gauges
-            let mut prod_by_topic: std::collections::HashMap<String, u64> =
-                std::collections::HashMap::new();
-            if let Some(series) = map.get("danube_topic_active_producers") {
-                for (labels, value) in series.iter() {
-                    if let Some(t) = labels.get("topic") {
-                        prod_by_topic.insert(t.clone(), *value as u64);
-                    }
-                }
-            }
-            let mut cons_by_topic: std::collections::HashMap<String, u64> =
-                std::collections::HashMap::new();
-            if let Some(series) = map.get("danube_topic_active_consumers") {
-                for (labels, value) in series.iter() {
-                    if let Some(t) = labels.get("topic") {
-                        cons_by_topic.insert(t.clone(), *value as u64);
-                    }
-                }
-            }
+    let mut errors: Vec<String> = Vec::new();
 
-            let mut topics: Vec<BrokerTopicMini> = Vec::new();
-            let mut producers_connected_sum = 0u64;
-            let mut consumers_connected_sum = 0u64;
-            // Union of keys
-            let mut topic_names: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            topic_names.extend(prod_by_topic.keys().cloned());
-            topic_names.extend(cons_by_topic.keys().cloned());
-            for name in topic_names.into_iter() {
-                let p = *prod_by_topic.get(&name).unwrap_or(&0);
-                let c = *cons_by_topic.get(&name).unwrap_or(&0);
-                producers_connected_sum += p;
-                consumers_connected_sum += c;
-                topics.push(BrokerTopicMini {
-                    name,
-                    producers_connected: p,
-                    consumers_connected: c,
-                });
-            }
-
-            let metrics = BrokerMetrics {
-                rpc_total,
-                rpc_rate_1m: 0.0,
-                topics_owned,
-                producers_connected: producers_connected_sum,
-                consumers_connected: consumers_connected_sum,
-                inbound_bytes_total: 0,
-                outbound_bytes_total: 0,
-                errors_5xx_total: 0,
-            };
-            (metrics, topics, None)
-        }
+    let topics_owned: u64 = match state.metrics.query_instant(&q_topics_owned).await {
+        Ok(resp) => resp
+            .data
+            .result
+            .iter()
+            .filter_map(|r| r.value.1.parse::<f64>().ok())
+            .map(|v| v as u64)
+            .sum(),
         Err(e) => {
-            let metrics = BrokerMetrics {
-                rpc_total: 0,
-                rpc_rate_1m: 0.0,
-                topics_owned: 0,
-                producers_connected: 0,
-                consumers_connected: 0,
-                inbound_bytes_total: 0,
-                outbound_bytes_total: 0,
-                errors_5xx_total: 0,
-            };
-            (metrics, Vec::new(), Some(e.to_string()))
+            errors.push(format!("topics_owned query failed: {}", e));
+            0
         }
+    };
+
+    let rpc_total: u64 = match state.metrics.query_instant(&q_rpc_total).await {
+        Ok(resp) => resp
+            .data
+            .result
+            .iter()
+            .filter_map(|r| r.value.1.parse::<f64>().ok())
+            .map(|v| v as u64)
+            .sum(),
+        Err(e) => {
+            errors.push(format!("rpc_total query failed: {}", e));
+            0
+        }
+    };
+
+    let mut prod_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    match state.metrics.query_instant(&q_prod).await {
+        Ok(resp) => {
+            for r in resp.data.result.iter() {
+                if let Some(t) = r.metric.get("topic") {
+                    if let Ok(v) = r.value.1.parse::<f64>() {
+                        prod_by_topic.insert(t.clone(), v as u64);
+                    }
+                }
+            }
+        }
+        Err(e) => errors.push(format!("producers query failed: {}", e)),
     }
+
+    let mut cons_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    match state.metrics.query_instant(&q_cons).await {
+        Ok(resp) => {
+            for r in resp.data.result.iter() {
+                if let Some(t) = r.metric.get("topic") {
+                    if let Ok(v) = r.value.1.parse::<f64>() {
+                        cons_by_topic.insert(t.clone(), v as u64);
+                    }
+                }
+            }
+        }
+        Err(e) => errors.push(format!("consumers query failed: {}", e)),
+    }
+
+    let mut topics: Vec<BrokerTopicMini> = Vec::new();
+    let mut producers_connected_sum = 0u64;
+    let mut consumers_connected_sum = 0u64;
+    let mut topic_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    topic_names.extend(prod_by_topic.keys().cloned());
+    topic_names.extend(cons_by_topic.keys().cloned());
+    for name in topic_names.into_iter() {
+        let p = *prod_by_topic.get(&name).unwrap_or(&0);
+        let c = *cons_by_topic.get(&name).unwrap_or(&0);
+        producers_connected_sum += p;
+        consumers_connected_sum += c;
+        topics.push(BrokerTopicMini {
+            name,
+            producers_connected: p,
+            consumers_connected: c,
+        });
+    }
+
+    let metrics = BrokerMetrics {
+        rpc_total,
+        rpc_rate_1m: 0.0,
+        topics_owned,
+        producers_connected: producers_connected_sum,
+        consumers_connected: consumers_connected_sum,
+        inbound_bytes_total: 0,
+        outbound_bytes_total: 0,
+        errors_5xx_total: 0,
+    };
+
+    let err = if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("; "))
+    };
+
+    (metrics, topics, err)
 }
