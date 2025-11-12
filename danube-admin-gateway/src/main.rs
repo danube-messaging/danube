@@ -15,6 +15,7 @@ mod ui {
     pub mod cluster;
     pub mod topic;
     pub mod shared;
+    pub mod topic_series;
 }
 
 use crate::app::{build_router, AppState};

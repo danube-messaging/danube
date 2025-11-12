@@ -8,7 +8,7 @@ A Backend-for-Frontend (BFF) service that provides a unified HTTP/JSON API for t
 - **Aggregated data**: Combines administrative metadata (brokers, topics, subscriptions) with real-time metrics (message counts, producer/consumer stats).
 - **Automatic discovery**: Finds all brokers in the cluster on-demand; no manual configuration required.
 - **Built-in caching**: Short TTL cache (default 3s) reduces load on brokers and speeds up responses.
-- **Configurable metrics scraping**: Pulls Prometheus metrics from brokers with configurable timeouts and endpoints.
+- **Prometheus client (PromQL)**: Queries a Prometheus server via HTTP API (instant and range queries) instead of scraping broker text directly.
 - **Error tolerance**: Returns partial results with error details when some brokers are unreachable.
 
 ## Build & run
@@ -21,7 +21,8 @@ cargo run -p danube-admin-gateway -- \
   --listen-addr 0.0.0.0:8080 \
   --request-timeout-ms 800 \
   --per-endpoint-cache-ms 3000 \
-  --metrics-port 9040
+  --prometheus-base-url http://localhost:9090 \
+  --metrics-timeout-ms 800
 ```
 
 With HTTPS for the HTTP listener:
@@ -53,11 +54,9 @@ cargo run -p danube-admin-gateway -- \
 - `--request-timeout-ms` (default: 800): Timeout for gRPC calls to brokers
 - `--grpc-enable-tls`, `--grpc-domain`, `--grpc-ca`, `--grpc-cert`, `--grpc-key`: TLS/mTLS config for broker connection
 
-### Metrics scraping
-- `--metrics-scheme` (default: http): Scheme for Prometheus endpoints
-- `--metrics-port` (default: 9040): Port where brokers expose Prometheus metrics
-- `--metrics-path` (default: /metrics): Path for Prometheus scrape
-- `--metrics-timeout-ms` (default: 800): Timeout per metrics scrape
+### Prometheus metrics
+- `--prometheus-base-url` (default: http://localhost:9090): Prometheus HTTP API base URL
+- `--metrics-timeout-ms` (default: 800): Timeout per Prometheus HTTP call
 
 ### Server & caching
 - `--listen-addr` (default: 0.0.0.0:8080): Gateway HTTP listen address
@@ -85,6 +84,14 @@ Detailed broker view: identity, metrics, and list of topics assigned to the brok
 
 ### GET /ui/v1/topics/{topic}
 Topic details: schema, subscriptions, and aggregated metrics (messages in/out, active producers/consumers). Topic name must be URL-encoded (e.g., `/default/my-topic` becomes `%2Fdefault%2Fmy-topic`).
+
+### GET /ui/v1/topics/{topic}/series
+Chart-ready time series for the topic using Prometheus range queries. Query params:
+- `from`: unix seconds
+- `to`: unix seconds
+- `step`: Prometheus step (e.g., `15s`, `30s`, `1m`)
+
+Returns an array of named series with points: `(ts_ms, value)`.
 
 ## curl examples
 

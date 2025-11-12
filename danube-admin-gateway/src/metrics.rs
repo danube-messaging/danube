@@ -52,6 +52,39 @@ impl MetricsClient {
         }
         Ok(body)
     }
+
+    pub async fn query_range(
+        &self,
+        query: &str,
+        start_unix_sec: i64,
+        end_unix_sec: i64,
+        step: &str,
+    ) -> Result<PromRangeResponse> {
+        let url = format!(
+            "{}/api/v1/query_range",
+            self.cfg.base_url.trim_end_matches('/')
+        );
+        let resp = self
+            .http
+            .get(url)
+            .query(&[
+                ("query", query),
+                ("start", &start_unix_sec.to_string()),
+                ("end", &end_unix_sec.to_string()),
+                ("step", step),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+        let body = resp.json::<PromRangeResponse>().await?;
+        if body.status != "success" {
+            tracing::error!(status = %body.status, %query, "prometheus range query returned non-success status");
+        }
+        if body.data.result_type != "matrix" {
+            tracing::error!(result_type = %body.data.result_type, %query, "unexpected result_type for range query");
+        }
+        Ok(body)
+    }
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -71,4 +104,23 @@ pub struct PromData {
 pub struct PromResult {
     pub metric: HashMap<String, String>,
     pub value: (f64, String),
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PromRangeResponse {
+    pub status: String,
+    pub data: PromRangeData,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PromRangeData {
+    pub result_type: String,
+    pub result: Vec<PromRangeSeries>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PromRangeSeries {
+    pub metric: HashMap<String, String>,
+    pub values: Vec<(f64, String)>,
 }
