@@ -85,15 +85,10 @@ impl TopicManager {
             None
         };
 
-        let mut new_topic = Topic::new(
-            topic_name,
-            dispatch_strategy.clone(),
-            wal_storage,
-            {
-                let resources = self.resources.lock().await;
-                resources.topic.clone()
-            },
-        );
+        let mut new_topic = Topic::new(topic_name, dispatch_strategy.clone(), wal_storage, {
+            let resources = self.resources.lock().await;
+            resources.topic.clone()
+        });
 
         let schema = {
             let resources = self.resources.lock().await;
@@ -134,7 +129,7 @@ impl TopicManager {
         self.topic_worker_pool
             .add_topic_to_worker(topic_name.to_string(), new_topic_arc);
 
-        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).increment(1);
+        gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
         Ok((dispatch_strategy, schema.type_schema))
     }
@@ -207,22 +202,12 @@ impl TopicManager {
             let ns = parts.next().unwrap_or("");
             let topic = parts.next().unwrap_or("");
             for sub in subs {
-                let cursor_path = join_path(&[
-                    BASE_TOPICS_PATH,
-                    ns,
-                    topic,
-                    "subscriptions",
-                    &sub,
-                    "cursor",
-                ]);
+                let cursor_path =
+                    join_path(&[BASE_TOPICS_PATH, ns, topic, "subscriptions", &sub, "cursor"]);
                 if let Err(e) = resources.topic.delete(&cursor_path).await {
                     warn!(
                         "Failed to delete reliable cursor for {}/{} subscription {} at {}: {}",
-                        ns,
-                        topic,
-                        sub,
-                        cursor_path,
-                        e
+                        ns, topic, sub, cursor_path, e
                     );
                 }
             }
@@ -244,7 +229,7 @@ impl TopicManager {
             self.consumers.remove(&consumer_id);
         }
 
-        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name).decrement(1);
 
         Ok(topic)
     }
@@ -256,7 +241,8 @@ impl TopicManager {
         if !self.topic_worker_pool.contains_topic(topic_name) {
             return Err(anyhow!(
                 "The topic {} does not exist on the broker {}",
-                topic_name, self.broker_id
+                topic_name,
+                self.broker_id
             ));
         }
 
@@ -301,7 +287,7 @@ impl TopicManager {
             let _ = resources.topic.delete_all_subscriptions(topic_name).await;
         }
 
-        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name).decrement(1);
         Ok(())
     }
 
@@ -332,7 +318,7 @@ impl TopicManager {
             let _ = resources.topic.delete_all_producers(topic_name).await;
         }
 
-        gauge!(BROKER_TOPICS_OWNED.name, "broker" => self.broker_id.to_string()).decrement(1);
+        gauge!(BROKER_TOPICS_OWNED.name).decrement(1);
         Ok(())
     }
 

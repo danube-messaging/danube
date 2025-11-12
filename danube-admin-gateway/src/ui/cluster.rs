@@ -19,7 +19,6 @@ pub struct ClusterPage {
 pub struct ClusterBrokerStats {
     pub topics_owned: u64,
     pub rpc_total: u64,
-    pub rpc_rate_1m: f64,
     pub active_connections: u64,
     pub errors_5xx_total: u64,
 }
@@ -66,19 +65,18 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
     };
 
     for br in brokers.brokers.iter() {
-        let (topics_owned, rpc_total) = match query_broker_metrics(&state, &br.broker_id).await {
+        let (topics_owned, rpc_total, active_connections) = match query_broker_metrics(&state, &br.broker_id).await {
             Ok(vals) => vals,
             Err(e) => {
                 errors.push(format!("metrics scrape failed for {}: {}", br.broker_id, e));
-                (0, 0)
+                (0, 0, 0)
             }
         };
 
         let stats = ClusterBrokerStats {
             topics_owned,
             rpc_total,
-            rpc_rate_1m: 0.0,
-            active_connections: 0,
+            active_connections,
             errors_5xx_total: 0,
         };
         totals_topics += stats.topics_owned;
@@ -117,9 +115,11 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
 // shared helpers imported from crate::ui::shared
 
-async fn query_broker_metrics(state: &AppState, broker_id: &str) -> anyhow::Result<(u64, u64)> {
+async fn query_broker_metrics(state: &AppState, broker_id: &str) -> anyhow::Result<(u64, u64, u64)> {
     let q_topics = format!("danube_broker_topics_owned{{broker=\"{}\"}}", broker_id);
     let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
+    let q_prod = format!("sum(danube_topic_active_producers{{broker=\"{}\"}})", broker_id);
+    let q_cons = format!("sum(danube_topic_active_consumers{{broker=\"{}\"}})", broker_id);
 
     let topics_resp = state.metrics.query_instant(&q_topics).await?;
     let mut topics_owned: u64 = 0;
@@ -137,5 +137,23 @@ async fn query_broker_metrics(state: &AppState, broker_id: &str) -> anyhow::Resu
         }
     }
 
-    Ok((topics_owned, rpc_total))
+    let prod_resp = state.metrics.query_instant(&q_prod).await?;
+    let mut producers: u64 = 0;
+    for r in prod_resp.data.result.iter() {
+        if let Ok(v) = r.value.1.parse::<f64>() {
+            producers += v as u64;
+        }
+    }
+
+    let cons_resp = state.metrics.query_instant(&q_cons).await?;
+    let mut consumers: u64 = 0;
+    for r in cons_resp.data.result.iter() {
+        if let Ok(v) = r.value.1.parse::<f64>() {
+            consumers += v as u64;
+        }
+    }
+
+    let active_connections = producers + consumers;
+
+    Ok((topics_owned, rpc_total, active_connections))
 }

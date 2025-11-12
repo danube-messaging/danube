@@ -24,15 +24,13 @@ pub struct BrokerTopicMini {
     pub name: String,
     pub producers_connected: u64,
     pub consumers_connected: u64,
+    pub subscriptions: u64,
 }
 
 #[derive(Clone, Serialize)]
 pub struct BrokerMetrics {
     pub rpc_total: u64,
-    pub rpc_rate_1m: f64,
     pub topics_owned: u64,
-    pub producers_connected: u64,
-    pub consumers_connected: u64,
     pub inbound_bytes_total: u64,
     pub outbound_bytes_total: u64,
     pub errors_5xx_total: u64,
@@ -125,6 +123,9 @@ async fn query_metrics_and_topics(
     let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
     let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
     let q_cons = format!("danube_topic_active_consumers{{broker=\"{}\"}}", broker_id);
+    let q_subs = format!("danube_topic_active_subscriptions{{broker=\"{}\"}}", broker_id);
+    let q_bytes_in = format!("sum(danube_topic_bytes_in_total{{broker=\"{}\"}})", broker_id);
+    let q_bytes_out = format!("sum(danube_consumer_bytes_out_total{{broker=\"{}\"}})", broker_id);
 
     let mut errors: Vec<String> = Vec::new();
 
@@ -184,32 +185,70 @@ async fn query_metrics_and_topics(
         Err(e) => errors.push(format!("consumers query failed: {}", e)),
     }
 
+    let mut subs_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    match state.metrics.query_instant(&q_subs).await {
+        Ok(resp) => {
+            for r in resp.data.result.iter() {
+                if let Some(t) = r.metric.get("topic") {
+                    if let Ok(v) = r.value.1.parse::<f64>() {
+                        subs_by_topic.insert(t.clone(), v as u64);
+                    }
+                }
+            }
+        }
+        Err(e) => errors.push(format!("subscriptions query failed: {}", e)),
+    }
+
     let mut topics: Vec<BrokerTopicMini> = Vec::new();
-    let mut producers_connected_sum = 0u64;
-    let mut consumers_connected_sum = 0u64;
     let mut topic_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     topic_names.extend(prod_by_topic.keys().cloned());
     topic_names.extend(cons_by_topic.keys().cloned());
+    topic_names.extend(subs_by_topic.keys().cloned());
     for name in topic_names.into_iter() {
         let p = *prod_by_topic.get(&name).unwrap_or(&0);
         let c = *cons_by_topic.get(&name).unwrap_or(&0);
-        producers_connected_sum += p;
-        consumers_connected_sum += c;
+        let s = *subs_by_topic.get(&name).unwrap_or(&0);
         topics.push(BrokerTopicMini {
             name,
             producers_connected: p,
             consumers_connected: c,
+            subscriptions: s,
         });
     }
 
+    let inbound_bytes_total: u64 = match state.metrics.query_instant(&q_bytes_in).await {
+        Ok(resp) => resp
+            .data
+            .result
+            .iter()
+            .filter_map(|r| r.value.1.parse::<f64>().ok())
+            .map(|v| v as u64)
+            .sum(),
+        Err(e) => {
+            errors.push(format!("inbound bytes query failed: {}", e));
+            0
+        }
+    };
+
+    let outbound_bytes_total: u64 = match state.metrics.query_instant(&q_bytes_out).await {
+        Ok(resp) => resp
+            .data
+            .result
+            .iter()
+            .filter_map(|r| r.value.1.parse::<f64>().ok())
+            .map(|v| v as u64)
+            .sum(),
+        Err(e) => {
+            errors.push(format!("outbound bytes query failed: {}", e));
+            0
+        }
+    };
+
     let metrics = BrokerMetrics {
         rpc_total,
-        rpc_rate_1m: 0.0,
         topics_owned,
-        producers_connected: producers_connected_sum,
-        consumers_connected: consumers_connected_sum,
-        inbound_bytes_total: 0,
-        outbound_bytes_total: 0,
+        inbound_bytes_total,
+        outbound_bytes_total,
         errors_5xx_total: 0,
     };
 
