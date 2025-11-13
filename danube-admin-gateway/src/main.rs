@@ -1,7 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -13,8 +12,8 @@ mod metrics;
 mod ui {
     pub mod broker;
     pub mod cluster;
-    pub mod topic;
     pub mod shared;
+    pub mod topic;
     pub mod topic_series;
 }
 
@@ -96,20 +95,26 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = cfg.listen_addr.parse().expect("invalid listen addr");
 
-    match (cfg.tls_cert, cfg.tls_key) {
-        (Some(cert), Some(key)) => {
-            let rustls = RustlsConfig::from_pem_file(cert, key).await?;
-            info!("listening on https://{}", addr);
-            axum_server::bind_rustls(addr, rustls)
-                .serve(app.into_make_service())
-                .await?;
-        }
-        _ => {
-            info!("listening on http://{}", addr);
-            let listener = TcpListener::bind(addr).await?;
-            axum::serve(listener, app.into_make_service()).await?;
-        }
-    }
+    info!("listening on http://{}", addr);
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service()).await?;
+
+    // commented out for now due to incompatibility between axum 0.8 and axum-server 0.7
+    //
+    // match (cfg.tls_cert, cfg.tls_key) {
+    //     (Some(cert), Some(key)) => {
+    //         let rustls = RustlsConfig::from_pem_file(cert, key).await?;
+    //         info!("listening on https://{}", addr);
+    //         axum_server::bind_rustls(addr, rustls)
+    //             .serve(app.into_make_service())
+    //             .await?;
+    //     }
+    //     _ => {
+    //         info!("listening on http://{}", addr);
+    //         let listener = TcpListener::bind(addr).await?;
+    //         axum::serve(listener, app.into_make_service()).await?;
+    //     }
+    // }
 
     Ok(())
 }

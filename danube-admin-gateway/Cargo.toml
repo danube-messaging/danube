@@ -19,7 +19,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 base64 = { workspace = true }
 axum = "0.8"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+# axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"] }
