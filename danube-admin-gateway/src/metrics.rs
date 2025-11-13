@@ -4,18 +4,14 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct MetricsConfig {
-    pub scheme: String,  // http or https
-    pub port: u16,       // default 9040
-    pub path: String,    // default /metrics
-    pub timeout_ms: u64, // per-scrape timeout
+    pub base_url: String,
+    pub timeout_ms: u64,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            scheme: "http".to_string(),
-            port: 9040,
-            path: "/metrics".to_string(),
+            base_url: "http://localhost:9090".to_string(),
             timeout_ms: 800,
         }
     }
@@ -35,58 +31,96 @@ impl MetricsClient {
         Ok(Self { cfg, http })
     }
 
-    pub async fn scrape_host_port(&self, host: &str, port: u16) -> Result<String> {
-        let url = format!("{}://{}:{}{}", self.cfg.scheme, host, port, self.cfg.path);
-        let resp = self.http.get(&url).send().await?.error_for_status()?;
-        let body = resp.text().await?;
+    pub async fn query_instant(&self, query: &str) -> Result<PromResponse> {
+        let url = format!(
+            "{}/api/v1/query",
+            self.cfg.base_url.trim_end_matches('/')
+        );
+        let resp = self
+            .http
+            .get(url)
+            .query(&[("query", query)])
+            .send()
+            .await?
+            .error_for_status()?;
+        let body = resp.json::<PromResponse>().await?;
+        if body.status != "success" {
+            tracing::error!(status = %body.status, %query, "prometheus instant query returned non-success status");
+        }
+        if body.data.result_type != "vector" {
+            tracing::error!(result_type = %body.data.result_type, %query, "unexpected result_type for instant query");
+        }
         Ok(body)
     }
 
-    pub fn base_port(&self) -> u16 {
-        self.cfg.port
+    pub async fn query_range(
+        &self,
+        query: &str,
+        start_unix_sec: i64,
+        end_unix_sec: i64,
+        step: &str,
+    ) -> Result<PromRangeResponse> {
+        let url = format!(
+            "{}/api/v1/query_range",
+            self.cfg.base_url.trim_end_matches('/')
+        );
+        let resp = self
+            .http
+            .get(url)
+            .query(&[
+                ("query", query),
+                ("start", &start_unix_sec.to_string()),
+                ("end", &end_unix_sec.to_string()),
+                ("step", step),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+        let body = resp.json::<PromRangeResponse>().await?;
+        if body.status != "success" {
+            tracing::error!(status = %body.status, %query, "prometheus range query returned non-success status");
+        }
+        if body.data.result_type != "matrix" {
+            tracing::error!(result_type = %body.data.result_type, %query, "unexpected result_type for range query");
+        }
+        Ok(body)
     }
 }
 
-// Extremely simple Prometheus text parser for single-sample gauges/counters.
-// Returns map: metric_name -> Vec<(labels_map, value)>
-pub fn parse_prometheus(text: &str) -> HashMap<String, Vec<(HashMap<String, String>, f64)>> {
-    let mut out: HashMap<String, Vec<(HashMap<String, String>, f64)>> = HashMap::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // Format: name{labels} value  OR name value
-        if let Some((left, val_str)) = line.rsplit_once(' ') {
-            if let Ok(value) = val_str.parse::<f64>() {
-                let (name, labels) = if let Some(idx) = left.find('{') {
-                    let name = &left[..idx];
-                    let rest = &left[idx + 1..];
-                    if let Some(end_idx) = rest.find('}') {
-                        let labels_str = &rest[..end_idx];
-                        (name, parse_labels(labels_str))
-                    } else {
-                        (left, HashMap::new())
-                    }
-                } else {
-                    (left, HashMap::new())
-                };
-                out.entry(name.to_string())
-                    .or_default()
-                    .push((labels, value));
-            }
-        }
-    }
-    out
+#[derive(serde::Deserialize, Debug)]
+pub struct PromResponse {
+    pub status: String,
+    pub data: PromData,
 }
 
-fn parse_labels(s: &str) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    for part in s.split(',') {
-        if let Some((k, v)) = part.split_once('=') {
-            let v = v.trim_matches('"');
-            m.insert(k.to_string(), v.to_string());
-        }
-    }
-    m
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PromData {
+    pub result_type: String,
+    pub result: Vec<PromResult>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PromResult {
+    pub metric: HashMap<String, String>,
+    pub value: (f64, String),
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PromRangeResponse {
+    pub status: String,
+    pub data: PromRangeData,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PromRangeData {
+    pub result_type: String,
+    pub result: Vec<PromRangeSeries>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PromRangeSeries {
+    pub metric: HashMap<String, String>,
+    pub values: Vec<(f64, String)>,
 }

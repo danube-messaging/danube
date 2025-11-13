@@ -1,7 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -13,8 +12,9 @@ mod metrics;
 mod ui {
     pub mod broker;
     pub mod cluster;
-    pub mod topic;
     pub mod shared;
+    pub mod topic;
+    pub mod topic_series;
 }
 
 use crate::app::{build_router, AppState};
@@ -57,13 +57,9 @@ struct Config {
     #[arg(long)]
     grpc_key: Option<String>,
 
-    // Metrics scraping configuration
-    #[arg(long, default_value = "http")]
-    metrics_scheme: String,
-    #[arg(long, default_value_t = 9040)]
-    metrics_port: u16,
-    #[arg(long, default_value = "/metrics")]
-    metrics_path: String,
+    // Prometheus configuration
+    #[arg(long, default_value = "http://localhost:9090")]
+    prometheus_base_url: String,
     #[arg(long, default_value_t = 800)]
     metrics_timeout_ms: u64,
 }
@@ -83,9 +79,7 @@ async fn main() -> Result<()> {
     };
     let client = AdminGrpcClient::connect(cfg.broker_endpoint.clone(), client_opts).await?;
     let metrics_client = MetricsClient::new(MetricsConfig {
-        scheme: cfg.metrics_scheme.clone(),
-        port: cfg.metrics_port,
-        path: cfg.metrics_path.clone(),
+        base_url: cfg.prometheus_base_url.clone(),
         timeout_ms: cfg.metrics_timeout_ms,
     })?;
     let app_state = Arc::new(AppState {
@@ -101,20 +95,26 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = cfg.listen_addr.parse().expect("invalid listen addr");
 
-    match (cfg.tls_cert, cfg.tls_key) {
-        (Some(cert), Some(key)) => {
-            let rustls = RustlsConfig::from_pem_file(cert, key).await?;
-            info!("listening on https://{}", addr);
-            axum_server::bind_rustls(addr, rustls)
-                .serve(app.into_make_service())
-                .await?;
-        }
-        _ => {
-            info!("listening on http://{}", addr);
-            let listener = TcpListener::bind(addr).await?;
-            axum::serve(listener, app.into_make_service()).await?;
-        }
-    }
+    info!("listening on http://{}", addr);
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service()).await?;
+
+    // commented out for now due to incompatibility between axum 0.8 and axum-server 0.7
+    //
+    // match (cfg.tls_cert, cfg.tls_key) {
+    //     (Some(cert), Some(key)) => {
+    //         let rustls = RustlsConfig::from_pem_file(cert, key).await?;
+    //         info!("listening on https://{}", addr);
+    //         axum_server::bind_rustls(addr, rustls)
+    //             .serve(app.into_make_service())
+    //             .await?;
+    //     }
+    //     _ => {
+    //         info!("listening on http://{}", addr);
+    //         let listener = TcpListener::bind(addr).await?;
+    //         axum::serve(listener, app.into_make_service()).await?;
+    //     }
+    // }
 
     Ok(())
 }

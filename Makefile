@@ -4,6 +4,9 @@
 BASE_BROKER_PORT := 6650
 BASE_ADMIN_PORT := 50051
 BASE_PROM_PORT := 9040
+PROM_PORT := 9090
+PROM_NAME := prometheus-danube
+PROM_CONFIG := $(PWD)/scripts/prometheus.yml
 
 # Number of broker instances
 NUM_BROKERS := 3
@@ -20,7 +23,7 @@ ETCD_PORT := 2379
 HAPROXY_CONFIG := haproxy.cfg
 HAPROXY_PORT := 50051
 
-.PHONY: all brokers etcd haproxy etcd-clean brokers-clean haproxy-clean admin admin-clean
+.PHONY: all brokers etcd haproxy etcd-clean brokers-clean haproxy-clean admin admin-clean prometheus prometheus-clean
 
 no_target_specified:
 	@echo "Please specify a target to build. Available targets:"
@@ -31,6 +34,8 @@ no_target_specified:
 	@echo "brokers-clean -- remove the broker instances"
 	@echo "admin         -- compile the danube-admin-gateway and listen on 8080 port"
 	@echo "admin-clean   -- remove the admin gateway instance"
+	@echo "prometheus    -- start a Prometheus server on port 9090 using scripts/prometheus.yml"
+	@echo "prometheus-clean -- remove the Prometheus container"
 #	@echo "haproxy       -- start an HAProxy instance with the haproxy.cfg config"
 #	@echo "haproxy-clean -- remove the HAProxy instance"
 
@@ -55,6 +60,19 @@ etcd-clean:
 	sudo rm -rf $(ETCD_DATA_DIR)
 	@echo "ETCD instance and data removed"
 
+prometheus:
+	@echo "Starting Prometheus..."
+	docker run -d --name $(PROM_NAME) \
+	    -p $(PROM_PORT):9090 \
+	    -v $(PROM_CONFIG):/etc/prometheus/prometheus.yml:ro \
+	    prom/prometheus:latest
+	@echo "Prometheus started on port: $(PROM_PORT) with config $(PROM_CONFIG)"
+
+prometheus-clean:
+	@echo "Cleaning up Prometheus container..."
+	docker rm -f $(PROM_NAME)
+	@echo "Prometheus container removed"
+	
 # Set log level based on RUST_LOG value (if provided)
 LOG_LEVEL = $(if $(RUST_LOG),$(RUST_LOG),info)
 
@@ -95,7 +113,7 @@ admin:
 	    --listen-addr 0.0.0.0:8080 \
 	    --request-timeout-ms 800 \
 	    --per-endpoint-cache-ms 3000 \
-	    --metrics-port $(BASE_PROM_PORT) \
+	    --prometheus-base-url http://localhost:$(PROM_PORT) \
 	    > temp/admin_gateway_8080.log 2>&1 & \
 	sleep 2
 	@echo "Danube admin gateway started on 0.0.0.0:8080 with metrics on $(BASE_PROM_PORT)"

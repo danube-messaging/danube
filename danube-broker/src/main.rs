@@ -92,13 +92,6 @@ async fn main() -> Result<()> {
         service_config.prom_exporter = Some(prom_address);
     }
 
-    // Init metrics with or without prometheus exporter
-    if let Some(prometheus_exporter) = service_config.prom_exporter.clone() {
-        init_metrics(Some(prometheus_exporter));
-    } else {
-        init_metrics(None)
-    }
-
     // initialize the metadata storage layer for Danube Broker
     info!("Initializing ETCD as metadata persistent store");
     let metadata_store: MetadataStorage =
@@ -188,6 +181,13 @@ async fn main() -> Result<()> {
         service_config.auto_create_topics,
     );
     let broker_id = broker_service.broker_id;
+
+    // Init metrics with or without prometheus exporter
+    if let Some(prometheus_exporter) = service_config.prom_exporter.clone() {
+        init_metrics(Some(prometheus_exporter), broker_id);
+    } else {
+        init_metrics(None, broker_id);
+    }
 
     // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.
     let leader_election_service = LeaderElection::new(

@@ -7,15 +7,13 @@ use crate::frames::{
 use danube_core::storage::PersistentStorageError;
 use tokio::io::AsyncReadExt;
 
-use std::path::PathBuf;
-use tokio::io::{AsyncSeekExt, SeekFrom};
-use metrics::{counter, histogram};
 use crate::persistent_metrics::{
-    CLOUD_UPLOAD_OBJECTS_TOTAL,
-    CLOUD_UPLOAD_BYTES_TOTAL,
-    CLOUD_UPLOAD_LATENCY_MS,
+    CLOUD_UPLOAD_BYTES_TOTAL, CLOUD_UPLOAD_LATENCY_MS, CLOUD_UPLOAD_OBJECTS_TOTAL,
 };
+use metrics::{counter, histogram};
+use std::path::PathBuf;
 use std::time::Instant;
+use tokio::io::{AsyncSeekExt, SeekFrom};
 
 /// Internal mutable state for a single streaming cycle.
 struct UploadState {
@@ -133,12 +131,21 @@ pub async fn stream_frames_to_cloud(
         finalize_uploaded_object(cloud, topic_path, &mut state).await?;
     // Metrics: upload latency, bytes, objects (ok)
     let provider = cloud.provider().to_string();
+
     if let Some(start) = state.start_instant.take() {
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
         histogram!(CLOUD_UPLOAD_LATENCY_MS.name, "provider"=> provider.clone()).record(elapsed_ms);
     }
-    counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> topic_path.to_string(), "provider"=> provider.clone(), "result"=> "ok").increment(1);
-    counter!(CLOUD_UPLOAD_BYTES_TOTAL.name, "topic"=> topic_path.to_string(), "provider"=> provider).increment(meta.content_length());
+
+    // Normalize topic label to include leading slash to align with other topic metrics
+    let topic_label = if topic_path.starts_with('/') {
+        topic_path.to_string()
+    } else {
+        format!("/{}", topic_path)
+    };
+    counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> topic_label.clone(), "provider"=> provider.clone(), "result"=> "ok").increment(1);
+    counter!(CLOUD_UPLOAD_BYTES_TOTAL.name, "topic"=> topic_label, "provider"=> provider)
+        .increment(meta.content_length());
 
     Ok(Some((
         final_object_id,

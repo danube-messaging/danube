@@ -14,7 +14,9 @@ use crate::metrics::MetricsClient;
 use crate::ui::{
     broker::{broker_page, BrokerPage},
     cluster::{cluster_page, ClusterPage},
-    topic::{topic_page, TopicPage},
+    topic::TopicPage,
+    topic::{topic_page},
+    topic_series::topic_series,
 };
 
 #[derive(Clone)]
@@ -46,6 +48,7 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/cluster", get(cluster_page))
         .route("/ui/v1/brokers/{broker_id}", get(broker_page))
         .route("/ui/v1/topics/{topic}", get(topic_page))
+        .route("/ui/v1/topics/{topic}/series", get(topic_series))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
