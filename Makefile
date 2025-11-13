@@ -60,15 +60,16 @@ etcd-clean:
 	sudo rm -rf $(ETCD_DATA_DIR)
 	@echo "ETCD instance and data removed"
 
-prometheus:
+prom:
 	@echo "Starting Prometheus..."
 	docker run -d --name $(PROM_NAME) \
 	    -p $(PROM_PORT):9090 \
+	    --add-host=host.docker.internal:host-gateway \
 	    -v $(PROM_CONFIG):/etc/prometheus/prometheus.yml:ro \
 	    prom/prometheus:latest
 	@echo "Prometheus started on port: $(PROM_PORT) with config $(PROM_CONFIG)"
 
-prometheus-clean:
+prom-clean:
 	@echo "Cleaning up Prometheus container..."
 	docker rm -f $(PROM_NAME)
 	@echo "Prometheus container removed"
