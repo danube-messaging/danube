@@ -89,7 +89,7 @@ Topic details: schema, subscriptions, and aggregated metrics (messages in/out, a
 Chart-ready time series for the topic using Prometheus range queries. Query params:
 - `from`: unix seconds
 - `to`: unix seconds
-- `step`: Prometheus step (e.g., `15s`, `30s`, `1m`)
+- `step`: Prometheus step (e.g, `15s`, `30s`, `1m`)
 
 Returns an array of named series with points: `(ts_ms, value)`.
 
