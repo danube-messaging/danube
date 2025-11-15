@@ -113,6 +113,12 @@ Notes:
 - `create` with `partitions` creates a partitioned topic; otherwise creates a non-partitioned topic.
 - `dispatch_strategy` defaults to `non_reliable`. `schema_type` defaults to `String`. `schema_data` defaults to `{}`.
 
+Response JSON:
+
+```json
+{ "success": true, "message": "ok" }
+```
+
 ### POST /ui/v1/cluster/actions
 Execute broker actions via Admin gRPC. Single endpoint supporting multiple actions.
 
@@ -137,6 +143,12 @@ Notes:
 - `broker_id` is required for all actions.
 - `unload` accepts tuning fields; sensible defaults are applied if omitted.
 - `activate` accepts an optional `reason` for auditability (default: `admin_activate`).
+
+Response JSON:
+
+```json
+{ "success": true, "message": "started=true total=10 succeeded=0 failed=0 pending=10" }
+```
 
 ## curl examples
 
