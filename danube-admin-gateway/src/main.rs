@@ -12,9 +12,11 @@ mod metrics;
 mod ui {
     pub mod broker;
     pub mod cluster;
+    pub mod namespaces;
     pub mod shared;
     pub mod topic;
     pub mod topic_series;
+    pub mod topics;
 }
 
 use crate::app::{build_router, AppState};
@@ -89,6 +91,8 @@ async fn main() -> Result<()> {
         cluster_page_cache: Mutex::new(None),
         broker_page_cache: Mutex::new(HashMap::new()),
         topic_page_cache: Mutex::new(HashMap::new()),
+        topics_cache: Mutex::new(None),
+        namespaces_cache: Mutex::new(None),
     });
 
     let app = build_router(app_state);

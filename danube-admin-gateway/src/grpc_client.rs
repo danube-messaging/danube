@@ -98,7 +98,6 @@ impl AdminGrpcClient {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn list_namespaces(&self) -> Result<admin::NamespaceListResponse> {
         let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
         let fut = async move { client.list_namespaces(admin::Empty {}).await };
@@ -109,7 +108,6 @@ impl AdminGrpcClient {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn list_topics(&self, namespace: &str) -> Result<admin::TopicListResponse> {
         let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
         let req = admin::NamespaceRequest {
@@ -145,6 +143,20 @@ impl AdminGrpcClient {
         match tokio::time::timeout(self.timeout, fut).await {
             Err(_) => Err(anyhow!("upstream timeout")),
             Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn get_namespace_policies(&self, namespace: &str) -> Result<admin::PolicyResponse> {
+        let mut client =
+            admin::namespace_admin_client::NamespaceAdminClient::new(self.channel.clone());
+        let req = admin::NamespaceRequest {
+            name: namespace.to_string(),
+        };
+        let fut = async move { client.get_namespace_policies(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status.to_string())),
             Ok(Ok(resp)) => Ok(resp.into_inner()),
         }
     }
