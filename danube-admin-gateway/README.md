@@ -79,6 +79,9 @@ Health check with broker leader reachability.
 ### GET /ui/v1/cluster
 Cluster overview: all brokers with roles and aggregated metrics (topics owned, RPC totals, etc.).
 
+### GET /ui/v1/topics
+Cluster-wide topics summary aggregated from Prometheus. Returns a list of topics with totals of producers, consumers, and subscriptions across the cluster, plus broker identities.
+
 ### GET /ui/v1/brokers/{broker_id}
 Detailed broker view: identity, metrics, and list of topics assigned to the broker with producer/consumer counts.
 
@@ -93,6 +96,48 @@ Chart-ready time series for the topic using Prometheus range queries. Query para
 
 Returns an array of named series with points: `(ts_ms, value)`.
 
+### GET /ui/v1/namespaces
+Lists all namespaces, their topics, and current policies (as a JSON string returned by the admin service). Deduplicates namespaces.
+
+### POST /ui/v1/topics/actions
+Execute topic actions via Admin gRPC. Single endpoint supporting multiple actions.
+
+Request JSON:
+
+```json
+{ "action": "create|delete|unload", "topic": "/ns/topic" | "topic", "namespace": "ns?", "partitions": 3?, "schema_type": "String|Bytes|Int64|Json?", "schema_data": "{}"?, "dispatch_strategy": "non_reliable|reliable?" }
+```
+
+Notes:
+- When `topic` lacks a namespace, provide `namespace` and the service will normalize to `/ns/topic`.
+- `create` with `partitions` creates a partitioned topic; otherwise creates a non-partitioned topic.
+- `dispatch_strategy` defaults to `non_reliable`. `schema_type` defaults to `String`. `schema_data` defaults to `{}`.
+
+### POST /ui/v1/cluster/actions
+Execute broker actions via Admin gRPC. Single endpoint supporting multiple actions.
+
+Request JSON:
+
+```json
+{
+  "action": "unload|activate",
+  "broker_id": "...",
+  // unload (optional)
+  "max_parallel": 1,
+  "namespaces_include": ["ns-a"],
+  "namespaces_exclude": ["ns-b"],
+  "dry_run": false,
+  "timeout_seconds": 60,
+  // activate (optional)
+  "reason": "admin_activate"
+}
+```
+
+Notes:
+- `broker_id` is required for all actions.
+- `unload` accepts tuning fields; sensible defaults are applied if omitted.
+- `activate` accepts an optional `reason` for auditability (default: `admin_activate`).
+
 ## curl examples
 
 Assuming the gateway runs on `http://localhost:8080`:
@@ -104,6 +149,9 @@ curl -s http://localhost:8080/ui/v1/health | jq
 # Cluster overview (all brokers + metrics)
 curl -s http://localhost:8080/ui/v1/cluster | jq
 
+# Cluster-wide topics summary
+curl -s http://localhost:8080/ui/v1/topics | jq
+
 # Broker details (replace broker_id with actual ID from cluster response)
 curl -s http://localhost:8080/ui/v1/brokers/63161296830406433 | jq
 
@@ -112,6 +160,65 @@ curl -s http://localhost:8080/ui/v1/topics/%2Fdefault%2Ftest_topic | jq
 
 # Another topic example: /default/partitioned_topic-part-0
 curl -s http://localhost:8080/ui/v1/topics/%2Fdefault%2Fpartitioned_topic-part-0 | jq
+
+# Namespaces with topics and policies
+curl -s http://localhost:8080/ui/v1/namespaces | jq
+
+# Topic actions
+# Create non-partitioned topic
+curl -s -X POST http://localhost:8080/ui/v1/topics/actions \
+  -H 'content-type: application/json' \
+  -d '{
+    "action":"create",
+    "topic":"mytopic",
+    "namespace":"default",
+    "schema_type":"String",
+    "dispatch_strategy":"reliable"
+  }' | jq
+
+# Create partitioned topic
+curl -s -X POST http://localhost:8080/ui/v1/topics/actions \
+  -H 'content-type: application/json' \
+  -d '{
+    "action":"create",
+    "topic":"/default/partitioned_topic",
+    "partitions":3,
+    "schema_type":"Json",
+    "schema_data":"{\"a\":1}",
+    "dispatch_strategy":"non_reliable"
+  }' | jq
+
+# Delete a topic
+curl -s -X POST http://localhost:8080/ui/v1/topics/actions \
+  -H 'content-type: application/json' \
+  -d '{"action":"delete","topic":"/default/mytopic"}' | jq
+
+# Unload a topic
+curl -s -X POST http://localhost:8080/ui/v1/topics/actions \
+  -H 'content-type: application/json' \
+  -d '{"action":"unload","topic":"mytopic","namespace":"default"}' | jq
+
+# Cluster actions
+# Unload a broker
+curl -s -X POST http://localhost:8080/ui/v1/cluster/actions \
+  -H 'content-type: application/json' \
+  -d '{
+    "action": "unload",
+    "broker_id": "63161296830406433",
+    "max_parallel": 2,
+    "namespaces_include": ["default"],
+    "dry_run": false,
+    "timeout_seconds": 60
+  }' | jq
+
+# Activate a broker
+curl -s -X POST http://localhost:8080/ui/v1/cluster/actions \
+  -H 'content-type: application/json' \
+  -d '{
+    "action": "activate",
+    "broker_id": "63161296830406433",
+    "reason": "admin_activate"
+  }' | jq
 ```
 
 ### Notes

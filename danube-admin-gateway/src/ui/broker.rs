@@ -41,6 +41,7 @@ pub struct BrokerIdentity {
     pub broker_id: String,
     pub broker_addr: String,
     pub broker_role: String,
+    pub broker_status: String,
 }
 
 pub async fn broker_page(
@@ -84,6 +85,7 @@ pub async fn broker_page(
             broker_id,
             broker_addr: br.broker_addr.clone(),
             broker_role: br.broker_role.clone(),
+            broker_status: br.broker_status.clone(),
         },
         metrics,
         topics,

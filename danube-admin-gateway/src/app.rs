@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, routing::{get, post}, Json, Router};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use tokio::sync::Mutex;
@@ -14,10 +14,12 @@ use crate::metrics::MetricsClient;
 use crate::ui::{
     broker::{broker_page, BrokerPage},
     cluster::{cluster_page, ClusterPage},
+    cluster_actions::cluster_actions,
     namespaces::{list_namespaces_with_policies, NamespacesResponse},
     topic::{topic_page, TopicPage},
     topic_series::topic_series,
     topics::{cluster_topics, TopicsResponse},
+    topic_actions::topic_actions,
 };
 
 #[derive(Clone)]
@@ -49,11 +51,13 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ui/v1/health", get(health))
         .route("/ui/v1/cluster", get(cluster_page))
+        .route("/ui/v1/cluster/actions", post(cluster_actions))
         .route("/ui/v1/topics", get(cluster_topics))
         .route("/ui/v1/namespaces", get(list_namespaces_with_policies))
         .route("/ui/v1/brokers/{broker_id}", get(broker_page))
         .route("/ui/v1/topics/{topic}", get(topic_page))
         .route("/ui/v1/topics/{topic}/series", get(topic_series))
+        .route("/ui/v1/topics/actions", post(topic_actions))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

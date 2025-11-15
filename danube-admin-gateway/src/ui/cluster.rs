@@ -28,6 +28,7 @@ pub struct ClusterBroker {
     pub broker_id: String,
     pub broker_addr: String,
     pub broker_role: String,
+    pub broker_status: String,
     pub stats: ClusterBrokerStats,
 }
 
@@ -86,6 +87,7 @@ pub async fn cluster_page(State(state): State<Arc<AppState>>) -> impl IntoRespon
             broker_id: br.broker_id.clone(),
             broker_addr: br.broker_addr.clone(),
             broker_role: br.broker_role.clone(),
+            broker_status: br.broker_status.clone(),
             stats,
         });
     }

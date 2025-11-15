@@ -94,6 +94,7 @@ message BrokerInfo {
   string broker_role = 3;
   string admin_addr = 4;
   string metrics_addr = 5;
+  string broker_status = 6;
 }
 
 message BrokerResponse {

@@ -147,6 +147,78 @@ impl AdminGrpcClient {
         }
     }
 
+    pub async fn create_topic(
+        &self,
+        name: &str,
+        schema_type: &str,
+        schema_data: &str,
+        dispatch_strategy: i32,
+    ) -> Result<admin::TopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let req = admin::NewTopicRequest {
+            name: name.to_string(),
+            schema_type: schema_type.to_string(),
+            schema_data: schema_data.to_string(),
+            dispatch_strategy,
+        };
+        let fut = async move { client.create_topic(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn create_partitioned_topic(
+        &self,
+        base_name: &str,
+        partitions: u32,
+        schema_type: &str,
+        schema_data: &str,
+        dispatch_strategy: i32,
+    ) -> Result<admin::TopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let req = admin::PartitionedTopicRequest {
+            base_name: base_name.to_string(),
+            partitions,
+            schema_type: schema_type.to_string(),
+            schema_data: schema_data.to_string(),
+            dispatch_strategy,
+        };
+        let fut = async move { client.create_partitioned_topic(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn delete_topic(&self, name: &str) -> Result<admin::TopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let req = admin::TopicRequest {
+            name: name.to_string(),
+        };
+        let fut = async move { client.delete_topic(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn unload_topic(&self, name: &str) -> Result<admin::TopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let req = admin::TopicRequest {
+            name: name.to_string(),
+        };
+        let fut = async move { client.unload_topic(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
     pub async fn get_namespace_policies(&self, namespace: &str) -> Result<admin::PolicyResponse> {
         let mut client =
             admin::namespace_admin_client::NamespaceAdminClient::new(self.channel.clone());
@@ -157,6 +229,50 @@ impl AdminGrpcClient {
         match tokio::time::timeout(self.timeout, fut).await {
             Err(_) => Err(anyhow!("upstream timeout")),
             Ok(Err(status)) => Err(anyhow!(status.to_string())),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn unload_broker(
+        &self,
+        broker_id: &str,
+        max_parallel: u32,
+        namespaces_include: Vec<String>,
+        namespaces_exclude: Vec<String>,
+        dry_run: bool,
+        timeout_seconds: u32,
+    ) -> Result<admin::UnloadBrokerResponse> {
+        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let req = admin::UnloadBrokerRequest {
+            broker_id: broker_id.to_string(),
+            max_parallel,
+            namespaces_include,
+            namespaces_exclude,
+            dry_run,
+            timeout_seconds,
+        };
+        let fut = async move { client.unload_broker(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn activate_broker(
+        &self,
+        broker_id: &str,
+        reason: &str,
+    ) -> Result<admin::ActivateBrokerResponse> {
+        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let req = admin::ActivateBrokerRequest {
+            broker_id: broker_id.to_string(),
+            reason: reason.to_string(),
+        };
+        let fut = async move { client.activate_broker(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status)),
             Ok(Ok(resp)) => Ok(resp.into_inner()),
         }
     }
