@@ -14,9 +14,10 @@ use crate::metrics::MetricsClient;
 use crate::ui::{
     broker::{broker_page, BrokerPage},
     cluster::{cluster_page, ClusterPage},
-    topic::TopicPage,
-    topic::{topic_page},
+    namespaces::{list_namespaces_with_policies, NamespacesResponse},
+    topic::{topic_page, TopicPage},
     topic_series::topic_series,
+    topics::{cluster_topics, TopicsResponse},
 };
 
 #[derive(Clone)]
@@ -32,6 +33,8 @@ pub struct AppState {
     pub cluster_page_cache: Mutex<Option<CacheEntry<ClusterPage>>>,
     pub broker_page_cache: Mutex<HashMap<String, CacheEntry<BrokerPage>>>,
     pub topic_page_cache: Mutex<HashMap<String, CacheEntry<TopicPage>>>,
+    pub topics_cache: Mutex<Option<CacheEntry<TopicsResponse>>>,
+    pub namespaces_cache: Mutex<Option<CacheEntry<NamespacesResponse>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -46,6 +49,8 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ui/v1/health", get(health))
         .route("/ui/v1/cluster", get(cluster_page))
+        .route("/ui/v1/topics", get(cluster_topics))
+        .route("/ui/v1/namespaces", get(list_namespaces_with_policies))
         .route("/ui/v1/brokers/{broker_id}", get(broker_page))
         .route("/ui/v1/topics/{topic}", get(topic_page))
         .route("/ui/v1/topics/{topic}/series", get(topic_series))
