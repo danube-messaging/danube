@@ -227,6 +227,7 @@ impl ClusterResources {
             broker_role,
             admin_addr,
             metrics_addr,
+            broker_status: "active".to_string(),
         })
     }
 
@@ -248,5 +249,27 @@ impl ClusterResources {
         }
 
         namespaces
+    }
+
+    /// Returns a map of broker_id -> broker_status (mode), read from
+    /// /cluster/brokers/{broker_id}/state JSON payloads.
+    /// If state is missing or malformed, defaults to "active".
+    pub(crate) async fn get_brokers_state(&self) -> std::collections::HashMap<String, String> {
+        use std::collections::HashMap;
+        let mut out: HashMap<String, String> = HashMap::new();
+        let broker_ids = self.get_brokers().await;
+        for broker_id in broker_ids.iter() {
+            let path = crate::utils::join_path(&[BASE_BROKER_PATH, broker_id, "state"]);
+            let mode = match self.store.get(&path, MetaOptions::None).await {
+                Ok(Some(val)) => val
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("active")
+                    .to_string(),
+                _ => "active".to_string(),
+            };
+            out.insert(broker_id.clone(), mode);
+        }
+        out
     }
 }

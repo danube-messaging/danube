@@ -26,8 +26,8 @@ pub(crate) enum BrokersCommands {
     },
     #[command(about = "Unload a broker by migrating all hosted topics off it")]
     Unload {
-        #[arg(long, help = "Target broker id. If omitted, unloads the broker you are connected to.")]
-        broker_id: Option<String>,
+        #[arg(long, required = true, help = "Target broker id")]
+        broker_id: String,
         #[arg(long, default_value_t = 1, help = "Max topics to unload in parallel")]
         max_parallel: u32,
         #[arg(long, help = "Namespaces to include (repeatable)")]
@@ -61,6 +61,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                     .iter()
                     .map(|b| serde_json::json!({
                         "broker_id": b.broker_id,
+                        "broker_status": b.broker_status,
                         "broker_addr": b.broker_addr,
                         "broker_role": b.broker_role,
                         "admin_addr": b.admin_addr,
@@ -74,6 +75,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                 table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
                 table.add_row(Row::new(vec![
                     Cell::new("BROKER ID"),
+                    Cell::new("BROKER STATUS"),
                     Cell::new("BROKER ADDRESS"),
                     Cell::new("BROKER ROLE"),
                     Cell::new("ADMIN ADDR"),
@@ -82,6 +84,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                 for broker in brokers {
                     table.add_row(Row::new(vec![
                         Cell::new(&broker.broker_id),
+                        Cell::new(&broker.broker_status),
                         Cell::new(&broker.broker_addr),
                         Cell::new(&broker.broker_role),
                         Cell::new(&broker.admin_addr),
@@ -122,7 +125,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
         } => {
             use danube_core::admin_proto::UnloadBrokerRequest;
             let request = UnloadBrokerRequest {
-                broker_id: broker_id.unwrap_or_default(),
+                broker_id,
                 max_parallel,
                 namespaces_include,
                 namespaces_exclude,

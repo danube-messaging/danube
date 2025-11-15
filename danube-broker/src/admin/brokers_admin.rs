@@ -20,9 +20,14 @@ impl BrokerAdmin for DanubeAdminImpl {
         let mut brokers_info = Vec::new();
 
         let brokers = self.resources.cluster.get_brokers().await;
+        // Collect broker states (mode) from /cluster/brokers/{id}/state
+        let states = self.resources.cluster.get_brokers_state().await;
 
         for broker_id in brokers {
-            if let Some(info) = self.resources.cluster.get_broker_info(&broker_id) {
+            if let Some(mut info) = self.resources.cluster.get_broker_info(&broker_id) {
+                if let Some(mode) = states.get(&broker_id) {
+                    info.broker_status = mode.clone();
+                }
                 brokers_info.push(info);
             }
         }

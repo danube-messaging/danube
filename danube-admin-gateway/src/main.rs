@@ -12,11 +12,13 @@ mod metrics;
 mod ui {
     pub mod broker;
     pub mod cluster;
+    pub mod cluster_actions;
     pub mod namespaces;
     pub mod shared;
     pub mod topic;
     pub mod topic_series;
     pub mod topics;
+    pub mod topic_actions;
 }
 
 use crate::app::{build_router, AppState};

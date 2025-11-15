@@ -44,6 +44,7 @@ pub async fn cluster_topics(State(state): State<Arc<AppState>>) -> impl IntoResp
             broker_id: b.broker_id.clone(),
             broker_addr: b.broker_addr.clone(),
             broker_role: b.broker_role.clone(),
+            broker_status: b.broker_status.clone(),
         })
         .collect();
 
