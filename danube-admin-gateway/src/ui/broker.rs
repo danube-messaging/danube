@@ -71,10 +71,20 @@ pub async fn broker_page(
         }
     };
 
-    // Query metrics and topic list
-    let (metrics, topics, scrape_err) = query_metrics_and_topics(&state, &broker_id).await;
-
+    // Fetch authoritative topic list via gRPC, then enrich with metrics
     let mut errors = Vec::new();
+    let topic_names: Vec<String> = match state.client.list_broker_topics(&broker_id).await {
+        Ok(resp) => resp.topics.into_iter().map(|t| t.name).collect(),
+        Err(e) => {
+            errors.push(format!("list_broker_topics failed: {}", e));
+            Vec::new()
+        }
+    };
+
+    // Query metrics filtered by the gRPC-provided topic names
+    let (metrics, topics, scrape_err) =
+        query_metrics_and_topics(&state, &broker_id, &topic_names).await;
+
     if let Some(err) = scrape_err {
         errors.push(format!("metrics scrape failed: {}", err));
     }
@@ -120,8 +130,8 @@ async fn fetch_target_broker(
 async fn query_metrics_and_topics(
     state: &AppState,
     broker_id: &str,
+    topic_names: &[String],
 ) -> (BrokerMetrics, Vec<BrokerTopicMini>, Option<String>) {
-    let q_topics_owned = format!("danube_broker_topics_owned{{broker=\"{}\"}}", broker_id);
     let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
     let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
     let q_cons = format!("danube_topic_active_consumers{{broker=\"{}\"}}", broker_id);
@@ -131,19 +141,8 @@ async fn query_metrics_and_topics(
 
     let mut errors: Vec<String> = Vec::new();
 
-    let topics_owned: u64 = match state.metrics.query_instant(&q_topics_owned).await {
-        Ok(resp) => resp
-            .data
-            .result
-            .iter()
-            .filter_map(|r| r.value.1.parse::<f64>().ok())
-            .map(|v| v as u64)
-            .sum(),
-        Err(e) => {
-            errors.push(format!("topics_owned query failed: {}", e));
-            0
-        }
-    };
+    // Use authoritative topic list length for topics_owned
+    let topics_owned: u64 = topic_names.len() as u64;
 
     let rpc_total: u64 = match state.metrics.query_instant(&q_rpc_total).await {
         Ok(resp) => resp
@@ -201,17 +200,14 @@ async fn query_metrics_and_topics(
         Err(e) => errors.push(format!("subscriptions query failed: {}", e)),
     }
 
+    // Build topics strictly from provided list; enrich with metrics counts
     let mut topics: Vec<BrokerTopicMini> = Vec::new();
-    let mut topic_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    topic_names.extend(prod_by_topic.keys().cloned());
-    topic_names.extend(cons_by_topic.keys().cloned());
-    topic_names.extend(subs_by_topic.keys().cloned());
-    for name in topic_names.into_iter() {
-        let p = *prod_by_topic.get(&name).unwrap_or(&0);
-        let c = *cons_by_topic.get(&name).unwrap_or(&0);
-        let s = *subs_by_topic.get(&name).unwrap_or(&0);
+    for name in topic_names.iter() {
+        let p = *prod_by_topic.get(name).unwrap_or(&0);
+        let c = *cons_by_topic.get(name).unwrap_or(&0);
+        let s = *subs_by_topic.get(name).unwrap_or(&0);
         topics.push(BrokerTopicMini {
-            name,
+            name: name.clone(),
             producers_connected: p,
             consumers_connected: c,
             subscriptions: s,

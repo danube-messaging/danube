@@ -122,11 +122,11 @@ async fn fetch_topics_for_broker(state: &AppState, broker_id: &str) -> anyhow::R
         Err(e) => return Err(anyhow::anyhow!(format!("subscriptions query failed: {}", e))),
     }
 
+    // Fetch authoritative topic list via gRPC and enrich with metric counts
+    let list = state.client.list_broker_topics(broker_id).await?;
+    let topic_names: std::collections::BTreeSet<String> =
+        list.topics.into_iter().map(|t| t.name).collect();
     let mut out: Vec<BrokerTopicMini> = Vec::new();
-    let mut topic_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    topic_names.extend(prod_by_topic.keys().cloned());
-    topic_names.extend(cons_by_topic.keys().cloned());
-    topic_names.extend(subs_by_topic.keys().cloned());
     for name in topic_names.into_iter() {
         let p = *prod_by_topic.get(&name).unwrap_or(&0);
         let c = *cons_by_topic.get(&name).unwrap_or(&0);

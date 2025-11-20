@@ -5,7 +5,7 @@ use danube_core::admin_proto::{
     topic_admin_client::TopicAdminClient,
     DescribeTopicRequest,
     DispatchStrategy as AdminDispatchStrategy, NamespaceRequest, NewTopicRequest,
-    PartitionedTopicRequest, SubscriptionRequest, TopicRequest,
+    PartitionedTopicRequest, SubscriptionRequest, TopicRequest, BrokerRequest,
 };
 use crate::client::admin_channel;
 use std::fs;
@@ -50,10 +50,12 @@ fn parse_dispatch_strategy(input: &str) -> AdminDispatchStrategy {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopicsCommands {
-    #[command(about = "List topics in the specified namespace")]
+    #[command(about = "List topics by namespace or by broker")]
     List {
-        #[arg(help = "Namespace name (e.g., default)")]
-        namespace: String,
+        #[arg(long, required_unless_present = "broker", help = "Namespace name (e.g., default)")]
+        namespace: Option<String>,
+        #[arg(long, conflicts_with = "namespace", required_unless_present = "namespace", help = "Broker ID to filter topics")]
+        broker: Option<String>,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
@@ -127,18 +129,54 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
     let mut client = topic_admin_client().await?;
 
     match topics.command {
-        // Get the list of topics of a namespace
-        TopicsCommands::List { namespace, output } => {
-            let request = NamespaceRequest { name: namespace };
-            let response = client.list_topics(request).await?;
-
-            let topics = response.into_inner().topics;
-            if matches!(output.as_deref(), Some("json")) {
-                println!("{}", serde_json::to_string_pretty(&topics)?);
-            } else {
-                for topic in topics {
-                    println!("Topic: {}", topic);
+        // List topics by either namespace or broker
+        TopicsCommands::List { namespace, broker, output } => {
+            if let Some(ns) = namespace {
+                let request = NamespaceRequest { name: ns };
+                let response = client.list_namespace_topics(request).await?;
+                let items = response.into_inner().topics;
+                if matches!(output.as_deref(), Some("json")) {
+                    let json_items: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|it| serde_json::json!({
+                            "name": it.name,
+                            "broker_id": it.broker_id,
+                        }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
+                } else {
+                    for item in items {
+                        if item.broker_id.is_empty() {
+                            println!("Topic: {}", item.name);
+                        } else {
+                            println!("Topic: {} (broker_id: {})", item.name, item.broker_id);
+                        }
+                    }
                 }
+            } else if let Some(bid) = broker {
+                let request = BrokerRequest { broker_id: bid };
+                let response = client.list_broker_topics(request).await?;
+                let items = response.into_inner().topics;
+                if matches!(output.as_deref(), Some("json")) {
+                    let json_items: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|it| serde_json::json!({
+                            "name": it.name,
+                            "broker_id": it.broker_id,
+                        }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
+                } else {
+                    for item in items {
+                        if item.broker_id.is_empty() {
+                            println!("Topic: {}", item.name);
+                        } else {
+                            println!("Topic: {} (broker_id: {})", item.name, item.broker_id);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Provide either --namespace or --broker");
             }
         }
 
