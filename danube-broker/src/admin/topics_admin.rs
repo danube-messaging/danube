@@ -7,6 +7,7 @@ use danube_core::admin_proto::{
     TopicResponse,
 };
 use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
@@ -40,9 +41,20 @@ impl TopicAdmin for DanubeAdminImpl {
                 .get_broker_for_topic(&normalized)
                 .await
                 .unwrap_or_default();
+            let lookup = normalized.trim_start_matches('/');
+            let delivery = match self
+                .resources
+                .topic
+                .get_dispatch_strategy(lookup)
+            {
+                Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+                Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+                None => "NonReliable".to_string(),
+            };
             topics.push(TopicInfo {
                 name: normalized,
                 broker_id,
+                delivery,
             });
         }
 
@@ -65,9 +77,20 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
         for name in names.into_iter() {
+            let lookup = name.trim_start_matches('/');
+            let delivery = match self
+                .resources
+                .topic
+                .get_dispatch_strategy(lookup)
+            {
+                Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+                Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+                None => "NonReliable".to_string(),
+            };
             topics.push(TopicInfo {
                 name,
                 broker_id: req.broker_id.clone(),
+                delivery,
             });
         }
 
@@ -285,12 +308,25 @@ impl TopicAdmin for DanubeAdminImpl {
             .await
             .unwrap_or_default();
 
+        // Delivery
+        let lookup = req.name.trim_start_matches('/');
+        let delivery = match self
+            .resources
+            .topic
+            .get_dispatch_strategy(lookup)
+        {
+            Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+            Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+            None => "NonReliable".to_string(),
+        };
+
         let response = DescribeTopicResponse {
             name: req.name,
             type_schema,
             schema_data,
             subscriptions,
             broker_id,
+            delivery,
         };
         Ok(tonic::Response::new(response))
     }

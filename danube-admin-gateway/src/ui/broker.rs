@@ -9,6 +9,7 @@ use axum::{
 
 use crate::app::{AppState, CacheEntry};
 use serde::Serialize;
+use danube_core::admin_proto::TopicInfo;
 
 #[derive(Clone, Serialize)]
 pub struct BrokerPage {
@@ -22,6 +23,7 @@ pub struct BrokerPage {
 #[derive(Clone, Serialize)]
 pub struct BrokerTopicMini {
     pub name: String,
+    pub delivery: String,
     pub producers_connected: u64,
     pub consumers_connected: u64,
     pub subscriptions: u64,
@@ -73,8 +75,8 @@ pub async fn broker_page(
 
     // Fetch authoritative topic list via gRPC, then enrich with metrics
     let mut errors = Vec::new();
-    let topic_names: Vec<String> = match state.client.list_broker_topics(&broker_id).await {
-        Ok(resp) => resp.topics.into_iter().map(|t| t.name).collect(),
+    let topic_infos: Vec<TopicInfo> = match state.client.list_broker_topics(&broker_id).await {
+        Ok(resp) => resp.topics,
         Err(e) => {
             errors.push(format!("list_broker_topics failed: {}", e));
             Vec::new()
@@ -83,7 +85,7 @@ pub async fn broker_page(
 
     // Query metrics filtered by the gRPC-provided topic names
     let (metrics, topics, scrape_err) =
-        query_metrics_and_topics(&state, &broker_id, &topic_names).await;
+        query_metrics_and_topics(&state, &broker_id, &topic_infos).await;
 
     if let Some(err) = scrape_err {
         errors.push(format!("metrics scrape failed: {}", err));
@@ -130,7 +132,7 @@ async fn fetch_target_broker(
 async fn query_metrics_and_topics(
     state: &AppState,
     broker_id: &str,
-    topic_names: &[String],
+    topic_infos: &[TopicInfo],
 ) -> (BrokerMetrics, Vec<BrokerTopicMini>, Option<String>) {
     let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
     let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
@@ -142,7 +144,7 @@ async fn query_metrics_and_topics(
     let mut errors: Vec<String> = Vec::new();
 
     // Use authoritative topic list length for topics_owned
-    let topics_owned: u64 = topic_names.len() as u64;
+    let topics_owned: u64 = topic_infos.len() as u64;
 
     let rpc_total: u64 = match state.metrics.query_instant(&q_rpc_total).await {
         Ok(resp) => resp
@@ -202,12 +204,14 @@ async fn query_metrics_and_topics(
 
     // Build topics strictly from provided list; enrich with metrics counts
     let mut topics: Vec<BrokerTopicMini> = Vec::new();
-    for name in topic_names.iter() {
+    for info in topic_infos.iter() {
+        let name = &info.name;
         let p = *prod_by_topic.get(name).unwrap_or(&0);
         let c = *cons_by_topic.get(name).unwrap_or(&0);
         let s = *subs_by_topic.get(name).unwrap_or(&0);
         topics.push(BrokerTopicMini {
             name: name.clone(),
+            delivery: info.delivery.clone(),
             producers_connected: p,
             consumers_connected: c,
             subscriptions: s,

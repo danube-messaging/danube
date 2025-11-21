@@ -105,6 +105,9 @@ pub struct TopicInfo {
     /// hosting broker id; empty if unknown/unassigned
     #[prost(string, tag = "2")]
     pub broker_id: ::prost::alloc::string::String,
+    /// delivery: Reliable | NonReliable
+    #[prost(string, tag = "3")]
+    pub delivery: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TopicInfoListResponse {
@@ -146,6 +149,9 @@ pub struct DescribeTopicResponse {
     pub subscriptions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, tag = "5")]
     pub broker_id: ::prost::alloc::string::String,
+    /// delivery: Reliable | NonReliable
+    #[prost(string, tag = "6")]
+    pub delivery: ::prost::alloc::string::String,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

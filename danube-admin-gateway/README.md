@@ -1,6 +1,8 @@
 # danube-admin-gateway
 
-A Backend-for-Frontend (BFF) service that provides a unified HTTP/JSON API for the Danube Admin UI. It aggregates data from multiple sources—broker administrative endpoints and Prometheus metrics—and delivers page-ready payloads optimized for the frontend.
+A Backend-for-Frontend (BFF) service that provides a unified HTTP/JSON API for the Danube Admin UI. 
+
+It aggregates data from multiple sources, like broker administrative endpoints and Prometheus metrics, and delivers page-ready payloads optimized for the frontend.
 
 ## What it does
 
@@ -68,87 +70,6 @@ cargo run -p danube-admin-gateway -- \
 - `DANUBE_ADMIN_DOMAIN`: TLS SNI/verification domain
 - `DANUBE_ADMIN_CA`: Path to PEM root CA
 - `DANUBE_ADMIN_CERT` / `DANUBE_ADMIN_KEY`: mTLS client cert/key paths
-
-## API endpoints
-
-Base URL defaults to `http://localhost:8080`.
-
-### GET /ui/v1/health
-Health check with broker leader reachability.
-
-### GET /ui/v1/cluster
-Cluster overview: all brokers with roles and aggregated metrics (topics owned, RPC totals, etc.).
-
-### GET /ui/v1/topics
-Cluster-wide topics summary aggregated from Prometheus. Returns a list of topics with totals of producers, consumers, and subscriptions across the cluster, plus broker identities.
-
-### GET /ui/v1/brokers/{broker_id}
-Detailed broker view: identity, metrics, and list of topics assigned to the broker with producer/consumer counts.
-
-### GET /ui/v1/topics/{topic}
-Topic details: schema, subscriptions, and aggregated metrics (messages in/out, active producers/consumers). Topic name must be URL-encoded (e.g., `/default/my-topic` becomes `%2Fdefault%2Fmy-topic`).
-
-### GET /ui/v1/topics/{topic}/series
-Chart-ready time series for the topic using Prometheus range queries. Query params:
-- `from`: unix seconds
-- `to`: unix seconds
-- `step`: Prometheus step (e.g, `15s`, `30s`, `1m`)
-
-Returns an array of named series with points: `(ts_ms, value)`.
-
-### GET /ui/v1/namespaces
-Lists all namespaces, their topics, and current policies (as a JSON string returned by the admin service). Deduplicates namespaces.
-
-### POST /ui/v1/topics/actions
-Execute topic actions via Admin gRPC. Single endpoint supporting multiple actions.
-
-Request JSON:
-
-```json
-{ "action": "create|delete|unload", "topic": "/ns/topic" | "topic", "namespace": "ns?", "partitions": 3?, "schema_type": "String|Bytes|Int64|Json?", "schema_data": "{}"?, "dispatch_strategy": "non_reliable|reliable?" }
-```
-
-Notes:
-- When `topic` lacks a namespace, provide `namespace` and the service will normalize to `/ns/topic`.
-- `create` with `partitions` creates a partitioned topic; otherwise creates a non-partitioned topic.
-- `dispatch_strategy` defaults to `non_reliable`. `schema_type` defaults to `String`. `schema_data` defaults to `{}`.
-
-Response JSON:
-
-```json
-{ "success": true, "message": "ok" }
-```
-
-### POST /ui/v1/cluster/actions
-Execute broker actions via Admin gRPC. Single endpoint supporting multiple actions.
-
-Request JSON:
-
-```json
-{
-  "action": "unload|activate",
-  "broker_id": "...",
-  // unload (optional)
-  "max_parallel": 1,
-  "namespaces_include": ["ns-a"],
-  "namespaces_exclude": ["ns-b"],
-  "dry_run": false,
-  "timeout_seconds": 60,
-  // activate (optional)
-  "reason": "admin_activate"
-}
-```
-
-Notes:
-- `broker_id` is required for all actions.
-- `unload` accepts tuning fields; sensible defaults are applied if omitted.
-- `activate` accepts an optional `reason` for auditability (default: `admin_activate`).
-
-Response JSON:
-
-```json
-{ "success": true, "message": "started=true total=10 succeeded=0 failed=0 pending=10" }
-```
 
 ## curl examples
 
@@ -231,6 +152,60 @@ curl -s -X POST http://localhost:8080/ui/v1/cluster/actions \
     "broker_id": "63161296830406433",
     "reason": "admin_activate"
   }' | jq
+```
+
+**Examples**
+
+```bash
+curl -s http://localhost:8080/ui/v1/cluster | jq
+{
+  "timestamp": "2025-11-21T04:59:41.467789717+00:00",
+  "brokers": [
+    {
+      "broker_id": "16769495701206859101",
+      "broker_addr": "http://0.0.0.0:6650",
+      "broker_role": "Cluster_Leader",
+      "broker_status": "active",
+      "stats": {
+        "topics_owned": 5,
+        "rpc_total": 14686,
+        "active_connections": 24,
+        "errors_5xx_total": 0
+      }
+    },
+    {
+      "broker_id": "3823634821110504384",
+      "broker_addr": "http://0.0.0.0:6651",
+      "broker_role": "Cluster_Follower",
+      "broker_status": "active",
+      "stats": {
+        "topics_owned": 6,
+        "rpc_total": 3967,
+        "active_connections": 9,
+        "errors_5xx_total": 0
+      }
+    },
+    {
+      "broker_id": "9235619178526211712",
+      "broker_addr": "http://0.0.0.0:6652",
+      "broker_role": "Cluster_Follower",
+      "broker_status": "active",
+      "stats": {
+        "topics_owned": 5,
+        "rpc_total": 18232,
+        "active_connections": 17,
+        "errors_5xx_total": 0
+      }
+    }
+  ],
+  "totals": {
+    "broker_count": 3,
+    "topics_total": 16,
+    "rpc_total": 36885,
+    "active_connections": 50
+  },
+  "errors": []
+}
 ```
 
 ### Notes
