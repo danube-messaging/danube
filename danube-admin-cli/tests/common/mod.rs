@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn cli() -> Command {
-    let mut cmd = Command::cargo_bin("danube-admin-cli").expect("binary exists");
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("danube-admin-cli"));
     cmd.env(
         "DANUBE_ADMIN_ENDPOINT",
         std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),

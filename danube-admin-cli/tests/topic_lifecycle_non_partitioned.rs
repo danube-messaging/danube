@@ -5,7 +5,7 @@ use common::*;
 #[test]
 fn topic_lifecycle_non_partitioned() {
     let ns = unique_ns();
-    // CLI uses leading '/ns/topic'; list output uses 'ns/topic'
+    // CLI uses leading '/ns/topic'; list output now includes leading '/ns/topic'
     let topic = format!("/{}/cli-e2e", ns);
     let list_name = format!("{}/cli-e2e", ns);
 
@@ -21,13 +21,18 @@ fn topic_lifecycle_non_partitioned() {
     // assert it appears in namespace list (parse JSON for robustness)
     let mut list = cli();
     let out = list
-        .args(["topics", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", "--namespace", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list");
     assert!(out.status.success());
     let body = String::from_utf8(out.stdout).unwrap();
-    let topics: Vec<String> = serde_json::from_str(&body).expect("valid JSON array of strings");
-    assert!(topics.iter().any(|t| t == &list_name), "missing {list_name} in {topics:?}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).expect("valid JSON array");
+    let names: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .collect();
+    let expected = format!("/{}", list_name);
+    assert!(names.iter().any(|t| t == &expected), "missing {expected} in {names:?}");
 
     // describe topic (json path contains schema)
     let mut describe = cli();
@@ -46,13 +51,17 @@ fn topic_lifecycle_non_partitioned() {
     delete_cmd.args(["topics", "delete", &topic]).assert().success();
     let mut list2 = cli();
     let out2 = list2
-        .args(["topics", "list", &ns, "--output", "json"]) 
+        .args(["topics", "list", "--namespace", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list after delete");
     assert!(out2.status.success());
     let body2 = String::from_utf8(out2.stdout).unwrap();
-    let topics2: Vec<String> = serde_json::from_str(&body2).expect("valid JSON array of strings");
-    assert!(!topics2.iter().any(|t| t == &list_name), "{list_name} still present: {topics2:?}");
+    let arr2: Vec<serde_json::Value> = serde_json::from_str(&body2).expect("valid JSON array");
+    let names2: Vec<String> = arr2
+        .iter()
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .collect();
+    assert!(!names2.iter().any(|t| t == &expected), "{expected} still present: {names2:?}");
 
     // teardown
     delete_ns(&ns);
