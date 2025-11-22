@@ -1,11 +1,13 @@
 use crate::admin::DanubeAdminImpl;
 use crate::schema::{Schema, SchemaType};
 use danube_core::admin_proto::{
-    topic_admin_server::TopicAdmin, DescribeTopicRequest, DescribeTopicResponse, NamespaceRequest,
-    NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse, SubscriptionRequest,
-    SubscriptionResponse, TopicListResponse, TopicRequest, TopicResponse,
+    topic_admin_server::TopicAdmin, BrokerRequest, DescribeTopicRequest, DescribeTopicResponse,
+    NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse,
+    SubscriptionRequest, SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest,
+    TopicResponse,
 };
 use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
@@ -13,22 +15,86 @@ use tracing::{trace, Level};
 #[tonic::async_trait]
 impl TopicAdmin for DanubeAdminImpl {
     #[tracing::instrument(level = Level::INFO, skip_all)]
-    async fn list_topics(
+    async fn list_namespace_topics(
         &self,
         request: Request<NamespaceRequest>,
-    ) -> std::result::Result<Response<TopicListResponse>, tonic::Status> {
-        trace!("Admin: get the list of topics of a namespace");
+    ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
+        trace!("Admin: list topics with broker_id for a namespace");
 
         let req = request.into_inner();
-
-        let topics = self
+        let names = self
             .resources
             .namespace
             .get_topics_for_namespace(&req.name)
             .await;
 
-        let response = TopicListResponse { topics };
-        Ok(tonic::Response::new(response))
+        let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
+        for name in names.into_iter() {
+            let normalized = if name.starts_with('/') {
+                name.clone()
+            } else {
+                format!("/{}", name)
+            };
+            let broker_id = self
+                .resources
+                .cluster
+                .get_broker_for_topic(&normalized)
+                .await
+                .unwrap_or_default();
+            let lookup = normalized.trim_start_matches('/');
+            let delivery = match self
+                .resources
+                .topic
+                .get_dispatch_strategy(lookup)
+            {
+                Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+                Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+                None => "NonReliable".to_string(),
+            };
+            topics.push(TopicInfo {
+                name: normalized,
+                broker_id,
+                delivery,
+            });
+        }
+
+        Ok(Response::new(TopicInfoListResponse { topics }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn list_broker_topics(
+        &self,
+        request: Request<BrokerRequest>,
+    ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
+        trace!("Admin: list topics hosted by a broker");
+
+        let req = request.into_inner();
+        let names = self
+            .resources
+            .cluster
+            .get_topics_for_broker(&req.broker_id)
+            .await;
+
+        let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
+        for name in names.into_iter() {
+            let lookup = name.trim_start_matches('/');
+            let delivery = match self
+                .resources
+                .topic
+                .get_dispatch_strategy(lookup)
+            {
+                Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+                Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+                None => "NonReliable".to_string(),
+            };
+            topics.push(TopicInfo {
+                name,
+                broker_id: req.broker_id.clone(),
+                delivery,
+            });
+        }
+
+        Ok(Response::new(TopicInfoListResponse { topics }))
     }
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn create_topic(
@@ -242,12 +308,25 @@ impl TopicAdmin for DanubeAdminImpl {
             .await
             .unwrap_or_default();
 
+        // Delivery
+        let lookup = req.name.trim_start_matches('/');
+        let delivery = match self
+            .resources
+            .topic
+            .get_dispatch_strategy(lookup)
+        {
+            Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
+            Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
+            None => "NonReliable".to_string(),
+        };
+
         let response = DescribeTopicResponse {
             name: req.name,
             type_schema,
             schema_data,
             subscriptions,
             broker_id,
+            delivery,
         };
         Ok(tonic::Response::new(response))
     }

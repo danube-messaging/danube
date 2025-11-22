@@ -2,44 +2,7 @@
 
 The danube-admin-cli is a command-line interface designed for interacting with and managing the Danube cluster.
 
-## TLS and mTLS
-
-The CLI uses a TLS-aware client factory. Configure via environment variables or by using an HTTPS endpoint.
-
-Environment variables:
-
-- DANUBE_ADMIN_ENDPOINT: Admin endpoint (default: http://127.0.0.1:50051)
-- DANUBE_ADMIN_TLS: "true" to force TLS even for http endpoints
-- DANUBE_ADMIN_DOMAIN: TLS server name (SNI/verification)
-- DANUBE_ADMIN_CA: Path to CA PEM file (optional; system roots used if omitted)
-- DANUBE_ADMIN_CERT: Path to client certificate (PEM) for mTLS (optional)
-- DANUBE_ADMIN_KEY: Path to client private key (PEM) for mTLS (optional)
-
-Examples:
-
-```bash
-# TLS using HTTPS endpoint and custom domain/CA
-export DANUBE_ADMIN_ENDPOINT=https://broker.example.com:50051
-export DANUBE_ADMIN_DOMAIN=broker.example.com
-export DANUBE_ADMIN_CA=./cert/ca-cert.pem
-
-# optional mTLS
-export DANUBE_ADMIN_CERT=./cert/client-cert.pem
-export DANUBE_ADMIN_KEY=./cert/client-key.pem
-
-danube-admin-cli brokers list
-```
-
-## Reliable dispatch options
-
-The `topics create` command accepts a `--dispatch-strategy` flag.
-
-Values:
-
-- `non_reliable` (default)
-- `reliable`
-
-## Command examples
+## Danube Admin CLI Commands
 
 ### Brokers
 
@@ -52,6 +15,16 @@ danube-admin-cli brokers leader-broker
 
 # List namespaces in cluster
 danube-admin-cli brokers namespaces
+```
+
+**Examples:**
+
+```bash
+target/debug/danube-admin-cli brokers list
+ BROKER ID            | BROKER STATUS | BROKER ADDRESS      | BROKER ROLE      | ADMIN ADDR           | METRICS ADDR 
+ 16769495701206859101 | active        | http://0.0.0.0:6650 | Cluster_Leader   | http://0.0.0.0:50051 | 0.0.0.0:9040 
+ 3823634821110504384  | active        | http://0.0.0.0:6651 | Cluster_Follower | http://0.0.0.0:50052 | 0.0.0.0:9041 
+ 9235619178526211712  | active        | http://0.0.0.0:6652 | Cluster_Follower | http://0.0.0.0:50053 | 0.0.0.0:9042
 ```
 
 ### Namespaces
@@ -68,6 +41,22 @@ danube-admin-cli namespaces create default
 
 # Delete a namespace (must be empty)
 danube-admin-cli namespaces delete default
+```
+
+**Examples:**
+
+```bash
+target/debug/danube-admin-cli namespaces policies default
+Policies Configuration:
+-----------------------
+Max Producers per Topic: 0
+Max Subscriptions per Topic: 0
+Max Consumers per Topic: 0
+Max Consumers per Subscription: 0
+Max publish rate: 0
+Dispatch rate for subscription: 0
+Max message size: 10485760
+-----------------------
 ```
 
 ### Topic management
@@ -113,4 +102,77 @@ danube-admin-cli topics unsubscribe --subscription sub1 /default/mytopic
 danube-admin-cli topics describe /default/mytopic
 # JSON output (describe uses Admin endpoint at DANUBE_ADMIN_ENDPOINT; default http://127.0.0.1:50051)
 danube-admin-cli topics describe /default/mytopic --output json
+```
+
+**Examples:**
+
+```bash
+target/debug/danube-admin-cli topics list --broker 3823634821110504384
+Topic: /default/pattern_4-part-2 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_2-part-0 (broker_id: 3823634821110504384, delivery: NonReliable)
+Topic: /default/pattern_2-part-2 (broker_id: 3823634821110504384, delivery: NonReliable)
+Topic: /default/pattern_5-part-1 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_5-part-2 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_5-part-0 (broker_id: 3823634821110504384, delivery: Reliable)
+```
+
+```bash
+target/debug/danube-admin-cli topics list --namespace default
+Topic: /default/pattern_4-part-2 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_4-part-0 (broker_id: 9235619178526211712, delivery: Reliable)
+Topic: /default/pattern_4-part-1 (broker_id: 16769495701206859101, delivery: Reliable)
+Topic: /default/pattern_3 (broker_id: 9235619178526211712, delivery: Reliable)
+Topic: /default/pattern_2-part-2 (broker_id: 3823634821110504384, delivery: NonReliable)
+Topic: /default/pattern_2-part-1 (broker_id: 9235619178526211712, delivery: NonReliable)
+Topic: /default/pattern_2-part-0 (broker_id: 3823634821110504384, delivery: NonReliable)
+Topic: /default/pattern_5-part-0 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_5-part-2 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_5-part-1 (broker_id: 3823634821110504384, delivery: Reliable)
+Topic: /default/pattern_1 (broker_id: 9235619178526211712, delivery: NonReliable)
+```
+
+```bash
+target/debug/danube-admin-cli topics describe /default/pattern_3
+Topic: /default/pattern_3
+Broker ID: 9235619178526211712
+Delivery: Reliable
+Schema: String
+Subscriptions: ["s_pattern_3_excl_1", "s_pattern_3_excl_1", "s_pattern_3_shared_1", "s_pattern_3_shared_1"]
+```
+
+## Reliable dispatch options
+
+The `topics create` command accepts a `--dispatch-strategy` flag.
+
+Values:
+
+- `non_reliable` (default)
+- `reliable`
+
+## TLS and mTLS
+
+The CLI uses a TLS-aware client factory. Configure via environment variables or by using an HTTPS endpoint.
+
+Environment variables:
+
+- DANUBE_ADMIN_ENDPOINT: Admin endpoint (default: http://127.0.0.1:50051)
+- DANUBE_ADMIN_TLS: "true" to force TLS even for http endpoints
+- DANUBE_ADMIN_DOMAIN: TLS server name (SNI/verification)
+- DANUBE_ADMIN_CA: Path to CA PEM file (optional; system roots used if omitted)
+- DANUBE_ADMIN_CERT: Path to client certificate (PEM) for mTLS (optional)
+- DANUBE_ADMIN_KEY: Path to client private key (PEM) for mTLS (optional)
+
+Examples:
+
+```bash
+# TLS using HTTPS endpoint and custom domain/CA
+export DANUBE_ADMIN_ENDPOINT=https://broker.example.com:50051
+export DANUBE_ADMIN_DOMAIN=broker.example.com
+export DANUBE_ADMIN_CA=./cert/ca-cert.pem
+
+# optional mTLS
+export DANUBE_ADMIN_CERT=./cert/client-cert.pem
+export DANUBE_ADMIN_KEY=./cert/client-key.pem
+
+danube-admin-cli brokers list
 ```

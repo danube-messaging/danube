@@ -30,7 +30,8 @@ service NamespaceAdmin {
 
 service TopicAdmin {
   // Topic related RPCs
-  rpc ListTopics(NamespaceRequest) returns (TopicListResponse);
+  rpc ListNamespaceTopics(NamespaceRequest) returns (TopicInfoListResponse);
+  rpc ListBrokerTopics(BrokerRequest) returns (TopicInfoListResponse);
   rpc CreateTopic(NewTopicRequest) returns (TopicResponse);
   rpc CreatePartitionedTopic(PartitionedTopicRequest) returns (TopicResponse);
   rpc DeleteTopic(TopicRequest) returns (TopicResponse);
@@ -109,6 +110,22 @@ message TopicListResponse {
   repeated string topics = 1;
 }
 
+// Detailed topic entry including hosting broker id
+message TopicInfo {
+  string name = 1;       // /namespace/topic (leading slash)
+  string broker_id = 2;  // hosting broker id; empty if unknown/unassigned
+  string delivery = 3;   // delivery: Reliable | NonReliable
+}
+
+message TopicInfoListResponse {
+  repeated TopicInfo topics = 1;
+}
+
+// Request to address a specific broker
+message BrokerRequest {
+  string broker_id = 1;
+}
+
 message PolicyResponse {
   string policies = 1;
 }
@@ -128,6 +145,7 @@ message DescribeTopicResponse {
   bytes schema_data = 3;
   repeated string subscriptions = 4;
   string broker_id = 5;
+  string delivery = 6; // delivery: Reliable | NonReliable
 }
 
 // Broker Unload

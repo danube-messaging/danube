@@ -4,11 +4,12 @@ use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use tracing::info;
 
 #[derive(Debug, Deserialize)]
 pub struct ClusterActionRequest {
-    pub action: String,     // unload | activate
-    pub broker_id: String,  // required for both
+    pub action: String,    // unload | activate
+    pub broker_id: String, // required for both
     // unload-only params (optional)
     pub max_parallel: Option<u32>,
     pub namespaces_include: Option<Vec<String>>,
@@ -33,7 +34,10 @@ pub async fn cluster_actions(
     if req.broker_id.trim().is_empty() {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ClusterActionResponse { success: false, message: "missing broker_id".to_string() }),
+            Json(ClusterActionResponse {
+                success: false,
+                message: "missing broker_id".to_string(),
+            }),
         )
             .into_response();
     }
@@ -45,6 +49,16 @@ pub async fn cluster_actions(
             let namespaces_exclude = req.namespaces_exclude.unwrap_or_default();
             let dry_run = req.dry_run.unwrap_or(false);
             let timeout_seconds = req.timeout_seconds.unwrap_or(60);
+            info!(
+                target = "gateway",
+                "cluster_actions unload request: broker_id={}, max_parallel={}, namespaces_include={:?}, namespaces_exclude={:?}, dry_run={}, timeout_seconds={}",
+                req.broker_id,
+                max_parallel,
+                namespaces_include,
+                namespaces_exclude,
+                dry_run,
+                timeout_seconds
+            );
             state
                 .client
                 .unload_broker(
@@ -56,10 +70,22 @@ pub async fn cluster_actions(
                     timeout_seconds,
                 )
                 .await
-                .map(|r| (r.started, format!("started={} total={} succeeded={} failed={} pending={}", r.started, r.total, r.succeeded, r.failed, r.pending)))
+                .map(|r| {
+                    (
+                        r.started,
+                        format!(
+                            "started={} total={} succeeded={} failed={} pending={}",
+                            r.started, r.total, r.succeeded, r.failed, r.pending
+                        ),
+                    )
+                })
         }
         "activate" => {
             let reason = req.reason.unwrap_or_else(|| "admin_activate".to_string());
+            info!(
+                target = "gateway",
+                "cluster_actions activate request: broker_id={}, reason={}", req.broker_id, reason
+            );
             state
                 .client
                 .activate_broker(&req.broker_id, &reason)
@@ -70,11 +96,24 @@ pub async fn cluster_actions(
     };
 
     match res {
-        Ok((ok, msg)) => Json(ClusterActionResponse { success: ok, message: msg }).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::BAD_GATEWAY,
-            Json(ClusterActionResponse { success: false, message: e.to_string() }),
-        )
-            .into_response(),
+        Ok((ok, msg)) => {
+            let out = ClusterActionResponse {
+                success: ok,
+                message: msg,
+            };
+            info!(target = "gateway", "cluster_actions response: {:?}", out);
+            Json(out).into_response()
+        }
+        Err(e) => {
+            let out = ClusterActionResponse {
+                success: false,
+                message: e.to_string(),
+            };
+            info!(
+                target = "gateway",
+                "cluster_actions error response: {:?}", out
+            );
+            (axum::http::StatusCode::BAD_GATEWAY, Json(out)).into_response()
+        }
     }
 }

@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::app::{AppState, CacheEntry};
 use crate::ui::broker::{BrokerIdentity, BrokerTopicMini};
+use danube_core::admin_proto::TopicInfo;
 use crate::ui::shared::fetch_brokers;
 
 #[derive(Clone, Serialize)]
@@ -122,17 +123,19 @@ async fn fetch_topics_for_broker(state: &AppState, broker_id: &str) -> anyhow::R
         Err(e) => return Err(anyhow::anyhow!(format!("subscriptions query failed: {}", e))),
     }
 
+    // Fetch authoritative topic list via gRPC and enrich with metric counts
+    let list = state.client.list_broker_topics(broker_id).await?;
+    let mut infos: Vec<TopicInfo> = list.topics;
+    infos.sort_by(|a, b| a.name.cmp(&b.name));
     let mut out: Vec<BrokerTopicMini> = Vec::new();
-    let mut topic_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    topic_names.extend(prod_by_topic.keys().cloned());
-    topic_names.extend(cons_by_topic.keys().cloned());
-    topic_names.extend(subs_by_topic.keys().cloned());
-    for name in topic_names.into_iter() {
+    for info in infos.into_iter() {
+        let name = info.name.clone();
         let p = *prod_by_topic.get(&name).unwrap_or(&0);
         let c = *cons_by_topic.get(&name).unwrap_or(&0);
         let s = *subs_by_topic.get(&name).unwrap_or(&0);
         out.push(BrokerTopicMini {
             name,
+            delivery: info.delivery,
             producers_connected: p,
             consumers_connected: c,
             subscriptions: s,

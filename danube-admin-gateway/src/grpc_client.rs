@@ -113,11 +113,15 @@ impl AdminGrpcClient {
         let req = admin::NamespaceRequest {
             name: namespace.to_string(),
         };
-        let fut = async move { client.list_topics(req).await };
+        let fut = async move { client.list_namespace_topics(req).await };
         match tokio::time::timeout(self.timeout, fut).await {
             Err(_) => Err(anyhow!("upstream timeout")),
-            Ok(Err(status)) => Err(anyhow!(status)),
-            Ok(Ok(resp)) => Ok(resp.into_inner()),
+            Ok(Err(status)) => Err(anyhow!(status.to_string())),
+            Ok(Ok(resp)) => {
+                let detailed = resp.into_inner();
+                let topics: Vec<String> = detailed.topics.into_iter().map(|ti| ti.name).collect();
+                Ok(admin::TopicListResponse { topics })
+            }
         }
     }
 
@@ -130,6 +134,22 @@ impl AdminGrpcClient {
         match tokio::time::timeout(self.timeout, fut).await {
             Err(_) => Err(anyhow!("upstream timeout")),
             Ok(Err(status)) => Err(anyhow!(status)),
+            Ok(Ok(resp)) => Ok(resp.into_inner()),
+        }
+    }
+
+    pub async fn list_broker_topics(
+        &self,
+        broker_id: &str,
+    ) -> Result<admin::TopicInfoListResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let req = admin::BrokerRequest {
+            broker_id: broker_id.to_string(),
+        };
+        let fut = async move { client.list_broker_topics(req).await };
+        match tokio::time::timeout(self.timeout, fut).await {
+            Err(_) => Err(anyhow!("upstream timeout")),
+            Ok(Err(status)) => Err(anyhow!(status.to_string())),
             Ok(Ok(resp)) => Ok(resp.into_inner()),
         }
     }

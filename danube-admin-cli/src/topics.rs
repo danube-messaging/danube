@@ -5,7 +5,7 @@ use danube_core::admin_proto::{
     topic_admin_client::TopicAdminClient,
     DescribeTopicRequest,
     DispatchStrategy as AdminDispatchStrategy, NamespaceRequest, NewTopicRequest,
-    PartitionedTopicRequest, SubscriptionRequest, TopicRequest,
+    PartitionedTopicRequest, SubscriptionRequest, TopicRequest, BrokerRequest,
 };
 use crate::client::admin_channel;
 use std::fs;
@@ -34,6 +34,7 @@ async fn fetch_schema_json(topic: &str) -> Result<serde_json::Value, Box<dyn std
         "name": resp.name,
         "type_schema": resp.type_schema,
         "broker_id": resp.broker_id,
+        "delivery": resp.delivery,
         // schema_data is bytes; render as string when possible, else base64
         "schema_data": String::from_utf8(resp.schema_data.clone()).unwrap_or_else(|_| general_purpose::STANDARD.encode(resp.schema_data.clone())),
     });
@@ -50,10 +51,12 @@ fn parse_dispatch_strategy(input: &str) -> AdminDispatchStrategy {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopicsCommands {
-    #[command(about = "List topics in the specified namespace")]
+    #[command(about = "List topics by namespace or by broker")]
     List {
-        #[arg(help = "Namespace name (e.g., default)")]
-        namespace: String,
+        #[arg(long, required_unless_present = "broker", help = "Namespace name (e.g., default)")]
+        namespace: Option<String>,
+        #[arg(long, conflicts_with = "namespace", required_unless_present = "namespace", help = "Broker ID to filter topics")]
+        broker: Option<String>,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
@@ -127,18 +130,56 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
     let mut client = topic_admin_client().await?;
 
     match topics.command {
-        // Get the list of topics of a namespace
-        TopicsCommands::List { namespace, output } => {
-            let request = NamespaceRequest { name: namespace };
-            let response = client.list_topics(request).await?;
-
-            let topics = response.into_inner().topics;
-            if matches!(output.as_deref(), Some("json")) {
-                println!("{}", serde_json::to_string_pretty(&topics)?);
-            } else {
-                for topic in topics {
-                    println!("Topic: {}", topic);
+        // List topics by either namespace or broker
+        TopicsCommands::List { namespace, broker, output } => {
+            if let Some(ns) = namespace {
+                let request = NamespaceRequest { name: ns };
+                let response = client.list_namespace_topics(request).await?;
+                let items = response.into_inner().topics;
+                if matches!(output.as_deref(), Some("json")) {
+                    let json_items: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|it| serde_json::json!({
+                            "name": it.name,
+                            "broker_id": it.broker_id,
+                            "delivery": it.delivery,
+                        }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
+                } else {
+                    for item in items {
+                        if item.broker_id.is_empty() {
+                            println!("Topic: {} (delivery: {})", item.name, item.delivery);
+                        } else {
+                            println!("Topic: {} (broker_id: {}, delivery: {})", item.name, item.broker_id, item.delivery);
+                        }
+                    }
                 }
+            } else if let Some(bid) = broker {
+                let request = BrokerRequest { broker_id: bid };
+                let response = client.list_broker_topics(request).await?;
+                let items = response.into_inner().topics;
+                if matches!(output.as_deref(), Some("json")) {
+                    let json_items: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|it| serde_json::json!({
+                            "name": it.name,
+                            "broker_id": it.broker_id,
+                            "delivery": it.delivery,
+                        }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
+                } else {
+                    for item in items {
+                        if item.broker_id.is_empty() {
+                            println!("Topic: {} (delivery: {})", item.name, item.delivery);
+                        } else {
+                            println!("Topic: {} (broker_id: {}, delivery: {})", item.name, item.broker_id, item.delivery);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Provide either --namespace or --broker");
             }
         }
 
@@ -215,11 +256,13 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
             // schema via admin DescribeTopic
             let schema_value = fetch_schema_json(&name).await?;
             let broker_id = schema_value.get("broker_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let delivery = schema_value.get("delivery").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
             if matches!(output.as_deref(), Some("json")) {
                 let out = serde_json::json!({
                     "topic": name,
                     "broker_id": broker_id,
+                    "delivery": delivery,
                     "schema": schema_value,
                     "subscriptions": subscriptions,
                 });
@@ -227,6 +270,7 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
             } else {
                 println!("Topic: {}", name);
                 if !broker_id.is_empty() { println!("Broker ID: {}", broker_id); }
+                if !delivery.is_empty() { println!("Delivery: {}", delivery); }
                 // Pretty schema: detect JSON data and pretty print
                 let schema_str = schema_value.get("schema_data").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if schema_str.trim_start().starts_with('{') || schema_str.trim_start().starts_with('[') {

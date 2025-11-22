@@ -96,6 +96,30 @@ pub struct TopicListResponse {
     #[prost(string, repeated, tag = "1")]
     pub topics: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// Detailed topic entry including hosting broker id
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TopicInfo {
+    /// /namespace/topic (leading slash)
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// hosting broker id; empty if unknown/unassigned
+    #[prost(string, tag = "2")]
+    pub broker_id: ::prost::alloc::string::String,
+    /// delivery: Reliable | NonReliable
+    #[prost(string, tag = "3")]
+    pub delivery: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TopicInfoListResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub topics: ::prost::alloc::vec::Vec<TopicInfo>,
+}
+/// Request to address a specific broker
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BrokerRequest {
+    #[prost(string, tag = "1")]
+    pub broker_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PolicyResponse {
     #[prost(string, tag = "1")]
@@ -125,6 +149,9 @@ pub struct DescribeTopicResponse {
     pub subscriptions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, tag = "5")]
     pub broker_id: ::prost::alloc::string::String,
+    /// delivery: Reliable | NonReliable
+    #[prost(string, tag = "6")]
+    pub delivery: ::prost::alloc::string::String,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1431,11 +1458,11 @@ pub mod topic_admin_client {
             self
         }
         /// Topic related RPCs
-        pub async fn list_topics(
+        pub async fn list_namespace_topics(
             &mut self,
             request: impl tonic::IntoRequest<super::NamespaceRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::TopicListResponse>,
+            tonic::Response<super::TopicInfoListResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1448,11 +1475,37 @@ pub mod topic_admin_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/danube_admin.TopicAdmin/ListTopics",
+                "/danube_admin.TopicAdmin/ListNamespaceTopics",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "ListTopics"));
+                .insert(
+                    GrpcMethod::new("danube_admin.TopicAdmin", "ListNamespaceTopics"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_broker_topics(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TopicInfoListResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/ListBrokerTopics",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "ListBrokerTopics"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn create_topic(
@@ -1629,11 +1682,18 @@ pub mod topic_admin_server {
     #[async_trait]
     pub trait TopicAdmin: std::marker::Send + std::marker::Sync + 'static {
         /// Topic related RPCs
-        async fn list_topics(
+        async fn list_namespace_topics(
             &self,
             request: tonic::Request<super::NamespaceRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::TopicListResponse>,
+            tonic::Response<super::TopicInfoListResponse>,
+            tonic::Status,
+        >;
+        async fn list_broker_topics(
+            &self,
+            request: tonic::Request<super::BrokerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TopicInfoListResponse>,
             tonic::Status,
         >;
         async fn create_topic(
@@ -1750,14 +1810,14 @@ pub mod topic_admin_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube_admin.TopicAdmin/ListTopics" => {
+                "/danube_admin.TopicAdmin/ListNamespaceTopics" => {
                     #[allow(non_camel_case_types)]
-                    struct ListTopicsSvc<T: TopicAdmin>(pub Arc<T>);
+                    struct ListNamespaceTopicsSvc<T: TopicAdmin>(pub Arc<T>);
                     impl<
                         T: TopicAdmin,
                     > tonic::server::UnaryService<super::NamespaceRequest>
-                    for ListTopicsSvc<T> {
-                        type Response = super::TopicListResponse;
+                    for ListNamespaceTopicsSvc<T> {
+                        type Response = super::TopicInfoListResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -1768,7 +1828,8 @@ pub mod topic_admin_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as TopicAdmin>::list_topics(&inner, request).await
+                                <T as TopicAdmin>::list_namespace_topics(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -1779,7 +1840,50 @@ pub mod topic_admin_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = ListTopicsSvc(inner);
+                        let method = ListNamespaceTopicsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/ListBrokerTopics" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListBrokerTopicsSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<T: TopicAdmin> tonic::server::UnaryService<super::BrokerRequest>
+                    for ListBrokerTopicsSvc<T> {
+                        type Response = super::TopicInfoListResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BrokerRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::list_broker_topics(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListBrokerTopicsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
