@@ -62,6 +62,10 @@ docker exec -it danube-cli danube-cli consume \
   --sub-type exclusive
 ```
 
+📦 Run with Docker (choose one):
+- **Minimal stack (brokers + dependencies)**: [docker/README.md](docker/README.md)
+- **Stack with Admin UI (UI + gateway + Prometheus)**: [docker/danube_with_ui/README.md](docker/danube_with_ui/README.md)
+
 📖 **[Complete Docker Setup Guide →](docker/README.md)**
 
 ## Architecture
@@ -141,5 +145,6 @@ Contributions in **Python**, **Java**, **JavaScript**, and other languages are w
 - **[danube-client](danube-client/)** - Async Rust client library  
 - **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
 - **[danube-admin-cli](danube-admin-cli/)** - Cluster management utilities
+- **[danube-admin-gateway](danube-admin-gateway/)** - HTTP/JSON BFF for the Admin UI
 
 ---

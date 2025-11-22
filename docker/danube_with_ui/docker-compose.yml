@@ -1,0 +1,245 @@
+# Licensed under the Apache License, Version 2.0
+# Danube Messaging Platform - Docker Compose Setup
+# Multi-broker setup with MinIO (S3-compatible) storage and ETCD metadata store
+
+services:
+  # ETCD service for metadata storage
+  etcd:
+    container_name: "danube-etcd"
+    image: quay.io/coreos/etcd:v3.5.9
+    environment:
+      - ETCDCTL_API=3
+      - ETCD_NAME=danube-etcd
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_INITIAL_CLUSTER=danube-etcd=http://etcd:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=danube-cluster
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    networks:
+      - danube_net
+    volumes:
+      - etcd_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # MinIO service for S3-compatible object storage
+  minio:
+    container_name: "danube-minio"
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+      - MINIO_DOMAIN=minio
+    ports:
+      - "9000:9000"  # MinIO API
+      - "9001:9001"  # MinIO Console
+    command: ["server", "/data", "--console-address", ":9001"]
+    networks:
+      - danube_net
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # MinIO client to create required buckets
+  mc:
+    container_name: "danube-mc"
+    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - danube_net
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO to be ready...';
+      until (/usr/bin/mc alias set danube-minio http://minio:9000 minioadmin minioadmin123) do 
+        echo 'MinIO not ready, waiting...' && sleep 2; 
+      done;
+      echo 'Creating Danube buckets...';
+      /usr/bin/mc rm -r --force danube-minio/danube-messages || true;
+      /usr/bin/mc rm -r --force danube-minio/danube-wal || true;
+      /usr/bin/mc mb danube-minio/danube-messages;
+      /usr/bin/mc mb danube-minio/danube-wal;
+      echo 'Buckets created successfully';
+      echo 'MinIO setup complete - keeping container alive';
+      tail -f /dev/null
+      "
+
+  # Danube Broker 1
+  broker1:
+    container_name: "danube-broker1"
+    image: ghcr.io/danube-messaging/danube-broker:latest
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mc:
+        condition: service_started
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_broker.yml:/etc/danube_broker.yml:ro
+      - broker1_wal:/data/wal
+    networks:
+      - danube_net
+    ports:
+      - "6650:6650"   # Broker gRPC
+      - "50051:50051" # Admin API
+      - "9040:9040"   # Prometheus metrics
+    command: [
+      "--config-file", "/etc/danube_broker.yml",
+      "--broker-addr", "0.0.0.0:6650",
+      "--admin-addr", "0.0.0.0:50051",
+      "--prom-exporter", "0.0.0.0:9040",
+      "--advertised-addr", "broker1:6650"
+    ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Danube Broker 2
+  broker2:
+    container_name: "danube-broker2"
+    image: ghcr.io/danube-messaging/danube-broker:latest
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mc:
+        condition: service_started
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_broker.yml:/etc/danube_broker.yml:ro
+      - broker2_wal:/data/wal
+    networks:
+      - danube_net
+    ports:
+      - "6651:6650"   # Broker gRPC
+      - "50052:50051" # Admin API
+      - "9041:9040"   # Prometheus metrics
+    command: [
+      "--config-file", "/etc/danube_broker.yml",
+      "--broker-addr", "0.0.0.0:6650",
+      "--admin-addr", "0.0.0.0:50051",
+      "--prom-exporter", "0.0.0.0:9040",
+      "--advertised-addr", "broker2:6650"
+    ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Danube CLI for testing within Docker network
+  danube-cli:
+    container_name: "danube-cli"
+    image: ghcr.io/danube-messaging/danube-cli:latest
+    depends_on:
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    networks:
+      - danube_net
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]  # Keep container running for interactive use
+
+  # Prometheus for metrics collection
+  prometheus:
+    container_name: "danube-prometheus"
+    image: prom/prometheus:latest
+    depends_on:
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Admin Gateway (HTTP BFF for the UI)
+  admin-gateway:
+    container_name: "danube-admin-gateway"
+    image: ghcr.io/danube-messaging/danube-admin-gateway:latest
+    depends_on:
+      broker1:
+        condition: service_started
+      prometheus:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "8080:8080"
+    command: [
+      "--broker-endpoint", "broker1:50051",
+      "--listen-addr", "0.0.0.0:8080",
+      "--request-timeout-ms", "800",
+      "--per-endpoint-cache-ms", "3000",
+      "--prometheus-base-url", "http://prometheus:9090",
+      "--cors-allow-origin", "http://localhost:8081"
+    ]
+
+  # Admin UI (served via Nginx)
+  admin-ui:
+    container_name: "danube-admin-ui"
+    image: ghcr.io/danube-messaging/danube-admin-ui:latest
+    depends_on:
+      admin-gateway:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "8081:80"
+
+networks:
+  danube_net:
+    name: danube_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.20.0.0/16"
+          gateway: "172.20.0.1"
+
+volumes:
+  etcd_data:
+    name: danube_etcd_data
+  minio_data:
+    name: danube_minio_data
+  broker1_wal:
+    name: danube_broker1_wal
+  broker2_wal:
+    name: danube_broker2_wal
