@@ -54,3 +54,15 @@ COPY --from=builder /app/target/release/danube-admin-cli /usr/local/bin/danube-a
 
 # No default entrypoint - users can call either binary directly
 ENTRYPOINT []
+
+# Admin Gateway stage: serve the HTTP BFF for the UI
+FROM base as admin-gateway
+
+# Copy the compiled admin gateway binary from the builder stage
+COPY --from=builder /app/target/release/danube-admin-gateway /usr/local/bin/danube-admin-gateway
+
+# Expose the HTTP port
+EXPOSE 8080
+
+# Define entrypoint
+ENTRYPOINT ["/usr/local/bin/danube-admin-gateway"]
