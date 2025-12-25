@@ -6,12 +6,12 @@ use danube_core::proto::{
     ConsumerResponse, ReceiveRequest, StreamMessage,
 };
 
+use crate::broker_metrics::BROKER_RPC_TOTAL;
+use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use metrics::counter;
-use crate::broker_metrics::BROKER_RPC_TOTAL;
 use tracing::{info, trace, warn, Level};
 
 #[tonic::async_trait]
@@ -50,11 +50,10 @@ impl ConsumerService for DanubeServerImpl {
             .await
         {
             // Single-attach takeover at subscribe: cancel existing stream and prepare for new session
-            if let Some(consumer_info) = service.find_consumer_by_id(consumer_id).await {
-                // Cancel any existing streaming task for this consumer
-                consumer_info.cancel_existing_stream().await;
-                // Mark as active for the new connection
-                consumer_info.set_status_true().await;
+            if let Some(consumer) = service.find_consumer_by_id(consumer_id).await {
+                // Simplified takeover: cancel existing streaming task and mark active
+                consumer.session.lock().await.cancel_stream();
+                consumer.set_status_active().await;
                 // Reset dispatcher pending state and notify to resume polling (reliable mode)
                 service.trigger_dispatcher_on_reconnect(consumer_id).await;
             }
@@ -148,9 +147,9 @@ impl ConsumerService for DanubeServerImpl {
 
         let service = self.service.as_ref();
 
-        // Fetch both ConsumerInfo and its receiver in one lookup
-        let (consumer_info, rx) = if let Some((info, rx)) = service.find_consumer_and_rx(consumer_id).await {
-            (info, rx)
+        // Fetch Consumer (which contains session with rx_cons)
+        let consumer = if let Some(cons) = service.find_consumer_for_streaming(consumer_id).await {
+            cons
         } else {
             let status = Status::not_found(format!(
                 "The consumer with the id {} does not exist",
@@ -162,14 +161,15 @@ impl ConsumerService for DanubeServerImpl {
 
         // Note: takeover is handled during subscribe(); here we only attach a new stream
 
-        let rx_cloned = Arc::clone(&rx);
+        let session_cloned = Arc::clone(&consumer.session);
         let service_for_disconnect = self.service.clone();
 
-        // Reset and store a new cancellation token for this streaming session
-        let token_for_task = consumer_info.reset_session_token().await;
+        // Takeover: cancel old session and get new cancellation token
+        let token_for_task = consumer.session.lock().await.takeover();
 
         tokio::spawn(async move {
-            let mut rx_guard = rx_cloned.lock().await;
+            let mut session_guard = session_cloned.lock().await;
+            let rx_cons = &mut session_guard.rx_cons;
 
             loop {
                 tokio::select! {
@@ -179,11 +179,11 @@ impl ConsumerService for DanubeServerImpl {
                             "Client disconnected for consumer_id: {}, marking inactive",
                             consumer_id
                         );
-                        if let Some(consumer_info) = service_for_disconnect
+                        if let Some(consumer) = service_for_disconnect
                             .find_consumer_by_id(consumer_id)
                             .await
                         {
-                            consumer_info.set_status_false().await;
+                            consumer.set_status_inactive().await;
                             // Reset dispatcher pending state so buffered messages can fail over/redeliver
                             service_for_disconnect.trigger_dispatcher_on_reconnect(consumer_id).await;
                         }
@@ -196,7 +196,7 @@ impl ConsumerService for DanubeServerImpl {
                         break;
                     }
                     // Receive messages
-                    message = rx_guard.recv() => {
+                    message = rx_cons.recv() => {
                         match message {
                             Some(stream_message) => {
                                 if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
@@ -207,11 +207,11 @@ impl ConsumerService for DanubeServerImpl {
                                     );
 
                                     // Mark the consumer as inactive on disconnect
-                                    if let Some(consumer_info) = service_for_disconnect
+                                    if let Some(consumer) = service_for_disconnect
                                         .find_consumer_by_id(consumer_id)
                                         .await
                                     {
-                                        consumer_info.set_status_false().await;
+                                        consumer.set_status_inactive().await;
                                         // Reset dispatcher pending state so buffered messages can fail over/redeliver
                                         service_for_disconnect.trigger_dispatcher_on_reconnect(consumer_id).await;
                                     }

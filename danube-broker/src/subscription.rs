@@ -4,12 +4,11 @@ use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, Notify};
-use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
 use crate::{
-    broker_metrics::{TOPIC_ACTIVE_CONSUMERS, SUBSCRIPTION_ACTIVE_CONSUMERS},
-    consumer::Consumer,
+    broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
+    consumer::{Consumer, ConsumerSession},
     dispatch_strategy::DispatchStrategy,
     dispatcher::subscription_engine::SubscriptionEngine,
     dispatcher::{
@@ -32,47 +31,12 @@ pub(crate) struct Subscription {
     #[allow(dead_code)]
     pub(crate) topic_name: String,
     pub(crate) dispatcher: Option<Dispatcher>,
-    pub(crate) consumers: HashMap<u64, ConsumerInfo>,
+    pub(crate) consumers: HashMap<u64, Consumer>,
     // Phase 2/3: optional per-subscription dispatch limiter (messages/sec)
     pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ConsumerInfo {
-    pub(crate) consumer_id: u64,
-    pub(crate) sub_options: SubscriptionOptions,
-    pub(crate) status: Arc<Mutex<bool>>,
-    pub(crate) rx_cons: Arc<Mutex<mpsc::Receiver<StreamMessage>>>,
-    pub(crate) cancellation_token: Arc<Mutex<Option<CancellationToken>>>,
-}
-
-impl ConsumerInfo {
-    pub(crate) async fn get_status(&self) -> bool {
-        *self.status.lock().await
-    }
-    pub(crate) async fn set_status_false(&self) -> () {
-        *self.status.lock().await = false
-    }
-    pub(crate) async fn set_status_true(&self) -> () {
-        *self.status.lock().await = true
-    }
-    pub(crate) async fn cancel_existing_stream(&self) {
-        let mut token_guard = self.cancellation_token.lock().await;
-        if let Some(token) = token_guard.take() {
-            token.cancel();
-        }
-    }
-    /// Cancel any existing session token and install a fresh one, returning the new token.
-    pub(crate) async fn reset_session_token(&self) -> CancellationToken {
-        let mut token_guard = self.cancellation_token.lock().await;
-        if let Some(old) = token_guard.take() {
-            old.cancel();
-        }
-        let new_token = CancellationToken::new();
-        *token_guard = Some(new_token.clone());
-        new_token
-    }
-}
+// ConsumerInfo removed - Consumer now contains all necessary state via ConsumerSession
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SubscriptionOptions {
@@ -112,7 +76,7 @@ impl Subscription {
         let (tx_cons, rx_cons) = mpsc::channel(4);
 
         let consumer_id = get_random_id();
-        let consumer_status = Arc::new(Mutex::new(true));
+        let session = Arc::new(Mutex::new(ConsumerSession::new(rx_cons)));
         let consumer = Consumer::new(
             consumer_id,
             &options.consumer_name,
@@ -120,30 +84,23 @@ impl Subscription {
             topic_name,
             &self.subscription_name,
             tx_cons,
-            consumer_status.clone(),
+            session.clone(),
         );
 
         let dispatcher = self.dispatcher.as_mut().unwrap();
         // Add the consumer to the dispatcher
-        dispatcher.add_consumer(consumer).await?;
-
-        let consumer_info = ConsumerInfo {
-            consumer_id,
-            sub_options: options,
-            status: consumer_status,
-            rx_cons: Arc::new(Mutex::new(rx_cons)),
-            cancellation_token: Arc::new(Mutex::new(None)),
-        };
+        dispatcher.add_consumer(consumer.clone()).await?;
 
         // Insert the consumer into the subscription's consumer list
-        self.consumers.insert(consumer_id, consumer_info.clone());
+        self.consumers.insert(consumer_id, consumer);
 
         // Gauge: active consumers per subscription ++
         gauge!(
             SUBSCRIPTION_ACTIVE_CONSUMERS.name,
             "topic" => self.topic_name.to_string(),
             "subscription" => self.subscription_name.clone()
-        ).increment(1.0);
+        )
+        .increment(1.0);
 
         trace!(
             "A dispatcher {:?} has been added on subscription {}",
@@ -301,40 +258,40 @@ impl Subscription {
         Ok(())
     }
 
-    pub(crate) fn get_consumer_rx(
-        &self,
-        consumer_id: u64,
-    ) -> Option<Arc<Mutex<mpsc::Receiver<StreamMessage>>>> {
-        if let Some(consumer_info) = self.consumers.get(&consumer_id) {
-            return Some(consumer_info.rx_cons.clone());
-        }
-        None
+    pub(crate) fn get_consumer(&self, consumer_id: u64) -> Option<Consumer> {
+        self.consumers.get(&consumer_id).cloned()
     }
 
-    pub(crate) fn get_consumer_info(&self, consumer_id: u64) -> Option<ConsumerInfo> {
-        if let Some(consumer) = self.consumers.get(&consumer_id) {
-            return Some(consumer.clone());
-        }
-        None
+    /// Returns the number of consumers in this subscription.
+    /// Efficient: O(1) operation, no cloning.
+    pub(crate) fn consumer_count(&self) -> usize {
+        self.consumers.len()
     }
 
-    // Get Consumers
-    pub(crate) fn get_consumers_info(&self) -> Vec<ConsumerInfo> {
-        let consumers = self.consumers.values().cloned().collect::<Vec<_>>();
-        consumers
+    /// Returns true if there are any consumers in this subscription.
+    /// Efficient: O(1) operation, no cloning.
+    pub(crate) fn has_consumers(&self) -> bool {
+        !self.consumers.is_empty()
+    }
+
+    /// Get all consumers (clones all consumer instances).
+    /// Use sparingly - prefer consumer_count() or has_consumers() when possible.
+    pub(crate) fn get_consumers(&self) -> Vec<Consumer> {
+        self.consumers.values().cloned().collect::<Vec<_>>()
     }
 
     // handles the disconnection of consumers associated with the subscription.
     pub(crate) async fn disconnect(&mut self) -> Result<Vec<u64>> {
         let mut consumers_id = Vec::new();
 
-        for (consumer_id, consumer_info) in self.consumers.iter_mut() {
-            if consumer_info.get_status().await {
+        for (consumer_id, consumer) in self.consumers.iter() {
+            if consumer.get_status().await {
                 // if consumer exist and its status is true, then set the status to false
-                consumer_info.set_status_false().await;
+                consumer.set_status_inactive().await;
                 consumers_id.push(*consumer_id);
             }
-            gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string()).decrement(1);
+            gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string())
+                .decrement(1);
             gauge!(SUBSCRIPTION_ACTIVE_CONSUMERS.name, "topic" => self.topic_name.to_string(), "subscription" => self.subscription_name.clone()).decrement(1);
         }
 
@@ -348,15 +305,15 @@ impl Subscription {
 
     // Validate Consumer - returns consumer ID
     pub(crate) async fn validate_consumer(&self, consumer_name: &str) -> Option<u64> {
-        for consumer_info in self.consumers.values() {
-            if consumer_info.sub_options.consumer_name == consumer_name {
+        for consumer in self.consumers.values() {
+            if consumer.consumer_name == consumer_name {
                 // if consumer exist and its status is false, then the consumer has disconnected
                 // the consumer client may try to reconnect
                 // then set the status to true and use the consumer
-                if !consumer_info.get_status().await {
-                    consumer_info.set_status_true().await;
+                if !consumer.get_status().await {
+                    consumer.set_status_active().await;
                 }
-                return Some(consumer_info.consumer_id);
+                return Some(consumer.consumer_id);
             }
         }
         None

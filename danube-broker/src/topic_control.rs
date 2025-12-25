@@ -9,17 +9,12 @@ use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::resources::BASE_TOPICS_PATH;
 use crate::utils::join_path;
 use crate::{
-    broker_metrics::BROKER_TOPICS_OWNED,
-    resources::Resources,
-    schema::SchemaType,
-    subscription::{ConsumerInfo, SubscriptionOptions},
-    topic::Topic,
+    broker_metrics::BROKER_TOPICS_OWNED, consumer::Consumer, resources::Resources,
+    schema::SchemaType, subscription::SubscriptionOptions, topic::Topic,
     topic_worker::TopicWorkerPool,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_core::message::StreamMessage;
 use danube_persistent_storage::WalStorageFactory;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 /// Manages topics and their associated producers and consumers.
@@ -418,35 +413,24 @@ impl TopicManager {
         Ok(consumer_id)
     }
 
-    /// Finds consumer info by id via the consumer index and topic subscriptions.
-    pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<ConsumerInfo> {
+    /// Finds consumer by id via the consumer index and topic subscriptions.
+    pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<Consumer> {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
             if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
                 if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
                 {
-                    return subscription.get_consumer_info(consumer_id);
+                    return subscription.get_consumer(consumer_id);
                 }
             }
         }
         None
     }
 
-    /// Finds consumer info and its receiver channel by id.
-    pub(crate) async fn find_consumer_and_rx(
-        &self,
-        consumer_id: u64,
-    ) -> Option<(ConsumerInfo, Arc<Mutex<mpsc::Receiver<StreamMessage>>>)> {
-        if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
-                {
-                    let info = subscription.get_consumer_info(consumer_id)?;
-                    let rx = subscription.get_consumer_rx(consumer_id)?;
-                    return Some((info, rx));
-                }
-            }
-        }
-        None
+    /// Finds consumer by id for streaming operations.
+    /// The consumer contains session (with rx_cons) needed for message streaming.
+    /// This is an alias for find_consumer_by_id but makes the streaming use-case explicit.
+    pub(crate) async fn find_consumer_for_streaming(&self, consumer_id: u64) -> Option<Consumer> {
+        self.find_consumer_by_id(consumer_id).await
     }
 
     /// Returns true if the consumer is healthy according to its subscription state.
