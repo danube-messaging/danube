@@ -20,7 +20,7 @@ use danube_persistent_storage::WalStorage;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
-use crate::consumer::Consumer;
+use crate::consumer::{Consumer, ConsumerSession};
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedSingleDispatcher;
 use crate::message::AckMessage;
@@ -61,8 +61,10 @@ async fn reliable_single_ack_gating() {
 
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-    let status = Arc::new(Mutex::new(true));
-    let consumer = Consumer::new(42, "c1", 0, topic, "sub", tx, status);
+    let (_rx_cons_tx, rx_cons_rx) = mpsc::channel::<StreamMessage>(8);
+    let session = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc = Arc::new(Mutex::new(rx_cons_rx));
+    let consumer = Consumer::new(42, "c1", 0, topic, "sub", tx, session, rx_cons_arc);
     dispatcher
         .add_consumer(consumer)
         .await
@@ -113,11 +115,13 @@ async fn non_reliable_single_immediate_dispatch() {
 
     // Consumer wiring
     let topic = "/default/unified_single_non_reliable";
-    let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-    let status = Arc::new(Mutex::new(true));
-    let consumer = Consumer::new(43, "c1", 0, topic, "sub", tx, status);
+    let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
+    let (_rx_cons_tx2, rx_cons_rx2) = mpsc::channel::<StreamMessage>(8);
+    let session2 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc2 = Arc::new(Mutex::new(rx_cons_rx2));
+    let consumer2 = Consumer::new(43, "c2", 0, topic, "sub", tx2, session2, rx_cons_arc2);
     dispatcher
-        .add_consumer(consumer)
+        .add_consumer(consumer2)
         .await
         .expect("add consumer");
 
@@ -128,7 +132,7 @@ async fn non_reliable_single_immediate_dispatch() {
         .await
         .expect("dispatch");
 
-    let got = timeout(Duration::from_secs(2), rx.recv())
+    let got = timeout(Duration::from_secs(2), rx2.recv())
         .await
         .expect("timely recv")
         .expect("some");

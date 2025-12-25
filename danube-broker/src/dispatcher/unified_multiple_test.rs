@@ -19,10 +19,10 @@ use danube_persistent_storage::WalStorage;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
-use crate::consumer::Consumer;
-use crate::message::AckMessage;
+use crate::consumer::{Consumer, ConsumerSession};
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::UnifiedMultipleDispatcher;
+use crate::message::AckMessage;
 use crate::topic::TopicStore;
 
 fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
@@ -59,13 +59,17 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);
-    let status1 = Arc::new(Mutex::new(true));
-    let c1 = Consumer::new(1, "c1", 1, topic, "sub", tx1, status1);
+    let (_rx_cons_tx1, rx_cons_rx1) = mpsc::channel::<StreamMessage>(8);
+    let session1 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc1 = Arc::new(Mutex::new(rx_cons_rx1));
+    let c1 = Consumer::new(42, "c1", 1, topic, "sub", tx1, session1, rx_cons_arc1);
     dispatcher.add_consumer(c1).await.expect("add c1");
 
     let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
-    let status2 = Arc::new(Mutex::new(true));
-    let c2 = Consumer::new(2, "c2", 1, topic, "sub", tx2, status2);
+    let (_rx_cons_tx2, rx_cons_rx2) = mpsc::channel::<StreamMessage>(8);
+    let session2 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc2 = Arc::new(Mutex::new(rx_cons_rx2));
+    let c2 = Consumer::new(43, "c2", 1, topic, "sub", tx2, session2, rx_cons_arc2);
     dispatcher.add_consumer(c2).await.expect("add c2");
 
     // Wait for reliable dispatcher readiness (stream initialized)
@@ -88,11 +92,12 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Ack the first delivery
     let (first_consumer_id, first_msg) = first_delivered;
-    let ack = AckMessage { request_id: first_msg.request_id, msg_id: first_msg.msg_id.clone(), subscription_name: "test-sub".to_string() };
-    dispatcher
-        .ack_message(ack)
-        .await
-        .expect("ack first");
+    let ack = AckMessage {
+        request_id: first_msg.request_id,
+        msg_id: first_msg.msg_id.clone(),
+        subscription_name: "test-sub".to_string(),
+    };
+    dispatcher.ack_message(ack).await.expect("ack first");
 
     // Append second message and notify -> expect other consumer to receive next (round-robin)
     ts.store_message(make_msg(501, 1, topic)).await.unwrap();
@@ -127,14 +132,36 @@ async fn non_reliable_multiple_round_robin() {
     let topic = "/default/unified_multiple_non_reliable";
 
     // Two consumers capture messages
-    let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);
-    let status1 = Arc::new(Mutex::new(true));
-    let c1 = Consumer::new(11, "c1", 1, topic, "sub", tx1, status1);
+    let (tx_c1, mut rx_c1) = mpsc::channel::<StreamMessage>(16);
+    let (_rx_cons_tx_c1, rx_cons_rx_c1) = mpsc::channel::<StreamMessage>(8);
+    let session_c1 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc_c1 = Arc::new(Mutex::new(rx_cons_rx_c1));
+    let c1 = Consumer::new(
+        101,
+        "c1",
+        1,
+        topic,
+        "sub",
+        tx_c1,
+        session_c1,
+        rx_cons_arc_c1,
+    );
     dispatcher.add_consumer(c1).await.expect("add c1");
 
-    let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
-    let status2 = Arc::new(Mutex::new(true));
-    let c2 = Consumer::new(12, "c2", 1, topic, "sub", tx2, status2);
+    let (tx_c2, mut rx_c2) = mpsc::channel::<StreamMessage>(16);
+    let (_rx_cons_tx_c2, rx_cons_rx_c2) = mpsc::channel::<StreamMessage>(8);
+    let session_c2 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc_c2 = Arc::new(Mutex::new(rx_cons_rx_c2));
+    let c2 = Consumer::new(
+        102,
+        "c2",
+        1,
+        topic,
+        "sub",
+        tx_c2,
+        session_c2,
+        rx_cons_arc_c2,
+    );
     dispatcher.add_consumer(c2).await.expect("add c2");
 
     // Dispatch 4 messages -> expect alternating delivery
@@ -150,8 +177,8 @@ async fn non_reliable_multiple_round_robin() {
     for _ in 0..4 {
         let m = timeout(Duration::from_secs(2), async {
             tokio::select! {
-                Some(m) = rx1.recv() => Ok::<(u64, StreamMessage), ()>((1, m)),
-                Some(m) = rx2.recv() => Ok::<(u64, StreamMessage), ()>((2, m)),
+                Some(m) = rx_c1.recv() => Ok::<(u64, StreamMessage), ()>((1, m)),
+                Some(m) = rx_c2.recv() => Ok::<(u64, StreamMessage), ()>((2, m)),
             }
         })
         .await

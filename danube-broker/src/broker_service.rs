@@ -1,22 +1,23 @@
+use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
 use danube_persistent_storage::WalStorageFactory;
+use metrics::counter;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tonic::{Code, Status};
 use tracing::info;
-use metrics::counter;
-use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 
 use danube_core::proto::{
     DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
 };
 
 use crate::{
+    consumer::Consumer,
     error_message::create_error_status,
     message::AckMessage,
     resources::Resources,
-    subscription::{ConsumerInfo, SubscriptionOptions},
+    subscription::SubscriptionOptions,
     topic_cluster::TopicCluster,
     topic_control::{ConsumerRegistry, ProducerRegistry, TopicManager},
     topic_worker::TopicWorkerPool,
@@ -142,7 +143,8 @@ impl BrokerService {
                 CLIENT_REDIRECTS_TOTAL.name,
                 "reason" => "not_local",
                 "topic_ns" => ns
-            ).increment(1);
+            )
+            .increment(1);
             return Err(create_error_status(
                 Code::Unavailable,
                 ErrorType::ServiceNotReady,
@@ -173,14 +175,15 @@ impl BrokerService {
                     CLIENT_REDIRECTS_TOTAL.name,
                     "reason" => "post_create",
                     "topic_ns" => ns
-                ).increment(1);
+                )
+                .increment(1);
                 Err(create_error_status(
                 Code::Unavailable,
                 ErrorType::ServiceNotReady,
                 "The topic metadata was created, need to redo the lookup to find the correct broker",
                 None,
                 ))
-            },
+            }
             Err(err) => Err(err),
         }
     }
@@ -323,18 +326,17 @@ impl BrokerService {
     // Consumer operations (delegated to TopicManager)
     // =====================================================================
 
-    /// Returns consumer info for `consumer_id` if present.
-    pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<ConsumerInfo> {
+    /// Returns consumer for `consumer_id` if present.
+    pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<Consumer> {
         self.topic_manager.find_consumer_by_id(consumer_id).await
     }
 
-    /// Combined accessor: returns both ConsumerInfo and its receiver for the given consumer_id.
-    /// Returns consumer info and its receiver for `consumer_id` if present.
-    pub(crate) async fn find_consumer_and_rx(
-        &self,
-        consumer_id: u64,
-    ) -> Option<(ConsumerInfo, Arc<Mutex<mpsc::Receiver<StreamMessage>>>)> {
-        self.topic_manager.find_consumer_and_rx(consumer_id).await
+    /// Finds consumer for streaming operations.
+    /// Returns consumer which contains session (with rx_cons) for `consumer_id` if present.
+    pub(crate) async fn find_consumer_for_streaming(&self, consumer_id: u64) -> Option<Consumer> {
+        self.topic_manager
+            .find_consumer_for_streaming(consumer_id)
+            .await
     }
 
     /// Returns true if the consumer with `consumer_id` is currently healthy.
@@ -362,10 +364,7 @@ impl BrokerService {
     }
 
     /// Validates whether policies allow creating a new subscription for `topic_name`.
-    pub(crate) async fn allow_subscription_creation(
-        &self,
-        topic_name: impl Into<String>,
-    ) -> bool {
+    pub(crate) async fn allow_subscription_creation(&self, topic_name: impl Into<String>) -> bool {
         let topic_name = topic_name.into();
         if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
             let limit = topic

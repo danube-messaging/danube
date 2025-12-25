@@ -143,7 +143,11 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
         .expect("timeout receiving churn shared messages");
 
     // All messages seen exactly once overall
-    assert_eq!(seen.len(), total, "should see all unique messages exactly once");
+    assert_eq!(
+        seen.len(),
+        total,
+        "should see all unique messages exactly once"
+    );
 
     // Distribution across at least 2 consumers before join and 3 after join; soft check: everyone received something
     for cname in ["cs-cons-0", "cs-cons-1", "cs-cons-2"] {
@@ -271,7 +275,9 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
                 let c0 = per_consumer.get("ce-cons-0").map(|s| s.len()).unwrap_or(0);
                 let c1 = per_consumer.get("ce-cons-1").map(|s| s.len()).unwrap_or(0);
                 let c2 = per_consumer.get("ce-cons-2").map(|s| s.len()).unwrap_or(0);
-                if c0 == total && c1 == total && c2 > 0 { break; }
+                if c0 == total && c1 == total && c2 > 0 {
+                    break;
+                }
             } else {
                 break;
             }
@@ -289,7 +295,10 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
     let got2 = per_consumer.get("ce-cons-2").cloned().unwrap_or_default();
     assert_eq!(got0.len(), total, "ce-cons-0 should receive all messages");
     assert_eq!(got1.len(), total, "ce-cons-1 should receive all messages");
-    assert!(got2.len() > 0, "ce-cons-2 should receive some messages after joining");
+    assert!(
+        got2.len() > 0,
+        "ce-cons-2 should receive some messages after joining"
+    );
 
     Ok(())
 }

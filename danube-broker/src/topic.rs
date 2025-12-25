@@ -5,7 +5,7 @@ use danube_core::{
     storage::{PersistentStorage, StartPosition, TopicStream},
 };
 use danube_persistent_storage::WalStorage;
-use metrics::{counter, histogram, gauge};
+use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
@@ -13,12 +13,15 @@ use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
-    broker_metrics::{TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL, TOPIC_MESSAGE_SIZE_BYTES, TOPIC_ACTIVE_SUBSCRIPTIONS},
+    broker_metrics::{
+        TOPIC_ACTIVE_SUBSCRIPTIONS, TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL,
+        TOPIC_MESSAGE_SIZE_BYTES,
+    },
     dispatch_strategy::DispatchStrategy,
     message::AckMessage,
-    rate_limiter::RateLimiter,
     policies::Policies,
     producer::Producer,
+    rate_limiter::RateLimiter,
     resources::TopicResources,
     schema::Schema,
     subscription::{Subscription, SubscriptionOptions},
@@ -156,9 +159,10 @@ impl Topic {
         // Decrement subscriptions gauge for all existing
         let subs_len = subs_guard.len();
         if subs_len > 0 {
-            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).decrement(subs_len as f64);
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
+                .decrement(subs_len as f64);
         }
-        
+
         Ok((disconnected_producers, disconnected_consumers))
     }
 
@@ -177,14 +181,18 @@ impl Topic {
         // Phase 3: publish rate limiting (if configured)
         if let Some(lim) = &self.publish_rate_limiter {
             if !lim.try_acquire(1).await {
-                warn!("Publish rate limit exceeded for topic {} (warn-only)", self.topic_name);
+                warn!(
+                    "Publish rate limit exceeded for topic {} (warn-only)",
+                    self.topic_name
+                );
             }
         }
         // Record message size distribution early (bytes)
         histogram!(
             TOPIC_MESSAGE_SIZE_BYTES.name,
             "topic" => self.topic_name.clone()
-        ).record(stream_message.payload.len() as f64);
+        )
+        .record(stream_message.payload.len() as f64);
 
         // Policy: max_message_size
         self.validate_message_size(stream_message.payload.len())?;
@@ -205,11 +213,13 @@ impl Topic {
         counter!(
             TOPIC_MESSAGES_IN_TOTAL.name,
             "topic"=> self.topic_name.clone()
-        ).increment(1);
+        )
+        .increment(1);
         counter!(
             TOPIC_BYTES_IN_TOTAL.name,
             "topic"=> self.topic_name.clone()
-        ).increment(stream_message.payload.len() as u64);
+        )
+        .increment(stream_message.payload.len() as u64);
 
         // Process message based on dispatch strategy
         match &self.dispatch_strategy {
@@ -368,7 +378,8 @@ impl Topic {
             let mut subs = self.subscriptions.lock().await;
             subs.insert(options.subscription_name.clone(), new_subscription);
             // Gauge: topic active subscriptions ++
-            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).increment(1.0);
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
+                .increment(1.0);
         }
 
         // Policy: consumer limits (per-subscription and per-topic)
@@ -381,7 +392,7 @@ impl Topic {
             .get_mut(&options.subscription_name)
             .expect("subscription must exist at this point");
 
-        if subscription.is_exclusive() && !subscription.get_consumers_info().is_empty() {
+        if subscription.is_exclusive() && subscription.has_consumers() {
             warn!("Not allowed to add the Consumer: {}, the Exclusive subscription can't be shared with other consumers", options.consumer_name);
             return Err(anyhow!("Not allowed to add the Consumer: {}, the Exclusive subscription can't be shared with other consumers", options.consumer_name));
         }
@@ -396,7 +407,8 @@ impl Topic {
     pub(crate) async fn unsubscribe(&self, subscription_name: &str) {
         let removed = self.subscriptions.lock().await.remove(subscription_name);
         if removed.is_some() {
-            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).decrement(1.0);
+            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
+                .decrement(1.0);
         }
     }
 
@@ -424,7 +436,7 @@ impl Topic {
         let sub_guard = self.subscriptions.lock().await;
         let subs = sub_guard.get(subscription)?;
 
-        let consumers = subs.get_consumers_info();
+        let consumers = subs.get_consumers();
 
         for consumer_info in consumers {
             if consumer_info.get_status().await {
@@ -485,7 +497,7 @@ impl Topic {
         let subscriptions = self.subscriptions.lock().await;
         let mut total = 0usize;
         for (_name, sub) in subscriptions.iter() {
-            total += sub.get_consumers_info().len();
+            total += sub.consumer_count();
         }
         total
     }
@@ -504,7 +516,9 @@ impl Topic {
         if current >= limit {
             return Err(anyhow!(
                 "Producer limit reached for topic {}. Current: {}, Limit: {}",
-                self.topic_name, current, limit
+                self.topic_name,
+                current,
+                limit
             ));
         }
         Ok(())
@@ -523,7 +537,9 @@ impl Topic {
         if current >= limit {
             return Err(anyhow!(
                 "Subscription limit reached for topic {}. Current: {}, Limit: {}",
-                self.topic_name, current, limit
+                self.topic_name,
+                current,
+                limit
             ));
         }
         Ok(())
@@ -539,7 +555,7 @@ impl Topic {
         if per_sub_limit > 0 {
             let subscriptions = self.subscriptions.lock().await;
             if let Some(sub) = subscriptions.get(sub_name) {
-                let current = sub.get_consumers_info().len() as u32;
+                let current = sub.consumer_count() as u32;
                 if current >= per_sub_limit {
                     return Err(anyhow!(
                         "Consumer limit per subscription reached on topic {} subscription {}. Current: {}, Limit: {}",
@@ -558,7 +574,9 @@ impl Topic {
             if current_total >= topic_limit {
                 return Err(anyhow!(
                     "Consumer limit per topic reached for {}. Current: {}, Limit: {}",
-                    self.topic_name, current_total, topic_limit
+                    self.topic_name,
+                    current_total,
+                    topic_limit
                 ));
             }
         }
@@ -577,7 +595,9 @@ impl Topic {
         if (size as u32) > max {
             return Err(anyhow!(
                 "Message size {} exceeds maximum allowed {} for topic {}",
-                size, max, self.topic_name
+                size,
+                max,
+                self.topic_name
             ));
         }
         Ok(())
