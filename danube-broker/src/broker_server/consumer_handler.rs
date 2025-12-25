@@ -161,15 +161,14 @@ impl ConsumerService for DanubeServerImpl {
 
         // Note: takeover is handled during subscribe(); here we only attach a new stream
 
-        let session_cloned = Arc::clone(&consumer.session);
+        let rx_cons_cloned = Arc::clone(&consumer.rx_cons);
         let service_for_disconnect = self.service.clone();
 
         // Takeover: cancel old session and get new cancellation token
         let token_for_task = consumer.session.lock().await.takeover();
 
         tokio::spawn(async move {
-            let mut session_guard = session_cloned.lock().await;
-            let rx_cons = &mut session_guard.rx_cons;
+            let mut rx_guard = rx_cons_cloned.lock().await;
 
             loop {
                 tokio::select! {
@@ -196,7 +195,7 @@ impl ConsumerService for DanubeServerImpl {
                         break;
                     }
                     // Receive messages
-                    message = rx_cons.recv() => {
+                    message = rx_guard.recv() => {
                         match message {
                             Some(stream_message) => {
                                 if grpc_tx.send(Ok(stream_message.into())).await.is_err() {

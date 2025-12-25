@@ -76,7 +76,8 @@ impl Subscription {
         let (tx_cons, rx_cons) = mpsc::channel(4);
 
         let consumer_id = get_random_id();
-        let session = Arc::new(Mutex::new(ConsumerSession::new(rx_cons)));
+        let session = Arc::new(Mutex::new(ConsumerSession::new()));
+        let rx_cons_arc = Arc::new(Mutex::new(rx_cons));
         let consumer = Consumer::new(
             consumer_id,
             &options.consumer_name,
@@ -85,6 +86,7 @@ impl Subscription {
             &self.subscription_name,
             tx_cons,
             session.clone(),
+            rx_cons_arc.clone(),
         );
 
         let dispatcher = self.dispatcher.as_mut().unwrap();

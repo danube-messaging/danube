@@ -62,8 +62,9 @@ async fn reliable_single_ack_gating() {
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
     let (_rx_cons_tx, rx_cons_rx) = mpsc::channel::<StreamMessage>(8);
-    let session = Arc::new(Mutex::new(ConsumerSession::new(rx_cons_rx)));
-    let consumer = Consumer::new(42, "c1", 0, topic, "sub", tx, session);
+    let session = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc = Arc::new(Mutex::new(rx_cons_rx));
+    let consumer = Consumer::new(42, "c1", 0, topic, "sub", tx, session, rx_cons_arc);
     dispatcher
         .add_consumer(consumer)
         .await
@@ -116,8 +117,9 @@ async fn non_reliable_single_immediate_dispatch() {
     let topic = "/default/unified_single_non_reliable";
     let (tx2, mut rx2) = mpsc::channel::<StreamMessage>(8);
     let (_rx_cons_tx2, rx_cons_rx2) = mpsc::channel::<StreamMessage>(8);
-    let session2 = Arc::new(Mutex::new(ConsumerSession::new(rx_cons_rx2)));
-    let consumer2 = Consumer::new(43, "c2", 0, topic, "sub", tx2, session2);
+    let session2 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc2 = Arc::new(Mutex::new(rx_cons_rx2));
+    let consumer2 = Consumer::new(43, "c2", 0, topic, "sub", tx2, session2, rx_cons_arc2);
     dispatcher
         .add_consumer(consumer2)
         .await
