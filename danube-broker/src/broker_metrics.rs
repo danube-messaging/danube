@@ -6,7 +6,7 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 8] = [
+pub(crate) const COUNTERS: [Metric; 10] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
@@ -15,14 +15,17 @@ pub(crate) const COUNTERS: [Metric; 8] = [
     BROKER_RPC_TOTAL,
     CLIENT_REDIRECTS_TOTAL,
     PRODUCER_SEND_TOTAL,
+    DISPATCHER_HEARTBEAT_POLLS_TOTAL,
+    DISPATCHER_NOTIFIER_POLLS_TOTAL,
 ];
-pub(crate) const GAUGES: [Metric; 6] = [
+pub(crate) const GAUGES: [Metric; 7] = [
     BROKER_TOPICS_OWNED,
     TOPIC_ACTIVE_PRODUCERS,
     TOPIC_ACTIVE_CONSUMERS,
     LEADER_ELECTION_STATE,
     TOPIC_ACTIVE_SUBSCRIPTIONS,
     SUBSCRIPTION_ACTIVE_CONSUMERS,
+    SUBSCRIPTION_LAG_MESSAGES,
 ];
 pub(crate) const HISTOGRAMS: [Metric; 2] = [PRODUCER_SEND_LATENCY_MS, TOPIC_MESSAGE_SIZE_BYTES];
 
@@ -61,6 +64,24 @@ pub(crate) const TOPIC_ACTIVE_SUBSCRIPTIONS: Metric = Metric {
 pub(crate) const SUBSCRIPTION_ACTIVE_CONSUMERS: Metric = Metric {
     name: "danube_subscription_active_consumers",
     description: "Total number of active consumers per subscription",
+};
+
+pub(crate) const SUBSCRIPTION_LAG_MESSAGES: Metric = Metric {
+    name: "danube_subscription_lag_messages",
+    description: "Number of messages the subscription is behind the topic WAL head",
+};
+
+// DISPATCHER Metrics --------------------------
+
+pub(crate) const DISPATCHER_HEARTBEAT_POLLS_TOTAL: Metric = Metric {
+    name: "danube_dispatcher_heartbeat_polls_total",
+    description:
+        "Total number of polls triggered by the heartbeat watchdog (indicates missed notifications)",
+};
+
+pub(crate) const DISPATCHER_NOTIFIER_POLLS_TOTAL: Metric = Metric {
+    name: "danube_dispatcher_notifier_polls_total",
+    description: "Total number of polls triggered by notifier (normal fast path)",
 };
 
 // TOPIC Metrics --------------------------

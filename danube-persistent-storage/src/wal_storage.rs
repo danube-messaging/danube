@@ -1,14 +1,11 @@
+use crate::persistent_metrics::{
+    CLOUD_HANDOFF_TO_WAL_TOTAL, WAL_APPEND_BYTES_TOTAL, WAL_APPEND_TOTAL, WAL_READER_CREATE_TOTAL,
+};
 use async_trait::async_trait;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
-use tokio_stream::StreamExt;
 use metrics::counter;
-use crate::persistent_metrics::{
-    WAL_APPEND_TOTAL,
-    WAL_APPEND_BYTES_TOTAL,
-    WAL_READER_CREATE_TOTAL,
-    CLOUD_HANDOFF_TO_WAL_TOTAL,
-};
+use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use crate::cloud::{CloudReader, CloudStore};
@@ -45,6 +42,15 @@ impl WalStorage {
         self
     }
 
+    /// Returns the current committed offset (head of the log).
+    /// This is the offset that will be assigned to the NEXT message.
+    ///
+    /// This method is extremely lightweight (atomic load, no locking) and can be called
+    /// frequently for lag detection without performance concerns.
+    pub fn current_offset(&self) -> u64 {
+        self.wal.current_offset()
+    }
+
     /// Convenience: append a message directly to the underlying WAL.
     ///
     /// Note: Integration tests use `storage.append(&msg)`; this helper forwards to `Wal::append`.
@@ -67,7 +73,8 @@ impl PersistentStorage for WalStorage {
         let res = self.wal.append(&msg).await;
         if let Ok(_off) = res {
             counter!(WAL_APPEND_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
-            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string()).increment(payload_len);
+            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string())
+                .increment(payload_len);
         }
         res
     }
@@ -154,7 +161,8 @@ impl PersistentStorage for WalStorage {
             // Chain them together to provide a single, seamless stream to the consumer.
             let chained = cloud_stream.chain(wal_stream);
             counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
-            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
+            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string())
+                .increment(1);
             Ok(Box::pin(chained))
         }
     }

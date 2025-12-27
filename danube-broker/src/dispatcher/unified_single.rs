@@ -1,9 +1,14 @@
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
+use metrics::{counter, gauge};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
+use tokio::time::Duration;
 use tracing::{trace, warn};
 
+use crate::broker_metrics::{
+    DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL, SUBSCRIPTION_LAG_MESSAGES,
+};
 use crate::consumer::Consumer;
 use crate::message::AckMessage;
 
@@ -32,7 +37,7 @@ enum DispatcherCommand {
     MessageAcked(AckMessage),
     // Reliable-only
     PollAndDispatch,
-    ResetPending, // Clear pending flag to allow retry after reconnection
+    ResetPending,     // Clear pending flag to allow retry after reconnection
     FlushProgressNow, // Force flush subscription progress (reliable only)
 }
 
@@ -140,6 +145,14 @@ impl UnifiedSingleDispatcher {
                 // Signal readiness regardless of success; dispatcher can still operate and retry.
                 let _ = ready_tx.send(true);
             }
+
+            // Heartbeat for lag detection (watchdog for reliability)
+            // Default: 500ms for balance between latency and CPU
+            let heartbeat_interval = Duration::from_millis(500);
+            let mut heartbeat = tokio::time::interval(heartbeat_interval);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip first immediate tick
+            heartbeat.tick().await;
 
             loop {
                 tokio::select! {
@@ -266,6 +279,43 @@ impl UnifiedSingleDispatcher {
                             }
                         }
                     }
+
+                    // Heartbeat tick (watchdog for reliability)
+                    _ = heartbeat.tick() => {
+                        // Only check lag if:
+                        // 1. We have an active consumer (someone to send to)
+                        // 2. We are not currently pending an ack (already dispatching)
+                        if active_consumer.is_some() && !pending {
+                            let lag_info = {
+                                let engine_guard = engine.lock().await;
+                                engine_guard.get_lag_info()
+                            };
+
+                            // Report lag as gauge (for monitoring)
+                            gauge!(
+                                SUBSCRIPTION_LAG_MESSAGES.name,
+                                "subscription" => engine.lock().await._subscription_name.clone()
+                            ).set(lag_info.lag_messages as f64);
+
+                            if lag_info.has_lag {
+                                // Count polls triggered by heartbeat (safety net)
+                                counter!(
+                                    DISPATCHER_HEARTBEAT_POLLS_TOTAL.name,
+                                    "subscription" => engine.lock().await._subscription_name.clone()
+                                ).increment(1);
+
+                                trace!(
+                                    lag_messages = lag_info.lag_messages,
+                                    cursor = ?lag_info.subscription_cursor,
+                                    wal_head = lag_info.wal_head,
+                                    "Heartbeat detected lag, triggering poll"
+                                );
+
+                                // Trigger poll (self-healing)
+                                let _ = reliable_tx_for_task.send(DispatcherCommand::PollAndDispatch).await;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -285,6 +335,8 @@ impl UnifiedSingleDispatcher {
         tokio::spawn(async move {
             loop {
                 n.notified().await;
+                // Count polls triggered by notifier (fast path)
+                counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
                 let _ = tx.send(DispatcherCommand::PollAndDispatch).await;
             }
         });
