@@ -175,6 +175,68 @@ impl SubscriptionEngine {
         }
         Ok(())
     }
+
+    /// Checks if this subscription is lagging behind the topic's WAL.
+    /// Returns true if there are messages waiting to be dispatched.
+    ///
+    /// This is the core of the lag detection mechanism for reliable delivery.
+    /// It compares the subscription's cursor (last_acked) against the WAL head
+    /// to determine if messages are waiting.
+    pub(crate) fn has_lag(&self) -> bool {
+        let wal_head = self.topic_store.get_last_committed_offset();
+
+        // If WAL is empty (head = 0), no lag
+        if wal_head == 0 {
+            return false;
+        }
+
+        // Compare our cursor against WAL head
+        match self.last_acked {
+            Some(cursor) => {
+                // We are caught up if: cursor == wal_head - 1
+                // (because head is the NEXT offset to be written)
+                // We have lag if: cursor < wal_head - 1
+                cursor < wal_head.saturating_sub(1)
+            }
+            None => {
+                // No acks yet - we might be at startup
+                // Check if stream was initialized and if there are messages
+                self.stream.is_some() && wal_head > 0
+            }
+        }
+    }
+
+    /// Returns diagnostic info about subscription position.
+    /// Useful for metrics, logging, and debugging.
+    pub(crate) fn get_lag_info(&self) -> LagInfo {
+        let wal_head = self.topic_store.get_last_committed_offset();
+        let cursor = self.last_acked;
+
+        let lag = match cursor {
+            Some(c) if wal_head > 0 => wal_head.saturating_sub(1).saturating_sub(c),
+            _ => 0,
+        };
+
+        LagInfo {
+            subscription_cursor: cursor,
+            wal_head,
+            lag_messages: lag,
+            has_lag: self.has_lag(),
+        }
+    }
+}
+
+/// Diagnostic information about subscription lag.
+#[derive(Debug, Clone)]
+pub(crate) struct LagInfo {
+    /// The subscription's current cursor (last acked offset)
+    pub(crate) subscription_cursor: Option<u64>,
+    /// The WAL's current head (next offset to be written)
+    pub(crate) wal_head: u64,
+    /// Number of messages the subscription is behind
+    pub(crate) lag_messages: u64,
+    /// Whether the subscription currently has lag
+    pub(crate) has_lag: bool,
 }
 
 #[cfg(test)]
@@ -255,3 +317,8 @@ mod tests {
         assert_eq!(got, Some(5));
     }
 }
+
+// Lag detection tests are in a separate file for better organization
+#[cfg(test)]
+#[path = "subscription_engine_test.rs"]
+mod lag_tests;
