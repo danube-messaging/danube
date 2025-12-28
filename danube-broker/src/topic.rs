@@ -17,7 +17,7 @@ use crate::{
         TOPIC_ACTIVE_SUBSCRIPTIONS, TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL,
         TOPIC_MESSAGE_SIZE_BYTES,
     },
-    dispatch_strategy::DispatchStrategy,
+    dispatcher::DispatchStrategy,
     message::AckMessage,
     policies::Policies,
     producer::Producer,

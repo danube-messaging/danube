@@ -9,12 +9,9 @@ use tracing::{trace, warn};
 use crate::{
     broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
     consumer::{Consumer, ConsumerSession},
-    dispatch_strategy::DispatchStrategy,
     dispatcher::subscription_engine::SubscriptionEngine,
-    dispatcher::{
-        unified_multiple::UnifiedMultipleDispatcher, unified_single::UnifiedSingleDispatcher,
-        Dispatcher,
-    },
+    dispatcher::DispatchStrategy,
+    dispatcher::{exclusive::ExclusiveDispatcher, shared::SharedDispatcher, Dispatcher},
     message::AckMessage,
     rate_limiter::RateLimiter,
     resources::TopicResources,
@@ -125,21 +122,19 @@ impl Subscription {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
                 0 => (
-                    Dispatcher::UnifiedOneConsumer(UnifiedSingleDispatcher::new_non_reliable()),
+                    Dispatcher::Exclusive(ExclusiveDispatcher::new_non_reliable()),
                     None,
                 ),
 
                 // Shared
                 1 => (
-                    Dispatcher::UnifiedMultipleConsumers(
-                        UnifiedMultipleDispatcher::new_non_reliable(),
-                    ),
+                    Dispatcher::Shared(SharedDispatcher::new_non_reliable()),
                     None,
                 ),
 
                 // Failover
                 2 => (
-                    Dispatcher::UnifiedOneConsumer(UnifiedSingleDispatcher::new_non_reliable()),
+                    Dispatcher::Exclusive(ExclusiveDispatcher::new_non_reliable()),
                     None,
                 ),
 
@@ -165,14 +160,11 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
+                        let new_dispatcher = ExclusiveDispatcher::new_reliable(engine);
                         // Ensure reliable dispatcher is initialized before exposing notifier
                         new_dispatcher.ready().await;
                         let notifier = new_dispatcher.get_notifier();
-                        (
-                            Dispatcher::UnifiedOneConsumer(new_dispatcher),
-                            Some(notifier),
-                        )
+                        (Dispatcher::Exclusive(new_dispatcher), Some(notifier))
                     }
 
                     // Shared
@@ -188,14 +180,11 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
+                        let new_dispatcher = SharedDispatcher::new_reliable(engine);
                         // Ensure reliable dispatcher is initialized before exposing notifier
                         new_dispatcher.ready().await;
                         let notifier = new_dispatcher.get_notifier();
-                        (
-                            Dispatcher::UnifiedMultipleConsumers(new_dispatcher),
-                            Some(notifier),
-                        )
+                        (Dispatcher::Shared(new_dispatcher), Some(notifier))
                     }
 
                     // Failover (treat as single active consumer)
@@ -211,12 +200,9 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = UnifiedSingleDispatcher::new_reliable(engine);
+                        let new_dispatcher = ExclusiveDispatcher::new_reliable(engine);
                         let notifier = new_dispatcher.get_notifier();
-                        (
-                            Dispatcher::UnifiedOneConsumer(new_dispatcher),
-                            Some(notifier),
-                        )
+                        (Dispatcher::Exclusive(new_dispatcher), Some(notifier))
                     }
 
                     _ => {
