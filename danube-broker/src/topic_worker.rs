@@ -9,9 +9,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::{
-    dispatch_strategy::DispatchStrategy,
-    message::AckMessage,
-    subscription::SubscriptionOptions,
+    dispatcher::DispatchStrategy, message::AckMessage, subscription::SubscriptionOptions,
     topic::Topic,
 };
 use danube_core::proto::DispatchStrategy as ProtoDispatchStrategy;
@@ -77,7 +75,6 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send publish response: {}", e);
                         }
-                        
                     }
                     Ok(TopicWorkerMessage::Subscribe {
                         topic_name,
@@ -89,7 +86,6 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send subscribe response: {}", e);
                         }
-                        
                     }
                     Ok(TopicWorkerMessage::AckMessage {
                         ack_msg,
@@ -99,7 +95,6 @@ impl TopicWorker {
                         if let Err(e) = response_tx.send_async(result).await {
                             error!("Failed to send ack response: {}", e);
                         }
-                        
                     }
                     Ok(TopicWorkerMessage::Shutdown) => {
                         info!("Topic worker {} shutting down", worker_id);
@@ -163,8 +158,6 @@ impl TopicWorker {
             ))
         }
     }
-
-    
 
     pub fn add_topic(&self, topic_name: String, topic: Arc<Topic>) {
         info!("Worker {} adding topic: {}", self.worker_id, topic_name);

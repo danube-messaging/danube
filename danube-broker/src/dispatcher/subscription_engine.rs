@@ -10,25 +10,110 @@ use crate::rate_limiter::RateLimiter;
 use crate::resources::TopicResources;
 use crate::topic::TopicStore;
 
-/// SubscriptionEngine encapsulates reliable delivery mechanics for a subscription:
-/// - Polling from TopicStore-backed TopicStream (WAL tail + CloudReader handoff)
-/// - Durable progress tracking via TopicResources (optional)
+/// # SubscriptionEngine
+///
+/// Core component for **reliable message delivery** in durable subscriptions.
+///
+/// ## Overview
+///
+/// The SubscriptionEngine manages the stateful mechanics of at-least-once delivery:
+/// - **Stream Management**: Polls messages from TopicStore-backed TopicStream (WAL → Cloud Storage)
+/// - **Progress Tracking**: Persists subscription cursor (last acked offset) to metadata store
+/// - **Lag Detection**: Monitors subscription position relative to WAL head
+/// - **Rate Limiting**: Optional throttling of message dispatch for flow control
+///
+/// ## Architecture
+///
+/// ```text
+/// Topic WAL → TopicStream → SubscriptionEngine → Reliable Dispatcher → Consumer
+///                              ↓ ack tracking
+///                         TopicResources (metadata)
+/// ```
+///
+/// ## Responsibility Boundary
+///
+/// - **SubscriptionEngine**: Stream polling, progress persistence, lag detection
+/// - **Reliable Dispatcher**: Ack-gating, pending message buffer, consumer management
+/// - **TopicStore**: WAL access, stream creation
+/// - **TopicResources**: Metadata persistence (subscription cursor storage)
+///
+/// ## Usage Pattern
+///
+/// ```rust,ignore
+/// // 1. Create engine (reliable dispatcher owns this)
+/// let engine = SubscriptionEngine::new_with_progress(
+///     "my-subscription".to_string(),
+///     "/my/topic".to_string(),
+///     topic_store,
+///     topic_resources,
+///     Duration::from_secs(5), // flush interval
+///     Some(rate_limiter),
+/// );
+///
+/// // 2. Initialize stream (typically from persisted progress)
+/// engine.init_stream_from_progress_or_latest().await?;
+///
+/// // 3. Poll messages (dispatcher loop)
+/// if let Some(msg) = engine.poll_next().await? {
+///     // dispatch to consumer...
+/// }
+///
+/// // 4. Track acknowledgments
+/// engine.on_acked(msg_id).await?;
+///
+/// // 5. Check lag (heartbeat)
+/// if engine.has_lag() {
+///     // trigger dispatch...
+/// }
+/// ```
 pub(crate) struct SubscriptionEngine {
+    /// Subscription name (for metadata lookups)
     pub(crate) _subscription_name: String,
+
+    /// Topic name (required for progress persistence)
     pub(crate) topic_name: Option<String>,
+
+    /// Reference to the topic's storage (WAL-backed)
     pub(crate) topic_store: Arc<TopicStore>,
+
+    /// Active stream for reading messages from the topic
+    /// Created via `init_stream_*` methods
     pub(crate) stream: Option<TopicStream>,
-    // progress persistence (optional)
+
+    /// Metadata store for persisting subscription progress (cursor)
+    /// Used by durable subscriptions to survive broker restarts
     pub(crate) progress_resources: Option<tokio::sync::Mutex<TopicResources>>,
+
+    /// Last acknowledged offset (consumer confirmed delivery)
+    /// This is the subscription's "cursor" - used for lag detection and persistence
     pub(crate) last_acked: Option<u64>,
+
+    /// Dirty flag indicating cursor needs to be flushed to metadata
+    /// Set on ack, cleared after successful flush
     pub(crate) dirty: bool,
+
+    /// Timestamp of last progress flush to metadata
+    /// Used for debounced persistence (avoids metadata write on every ack)
     pub(crate) last_flush_at: Instant,
+
+    /// Interval for debounced progress flushes (default: 5 seconds)
+    /// Balances durability (frequent flushes) vs metadata load (infrequent flushes)
     pub(crate) sub_progress_flush_interval: Duration,
-    // Phase 3: optional per-subscription dispatch limiter (messages/sec)
+
+    /// Optional rate limiter for throttling message dispatch
+    /// Used for flow control to prevent overwhelming consumers
     pub(crate) dispatch_rate_limiter: Option<std::sync::Arc<RateLimiter>>,
 }
 
 impl SubscriptionEngine {
+    /// Create a basic SubscriptionEngine without progress tracking.
+    ///
+    /// Used primarily for testing. Production code should use `new_with_progress()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `subscription_name` - Name of the subscription
+    /// * `topic_store` - Reference to the topic's storage (WAL-backed)
     pub(crate) fn new(subscription_name: String, topic_store: Arc<TopicStore>) -> Self {
         Self {
             _subscription_name: subscription_name,
@@ -44,6 +129,31 @@ impl SubscriptionEngine {
         }
     }
 
+    /// Create a SubscriptionEngine with progress tracking and optional rate limiting.
+    ///
+    /// This is the standard constructor for durable subscriptions.
+    ///
+    /// # Arguments
+    ///
+    /// * `subscription_name` - Name of the subscription (for metadata lookups)
+    /// * `topic_name` - Name of the topic
+    /// * `topic_store` - Reference to the topic's storage
+    /// * `progress_resources` - Metadata store for persisting cursor
+    /// * `sub_progress_flush_interval` - Debounce interval for cursor persistence (typically 5s)
+    /// * `limiter` - Optional rate limiter for throttling dispatch
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let engine = SubscriptionEngine::new_with_progress(
+    ///     "my-sub".to_string(),
+    ///     "/my/topic".to_string(),
+    ///     topic_store,
+    ///     topic_resources,
+    ///     Duration::from_secs(5),
+    ///     None,
+    /// );
+    /// ```
     pub(crate) fn new_with_progress(
         subscription_name: String,
         topic_name: String,
@@ -60,9 +170,14 @@ impl SubscriptionEngine {
         s
     }
 
-    // with_progress_and_limiter removed in favor of unified new_with_progress
-
-    /// Initialize underlying stream. For a brand-new subscription we default to Latest.
+    /// Initialize the message stream starting from the **latest** position.
+    ///
+    /// Used for brand-new subscriptions with no persisted cursor.
+    /// Messages produced before subscription creation are skipped.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on successful stream creation, `Err` if TopicStore fails.
     pub(crate) async fn init_stream_latest(&mut self) -> Result<()> {
         let stream = self
             .topic_store
@@ -72,7 +187,18 @@ impl SubscriptionEngine {
         Ok(())
     }
 
-    /// Initialize using persisted progress if available, otherwise Latest
+    /// Initialize the message stream from **persisted cursor** or latest if none exists.
+    ///
+    /// This is the standard initialization for durable subscriptions:
+    /// 1. Check metadata for persisted cursor (last acked offset)
+    /// 2. If found, create stream starting at `cursor + 1`
+    /// 3. If not found, fall back to `init_stream_latest()`
+    ///
+    /// Ensures subscriptions survive broker restarts without message loss.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on successful stream creation, `Err` if TopicStore or metadata access fails.
     pub(crate) async fn init_stream_from_progress_or_latest(&mut self) -> Result<()> {
         if let (Some(topic), Some(res_mx)) =
             (self.topic_name.as_deref(), self.progress_resources.as_ref())
@@ -93,9 +219,36 @@ impl SubscriptionEngine {
         self.init_stream_latest().await
     }
 
-    /// Polls next message from the underlying stream.
-    /// Reliable pacing: if a message is ready but the limiter denies, wait and retry
-    /// instead of returning None. This preserves reliability and provides smooth pacing.
+    /// Poll the next message from the topic stream.
+    ///
+    /// This is the core method for pulling messages from the WAL/cloud storage.
+    ///
+    /// # Rate Limiting (Reliable Pacing)
+    ///
+    /// If a rate limiter is configured and denies the request:
+    /// - The method **waits and retries** (exponential backoff up to 100ms)
+    /// - Does NOT return `None` immediately
+    /// - Preserves reliability while providing smooth flow control
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(msg))` - Next message available and rate limit allows
+    /// - `Ok(None)` - Stream exhausted (caught up with WAL)
+    /// - `Err(_)` - Stream error
+    ///
+    /// # Usage in Dispatcher
+    ///
+    /// ```rust,ignore
+    /// // Reliable dispatcher poll loop
+    /// match engine.poll_next().await? {
+    ///     Some(msg) => {
+    ///         // dispatch to consumer
+    ///     }
+    ///     None => {
+    ///         // caught up, wait for notification
+    ///     }
+    /// }
+    /// ```
     pub(crate) async fn poll_next(&mut self) -> Result<Option<StreamMessage>> {
         let stream = match &mut self.stream {
             Some(s) => s,
@@ -125,7 +278,29 @@ impl SubscriptionEngine {
         }
     }
 
-    /// Called by dispatcher when a message has been acknowledged by a consumer.
+    /// Record message acknowledgment from consumer.
+    ///
+    /// Updates the subscription cursor and triggers debounced persistence.
+    ///
+    /// # Debounced Persistence
+    ///
+    /// The cursor is NOT written to metadata immediately:
+    /// 1. Mark `dirty = true` and update `last_acked`
+    /// 2. If `sub_progress_flush_interval` has elapsed since last flush:
+    ///    - Write cursor to metadata via `TopicResources`
+    ///    - Clear `dirty` flag
+    ///    - Update `last_flush_at` timestamp
+    /// 3. Otherwise, defer flush to next ack
+    ///
+    /// This batching reduces metadata write load while ensuring eventual durability.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg_id` - The acknowledged message ID (contains `topic_offset`)
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Ok(())`. Flush failures are logged but don't error (best-effort).
     pub(crate) async fn on_acked(&mut self, msg_id: MessageID) -> Result<()> {
         // Track last acked offset
         self.last_acked = Some(msg_id.topic_offset);
@@ -158,8 +333,24 @@ impl SubscriptionEngine {
         Ok(())
     }
 
-    /// Immediately flush the last_acked progress to metadata (best-effort).
-    /// Used during unload pause to persist cursor without waiting for debounce.
+    /// Immediately flush subscription cursor to metadata.
+    ///
+    /// Bypasses the debounce interval to force persistence.
+    ///
+    /// # Use Cases
+    ///
+    /// - **Consumer disconnect**: Ensure cursor is saved before removing subscription
+    /// - **Broker shutdown**: Persist final state before process exit
+    /// - **Manual flush**: Explicit durability checkpoint
+    ///
+    /// # Best-Effort Semantics
+    ///
+    /// Write failures are silently ignored (logged internally).
+    /// This is by design - cursor will be retried on next ack.
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Ok(())`.
     pub(crate) async fn flush_progress_now(&mut self) -> Result<()> {
         if let (Some(off), Some(res_mx), Some(topic)) = (
             self.last_acked,
@@ -176,12 +367,39 @@ impl SubscriptionEngine {
         Ok(())
     }
 
-    /// Checks if this subscription is lagging behind the topic's WAL.
-    /// Returns true if there are messages waiting to be dispatched.
+    /// Check if subscription is lagging behind the topic's WAL.
     ///
-    /// This is the core of the lag detection mechanism for reliable delivery.
-    /// It compares the subscription's cursor (last_acked) against the WAL head
-    /// to determine if messages are waiting.
+    /// This is the **core of lag detection** for the heartbeat watchdog.
+    ///
+    /// # Algorithm
+    ///
+    /// ```text
+    /// wal_head = topic_store.get_last_committed_offset()
+    ///
+    /// if wal_head == 0:
+    ///     return false  // WAL empty, no lag
+    ///
+    /// if last_acked is None:
+    ///     return stream.is_some() && wal_head > 0  // startup case
+    ///
+    /// // Caught up: cursor == wal_head - 1
+    /// // (wal_head is NEXT offset to be written)
+    /// return last_acked < wal_head - 1
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// - `true` - Subscription is behind, messages waiting
+    /// - `false` - Subscription is caught up
+    ///
+    /// # Usage in Dispatcher
+    ///
+    /// The reliable dispatcher's heartbeat (500ms) calls this method:
+    /// ```rust,ignore
+    /// if engine.has_lag() {
+    ///     // trigger PollAndDispatch
+    /// }
+    /// ```
     pub(crate) fn has_lag(&self) -> bool {
         let wal_head = self.topic_store.get_last_committed_offset();
 
@@ -206,8 +424,26 @@ impl SubscriptionEngine {
         }
     }
 
-    /// Returns diagnostic info about subscription position.
-    /// Useful for metrics, logging, and debugging.
+    /// Get detailed lag information for monitoring and metrics.
+    ///
+    /// Returns a `LagInfo` struct containing:
+    /// - `subscription_cursor`: Last acked offset (None if no acks yet)
+    /// - `wal_head`: Current WAL head (next offset to be written)
+    /// - `lag_messages`: Number of messages subscription is behind
+    /// - `has_lag`: Boolean indicating if lag exists
+    ///
+    /// # Calculation
+    ///
+    /// ```text
+    /// lag_messages = (wal_head - 1) - last_acked
+    /// ```
+    ///
+    /// # Usage
+    ///
+    /// ```rust,ignore
+    /// let info = engine.get_lag_info();
+    /// gauge!("subscription_lag_messages").set(info.lag_messages as f64);
+    /// ```
     pub(crate) fn get_lag_info(&self) -> LagInfo {
         let wal_head = self.topic_store.get_last_committed_offset();
         let cursor = self.last_acked;
@@ -227,11 +463,32 @@ impl SubscriptionEngine {
 }
 
 /// Diagnostic information about subscription lag.
+///
+/// Returned by `SubscriptionEngine::get_lag_info()` for monitoring and metrics.
+///
+/// # Fields
+///
+/// - `subscription_cursor`: Last acked offset (cursor position)
+/// - `wal_head`: Current WAL head (next offset to write)
+/// - `lag_messages`: Count of unprocessed messages
+/// - `has_lag`: Boolean flag for quick lag check
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let info = engine.get_lag_info();
+/// if info.has_lag {
+///     println!("Subscription lagging by {} messages", info.lag_messages);
+///     println!("Cursor: {:?}, WAL Head: {}", info.subscription_cursor, info.wal_head);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub(crate) struct LagInfo {
     /// The subscription's current cursor (last acked offset)
+    #[allow(dead_code)]
     pub(crate) subscription_cursor: Option<u64>,
     /// The WAL's current head (next offset to be written)
+    #[allow(dead_code)]
     pub(crate) wal_head: u64,
     /// Number of messages the subscription is behind
     pub(crate) lag_messages: u64,

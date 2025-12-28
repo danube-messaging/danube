@@ -1,13 +1,28 @@
-//! Test: UnifiedMultipleDispatcher reliable round-robin with strict ack-gating and non-reliable round-robin
+//! # Shared Dispatcher Tests
 //!
-//! Purpose
-//! - Reliable: validate strict ack-gating across the subscription and round-robin target selection
-//!   among multiple consumers. Only one in-flight at a time, next delivered after ack.
-//! - Non-reliable: validate round-robin fan-out across multiple healthy consumers without acks.
+//! Tests for `SharedDispatcher` (multiple consumers with round-robin load balancing).
 //!
-//! Notes
-//! - Uses WalStorage + TopicStore for reliable mode and dispatcher notifier to kick the loop.
-//! - Health gating is implicitly preserved via Consumer::get_status().
+//! ## Test Coverage
+//!
+//! ### Reliable Mode (At-Least-Once + Load Balancing)
+//! - **Ack-gating**: Only one message in-flight at a time across subscription
+//! - **Round-robin selection**: Messages distributed evenly across consumers
+//! - **Stream-driven dispatch**: Messages polled from WAL via SubscriptionEngine
+//! - **Notification mechanism**: Topic notifies dispatcher via `Arc<Notify>`
+//! - **Cursor persistence**: Subscription progress tracked
+//!
+//! ### Non-Reliable Mode (At-Most-Once + Load Balancing)
+//! - **Fire-and-forget**: Immediate dispatch without ack tracking
+//! - **Round-robin distribution**: Atomic counter ensures fair load balancing
+//! - **Direct dispatch**: Messages sent via `dispatch_message()` API
+//! - **No persistence**: No cursor tracking or WAL involvement
+//!
+//! ## Implementation Notes
+//!
+//! - Uses `WalStorage` to back `TopicStore` for reliable mode
+//! - Uses `get_notifier()` to trigger `PollAndDispatch` after storing messages to WAL
+//! - Round-robin verified by tracking which consumer receives each message
+//! - Health gating exercised implicitly via `Consumer::get_status()` remaining true
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,8 +35,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::{Consumer, ConsumerSession};
+use crate::dispatcher::shared::SharedDispatcher;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
-use crate::dispatcher::UnifiedMultipleDispatcher;
 use crate::message::AckMessage;
 use crate::topic::TopicStore;
 
@@ -34,7 +49,7 @@ fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: topic_off,
         },
-        payload: format!("unified-multi-{}", req_id).into_bytes(),
+        payload: format!("shared-{}", req_id).into_bytes(),
         publish_time: 0,
         producer_name: "producer-test".to_string(),
         subscription_name: None,
@@ -42,6 +57,25 @@ fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
     }
 }
 
+/// Test reliable shared dispatcher with round-robin and strict ack-gating.
+///
+/// # Test Scenario
+///
+/// 1. Create reliable dispatcher with SubscriptionEngine backed by WAL
+/// 2. Add two consumers (c1, c2)
+/// 3. Store message #1 to WAL → notify dispatcher
+/// 4. Verify message #1 delivered to one consumer
+/// 5. Send ack for message #1
+/// 6. Store message #2 to WAL → notify dispatcher
+/// 7. Verify message #2 delivered to the OTHER consumer (round-robin)
+///
+/// # What This Validates
+///
+/// - **Ack-gating**: Second message not dispatched until first is acked
+/// - **Round-robin**: Different consumer receives second message
+/// - **Stream polling**: Messages read from WAL via SubscriptionEngine
+/// - **Notification flow**: Topic → Notify → PollAndDispatch → Consumer selection
+/// - **Load balancing**: Work distributed evenly across consumers
 #[tokio::test]
 async fn reliable_multiple_round_robin_ack_gating() {
     // Arrange WAL + TopicStore + engine + dispatcher
@@ -50,11 +84,11 @@ async fn reliable_multiple_round_robin_ack_gating() {
         .expect("create wal");
     let wal_storage = WalStorage::from_wal(wal);
 
-    let topic = "/default/unified_multiple_reliable";
+    let topic = "/default/shared_reliable";
     let ts = TopicStore::new(topic.to_string(), wal_storage);
 
     let engine = SubscriptionEngine::new("sub-shared".to_string(), Arc::new(ts.clone()));
-    let dispatcher = UnifiedMultipleDispatcher::new_reliable(engine);
+    let dispatcher = SharedDispatcher::new_reliable(engine);
     let notifier = dispatcher.get_notifier();
 
     // Two consumers capture messages
@@ -124,12 +158,29 @@ async fn reliable_multiple_round_robin_ack_gating() {
     );
 }
 
+/// Test non-reliable shared dispatcher with round-robin distribution.
+///
+/// # Test Scenario
+///
+/// 1. Create non-reliable dispatcher (no SubscriptionEngine)
+/// 2. Add two consumers (c1, c2)
+/// 3. Call `dispatch_message()` 4 times
+/// 4. Verify all 4 messages delivered
+/// 5. Verify both consumers received ~equal number of messages (round-robin)
+///
+/// # What This Validates
+///
+/// - **Fire-and-forget**: Messages sent immediately without ack
+/// - **Round-robin distribution**: Atomic counter ensures fair targeting
+/// - **Direct dispatch**: No WAL, no SubscriptionEngine
+/// - **Load balancing**: Work distributed evenly across consumers
+/// - **No blocking**: All messages sent without waiting for acks
 #[tokio::test]
 async fn non_reliable_multiple_round_robin() {
     // Arrange non-reliable dispatcher
-    let dispatcher = UnifiedMultipleDispatcher::new_non_reliable();
+    let dispatcher = SharedDispatcher::new_non_reliable();
 
-    let topic = "/default/unified_multiple_non_reliable";
+    let topic = "/default/shared_non_reliable";
 
     // Two consumers capture messages
     let (tx_c1, mut rx_c1) = mpsc::channel::<StreamMessage>(16);
