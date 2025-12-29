@@ -59,14 +59,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             )
             .await
         {
-            Ok((schema_id, version, is_new_version)) => {
-                // Get fingerprint for the response
-                let metadata = self
-                    .registry
-                    .get_metadata(&req.subject)
-                    .await
-                    .map_err(|e| Status::internal(format!("Failed to get metadata: {}", e)))?;
-
+            Ok((schema_id, version, is_new_version, metadata)) => {
+                // Get fingerprint from the returned metadata (no need for additional fetch)
                 let schema_version = metadata
                     .get_version(version)
                     .ok_or_else(|| Status::internal("Version not found after registration"))?;

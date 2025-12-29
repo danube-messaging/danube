@@ -27,7 +27,14 @@ impl SchemaResources {
     /// Check if a schema subject exists (reads from LocalCache)
     pub(crate) async fn subject_exists(&self, subject: &str) -> Result<bool> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "metadata"]);
-        Ok(self.local_cache.get(&path).is_some())
+        // Check if metadata exists AND can be deserialized
+        match self.local_cache.get(&path) {
+            Some(value) => {
+                // Verify it's valid SchemaMetadata
+                Ok(serde_json::from_value::<SchemaMetadata>(value).is_ok())
+            }
+            None => Ok(false),
+        }
     }
 
     /// Get schema metadata from LocalCache (fast read)

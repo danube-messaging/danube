@@ -3,7 +3,6 @@ use danube_client::{DanubeClient, SchemaRegistryClient};
 use serde::Serialize;
 use std::thread;
 use std::time::Duration;
-use tracing::info;
 
 // Define the message structure
 #[derive(Serialize)]
@@ -14,9 +13,6 @@ struct MyMessage {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup tracing
-    tracing_subscriber::fmt::init();
-
     let client = DanubeClient::builder()
         .service_url("http://127.0.0.1:6650")
         .build()
@@ -36,7 +32,7 @@ async fn main() -> Result<()> {
         .execute()
         .await?;
 
-    info!("Registered schema with ID: {}", schema_id);
+    println!("Registered schema with ID: {}", schema_id);
 
     // Phase 5: Create producer with schema reference
     let mut producer = client
@@ -47,7 +43,7 @@ async fn main() -> Result<()> {
         .build();
 
     producer.create().await?;
-    info!("The Producer {} was created", producer_name);
+    println!("The Producer {} was created", producer_name);
 
     let mut i = 0;
 

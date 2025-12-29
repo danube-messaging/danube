@@ -2,13 +2,9 @@ use anyhow::Result;
 use danube_client::DanubeClient;
 use std::thread;
 use std::time::Duration;
-use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup tracing
-    tracing_subscriber::fmt::init();
-
     let client = DanubeClient::builder()
         .service_url("http://127.0.0.1:6650")
         .build()
@@ -25,7 +21,7 @@ async fn main() -> Result<()> {
         .build();
 
     producer.create().await?;
-    info!("The Producer {} was created", producer_name);
+    println!("The Producer {} was created", producer_name);
 
     let mut i = 0;
 

@@ -164,12 +164,6 @@ pub struct SchemaMetadata {
     pub created_by: String,
     /// When last updated
     pub updated_at: u64,
-    /// Optional owner team
-    pub owner_team: Option<String>,
-    /// Optional documentation URL
-    pub documentation_url: Option<String>,
-    /// Optional migration guide
-    pub migration_guide: Option<String>,
     /// Topics currently using this schema
     pub topics_using: Vec<String>,
 }
@@ -190,9 +184,6 @@ impl SchemaMetadata {
             created_at: now,
             created_by,
             updated_at: now,
-            owner_team: None,
-            documentation_url: None,
-            migration_guide: None,
             topics_using: Vec::new(),
         }
     }

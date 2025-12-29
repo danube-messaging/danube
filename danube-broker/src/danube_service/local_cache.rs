@@ -11,7 +11,8 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use crate::resources::{
-    BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH, BASE_SUBSCRIPTIONS_PATH, BASE_TOPICS_PATH,
+    BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH, BASE_SCHEMAS_PATH, BASE_SUBSCRIPTIONS_PATH,
+    BASE_TOPICS_PATH,
 };
 
 // It caches various types of metadata required by Danube brokers, such as topic and namespace data,
@@ -110,6 +111,7 @@ impl LocalCache {
             BASE_NAMESPACES_PATH,
             BASE_TOPICS_PATH,
             BASE_SUBSCRIPTIONS_PATH,
+            BASE_SCHEMAS_PATH,
         ];
 
         for prefix in &prefixes {

@@ -32,6 +32,7 @@ impl SchemaRegistry {
     }
 
     /// Register a new schema or return existing schema ID if identical schema exists
+    /// Returns: (schema_id, version, is_new_version, metadata)
     pub async fn register_schema(
         &self,
         subject: &str,
@@ -40,7 +41,7 @@ impl SchemaRegistry {
         description: String,
         created_by: String,
         tags: Vec<String>,
-    ) -> Result<(u64, u32, bool)> {
+    ) -> Result<(u64, u32, bool, SchemaMetadata)> {
         // Parse and validate the schema
         let schema_def = self.parse_schema(schema_type, schema_def_bytes)?;
         let fingerprint = Self::get_fingerprint(&schema_def);
@@ -55,7 +56,7 @@ impl SchemaRegistry {
             // Check for duplicate fingerprint in existing versions
             for version in &metadata.versions {
                 if version.fingerprint == fingerprint {
-                    return Ok((metadata.id, version.version, false));
+                    return Ok((metadata.id, version.version, false, metadata.clone()));
                 }
             }
 
@@ -86,7 +87,7 @@ impl SchemaRegistry {
             metadata.add_version(new_version.clone());
             self.storage.update_metadata(&metadata).await?;
 
-            Ok((metadata.id, new_version_number, true))
+            Ok((metadata.id, new_version_number, true, metadata))
         } else {
             // New subject, create first version
             let schema_id = self.id_generator.fetch_add(1, Ordering::SeqCst);
@@ -113,7 +114,7 @@ impl SchemaRegistry {
                 .await?;
             self.storage.store_schema_metadata(&metadata).await?;
 
-            Ok((schema_id, 1, true))
+            Ok((schema_id, 1, true, metadata))
         }
     }
 
