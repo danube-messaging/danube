@@ -39,6 +39,8 @@ pub(crate) struct LocalCache {
     topics: Arc<DashMap<String, (i64, Value)>>,
     // holds information about the topic subscriptions, including their consumers
     subscriptions: Arc<DashMap<String, (i64, Value)>>,
+    // holds information about schemas (subject -> (schema_id, metadata))
+    schemas: Arc<DashMap<String, (i64, Value)>>,
     // metadata store
     metadata_store: MetadataStorage,
 }
@@ -51,6 +53,7 @@ impl LocalCache {
             namespaces: Arc::new(DashMap::new()),
             topics: Arc::new(DashMap::new()),
             subscriptions: Arc::new(DashMap::new()),
+            schemas: Arc::new(DashMap::new()),
             metadata_store,
         }
     }
@@ -70,6 +73,7 @@ impl LocalCache {
             "namespaces" => &self.namespaces,
             "topics" => &self.topics,
             "consumers" => &self.subscriptions,
+            "schemas" => &self.schemas,
             _ => return,
         };
 
@@ -188,6 +192,7 @@ impl LocalCache {
                 .subscriptions
                 .get(path)
                 .map(|entry| entry.value().1.clone()),
+            "schemas" => self.schemas.get(path).map(|entry| entry.value().1.clone()),
             _ => None,
         }
     }
@@ -207,6 +212,7 @@ impl LocalCache {
                 "namespaces" => &self.namespaces,
                 "topics" => &self.topics,
                 "consumers" => &self.subscriptions,
+                "schemas" => &self.schemas,
                 _ => continue,
             };
 

@@ -80,20 +80,31 @@ impl TopicManager {
             None
         };
 
-        let mut new_topic = Topic::new(topic_name, dispatch_strategy.clone(), wal_storage, {
-            let resources = self.resources.lock().await;
-            resources.topic.clone()
-        });
+        let mut new_topic = Topic::new(
+            topic_name,
+            dispatch_strategy.clone(),
+            wal_storage,
+            {
+                let resources = self.resources.lock().await;
+                resources.topic.clone()
+            },
+            {
+                let resources = self.resources.lock().await;
+                resources.schema.clone()
+            },
+        );
 
-        let schema = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_schema(topic_name)
-        };
-        if schema.is_none() {
-            return Err(anyhow!("Unable to create topic without a valid schema"));
-        }
-        let schema = schema.unwrap();
-        let _ = new_topic.add_schema(schema.clone());
+        // Phase 6: Schema validation removed - topics now use SchemaRegistry references
+        // The schema validation will happen via SchemaRegistry when producer sets schema_ref
+        // let schema = {
+        //     let resources = self.resources.lock().await;
+        //     resources.topic.get_schema(topic_name)
+        // };
+        // if schema.is_none() {
+        //     return Err(anyhow!("Unable to create topic without a valid schema"));
+        // }
+        // let schema = schema.unwrap();
+        // let _ = new_topic.add_schema(schema.clone());
 
         // get policies from local_cache
         let policies = {
@@ -126,7 +137,9 @@ impl TopicManager {
 
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
-        Ok((dispatch_strategy, schema.type_schema))
+        // Phase 6: Return default SchemaType since old schema system removed
+        // Topics now use SchemaRegistry references instead
+        Ok((dispatch_strategy, SchemaType::Bytes))
     }
 
     /// Flush and seal persistent storage (WAL/uploader/deleter).

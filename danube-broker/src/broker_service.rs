@@ -6,11 +6,9 @@ use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Code, Status};
-use tracing::info;
+use tracing::{info, warn};
 
-use danube_core::proto::{
-    DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
-};
+use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, ErrorType, SchemaReference};
 
 use crate::{
     consumer::Consumer,
@@ -103,7 +101,7 @@ impl BrokerService {
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
-        schema: Option<ProtoSchema>,
+        schema_ref: Option<SchemaReference>,
     ) -> Result<bool, Status> {
         // Validate topic format
         if !validate_topic_format(topic_name) {
@@ -131,6 +129,20 @@ impl BrokerService {
                     ));
                 }
             }
+
+            // Phase 6: Set schema reference if provided by producer
+            if let Some(schema_ref) = schema_ref {
+                if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+                    if let Err(e) = topic.set_schema_ref(schema_ref) {
+                        warn!(
+                            "Failed to set schema reference for topic {}: {}",
+                            topic_name, e
+                        );
+                        // Don't fail the request, just warn (schema is optional)
+                    }
+                }
+            }
+
             return Ok(true);
         }
 
@@ -165,7 +177,7 @@ impl BrokerService {
         }
 
         match self
-            .create_topic_cluster(topic_name, dispatch_strategy, schema)
+            .create_topic_cluster(topic_name, dispatch_strategy, schema_ref)
             .await
         {
             Ok(()) => {
@@ -202,10 +214,10 @@ impl BrokerService {
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
-        schema: Option<ProtoSchema>,
+        schema_ref: Option<SchemaReference>,
     ) -> Result<(), Status> {
         self.topic_cluster
-            .create_on_cluster(topic_name, dispatch_strategy, schema, None)
+            .create_on_cluster(topic_name, dispatch_strategy, schema_ref, None)
             .await
     }
 
@@ -277,14 +289,15 @@ impl BrokerService {
     // Producer operations (delegated to TopicManager)
     // =====================================================================
 
-    /// Returns the topic schema from Local Cache as core proto schema (async).
-    pub(crate) async fn get_schema_async(&self, topic_name: &str) -> Option<ProtoSchema> {
-        let resources = self.resources.lock().await;
-        resources
-            .topic
-            .get_schema(topic_name)
-            .map(ProtoSchema::from)
-    }
+    // TODO Phase 4: get_schema_async() removed - old schema system deprecated
+    // /// Returns the topic schema from Local Cache as core proto schema (async).
+    // pub(crate) async fn get_schema_async(&self, topic_name: &str) -> Option<ProtoSchema> {
+    //     let resources = self.resources.lock().await;
+    //     resources
+    //         .topic
+    //         .get_schema(topic_name)
+    //         .map(ProtoSchema::from)
+    // }
 
     /// Returns an existing producer id if a producer with `producer_name` is already attached.
     pub(crate) async fn check_if_producer_exist(

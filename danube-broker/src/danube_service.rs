@@ -23,7 +23,7 @@ use tracing::{info, trace, warn};
 use crate::{
     admin::DanubeAdminImpl,
     auth::AuthMode,
-    broker_server,
+    broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
     policies::Policies,
     resources::{Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE},
@@ -207,8 +207,18 @@ impl DanubeService {
         // Start the Broker GRPC server
         //==========================================================================
 
+        // Initialize Schema Registry Service
+        // Phase 6: Now properly using SchemaResources pattern
+        let schema_registry = Arc::new(SchemaRegistryService::new(
+            self.local_cache.clone(),
+            self.meta_store.clone(),
+        ));
+
+        info!("Schema Registry Service initialized");
+
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
+            schema_registry,
             self.service_config.broker_addr.clone(),
             self.service_config.auth.clone(),
         );

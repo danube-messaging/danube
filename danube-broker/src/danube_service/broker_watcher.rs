@@ -282,20 +282,21 @@ async fn verify_cache_readiness_with_retry(
 ) -> anyhow::Result<()> {
     for attempt in 0..max_retries {
         // Check if required metadata is available in LocalCache
-        let (has_dispatch, has_schema, has_policies) = {
+        // Phase 6: Schema check removed - topics now use SchemaRegistry references
+        let (has_dispatch, has_policies) = {
             let resources = broker_service.resources.lock().await;
             let dispatch_strategy = resources.topic.get_dispatch_strategy(topic_name);
-            let schema = resources.topic.get_schema(topic_name);
+            // let schema = resources.topic.get_schema(topic_name);
             let policies = resources.topic.get_policies(topic_name);
 
             (
                 dispatch_strategy.is_some(),
-                schema.is_some(),
+                // schema.is_some(),
                 policies.is_some(),
             )
         };
 
-        if has_dispatch && has_schema {
+        if has_dispatch {
             trace!(
                 "Cache readiness verified for topic {} on attempt {}",
                 topic_name,
@@ -306,10 +307,9 @@ async fn verify_cache_readiness_with_retry(
 
         if attempt < max_retries - 1 {
             trace!(
-                "Cache not ready for topic {} (dispatch: {}, schema: {}, policies: {}), retrying in {:?}",
+                "Cache not ready for topic {} (dispatch: {}, policies: {}), retrying in {:?}",
                 topic_name,
                 has_dispatch,
-                has_schema,
                 has_policies,
                 retry_delay
             );

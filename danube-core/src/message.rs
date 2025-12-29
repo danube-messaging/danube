@@ -50,6 +50,9 @@ pub struct StreamMessage {
     pub subscription_name: Option<String>,
     // User-defined properties/attributes
     pub attributes: HashMap<String, String>,
+    // Schema identification from schema registry
+    pub schema_id: Option<u64>,
+    pub schema_version: Option<u32>,
 }
 
 impl StreamMessage {
@@ -85,6 +88,8 @@ impl From<ProtoStreamMessage> for StreamMessage {
             producer_name: proto_stream_msg.producer_name,
             subscription_name: Some(proto_stream_msg.subscription_name),
             attributes: proto_stream_msg.attributes,
+            schema_id: proto_stream_msg.schema_id,
+            schema_version: proto_stream_msg.schema_version,
         }
     }
 }
@@ -110,6 +115,8 @@ impl From<StreamMessage> for ProtoStreamMessage {
             producer_name: stream_msg.producer_name,
             subscription_name: stream_msg.subscription_name.unwrap_or_default(),
             attributes: stream_msg.attributes,
+            schema_id: stream_msg.schema_id,
+            schema_version: stream_msg.schema_version,
         }
     }
 }

@@ -3,14 +3,17 @@ mod consumer_handler;
 mod discovery_handler;
 mod health_check_handler;
 mod producer_handler;
+mod schema_registry_handler;
+
+pub(crate) use schema_registry_handler::SchemaRegistryService;
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::auth_jwt::jwt_auth_interceptor;
 use crate::broker_service::BrokerService;
 use danube_core::proto::{
     auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
-    discovery_server::DiscoveryServer, health_check_server::HealthCheckServer,
-    producer_service_server::ProducerServiceServer,
+    danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
+    health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
 
 use std::net::SocketAddr;
@@ -25,6 +28,7 @@ use tracing::warn;
 #[derive(Debug, Clone)]
 pub(crate) struct DanubeServerImpl {
     service: Arc<BrokerService>,
+    schema_registry: Arc<SchemaRegistryService>,
     broker_addr: SocketAddr,
     auth: AuthConfig,
     // the api key is used to authenticate the user for JWT auth
@@ -34,11 +38,13 @@ pub(crate) struct DanubeServerImpl {
 impl DanubeServerImpl {
     pub(crate) fn new(
         service: Arc<BrokerService>,
+        schema_registry: Arc<SchemaRegistryService>,
         broker_addr: SocketAddr,
         auth: AuthConfig,
     ) -> Self {
         DanubeServerImpl {
             service,
+            schema_registry,
             broker_addr,
             auth,
             valid_api_keys: Vec::new(),
@@ -58,6 +64,9 @@ impl DanubeServerImpl {
         let discovery_service = DiscoveryServer::new(self.clone());
         let health_check_service = HealthCheckServer::new(self.clone());
         let auth_service = AuthServiceServer::new(self.clone());
+        // Phase 6: Clone the Arc to pass ownership to SchemaRegistryServer
+        let schema_registry_service =
+            SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
         let server_builder = if let AuthMode::TlsWithJwt = self.auth.mode {
             let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
@@ -77,8 +86,15 @@ impl DanubeServerImpl {
                     discovery_service,
                     interceptor.clone(),
                 ))
-                .add_service(InterceptedService::new(health_check_service, interceptor))
+                .add_service(InterceptedService::new(
+                    health_check_service,
+                    interceptor.clone(),
+                ))
                 .add_service(auth_service)
+                .add_service(InterceptedService::new(
+                    schema_registry_service,
+                    interceptor,
+                ))
         } else {
             server_builder
                 .add_service(producer_service)
@@ -86,6 +102,7 @@ impl DanubeServerImpl {
                 .add_service(discovery_service)
                 .add_service(health_check_service)
                 .add_service(auth_service)
+                .add_service(schema_registry_service)
         };
 
         let server = server_builder.serve(socket_addr);

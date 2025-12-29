@@ -2,8 +2,8 @@ use crate::broker_server::DanubeServerImpl;
 use crate::{broker_service::validate_topic_format, error_message::create_error_status};
 
 use danube_core::proto::{
-    discovery_server::Discovery, topic_lookup_response::LookupType, ErrorType, SchemaRequest,
-    SchemaResponse, TopicLookupRequest, TopicLookupResponse, TopicPartitionsResponse,
+    discovery_server::Discovery, topic_lookup_response::LookupType, ErrorType, TopicLookupRequest,
+    TopicLookupResponse, TopicPartitionsResponse,
 };
 
 use tonic::{Code, Request, Response};
@@ -109,66 +109,6 @@ impl Discovery for DanubeServerImpl {
         let response = TopicPartitionsResponse {
             request_id: req.request_id,
             partitions: result,
-        };
-
-        Ok(tonic::Response::new(response))
-    }
-
-    // Retrieve message schema from Metadata Store
-    #[tracing::instrument(level = Level::INFO, skip_all)]
-    async fn get_schema(
-        &self,
-        request: Request<SchemaRequest>,
-    ) -> std::result::Result<Response<SchemaResponse>, tonic::Status> {
-        let req = request.into_inner();
-
-        trace!("Schema Lookup for the topic: {}", req.topic);
-
-        // The topic format is /{namespace_name}/{topic_name}
-        if !validate_topic_format(&req.topic) {
-            let error_string = format!(
-                "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
-                &req.topic
-            );
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::InvalidTopicName,
-                &error_string,
-                None,
-            );
-            return Err(status);
-        }
-
-        let service = self.service.as_ref();
-
-        // if it's non-partitioned topic, then the Vec should contain only one element
-        // if it's partitoned, then the Vec should contain more than one element
-        // we are interested on the first element, as in the partitioned topic, all partitions should use the same schema
-        let result = service.topic_partitions(&req.topic).await;
-
-        // Check if the topic exists (has partitions)
-        let first_partition = match result.get(0) {
-            Some(partition) => partition,
-            None => {
-                let error_string = &format!("Unable to find the requested topic: {}", &req.topic);
-                let status = create_error_status(
-                    Code::NotFound,
-                    ErrorType::TopicNotFound,
-                    error_string,
-                    None,
-                );
-                return Err(status);
-            }
-        };
-
-        let proto_schema = service.get_schema_async(first_partition).await;
-
-        // should I inform the client that the topic is not served by this broker ?
-        // as the get_schema is local to this broker
-
-        let response = SchemaResponse {
-            request_id: req.request_id,
-            schema: proto_schema,
         };
 
         Ok(tonic::Response::new(response))

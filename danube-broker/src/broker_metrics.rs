@@ -6,7 +6,7 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 10] = [
+pub(crate) const COUNTERS: [Metric; 12] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
@@ -17,6 +17,8 @@ pub(crate) const COUNTERS: [Metric; 10] = [
     PRODUCER_SEND_TOTAL,
     DISPATCHER_HEARTBEAT_POLLS_TOTAL,
     DISPATCHER_NOTIFIER_POLLS_TOTAL,
+    SCHEMA_VALIDATION_TOTAL,
+    SCHEMA_VALIDATION_FAILURES_TOTAL,
 ];
 pub(crate) const GAUGES: [Metric; 7] = [
     BROKER_TOPICS_OWNED,
@@ -109,6 +111,18 @@ pub(crate) const TOPIC_ACTIVE_PRODUCERS: Metric = Metric {
 pub(crate) const TOPIC_ACTIVE_CONSUMERS: Metric = Metric {
     name: "danube_topic_active_consumers",
     description: "Total number of consumers per topic",
+};
+
+// SCHEMA Metrics --------------------------
+
+pub(crate) const SCHEMA_VALIDATION_TOTAL: Metric = Metric {
+    name: "danube_schema_validation_total",
+    description: "Total number of schema validation attempts",
+};
+
+pub(crate) const SCHEMA_VALIDATION_FAILURES_TOTAL: Metric = Metric {
+    name: "danube_schema_validation_failures_total",
+    description: "Total number of schema validation failures",
 };
 
 // PRODUCER Metrics --------------------------

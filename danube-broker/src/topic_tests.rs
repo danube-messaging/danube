@@ -8,7 +8,7 @@ use futures::StreamExt;
 
 use crate::danube_service::LocalCache;
 use crate::policies::Policies;
-use crate::resources::TopicResources;
+use crate::resources::{SchemaResources, TopicResources};
 use crate::subscription::SubscriptionOptions;
 use crate::topic::Topic;
 use crate::topic::TopicStore;
@@ -60,12 +60,14 @@ async fn mk_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let local_cache = LocalCache::new(store.clone());
-    let topic_resources = TopicResources::new(local_cache, store);
+    let topic_resources = TopicResources::new(local_cache.clone(), store.clone());
+    let schema_resources = SchemaResources::new(local_cache, store);
     Topic::new(
         name,
         ConfigDispatchStrategy::NonReliable,
         None,
         topic_resources,
+        schema_resources,
     )
 }
 

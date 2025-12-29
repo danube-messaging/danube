@@ -1,11 +1,11 @@
 use crate::{
     errors::{DanubeError, Result},
     retry_manager::{status_to_danube_error, RetryManager},
-    DanubeClient, ProducerOptions, Schema,
+    DanubeClient, ProducerOptions,
 };
 use danube_core::proto::{
     producer_service_client::ProducerServiceClient, DispatchStrategy as ProtoDispatchStrategy,
-    ProducerAccessMode, ProducerRequest, StreamMessage as ProtoStreamMessage,
+    ProducerAccessMode, ProducerRequest, SchemaReference, StreamMessage as ProtoStreamMessage,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
@@ -36,8 +36,10 @@ pub(crate) struct TopicProducer {
     producer_id: Option<u64>,
     // unique identifier for every request sent by the producer
     request_id: AtomicU64,
-    // the schema represent the message payload schema
-    schema: Schema,
+    // optional schema reference for new schema registry
+    schema_ref: Option<SchemaReference>,
+    // resolved schema_id for message validation (cached)
+    schema_id: Option<u64>,
     // the retention strategy for the topic
     dispatch_strategy: ConfigDispatchStrategy,
     // other configurable options for the producer
@@ -55,7 +57,7 @@ impl TopicProducer {
         client: DanubeClient,
         topic: String,
         producer_name: String,
-        schema: Schema,
+        schema_ref: Option<SchemaReference>,
         dispatch_strategy: ConfigDispatchStrategy,
         producer_options: ProducerOptions,
     ) -> Self {
@@ -71,7 +73,8 @@ impl TopicProducer {
             producer_name,
             producer_id: None,
             request_id: AtomicU64::new(0),
-            schema,
+            schema_ref,
+            schema_id: None,
             dispatch_strategy,
             producer_options,
             stream_client: None,
@@ -95,7 +98,7 @@ impl TopicProducer {
                 request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
                 producer_name: self.producer_name.clone(),
                 topic_name: self.topic.clone(),
-                schema: Some(self.schema.clone().into()),
+                schema_ref: self.schema_ref.clone(),
                 producer_access_mode: ProducerAccessMode::Shared.into(),
                 dispatch_strategy: match &self.dispatch_strategy {
                     ConfigDispatchStrategy::NonReliable => {
@@ -191,6 +194,8 @@ impl TopicProducer {
             producer_name: self.producer_name.clone(),
             subscription_name: None,
             attributes: attr,
+            schema_id: self.schema_id,
+            schema_version: None, // TODO: Add version tracking
         };
 
         let req: ProtoStreamMessage = send_message.into();

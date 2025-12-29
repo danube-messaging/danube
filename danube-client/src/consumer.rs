@@ -8,7 +8,10 @@ use crate::{
 use danube_core::message::StreamMessage;
 use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -183,7 +186,9 @@ impl Consumer {
                 };
 
                 loop {
-                    if shutdown.load(Ordering::SeqCst) { return; }
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
                     // Try to get stream from consumer (subscribe is handled internally with its own retry)
                     let stream_result = {
                         let mut locked = consumer.lock().await;
@@ -197,7 +202,9 @@ impl Consumer {
                             // Process messages until stream ends or errors
                             while !shutdown.load(Ordering::SeqCst) {
                                 let message_opt = stream.next().await;
-                                if message_opt.is_none() { break; }
+                                if message_opt.is_none() {
+                                    break;
+                                }
                                 let message = message_opt.unwrap();
                                 match message {
                                     Ok(stream_message) => {
@@ -216,17 +223,22 @@ impl Consumer {
                             // Stream ended, retry receive
                         }
                         Err(error) => {
-                            if shutdown.load(Ordering::SeqCst) { return; }
+                            if shutdown.load(Ordering::SeqCst) {
+                                return;
+                            }
                             // Check if this is an unrecoverable error (e.g., stream client not initialized)
                             if matches!(error, DanubeError::Unrecoverable(_)) {
-                                eprintln!("Unrecoverable error detected, attempting resubscription: {:?}", error);
-                                
+                                eprintln!(
+                                    "Unrecoverable error detected, attempting resubscription: {:?}",
+                                    error
+                                );
+
                                 // Attempt to resubscribe for unrecoverable errors
                                 let resubscribe_result = {
                                     let mut locked = consumer.lock().await;
                                     locked.subscribe().await
                                 };
-                                
+
                                 match resubscribe_result {
                                     Ok(_) => {
                                         eprintln!("Resubscription successful after unrecoverable error, continuing...");
@@ -234,24 +246,27 @@ impl Consumer {
                                         continue; // Go back to creating stream_result
                                     }
                                     Err(e) => {
-                                        eprintln!("Resubscription failed after unrecoverable error: {:?}", e);
+                                        eprintln!(
+                                            "Resubscription failed after unrecoverable error: {:?}",
+                                            e
+                                        );
                                         return; // Exit task if resubscription fails
                                     }
                                 }
                             }
-                            
+
                             // Failed to get stream, check if retryable
                             if retry_manager.is_retryable_error(&error) {
                                 attempts += 1;
                                 if attempts > max_retries {
                                     eprintln!("Max retries exceeded for consumer receive, attempting resubscription");
-                                    
+
                                     // Attempt to resubscribe
                                     let resubscribe_result = {
                                         let mut locked = consumer.lock().await;
                                         locked.subscribe().await
                                     };
-                                    
+
                                     match resubscribe_result {
                                         Ok(_) => {
                                             eprintln!("Resubscription successful, continuing...");
@@ -275,6 +290,76 @@ impl Consumer {
             });
             self.task_handles.push(handle);
         }
+
+        Ok(rx)
+    }
+
+    /// Starts receiving messages with automatic deserialization
+    ///
+    /// This is a type-safe wrapper around `receive()` that automatically deserializes
+    /// message payloads from JSON into the specified type `T`. Each received item is
+    /// a Result containing either the deserialized message or a deserialization error.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: The type to deserialize messages into. Must implement `serde::Deserialize`.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` with:
+    /// - `Ok(mpsc::Receiver<Result<(StreamMessage, T)>>)` - Channel of typed messages
+    /// - `Err(e)` - If the receive client cannot be created
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct MyEvent {
+    ///     field1: String,
+    ///     field2: i32,
+    /// }
+    ///
+    /// let mut stream = consumer.receive_typed::<MyEvent>().await?;
+    ///
+    /// while let Some(result) = stream.recv().await {
+    ///     match result {
+    ///         Ok((message, decoded)) => {
+    ///             println!("Received: {:?}", decoded);
+    ///             consumer.ack(&message).await?;
+    ///         }
+    ///         Err(e) => eprintln!("Deserialization error: {}", e),
+    ///     }
+    /// }
+    /// ```
+    pub async fn receive_typed<T>(&mut self) -> Result<mpsc::Receiver<Result<(StreamMessage, T)>>>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        // Get the raw message stream
+        let mut raw_rx = self.receive().await?;
+
+        // Create a channel for typed messages
+        let (tx, rx) = mpsc::channel(100);
+
+        // Spawn a task to deserialize messages
+        tokio::spawn(async move {
+            while let Some(message) = raw_rx.recv().await {
+                // Attempt to deserialize the payload
+                let result = serde_json::from_slice::<T>(&message.payload)
+                    .map(|decoded| (message, decoded))
+                    .map_err(|e| {
+                        DanubeError::Unrecoverable(format!("Failed to deserialize message: {}", e))
+                    });
+
+                // Send the result (success or error) to the client
+                if tx.send(result).await.is_err() {
+                    // Channel closed, exit
+                    break;
+                }
+            }
+        });
 
         Ok(rx)
     }

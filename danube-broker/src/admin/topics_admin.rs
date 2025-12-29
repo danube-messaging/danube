@@ -1,13 +1,14 @@
 use crate::admin::DanubeAdminImpl;
-use crate::schema::{Schema, SchemaType};
+// Phase 6: Old schema API - commented out during schema registry migration
+// use crate::schema::{Schema, SchemaType};
 use danube_core::admin_proto::{
     topic_admin_server::TopicAdmin, BrokerRequest, DescribeTopicRequest, DescribeTopicResponse,
     NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse,
     SubscriptionRequest, SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest,
     TopicResponse,
 };
-use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
+use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
@@ -42,11 +43,7 @@ impl TopicAdmin for DanubeAdminImpl {
                 .await
                 .unwrap_or_default();
             let lookup = normalized.trim_start_matches('/');
-            let delivery = match self
-                .resources
-                .topic
-                .get_dispatch_strategy(lookup)
-            {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -78,11 +75,7 @@ impl TopicAdmin for DanubeAdminImpl {
         let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
         for name in names.into_iter() {
             let lookup = name.trim_start_matches('/');
-            let delivery = match self
-                .resources
-                .topic
-                .get_dispatch_strategy(lookup)
-            {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -105,19 +98,23 @@ impl TopicAdmin for DanubeAdminImpl {
 
         trace!("Admin: creates a non-partitioned topic: {}", req.name);
 
-        let mut schema_type = match SchemaType::from_str(&req.schema_type) {
-            Some(schema_type) => schema_type,
-            None => {
-                let status = Status::not_found(format!(
-                    "Invalid schema_type, allowed values: Bytes, String, Int64, Json "
-                ));
-                return Err(status);
-            }
-        };
-
-        if schema_type == SchemaType::Json(String::new()) {
-            schema_type = SchemaType::Json(req.schema_data);
-        }
+        // Phase 6: Schema creation commented out during migration
+        // Will be re-enabled when admin CLI is migrated to new schema registry in Phase 7
+        // let mut schema_type = match SchemaType::from_str(&req.schema_type) {
+        //     Some(schema_type) => schema_type,
+        //     None => {
+        //         let status = Status::not_found(format!(
+        //             "Invalid schema_type, allowed values: Bytes, String, Int64, Json "
+        //         ));
+        //         return Err(status);
+        //     }
+        // };
+        //
+        // if schema_type == SchemaType::Json(String::new()) {
+        //     schema_type = SchemaType::Json(req.schema_data);
+        // }
+        //
+        // let schema = Schema::new(format!("{}_schema", req.name), schema_type);
 
         // Map admin NewTopicRequest.dispatch_strategy (enum i32) into core proto DispatchStrategy
         let dispatch_strategy =
@@ -126,10 +123,8 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let service = self.broker_service.as_ref();
 
-        let schema = Schema::new(format!("{}_schema", req.name), schema_type);
-
         let success = match service
-            .create_topic_cluster(&req.name, Some(dispatch_strategy), Some(schema.into()))
+            .create_topic_cluster(&req.name, Some(dispatch_strategy), None)
             .await
         {
             Ok(()) => true,
@@ -159,20 +154,23 @@ impl TopicAdmin for DanubeAdminImpl {
             req.partitions
         );
 
-        // Schema mapping
-        let mut schema_type = match SchemaType::from_str(&req.schema_type) {
-            Some(schema_type) => schema_type,
-            None => {
-                let status = Status::not_found(
-                    "Invalid schema_type, allowed values: Bytes, String, Int64, Json ",
-                );
-                return Err(status);
-            }
-        };
-
-        if schema_type == SchemaType::Json(String::new()) {
-            schema_type = SchemaType::Json(req.schema_data);
-        }
+        // Phase 6: Schema mapping commented out during migration
+        // Will be re-enabled when admin CLI is migrated to new schema registry in Phase 7
+        // let mut schema_type = match SchemaType::from_str(&req.schema_type) {
+        //     Some(schema_type) => schema_type,
+        //     None => {
+        //         let status = Status::not_found(
+        //             "Invalid schema_type, allowed values: Bytes, String, Int64, Json ",
+        //         );
+        //         return Err(status);
+        //     }
+        // };
+        //
+        // if schema_type == SchemaType::Json(String::new()) {
+        //     schema_type = SchemaType::Json(req.schema_data);
+        // }
+        //
+        // let schema = Schema::new(format!("{}_schema", req.base_name), schema_type);
 
         // Dispatch mapping: admin enum (i32) -> core proto enum
         let dispatch_strategy =
@@ -180,13 +178,12 @@ impl TopicAdmin for DanubeAdminImpl {
                 .map_err(|_| Status::invalid_argument("invalid dispatch_strategy value"))?;
 
         let service = self.broker_service.as_ref();
-        let schema = Schema::new(format!("{}_schema", req.base_name), schema_type);
 
         // Create all partitions; fail fast on error
         for partition_id in 0..req.partitions {
             let topic = format!("{}-part-{}", req.base_name, partition_id);
             if let Err(err) = service
-                .create_topic_cluster(&topic, Some(dispatch_strategy), Some(schema.clone().into()))
+                .create_topic_cluster(&topic, Some(dispatch_strategy), None)
                 .await
             {
                 let status = Status::not_found(format!(
@@ -292,15 +289,19 @@ impl TopicAdmin for DanubeAdminImpl {
             .get_subscription_for_topic(&req.name)
             .await;
 
-        // Schema
-        let service = self.broker_service.as_ref();
-        let schema = service.get_schema_async(&req.name).await;
+        // Phase 6: Schema retrieval commented out during migration
+        // Will be re-enabled when admin CLI is migrated to new schema registry in Phase 7
+        // let service = self.broker_service.as_ref();
+        // let schema = service.get_schema_async(&req.name).await;
+        //
+        // let (type_schema, schema_data) = if let Some(s) = schema {
+        //     (s.type_schema, s.schema_data)
+        // } else {
+        //     (0, Vec::new())
+        // };
 
-        let (type_schema, schema_data) = if let Some(s) = schema {
-            (s.type_schema, s.schema_data)
-        } else {
-            (0, Vec::new())
-        };
+        let service = self.broker_service.as_ref();
+        let (type_schema, schema_data) = (0, Vec::new());
 
         // Identify serving broker id for this topic if known
         let broker_id = service
@@ -310,11 +311,7 @@ impl TopicAdmin for DanubeAdminImpl {
 
         // Delivery
         let lookup = req.name.trim_start_matches('/');
-        let delivery = match self
-            .resources
-            .topic
-            .get_dispatch_strategy(lookup)
-        {
+        let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
             Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
             Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
             None => "NonReliable".to_string(),

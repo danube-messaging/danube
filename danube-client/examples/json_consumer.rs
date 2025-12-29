@@ -35,16 +35,13 @@ async fn main() -> Result<()> {
     consumer.subscribe().await?;
     println!("The Consumer {} was created", consumer_name);
 
-    let _schema = client.get_schema(topic).await.unwrap();
+    // Phase 5: Start receiving typed messages with automatic deserialization
+    let mut message_stream = consumer.receive_typed::<MyMessage>().await?;
 
-    // Start receiving messages
-    let mut message_stream = consumer.receive().await?;
-
-    while let Some(message) = message_stream.recv().await {
-        let payload = message.payload.clone();
-        // Deserialize the message using the schema
-        match serde_json::from_slice::<MyMessage>(&payload) {
-            Ok(decoded_message) => {
+    while let Some(result) = message_stream.recv().await {
+        match result {
+            Ok((message, decoded_message)) => {
+                // Phase 5: Message is automatically deserialized
                 println!("Received message: {:?}", decoded_message);
 
                 // Acknowledge the message
@@ -53,7 +50,7 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("Failed to decode message: {}", e);
+                eprintln!("Failed to deserialize message: {}", e);
             }
         }
     }

@@ -21,10 +21,15 @@ mod topic_consumer;
 
 mod message_router;
 
-mod schema;
-pub use schema::{Schema, SchemaType};
+// TODO Phase 4: Old schema module removed - migrate to SchemaReference
+// mod schema;
+// pub use schema::{Schema, SchemaType};
 
-mod schema_service;
+// mod schema_service;
+
+// Phase 5: New Schema Registry Client
+mod schema_registry_client;
+pub use schema_registry_client::SchemaRegistryClient;
 
 mod lookup_service;
 

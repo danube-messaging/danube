@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package danube_schema;
+
+// Schema Registry Service for managing schemas across the Danube cluster
+service SchemaRegistry {
+    // Register a new schema or get existing schema ID if identical schema exists
+    rpc RegisterSchema(RegisterSchemaRequest) returns (RegisterSchemaResponse);
+    
+    // Get a specific schema by ID and optional version
+    rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+    
+    // Get the latest version of a schema for a subject
+    rpc GetLatestSchema(GetLatestSchemaRequest) returns (GetSchemaResponse);
+    
+    // List all versions for a subject
+    rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+    
+    // Check if a new schema is compatible with existing versions
+    rpc CheckCompatibility(CheckCompatibilityRequest) returns (CheckCompatibilityResponse);
+    
+    // Delete a specific schema version
+    rpc DeleteSchemaVersion(DeleteSchemaVersionRequest) returns (DeleteSchemaVersionResponse);
+    
+    // Set or update compatibility mode for a subject
+    rpc SetCompatibilityMode(SetCompatibilityModeRequest) returns (SetCompatibilityModeResponse);
+}
+
+// Request to register a new schema
+message RegisterSchemaRequest {
+    string subject = 1;              // Subject name (defaults to topic name)
+    string schema_type = 2;          // "avro", "json_schema", "protobuf", "bytes", "string", "number"
+    bytes schema_definition = 3;     // Schema content (JSON for Avro/JSON Schema, proto for Protobuf)
+    string description = 4;          // Human-readable description
+    string created_by = 5;           // Creator identifier
+    repeated string tags = 6;        // Tags for categorization
+}
+
+// Response after registering a schema
+message RegisterSchemaResponse {
+    uint64 schema_id = 1;            // Globally unique schema ID
+    uint32 version = 2;              // Version number for this subject
+    bool is_new_version = 3;         // false if exact schema already exists
+    string fingerprint = 4;          // SHA-256 hash of schema for client caching
+}
+
+// Request to get a schema by ID
+message GetSchemaRequest {
+    uint64 schema_id = 1;            // Global schema ID
+    optional uint32 version = 2;     // Optional version, if omitted returns latest
+}
+
+// Response containing schema details
+message GetSchemaResponse {
+    uint64 schema_id = 1;
+    uint32 version = 2;
+    string subject = 3;
+    string schema_type = 4;
+    bytes schema_definition = 5;
+    string description = 6;
+    uint64 created_at = 7;
+    string created_by = 8;
+    repeated string tags = 9;
+    string fingerprint = 10;
+    string compatibility_mode = 11;
+}
+
+// Request to get latest schema for a subject
+message GetLatestSchemaRequest {
+    string subject = 1;              // Subject name (usually topic name)
+}
+
+// Request to list all versions of a subject
+message ListVersionsRequest {
+    string subject = 1;
+}
+
+// Response with list of versions
+message ListVersionsResponse {
+    repeated SchemaVersionInfo versions = 1;
+}
+
+// Information about a schema version
+message SchemaVersionInfo {
+    uint32 version = 1;
+    uint64 created_at = 2;
+    string created_by = 3;
+    string description = 4;
+    string fingerprint = 5;
+    uint64 schema_id = 6;
+}
+
+// Request to check compatibility
+message CheckCompatibilityRequest {
+    string subject = 1;
+    bytes new_schema_definition = 2;
+    string schema_type = 3;
+    optional string compatibility_mode = 4;  // Override subject's compatibility mode
+}
+
+// Response with compatibility result
+message CheckCompatibilityResponse {
+    bool is_compatible = 1;
+    repeated string errors = 2;          // Incompatibility reasons if not compatible
+}
+
+// Request to delete a schema version
+message DeleteSchemaVersionRequest {
+    string subject = 1;
+    uint32 version = 2;
+}
+
+// Response for delete operation
+message DeleteSchemaVersionResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Request to set compatibility mode
+message SetCompatibilityModeRequest {
+    string subject = 1;
+    string compatibility_mode = 2;   // "none", "backward", "forward", "full"
+}
+
+// Response for compatibility mode update
+message SetCompatibilityModeResponse {
+    bool success = 1;
+    string message = 2;
+}
