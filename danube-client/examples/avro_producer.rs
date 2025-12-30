@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     // Send messages with Avro schema
     let actions = ["login", "purchase", "logout", "view_product", "add_to_cart"];
 
-    for i in 0..10 {
+    for i in 0..100 {
         let event = UserEvent {
             user_id: format!("user_{}", 1000 + i),
             action: actions[i % actions.len()].to_string(),
