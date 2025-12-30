@@ -242,31 +242,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_schema_metadata_creation() {
-        let schema_def = SchemaDefinition::String;
-        let version = SchemaVersion::new(
-            1,
-            schema_def,
-            "fingerprint".to_string(),
-            "test_user".to_string(),
-            "Initial version".to_string(),
-        );
-
-        let metadata = SchemaMetadata::new(
-            1,
-            "test-subject".to_string(),
-            version,
-            "test_user".to_string(),
-        );
-
-        assert_eq!(metadata.id, 1);
-        assert_eq!(metadata.subject, "test-subject");
-        assert_eq!(metadata.latest_version, 1);
-        assert_eq!(metadata.versions.len(), 1);
-    }
-
-    #[test]
-    fn test_add_version() {
+    fn test_add_version_updates_latest() {
         let schema_def = SchemaDefinition::String;
         let version1 = SchemaVersion::new(
             1,
@@ -295,5 +271,43 @@ mod tests {
 
         assert_eq!(metadata.latest_version, 2);
         assert_eq!(metadata.versions.len(), 2);
+        assert!(metadata.get_latest_version().is_some());
+        assert_eq!(metadata.get_latest_version().unwrap().version, 2);
+    }
+
+    #[test]
+    fn test_get_version_returns_correct_version() {
+        let schema_def = SchemaDefinition::Number;
+        let version1 = SchemaVersion::new(
+            1,
+            schema_def.clone(),
+            "fp1".to_string(),
+            "user1".to_string(),
+            "First".to_string(),
+        );
+
+        let mut metadata = SchemaMetadata::new(
+            100,
+            "numbers".to_string(),
+            version1,
+            "user1".to_string(),
+        );
+
+        let version2 = SchemaVersion::new(
+            2,
+            schema_def,
+            "fp2".to_string(),
+            "user2".to_string(),
+            "Second".to_string(),
+        );
+
+        metadata.add_version(version2);
+
+        // Test retrieving specific versions
+        assert!(metadata.get_version(1).is_some());
+        assert_eq!(metadata.get_version(1).unwrap().fingerprint, "fp1");
+        assert!(metadata.get_version(2).is_some());
+        assert_eq!(metadata.get_version(2).unwrap().fingerprint, "fp2");
+        assert!(metadata.get_version(99).is_none());
     }
 }

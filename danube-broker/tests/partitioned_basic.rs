@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use std::collections::HashSet;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -19,7 +19,6 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_part_basic")
-        .with_schema("my_schema".into(), SchemaType::String)
         .with_partitions(partitions)
         .build();
     producer.create().await?;

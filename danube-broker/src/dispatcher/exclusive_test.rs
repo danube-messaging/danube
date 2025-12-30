@@ -51,6 +51,8 @@ fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
         producer_name: "producer-test".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

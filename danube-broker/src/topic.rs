@@ -14,8 +14,8 @@ use tracing::{info, warn};
 
 use crate::{
     broker_metrics::{
-        SCHEMA_VALIDATION_FAILURES_TOTAL, SCHEMA_VALIDATION_TOTAL, TOPIC_ACTIVE_SUBSCRIPTIONS,
-        TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL, TOPIC_MESSAGE_SIZE_BYTES,
+        TOPIC_ACTIVE_SUBSCRIPTIONS, TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL,
+        TOPIC_MESSAGE_SIZE_BYTES,
     },
     dispatcher::DispatchStrategy,
     message::AckMessage,
@@ -23,11 +23,9 @@ use crate::{
     producer::Producer,
     rate_limiter::RateLimiter,
     resources::{SchemaResources, TopicResources},
-    // Phase 6: Old Schema type removed - using SchemaResources for schema operations
-    schema::ValidationPolicy,
     subscription::{Subscription, SubscriptionOptions},
+    topic_schema::TopicSchemaContext,
 };
-use danube_core::proto::SchemaReference;
 
 #[cfg(test)]
 #[path = "topic_tests.rs"]
@@ -57,16 +55,9 @@ pub(crate) enum TopicState {
 #[derive(Debug)]
 pub(crate) struct Topic {
     pub(crate) topic_name: String,
-    // Phase 6: Legacy schema field removed - using schema_ref with SchemaRegistry
-    // pub(crate) schema: Option<Schema>,
-    // New schema registry reference (wrapped in Mutex for Arc access)
-    schema_ref: Mutex<Option<SchemaReference>>,
-    // Resolved schema ID for fast validation (cached from registry, wrapped in Mutex)
-    resolved_schema_id: Mutex<Option<u64>>,
-    // Schema validation policy (None/Warn/Enforce for schema ID validation)
-    pub(crate) validation_policy: ValidationPolicy,
-    // Enable deep payload validation (default: false, for performance)
-    enable_payload_validation: bool,
+    // Schema context encapsulating all schema-related functionality
+    schema_context: TopicSchemaContext,
+    // Topic-level policies
     pub(crate) topic_policies: Option<Policies>,
     // subscription_name -> Subscription
     pub(crate) subscriptions: Mutex<HashMap<String, Subscription>>,
@@ -77,8 +68,6 @@ pub(crate) struct Topic {
     pub(crate) notifiers: Mutex<Vec<Arc<Notify>>>,
     // handle to metadata topic resources for cleanup operations
     resources_topic: TopicResources,
-    // handle to schema resources for schema resolution
-    resources_schema: SchemaResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
     // topic state for orchestrations like unload
@@ -103,18 +92,13 @@ impl Topic {
 
         Topic {
             topic_name: topic_name.into(),
-            // Phase 6: schema field removed, new fields wrapped in Mutex
-            schema_ref: Mutex::new(None),
-            resolved_schema_id: Mutex::new(None),
-            validation_policy: ValidationPolicy::None,
-            enable_payload_validation: false, // Disabled by default for performance
+            schema_context: TopicSchemaContext::new(resources_schema),
             topic_policies: None,
             subscriptions: Mutex::new(HashMap::new()),
             producers: Mutex::new(HashMap::new()),
             dispatch_strategy,
             notifiers: Mutex::new(Vec::new()),
             resources_topic,
-            resources_schema,
             topic_store,
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
@@ -217,7 +201,9 @@ impl Topic {
         self.validate_message_size(stream_message.payload.len())?;
 
         // Schema validation (if enabled)
-        self.validate_message_schema(&stream_message).await?;
+        self.schema_context
+            .validate_message(&stream_message, &self.topic_name)
+            .await?;
 
         // Validate producer without blocking
         let producer_id = stream_message.msg_id.producer_id;
@@ -485,232 +471,18 @@ impl Topic {
         Ok(())
     }
 
-    // Phase 6: Old schema methods commented out - use SchemaRegistry instead
-    // pub(crate) fn add_schema(&mut self, schema: Schema) -> Result<()> {
-    //     self.schema = Some(schema);
-    //     Ok(())
-    // }
-    //
-    // #[allow(dead_code)]
-    // pub(crate) fn get_schema(&self) -> Option<Schema> {
-    //     self.schema.clone()
-    // }
-    //
-    // #[allow(dead_code)]
-    // pub(crate) fn delete_schema(&self, _schema: Schema) -> Result<()> {
-    //     todo!()
-    // }
-
-    // ===== New Schema Registry Methods =====
-
     /// Set schema reference and resolve to schema ID
-    /// This should be called when topic loads or when producer sets schema
-    pub(crate) fn set_schema_ref(&self, schema_ref: SchemaReference) -> Result<()> {
-        let subject = schema_ref.subject.clone();
-
-        // Resolve schema_ref to schema_id using SchemaResources
-        if let Some(schema_id) = self.resources_schema.get_schema_id(&subject) {
-            // Update both fields atomically
-            if let Ok(mut schema_ref_guard) = self.schema_ref.try_lock() {
-                *schema_ref_guard = Some(schema_ref);
-            }
-            if let Ok(mut resolved_id_guard) = self.resolved_schema_id.try_lock() {
-                *resolved_id_guard = Some(schema_id);
-            }
-
-            info!(
-                "Topic {} resolved schema: subject={}, schema_id={}",
-                self.topic_name, subject, schema_id
-            );
-            Ok(())
-        } else {
-            // Schema not in cache yet - may need to be registered first
-            warn!(
-                "Schema not found in cache for subject: {}. Producer should register schema first.",
-                subject
-            );
-            Err(anyhow!(
-                "Schema '{}' not found in registry. Please register schema before producing messages.",
-                subject
-            ))
-        }
+    ///
+    /// This should be called when a producer sets a schema for the topic.
+    /// Returns an error if schema subject is not found in registry.
+    pub(crate) fn set_schema_ref(
+        &self,
+        schema_ref: danube_core::proto::SchemaReference,
+    ) -> Result<()> {
+        self.schema_context
+            .set_schema_ref(schema_ref, &self.topic_name)
     }
 
-    /// Set validation policy for this topic
-    #[allow(dead_code)]
-    pub(crate) fn set_validation_policy(&mut self, policy: ValidationPolicy) {
-        self.validation_policy = policy;
-    }
-
-    /// Enable or disable deep payload validation (default: false for performance)
-    /// When enabled, validates message payload content against schema definition
-    #[allow(dead_code)]
-    pub(crate) fn set_payload_validation(&mut self, enabled: bool) {
-        self.enable_payload_validation = enabled;
-    }
-
-    /// Validate a message against topic's schema
-    /// Returns Ok(()) if validation passes, Err if fails
-    pub(crate) async fn validate_message_schema(&self, message: &StreamMessage) -> Result<()> {
-        // Skip validation if policy is None
-        if matches!(self.validation_policy, ValidationPolicy::None) {
-            return Ok(());
-        }
-
-        // Record validation attempt
-        counter!(
-            SCHEMA_VALIDATION_TOTAL.name,
-            "topic" => self.topic_name.clone(),
-            "policy" => format!("{:?}", self.validation_policy)
-        )
-        .increment(1);
-
-        // Check if topic has schema enforcement enabled
-        let expected_schema_id = {
-            let resolved_id_guard = self
-                .resolved_schema_id
-                .try_lock()
-                .map_err(|_| anyhow!("Failed to acquire schema lock"))?;
-
-            match *resolved_id_guard {
-                Some(id) => id,
-                None => {
-                    // No schema set for topic
-                    if matches!(self.validation_policy, ValidationPolicy::Enforce) {
-                        return Err(anyhow!(
-                            "Topic {} requires schema but none is configured",
-                            self.topic_name
-                        ));
-                    }
-                    return Ok(()); // Warn mode: allow messages without schema
-                }
-            }
-        };
-
-        // Check if message has schema_id
-        let message_schema_id = match message.schema_id {
-            Some(id) => id,
-            None => {
-                let err = anyhow!(
-                    "Message missing schema_id for topic {} (expected schema_id: {})",
-                    self.topic_name,
-                    expected_schema_id
-                );
-
-                // Record failure
-                counter!(
-                    SCHEMA_VALIDATION_FAILURES_TOTAL.name,
-                    "topic" => self.topic_name.clone(),
-                    "reason" => "missing_schema_id"
-                )
-                .increment(1);
-
-                match self.validation_policy {
-                    ValidationPolicy::Warn => {
-                        warn!("{}", err);
-                        return Ok(()); // Warn but allow
-                    }
-                    ValidationPolicy::Enforce => return Err(err),
-                    ValidationPolicy::None => return Ok(()),
-                }
-            }
-        };
-
-        // Validate schema_id matches
-        if message_schema_id != expected_schema_id {
-            let err = anyhow!(
-                "Schema mismatch for topic {}: message has schema_id={}, expected={}",
-                self.topic_name,
-                message_schema_id,
-                expected_schema_id
-            );
-
-            // Record failure
-            counter!(
-                SCHEMA_VALIDATION_FAILURES_TOTAL.name,
-                "topic" => self.topic_name.clone(),
-                "reason" => "schema_mismatch"
-            )
-            .increment(1);
-
-            match self.validation_policy {
-                ValidationPolicy::Warn => {
-                    warn!("{}", err);
-                    Ok(()) // Warn but allow
-                }
-                ValidationPolicy::Enforce => Err(err),
-                ValidationPolicy::None => Ok(()),
-            }
-        } else {
-            // Schema ID validation passed
-
-            // Phase 6: Deep payload validation (optional, disabled by default)
-            if self.enable_payload_validation {
-                self.validate_payload_content(message).await?;
-            }
-
-            Ok(())
-        }
-    }
-
-    /// Validate message payload content against schema definition (deep validation)
-    /// This is CPU-intensive and disabled by default
-    async fn validate_payload_content(&self, message: &StreamMessage) -> Result<()> {
-        use crate::schema::validator::ValidatorFactory;
-
-        // Get schema definition from resources
-        let schema_id_guard = self
-            .resolved_schema_id
-            .try_lock()
-            .map_err(|_| anyhow!("Failed to acquire schema lock"))?;
-
-        let _schema_id = match *schema_id_guard {
-            Some(id) => id,
-            None => return Ok(()), // No schema configured, skip validation
-        };
-        drop(schema_id_guard);
-
-        // Get the subject from schema_ref
-        let schema_ref_guard = self
-            .schema_ref
-            .try_lock()
-            .map_err(|_| anyhow!("Failed to acquire schema ref lock"))?;
-
-        let subject = match &*schema_ref_guard {
-            Some(ref_val) => ref_val.subject.clone(),
-            None => return Ok(()), // No subject, skip
-        };
-        drop(schema_ref_guard);
-
-        // Fetch schema version from resources
-        let version = message.schema_version.unwrap_or(1);
-        let schema_version = self
-            .resources_schema
-            .get_version(&subject, version)
-            .await
-            .map_err(|e| anyhow!("Schema version not found: {}/{} - {}", subject, version, e))?;
-
-        // Create validator and validate payload
-        let validator = ValidatorFactory::create(&schema_version.schema_def)
-            .map_err(|e| anyhow!("Failed to create validator: {}", e))?;
-
-        validator.validate(&message.payload).map_err(|e| {
-            // Record payload validation failure
-            counter!(
-                SCHEMA_VALIDATION_FAILURES_TOTAL.name,
-                "topic" => self.topic_name.clone(),
-                "reason" => "payload_invalid"
-            )
-            .increment(1);
-
-            anyhow!("Payload validation failed: {}", e)
-        })?;
-
-        Ok(())
-    }
-}
-
-impl Topic {
     // ===== Helper counters =====
     pub(crate) async fn producer_count(&self) -> usize {
         let producers = self.producers.lock().await;

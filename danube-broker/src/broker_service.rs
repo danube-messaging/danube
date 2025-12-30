@@ -6,7 +6,7 @@ use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Code, Status};
-use tracing::{info, warn};
+use tracing::info;
 
 use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, ErrorType, SchemaReference};
 
@@ -130,16 +130,17 @@ impl BrokerService {
                 }
             }
 
-            // Phase 6: Set schema reference if provided by producer
+            // Schema reference validation: if producer explicitly sets schema, it MUST exist
             if let Some(schema_ref) = schema_ref {
                 if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-                    if let Err(e) = topic.set_schema_ref(schema_ref) {
-                        warn!(
-                            "Failed to set schema reference for topic {}: {}",
-                            topic_name, e
-                        );
-                        // Don't fail the request, just warn (schema is optional)
-                    }
+                    topic.set_schema_ref(schema_ref).map_err(|e| {
+                        create_error_status(
+                            Code::FailedPrecondition,
+                            ErrorType::UnknownError,
+                            &format!("Schema validation failed for topic {}: {}", topic_name, e),
+                            None,
+                        )
+                    })?;
                 }
             }
 

@@ -207,6 +207,8 @@ async fn policy_limit_max_message_size() -> AnyResult<()> {
         producer_name: "p".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     };
 
     let err = topic.publish_message_async(msg).await.unwrap_err();
@@ -228,6 +230,8 @@ fn make_msg(i: u64, topic: &str) -> StreamMessage {
         producer_name: "producer-wal".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

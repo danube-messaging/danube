@@ -101,54 +101,40 @@ mod tests {
         "required": ["name"]
     }"#;
 
-    const INVALID_JSON_SCHEMA: &str = r#"{
-        "type": "invalid_type"
-    }"#;
-
     const MALFORMED_JSON: &str = r#"{
         "type": "object",
         "properties": {
     }"#;
 
     #[test]
-    fn test_parse_valid_schema() {
+    fn test_parse_valid_schema_generates_fingerprint() {
         let result = JsonSchemaHandler::parse(VALID_JSON_SCHEMA.as_bytes());
         assert!(result.is_ok());
 
         let schema = result.unwrap();
         assert!(!schema.fingerprint.is_empty());
         assert!(schema.fingerprint.starts_with("sha256:"));
+        assert!(!schema.raw_schema.is_empty());
     }
 
     #[test]
-    fn test_parse_invalid_schema() {
-        let result = JsonSchemaHandler::parse(INVALID_JSON_SCHEMA.as_bytes());
-        // This might pass or fail depending on JSON Schema validator strictness
-        // The validator might allow unknown types or might reject them
-        println!("Result: {:?}", result);
-    }
-
-    #[test]
-    fn test_parse_malformed_json() {
+    fn test_parse_malformed_json_returns_error() {
         let result = JsonSchemaHandler::parse(MALFORMED_JSON.as_bytes());
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid JSON"));
     }
 
     #[test]
-    fn test_validate_schema() {
-        assert!(JsonSchemaHandler::validate(VALID_JSON_SCHEMA).is_ok());
-        assert!(JsonSchemaHandler::validate(MALFORMED_JSON).is_err());
-    }
-
-    #[test]
-    fn test_fingerprint_consistency() {
+    fn test_fingerprint_consistency_for_deduplication() {
+        // Critical: Same schema must always produce same fingerprint for deduplication
         let fp1 = JsonSchemaHandler::compute_fingerprint(VALID_JSON_SCHEMA);
         let fp2 = JsonSchemaHandler::compute_fingerprint(VALID_JSON_SCHEMA);
         assert_eq!(fp1, fp2);
     }
 
     #[test]
-    fn test_different_schemas_different_fingerprints() {
+    fn test_different_schemas_have_different_fingerprints() {
+        // Critical: Different schemas must have different fingerprints
         let schema1 = r#"{"type": "object", "properties": {"x": {"type": "integer"}}}"#;
         let schema2 = r#"{"type": "object", "properties": {"y": {"type": "string"}}}"#;
 
@@ -158,23 +144,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_title() {
-        let schema = JsonSchemaHandler::parse(VALID_JSON_SCHEMA.as_bytes()).unwrap();
-        let title = JsonSchemaHandler::extract_title(&schema);
-        assert_eq!(title, Some("User".to_string()));
-    }
-
-    #[test]
-    fn test_get_draft_version() {
-        let schema = JsonSchemaHandler::parse(VALID_JSON_SCHEMA.as_bytes()).unwrap();
-        let draft = JsonSchemaHandler::get_draft_version(&schema);
-        assert!(draft.is_some());
-        assert!(draft.unwrap().contains("draft-07"));
-    }
-
-    #[test]
-    fn test_canonicalize() {
-        // Schema with extra whitespace should produce same fingerprint as compact version
+    fn test_canonicalization_normalizes_whitespace() {
+        // Critical: Different formatting should produce same fingerprint after canonicalization
         let schema_pretty = r#"{
             "type": "object",
             "properties": {

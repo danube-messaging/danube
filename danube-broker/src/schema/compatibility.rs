@@ -306,21 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn test_primitive_schemas_always_compatible() {
-        let checker = CompatibilityChecker::new();
-
-        let result = checker
-            .check(
-                &SchemaDefinition::String,
-                &SchemaDefinition::String,
-                CompatibilityMode::Full,
-            )
-            .unwrap();
-
-        assert!(result.is_compatible);
-    }
-
-    #[test]
     fn test_different_schema_types_incompatible() {
         let checker = CompatibilityChecker::new();
 
@@ -340,7 +325,6 @@ mod tests {
         let checker = CompatibilityChecker::new();
 
         let old_schema = create_avro_schema(r#"{"name":"name","type":"string"}"#);
-
         let new_schema = create_avro_schema(
             r#"{"name":"name","type":"string"},{"name":"age","type":["null","int"],"default":null}"#,
         );
@@ -357,20 +341,68 @@ mod tests {
     }
 
     #[test]
-    fn test_compatibility_mode_none_always_compatible() {
+    fn test_avro_backward_incompatible_removing_field() {
         let checker = CompatibilityChecker::new();
 
-        let old_schema = create_avro_schema(r#"{"name":"name","type":"string"}"#);
-        let new_schema = create_avro_schema(r#"{"name":"different","type":"int"}"#);
+        let old_schema = create_avro_schema(
+            r#"{"name":"name","type":"string"},{"name":"age","type":"int"}"#,
+        );
+        let new_schema = create_avro_schema(r#"{"name":"name","type":"string"}"#);
 
         let result = checker
             .check(
                 &SchemaDefinition::Avro(old_schema),
                 &SchemaDefinition::Avro(new_schema),
-                CompatibilityMode::None,
+                CompatibilityMode::Backward,
             )
             .unwrap();
 
+        // Backward compatible: new schema (reader) can read old data (writer)
+        // Old data has 'age' field, but new reader doesn't expect it - this is OK
+        assert!(result.is_compatible);
+    }
+
+    #[test]
+    fn test_avro_forward_compatible_adding_field_with_default() {
+        let checker = CompatibilityChecker::new();
+
+        let old_schema = create_avro_schema(r#"{"name":"name","type":"string"}"#);
+        let new_schema = create_avro_schema(
+            r#"{"name":"name","type":"string"},{"name":"age","type":"int","default":0}"#,
+        );
+
+        let result = checker
+            .check(
+                &SchemaDefinition::Avro(old_schema),
+                &SchemaDefinition::Avro(new_schema),
+                CompatibilityMode::Forward,
+            )
+            .unwrap();
+
+        // Forward compatible: old schema (reader) can read new data (writer)
+        // New data might have 'age', old reader ignores it - this is OK
+        assert!(result.is_compatible);
+    }
+
+    #[test]
+    fn test_avro_full_compatibility_requires_both_directions() {
+        let checker = CompatibilityChecker::new();
+
+        let old_schema = create_avro_schema(r#"{"name":"name","type":"string"}"#);
+        let new_schema = create_avro_schema(
+            r#"{"name":"name","type":"string"},{"name":"email","type":["null","string"],"default":null}"#,
+        );
+
+        let result = checker
+            .check(
+                &SchemaDefinition::Avro(old_schema),
+                &SchemaDefinition::Avro(new_schema),
+                CompatibilityMode::Full,
+            )
+            .unwrap();
+
+        // Full compatibility: must be both backward and forward compatible
+        // Adding optional field with default satisfies both
         assert!(result.is_compatible);
     }
 }

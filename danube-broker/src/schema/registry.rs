@@ -268,8 +268,6 @@ impl SchemaRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Full integration tests would require a real MetadataStorage with LocalCache
     // Tests removed after deleting SchemaStorage wrapper - SchemaRegistry now uses SchemaResources directly
 }

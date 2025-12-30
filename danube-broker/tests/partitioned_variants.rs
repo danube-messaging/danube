@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Duration};
@@ -38,7 +38,6 @@ async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Resul
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_part_queue_shared")
-        .with_schema("schema_str".into(), SchemaType::String)
         .with_partitions(partitions)
         .build();
     producer.create().await?;
@@ -155,7 +154,6 @@ async fn partitioned_pubsub_fanout_exclusive_full_receipt() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_part_fanout_excl")
-        .with_schema("schema_str".into(), SchemaType::String)
         .with_partitions(partitions)
         .build();
     producer.create().await?;

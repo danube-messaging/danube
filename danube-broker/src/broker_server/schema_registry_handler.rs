@@ -318,8 +318,6 @@ impl SchemaRegistryTrait for SchemaRegistryService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Integration tests would require setting up a test metadata store
     // For now, these are placeholder tests showing the structure
 

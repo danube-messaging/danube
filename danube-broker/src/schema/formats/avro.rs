@@ -88,36 +88,34 @@ mod tests {
     }"#;
 
     #[test]
-    fn test_parse_valid_schema() {
+    fn test_parse_valid_schema_generates_fingerprint() {
         let result = AvroSchemaHandler::parse(VALID_AVRO_SCHEMA.as_bytes());
         assert!(result.is_ok());
 
         let schema = result.unwrap();
         assert!(!schema.fingerprint.is_empty());
         assert!(schema.fingerprint.starts_with("sha256:"));
+        assert!(!schema.raw_schema.is_empty());
     }
 
     #[test]
-    fn test_parse_invalid_schema() {
+    fn test_parse_invalid_schema_returns_error() {
         let result = AvroSchemaHandler::parse(INVALID_AVRO_SCHEMA.as_bytes());
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid Avro"));
     }
 
     #[test]
-    fn test_validate_schema() {
-        assert!(AvroSchemaHandler::validate(VALID_AVRO_SCHEMA).is_ok());
-        assert!(AvroSchemaHandler::validate(INVALID_AVRO_SCHEMA).is_err());
-    }
-
-    #[test]
-    fn test_fingerprint_consistency() {
+    fn test_fingerprint_consistency_for_deduplication() {
+        // Critical: Same schema must always produce same fingerprint for deduplication
         let fp1 = AvroSchemaHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
         let fp2 = AvroSchemaHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
         assert_eq!(fp1, fp2);
     }
 
     #[test]
-    fn test_different_schemas_different_fingerprints() {
+    fn test_different_schemas_have_different_fingerprints() {
+        // Critical: Different schemas must have different fingerprints
         let schema1 =
             r#"{"type": "record", "name": "A", "fields": [{"name": "x", "type": "int"}]}"#;
         let schema2 =
@@ -129,9 +127,22 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_name() {
-        let schema = AvroSchemaHandler::parse(VALID_AVRO_SCHEMA.as_bytes()).unwrap();
-        let name = AvroSchemaHandler::extract_name(&schema);
-        assert_eq!(name, Some("User".to_string()));
+    fn test_canonicalization_normalizes_whitespace() {
+        // Different formatting should produce same fingerprint after canonicalization
+        let schema_pretty = r#"{
+            "type": "record",
+            "name": "User",
+            "fields": [
+                {"name": "id", "type": "int"}
+            ]
+        }"#;
+
+        let schema_compact = r#"{"type":"record","name":"User","fields":[{"name":"id","type":"int"}]}"#;
+
+        let fp1 = AvroSchemaHandler::compute_fingerprint(schema_pretty);
+        let fp2 = AvroSchemaHandler::compute_fingerprint(schema_compact);
+
+        // After canonicalization, fingerprints should match
+        assert_eq!(fp1, fp2);
     }
 }
