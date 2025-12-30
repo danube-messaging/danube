@@ -1,13 +1,14 @@
 use crate::{
     errors::{DanubeError, Result},
     retry_manager::RetryManager,
+    schema_types::{CompatibilityMode, SchemaType},
     DanubeClient,
 };
 use danube_core::proto::danube_schema::{
     schema_registry_client::SchemaRegistryClient as GrpcSchemaRegistryClient,
     CheckCompatibilityRequest, CheckCompatibilityResponse, GetLatestSchemaRequest,
     GetSchemaRequest, GetSchemaResponse, ListVersionsRequest, RegisterSchemaRequest,
-    RegisterSchemaResponse,
+    RegisterSchemaResponse, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
 };
 
 /// Client for interacting with the Danube Schema Registry
@@ -140,19 +141,26 @@ impl SchemaRegistryClient {
     }
 
     /// Check if a schema is compatible with existing versions
+    ///
+    /// # Arguments
+    /// * `subject` - Schema subject name
+    /// * `schema_data` - Raw schema content
+    /// * `schema_type` - Schema type (Avro, JsonSchema, Protobuf)
+    /// * `mode` - Optional compatibility mode override (uses subject's default if None)
     pub async fn check_compatibility(
         &mut self,
         subject: impl Into<String>,
         schema_data: Vec<u8>,
-        schema_type: impl Into<String>,
+        schema_type: SchemaType,
+        mode: Option<CompatibilityMode>,
     ) -> Result<CheckCompatibilityResponse> {
         self.connect().await?;
 
         let request = CheckCompatibilityRequest {
             subject: subject.into(),
             new_schema_definition: schema_data,
-            schema_type: schema_type.into(),
-            compatibility_mode: None, // Use default compatibility mode
+            schema_type: schema_type.as_str().to_string(),
+            compatibility_mode: mode.map(|m| m.as_str().to_string()),
         };
 
         let mut req = tonic::Request::new(request);
@@ -168,6 +176,49 @@ impl SchemaRegistryClient {
             .await
             .map_err(|e| {
                 DanubeError::Unrecoverable(format!("Failed to check compatibility: {}", e))
+            })?
+            .into_inner();
+
+        Ok(response)
+    }
+
+    /// Set compatibility mode for a subject
+    ///
+    /// # Arguments
+    /// * `subject` - Schema subject name
+    /// * `mode` - Compatibility mode to set
+    ///
+    /// # Example
+    /// ```no_run
+    /// use danube_client::{SchemaRegistryClient, CompatibilityMode};
+    ///
+    /// schema_client.set_compatibility_mode("critical-orders", CompatibilityMode::Full).await?;
+    /// ```
+    pub async fn set_compatibility_mode(
+        &mut self,
+        subject: impl Into<String>,
+        mode: CompatibilityMode,
+    ) -> Result<SetCompatibilityModeResponse> {
+        self.connect().await?;
+
+        let request = SetCompatibilityModeRequest {
+            subject: subject.into(),
+            compatibility_mode: mode.as_str().to_string(),
+        };
+
+        let mut req = tonic::Request::new(request);
+        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
+
+        let response = self
+            .grpc_client
+            .as_mut()
+            .ok_or_else(|| {
+                DanubeError::Unrecoverable("Schema registry client not connected".into())
+            })?
+            .set_compatibility_mode(req)
+            .await
+            .map_err(|e| {
+                DanubeError::Unrecoverable(format!("Failed to set compatibility mode: {}", e))
             })?
             .into_inner();
 
@@ -239,14 +290,21 @@ impl SchemaRegistryClient {
 pub struct SchemaRegistrationBuilder<'a> {
     client: &'a mut SchemaRegistryClient,
     subject: String,
-    schema_type: Option<String>,
+    schema_type: Option<SchemaType>,
     schema_data: Option<Vec<u8>>,
 }
 
 impl<'a> SchemaRegistrationBuilder<'a> {
-    /// Set the schema type (e.g., "json_schema", "avro", "protobuf")
-    pub fn with_type(mut self, schema_type: impl Into<String>) -> Self {
-        self.schema_type = Some(schema_type.into());
+    /// Set the schema type
+    ///
+    /// # Example
+    /// ```no_run
+    /// use danube_client::SchemaType;
+    ///
+    /// .with_type(SchemaType::Avro)
+    /// ```
+    pub fn with_type(mut self, schema_type: SchemaType) -> Self {
+        self.schema_type = Some(schema_type);
         self
     }
 
@@ -267,7 +325,7 @@ impl<'a> SchemaRegistrationBuilder<'a> {
 
         let response = self
             .client
-            .register_schema_internal(self.subject, schema_type, schema_data)
+            .register_schema_internal(self.subject, schema_type.as_str().to_string(), schema_data)
             .await?;
 
         Ok(response.schema_id)

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient};
+use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
 use serde::Serialize;
 use std::thread;
 use std::time::Duration;
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let mut schema_client = SchemaRegistryClient::new(&client).await?;
     let schema_id = schema_client
         .register_schema("my-app-events")
-        .with_type("json_schema")
+        .with_type(SchemaType::JsonSchema)
         .with_schema_data(json_schema.as_bytes())
         .execute()
         .await?;
@@ -48,14 +48,15 @@ async fn main() -> Result<()> {
     let mut i = 0;
 
     while i < 100 {
-        // Phase 5: Use typed messages with automatic serialization
         let message = MyMessage {
             field1: format!("value{}", i),
             field2: 2020 + i,
         };
 
-        // Phase 5: send_typed() handles JSON serialization automatically
-        let message_id = producer.send_typed(&message, None).await?;
+        // Serialize to JSON bytes
+        let json_bytes = serde_json::to_vec(&message)?;
+
+        let message_id = producer.send(json_bytes, None).await?;
         println!("The Message with id {} was sent", message_id);
 
         thread::sleep(Duration::from_secs(1));

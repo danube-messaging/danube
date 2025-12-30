@@ -95,7 +95,55 @@ cargo run --example json_producer
 
 ---
 
-### 5. **avro_producer.rs** & **avro_consumer.rs**
+### 5. **json_consumer_validated.rs**
+**Purpose**: Demonstrates consumer-side schema validation against the Schema Registry at startup.
+
+**Key Features**:
+- Fetches schema from registry before consuming
+- Validates Rust struct against JSON Schema definition
+- Fails at startup if struct doesn't match schema
+- Prevents runtime deserialization errors
+- Schema version tracking and logging
+
+**Use Case**: Production consumers that need to ensure their struct definitions match the producer's schema, preventing silent data loss or deserialization failures.
+
+```bash
+# Run the producer first to register schema
+cargo run --example json_producer
+
+# Then run the validated consumer
+cargo run --example json_consumer_validated
+```
+
+**What it validates**:
+- ✅ Field names match schema properties
+- ✅ Field types are compatible (string, integer, etc.)
+- ✅ Required fields are present
+- ✅ No extra unexpected fields
+
+**Dependencies**: Requires `jsonschema` crate for validation:
+```toml
+[dependencies]
+jsonschema = "0.18"
+```
+
+**When to use**:
+- **Development**: Catch schema mismatches early
+- **CI/CD**: Validate before deployment
+- **Production**: Ensure consumer compatibility
+
+**Output Example**:
+```
+🔍 Fetching schema from registry for subject: my-app-events
+📋 Retrieved schema version: 1
+✅ Struct validated successfully against schema v1
+✅ Consumer validated against schema version: 1
+   Safe to proceed with typed deserialization
+```
+
+---
+
+### 6. **avro_producer.rs** & **avro_consumer.rs**
 **Purpose**: Demonstrates Apache Avro schema usage for efficient binary serialization.
 
 **Key Features**:
@@ -133,7 +181,7 @@ cargo run --example avro_producer
 
 ---
 
-### 6. **schema_evolution.rs**
+### 7. **schema_evolution.rs**
 **Purpose**: Comprehensive demonstration of schema evolution and compatibility checking.
 
 **Key Features**:
@@ -187,16 +235,33 @@ let mut producer = client
 Register schemas and enable validation:
 
 ```rust
+use danube_client::{SchemaRegistryClient, SchemaType, CompatibilityMode};
+
 // 1. Register schema
 let mut schema_client = SchemaRegistryClient::new(&client).await?;
 let schema_id = schema_client
     .register_schema("my-subject")
-    .with_type("avro")  // or "json_schema"
+    .with_type(SchemaType::Avro)  // Type-safe enum: Avro, JsonSchema, Protobuf, etc.
     .with_schema_data(schema_bytes)
     .execute()
     .await?;
 
-// 2. Create producer with schema
+// 2. Check compatibility before evolution
+let compat_result = schema_client
+    .check_compatibility(
+        "my-subject",
+        new_schema_bytes,
+        SchemaType::Avro,
+        None,  // Use subject's default mode (or Some(CompatibilityMode::Full))
+    )
+    .await?;
+
+// 3. Set compatibility mode for a subject
+schema_client
+    .set_compatibility_mode("critical-subject", CompatibilityMode::Full)
+    .await?;
+
+// 4. Create producer with schema subject
 let mut producer = client
     .new_producer()
     .with_topic("/default/my_topic")
@@ -204,8 +269,12 @@ let mut producer = client
     .with_schema_subject("my-subject")  // Link to schema
     .build();
 
-// 3. Consumer automatically validates against schema
-let mut message_stream = consumer.receive_typed::<MyType>().await?;
+// 5. Consumer validates struct at startup (see json_consumer_validated.rs)
+let schema_version = validate_struct_against_registry(
+    &mut schema_client,
+    "my-subject",
+    &MyStruct::default(),
+).await?;
 ```
 
 ---
@@ -214,12 +283,40 @@ let mut message_stream = consumer.receive_typed::<MyType>().await?;
 
 | Type | Description | Use Case |
 |------|-------------|----------|
-| `bytes` | Raw binary data (no validation) | Simple messaging, custom formats |
-| `string` | UTF-8 text data | Plain text messages |
-| `number` | Numeric data | Simple numeric values |
-| `json_schema` | JSON with schema validation | Structured JSON data |
-| `avro` | Apache Avro binary format | High-performance, schema evolution |
-| `protobuf` | Protocol Buffers (future) | Cross-language compatibility |
+| `SchemaType::Bytes` | Raw binary data (no validation) | Simple messaging, custom formats |
+| `SchemaType::String` | UTF-8 text data | Plain text messages |
+| `SchemaType::Number` | Numeric data (int, float, double) | Simple numeric values |
+| `SchemaType::JsonSchema` | JSON with schema validation | Structured JSON data |
+| `SchemaType::Avro` | Apache Avro binary format | High-performance, schema evolution |
+| `SchemaType::Protobuf` | Protocol Buffers | Cross-language compatibility |
+
+All schema types are available as type-safe enums for IDE auto-completion and compile-time validation.
+
+---
+
+## Compatibility Modes
+
+Schema evolution is controlled by compatibility modes. Set these per-subject to define evolution rules:
+
+| Mode | Description | Allows | Use Case |
+|------|-------------|--------|----------|
+| `CompatibilityMode::Backward` | New schema reads old data | Add optional fields, remove fields | **Default**. Consumers upgrade before producers |
+| `CompatibilityMode::Forward` | Old schema reads new data | Add required fields, remove optional fields | Producers upgrade before consumers |
+| `CompatibilityMode::Full` | Both directions | Only safe changes (add optional) | **Strictest**. Critical schemas |
+| `CompatibilityMode::None` | No validation | Any change | Development/testing only |
+
+**Example**:
+```rust
+// Set strict compatibility for critical schemas
+schema_client
+    .set_compatibility_mode("order-events", CompatibilityMode::Full)
+    .await?;
+
+// Development schemas can be flexible
+schema_client
+    .set_compatibility_mode("test-events", CompatibilityMode::None)
+    .await?;
+```
 
 ---
 
@@ -227,9 +324,11 @@ let mut message_stream = consumer.receive_typed::<MyType>().await?;
 
 ### Register Schema
 ```rust
+use danube_client::SchemaType;
+
 let schema_id = schema_client
     .register_schema("my-subject")
-    .with_type("avro")
+    .with_type(SchemaType::Avro)  // Type-safe enum
     .with_schema_data(schema_bytes)
     .execute()
     .await?;
@@ -237,23 +336,40 @@ let schema_id = schema_client
 
 ### Check Compatibility
 ```rust
+use danube_client::{SchemaType, CompatibilityMode};
+
 let result = schema_client
-    .check_compatibility("my-subject")
-    .with_schema_data(new_schema_bytes)
-    .execute()
+    .check_compatibility(
+        "my-subject",
+        new_schema_bytes,
+        SchemaType::Avro,
+        None,  // Optional: Some(CompatibilityMode::Full)
+    )
     .await?;
 
 if result.is_compatible {
     println!("✅ Safe to register!");
+} else {
+    eprintln!("❌ Incompatible: {:?}", result.errors);
 }
+```
+
+### Set Compatibility Mode
+```rust
+use danube_client::CompatibilityMode;
+
+schema_client
+    .set_compatibility_mode("my-subject", CompatibilityMode::Full)
+    .await?;
 ```
 
 ### List Versions
 ```rust
 let versions = schema_client
     .list_versions("my-subject")
-    .execute()
     .await?;
+
+println!("Versions: {:?}", versions);  // e.g., [1, 2, 3]
 ```
 
 ### Get Latest Schema
@@ -261,4 +377,91 @@ let versions = schema_client
 let schema = schema_client
     .get_latest_schema("my-subject")
     .await?;
+
+println!("Version: {}", schema.version);
+println!("Type: {}", schema.schema_type);
 ```
+
+---
+
+## Running Examples
+
+### Prerequisites
+
+1. **Start the Danube broker**:
+   ```bash
+   # From the danube root directory
+   cargo run --bin danube-broker
+   ```
+
+2. **For schema validation examples**, add `jsonschema` to your `Cargo.toml`:
+   ```toml
+   [dependencies]
+   jsonschema = "0.18"
+   ```
+
+### Running Individual Examples
+
+```bash
+# Basic examples
+cargo run --example simple_producer_consumer
+cargo run --example partitions_producer
+cargo run --example partitions_consumer
+
+# Schema registry examples
+cargo run --example json_producer
+cargo run --example json_consumer
+cargo run --example json_consumer_validated  # Requires jsonschema crate
+cargo run --example avro_producer
+cargo run --example avro_consumer
+cargo run --example schema_evolution
+```
+
+### Recommended Learning Path
+
+1. **Start simple**: `simple_producer_consumer.rs` - understand basic messaging
+2. **Add schemas**: `json_producer.rs` + `json_consumer.rs` - learn schema registration
+3. **Validate schemas**: `json_consumer_validated.rs` - production-ready validation
+4. **Schema evolution**: `schema_evolution.rs` - understand compatibility rules
+5. **High performance**: `avro_producer.rs` + `avro_consumer.rs` - binary serialization
+6. **Scale up**: `partitions_producer.rs` + `partitions_consumer.rs` - horizontal scaling
+7. **Reliability**: `reliable_dispatch_*` examples - guaranteed delivery
+
+---
+
+## Best Practices
+
+### Schema Registry Usage
+
+1. **Always register schemas** before producing messages
+2. **Use type-safe enums** (`SchemaType`, `CompatibilityMode`) for API calls
+3. **Validate consumer structs** at startup (see `json_consumer_validated.rs`)
+4. **Set appropriate compatibility modes** per subject:
+   - `Full` for critical schemas
+   - `Backward` for most use cases (default)
+   - `None` only for development
+
+### Consumer Patterns
+
+**Option 1: Manual Struct** (simple, fast)
+- Define struct manually
+- Serialize/deserialize with `serde_json`
+- Good for: Prototypes, tightly-coupled services
+
+**Option 2: Validated Struct** (recommended)
+- Fetch schema from registry at startup
+- Validate struct against schema
+- Use typed struct for convenience
+- Good for: Production services, schema evolution
+
+**Option 3: Dynamic Validation** (flexible)
+- Fetch schema and validate each message
+- Use `serde_json::Value` for dynamic data
+- Good for: Generic consumers, schema exploration
+
+### Producer Patterns
+
+1. **Register schema once** at startup
+2. **Check compatibility** before schema updates
+3. **Reuse schema_id** across restarts (idempotent registration)
+4. **Set schema subject** on producer for automatic validation

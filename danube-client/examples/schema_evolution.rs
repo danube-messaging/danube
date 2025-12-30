@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient};
+use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
 
 /// This example demonstrates schema evolution and compatibility checking.
 /// It shows how to evolve a schema while maintaining backward compatibility.
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
 
     let schema_id_v1 = schema_client
         .register_schema("product-catalog")
-        .with_type("avro")
+        .with_type(SchemaType::Avro)
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
@@ -61,7 +61,12 @@ async fn main() -> Result<()> {
     "#;
 
     let compatibility_result = schema_client
-        .check_compatibility("product-catalog", schema_v2.as_bytes().to_vec(), "avro")
+        .check_compatibility(
+            "product-catalog",
+            schema_v2.as_bytes().to_vec(),
+            SchemaType::Avro,
+            None,
+        )
         .await?;
 
     if compatibility_result.is_compatible {
@@ -70,7 +75,7 @@ async fn main() -> Result<()> {
         // Register the new version
         match schema_client
             .register_schema("product-catalog")
-            .with_type("avro")
+            .with_type(SchemaType::Avro)
             .with_schema_data(schema_v2.as_bytes())
             .execute()
             .await
@@ -91,9 +96,10 @@ async fn main() -> Result<()> {
     }
 
     // Step 3: Try to register an incompatible schema
-    println!("\n📝 Step 3: Testing incompatible schema (v3 - removes required field)");
+    println!("\n📝 Step 3: Testing incompatible schema (v3 - adds required field without default)");
 
-    // Schema v3: Remove a required field (NOT backward compatible)
+    // Schema v3: Add a new REQUIRED field without default (NOT backward compatible)
+    // Old data (v2) doesn't have "category", but v3 requires it → INCOMPATIBLE
     let schema_v3_incompatible = r#"
     {
         "type": "record",
@@ -101,7 +107,10 @@ async fn main() -> Result<()> {
         "namespace": "com.example.catalog",
         "fields": [
             {"name": "product_id", "type": "string"},
-            {"name": "price", "type": "double"}
+            {"name": "name", "type": "string"},
+            {"name": "price", "type": "double"},
+            {"name": "description", "type": ["null", "string"], "default": null},
+            {"name": "category", "type": "string"}
         ]
     }
     "#;
@@ -110,15 +119,21 @@ async fn main() -> Result<()> {
         .check_compatibility(
             "product-catalog",
             schema_v3_incompatible.as_bytes().to_vec(),
-            "avro",
+            SchemaType::Avro,
+            None,
         )
         .await?;
 
     if compatibility_result_v3.is_compatible {
         println!("✅ Schema v3 is compatible (unexpected!)");
+        println!("   Note: This should have been rejected for adding a required field!");
     } else {
-        println!("❌ Schema v3 is NOT compatible (expected - removed required field 'name')");
-        println!("   This protects consumers from breaking changes!");
+        println!("❌ Schema v3 is NOT compatible (expected!)");
+        println!("   Reason: Added required field 'category' without default");
+        println!("   This protects against breaking old data!");
+        if !compatibility_result_v3.errors.is_empty() {
+            println!("   Errors: {:?}", compatibility_result_v3.errors);
+        }
     }
 
     // Step 4: List all versions
@@ -140,16 +155,17 @@ async fn main() -> Result<()> {
 
     println!("\n🎉 Schema evolution demo completed!");
     println!("   Key takeaways:");
-    println!("   • Adding optional fields: ✅ Compatible");
-    println!("   • Removing required fields: ❌ Incompatible");
-    println!("   • Compatibility checks prevent breaking changes");
+    println!("   • Adding optional fields: ✅ Compatible (backward)");
+    println!("   • Adding required fields without default: ❌ Incompatible");
+    println!("   • Compatibility mode: BACKWARD (default)");
+    println!("   • Backward = new schema can read old data");
 
     println!("\n✅ SUCCESS: Schema evolution example completed!");
     println!("   All operations succeeded:");
-    println!("   - Registered schema v1");
-    println!("   - Checked compatibility (v2 compatible)");
-    println!("   - Registered schema v2");
-    println!("   - Checked compatibility (v3 incompatible)");
+    println!("   - Registered schema v1 (3 fields)");
+    println!("   - Checked compatibility (v2 adds optional field → compatible)");
+    println!("   - Registered schema v2 (4 fields)");
+    println!("   - Checked compatibility (v3 adds required field → incompatible)");
     println!("   - Listed {} version(s)", versions.len());
     println!("   - Retrieved latest schema");
 

@@ -247,61 +247,6 @@ impl Producer {
             }
         }
     }
-
-    /// Sends a typed message with automatic JSON serialization
-    ///
-    /// This is a convenience method that serializes the provided data structure  
-    /// to JSON and sends it using the standard `send()` method. The producer
-    /// must have a schema_ref configured via `with_schema_subject()` or
-    /// `with_schema_reference()`.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `T`: The type to serialize. Must implement `serde::Serialize`.
-    ///
-    /// # Parameters
-    ///
-    /// - `data`: The data structure to serialize and send
-    /// - `attributes`: Optional user-defined message attributes
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(u64)`: The sequence ID of the sent message
-    /// - `Err(e)`: Serialization or sending error
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use serde::Serialize;
-    ///
-    /// #[derive(Serialize)]
-    /// struct MyEvent {
-    ///     field1: String,
-    ///     field2: i32,
-    /// }
-    ///
-    /// let event = MyEvent {
-    ///     field1: "value".to_string(),
-    ///     field2: 123,
-    /// };
-    ///
-    /// let msg_id = producer.send_typed(&event, None).await?;
-    /// ```
-    pub async fn send_typed<T: serde::Serialize>(
-        &self,
-        data: &T,
-        attributes: Option<HashMap<String, String>>,
-    ) -> Result<u64> {
-        use crate::errors::DanubeError;
-
-        // Serialize to JSON
-        let json_bytes = serde_json::to_vec(data).map_err(|e| {
-            DanubeError::Unrecoverable(format!("Failed to serialize message: {}", e))
-        })?;
-
-        // Send using the standard send method
-        self.send(json_bytes, attributes).await
-    }
 }
 
 /// A builder for creating a new `Producer` instance.

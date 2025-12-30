@@ -32,13 +32,13 @@ async fn main() -> Result<()> {
     consumer.subscribe().await?;
     println!("The Consumer {} was created", consumer_name);
 
-    // Phase 5: Start receiving typed messages with automatic deserialization
-    let mut message_stream = consumer.receive_typed::<MyMessage>().await?;
+    // Start receiving messages
+    let mut message_stream = consumer.receive().await?;
 
-    while let Some(result) = message_stream.recv().await {
-        match result {
-            Ok((message, decoded_message)) => {
-                // Phase 5: Message is automatically deserialized
+    while let Some(message) = message_stream.recv().await {
+        // Deserialize the message payload from JSON
+        match serde_json::from_slice::<MyMessage>(&message.payload) {
+            Ok(decoded_message) => {
                 println!("Received message: {:?}", decoded_message);
 
                 // Acknowledge the message

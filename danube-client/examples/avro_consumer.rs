@@ -35,15 +35,15 @@ async fn main() -> Result<()> {
     consumer.subscribe().await?;
     println!("✅ Consumer {} subscribed to {}", consumer_name, topic);
 
-    // Start receiving Avro-encoded messages with automatic deserialization
-    let mut message_stream = consumer.receive_typed::<UserEvent>().await?;
+    // Start receiving messages
+    let mut message_stream = consumer.receive().await?;
 
     println!("🎧 Listening for user events (Avro schema)...\n");
 
-    while let Some(result) = message_stream.recv().await {
-        match result {
-            Ok((message, decoded_event)) => {
-                // Message is automatically deserialized from Avro
+    while let Some(message) = message_stream.recv().await {
+        // Deserialize the message payload
+        match serde_json::from_slice::<UserEvent>(&message.payload) {
+            Ok(decoded_event) => {
                 println!("📥 Received User Event:");
                 println!("   User ID: {}", decoded_event.user_id);
                 println!("   Action: {}", decoded_event.action);
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("❌ Failed to deserialize Avro message: {}", e);
+                eprintln!("❌ Failed to deserialize message: {}", e);
             }
         }
     }

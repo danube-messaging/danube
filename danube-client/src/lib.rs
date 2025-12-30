@@ -31,6 +31,9 @@ mod message_router;
 mod schema_registry_client;
 pub use schema_registry_client::SchemaRegistryClient;
 
+mod schema_types;
+pub use schema_types::{CompatibilityMode, SchemaType};
+
 mod lookup_service;
 
 mod connection_manager;

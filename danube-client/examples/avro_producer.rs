@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient};
+use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
 use serde::Serialize;
 use std::thread;
 use std::time::Duration;
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     // Register the schema and get schema ID
     let schema_id = schema_client
         .register_schema("user-events")
-        .with_type("avro")
+        .with_type(SchemaType::Avro)
         .with_schema_data(avro_schema.as_bytes())
         .execute()
         .await?;

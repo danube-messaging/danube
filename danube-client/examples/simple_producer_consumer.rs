@@ -14,31 +14,14 @@ async fn main() -> Result<()> {
 
     let topic = "/default/simple_topic";
 
-    // Spawn producer task
-    let client_producer = client.clone();
-    let producer_handle = tokio::spawn(async move {
-        let mut producer = client_producer
-            .new_producer()
-            .with_topic(topic)
-            .with_name("simple_producer")
-            .build();
+    let mut producer = client
+        .new_producer()
+        .with_topic(topic)
+        .with_name("simple_producer")
+        .build();
 
-        producer.create().await?;
-        println!("✅ Producer created");
-
-        // Send 5 simple messages
-        for i in 1..=5 {
-            let message = format!("Hello Danube! Message #{}", i);
-            let message_id = producer.send(message.as_bytes().to_vec(), None).await?;
-            println!("📤 Sent: '{}' (ID: {})", message, message_id);
-            sleep(Duration::from_secs(1)).await;
-        }
-
-        Ok::<(), anyhow::Error>(())
-    });
-
-    // Give producer time to start
-    sleep(Duration::from_millis(500)).await;
+    producer.create().await?;
+    println!("✅ Producer created");
 
     // Create consumer
     let mut consumer = client
@@ -57,6 +40,19 @@ async fn main() -> Result<()> {
     let mut count = 0;
 
     println!("\n🎧 Listening for messages...\n");
+
+    // Spawn producer task
+    let producer_handle = tokio::spawn(async move {
+        // Send 5 simple messages
+        for i in 1..=5 {
+            let message = format!("Hello Danube! Message #{}", i);
+            let message_id = producer.send(message.as_bytes().to_vec(), None).await?;
+            println!("📤 Sent: '{}' (ID: {})", message, message_id);
+            sleep(Duration::from_secs(1)).await;
+        }
+
+        Ok::<(), anyhow::Error>(())
+    });
 
     while count < 5 {
         if let Some(message) = message_stream.recv().await {
