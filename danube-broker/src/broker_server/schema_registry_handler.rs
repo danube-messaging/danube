@@ -206,16 +206,17 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         request: Request<CheckCompatibilityRequest>,
     ) -> Result<Response<CheckCompatibilityResponse>, Status> {
         let req = request.into_inner();
-        info!(
-            "Checking compatibility for subject: {}, mode: {:?}",
-            req.subject, req.compatibility_mode
-        );
 
         // Parse compatibility mode if provided
-        let mode = req
+        let mode_override = req
             .compatibility_mode
             .as_ref()
             .and_then(|s| crate::schema::CompatibilityMode::from_str(s));
+
+        info!(
+            "Checking compatibility for subject: {}, mode_override: {:?} (will use subject's default if None)",
+            req.subject, mode_override
+        );
 
         match self
             .registry
@@ -223,7 +224,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 &req.subject,
                 &req.schema_type,
                 &req.new_schema_definition,
-                mode,
+                mode_override,
             )
             .await
         {

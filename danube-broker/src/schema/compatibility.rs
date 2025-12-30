@@ -166,14 +166,45 @@ impl CompatibilityChecker {
             (Schema::String, Schema::Bytes) => Ok(true),
             (Schema::Bytes, Schema::String) => Ok(true),
 
-            // Records must have compatible fields (simplified check)
+            // Records must have compatible fields
             (Schema::Record(r_rec), Schema::Record(w_rec)) => {
                 // Same record name
                 if r_rec.name != w_rec.name {
                     return Ok(false);
                 }
-                // Reader can have subset of writer fields (with defaults)
-                Ok(true) // Simplified - full check would validate each field
+
+                // Backward compatibility: reader must be able to read data written with writer
+                // This means:
+                // 1. Every field in writer must be readable by reader (reader has it or can ignore it)
+                // 2. Every required field in reader must exist in writer
+
+                // Check that all required reader fields exist in writer
+                for reader_field in &r_rec.fields {
+                    let field_exists_in_writer =
+                        w_rec.fields.iter().any(|wf| wf.name == reader_field.name);
+
+                    // If reader expects a field but writer doesn't have it, need a default
+                    if !field_exists_in_writer {
+                        // Check if reader field has a default value or is optional (union with null)
+                        let has_default = match &reader_field.schema {
+                            Schema::Union(union_schema) => {
+                                // If it's a union with null, it's optional
+                                union_schema
+                                    .variants()
+                                    .iter()
+                                    .any(|s| matches!(s, Schema::Null))
+                            }
+                            _ => reader_field.default.is_some(),
+                        };
+
+                        if !has_default {
+                            // Required field in reader doesn't exist in writer - incompatible
+                            return Ok(false);
+                        }
+                    }
+                }
+
+                Ok(true)
             }
 
             // Arrays with compatible items
