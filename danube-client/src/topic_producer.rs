@@ -40,6 +40,8 @@ pub(crate) struct TopicProducer {
     schema_ref: Option<SchemaReference>,
     // resolved schema_id for message validation (cached)
     schema_id: Option<u64>,
+    // resolved schema_version (cached)
+    schema_version: Option<u32>,
     // the retention strategy for the topic
     dispatch_strategy: ConfigDispatchStrategy,
     // other configurable options for the producer
@@ -75,6 +77,7 @@ impl TopicProducer {
             request_id: AtomicU64::new(0),
             schema_ref,
             schema_id: None,
+            schema_version: None,
             dispatch_strategy,
             producer_options,
             stream_client: None,
@@ -124,6 +127,30 @@ impl TopicProducer {
                         .health_check_service
                         .start_health_check(&self.client.uri, 0, response.producer_id, stop_signal)
                         .await;
+
+                    // If producer has schema_ref, resolve schema metadata and cache it
+                    if let Some(schema_ref) = self.schema_ref.clone() {
+                        match self.resolve_schema_metadata(&schema_ref).await {
+                            Ok((schema_id, schema_version)) => {
+                                self.schema_id = Some(schema_id);
+                                self.schema_version = Some(schema_version);
+                                tracing::debug!(
+                                    "Producer '{}' cached schema: id={}, version={}",
+                                    self.producer_name,
+                                    schema_id,
+                                    schema_version
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Producer '{}' failed to resolve schema metadata: {}. Messages will not have schema info.",
+                                    self.producer_name,
+                                    e
+                                );
+                                // Don't fail producer creation, just log warning
+                            }
+                        }
+                    }
 
                     return Ok(response.producer_id);
                 }
@@ -195,7 +222,7 @@ impl TopicProducer {
             subscription_name: None,
             attributes: attr,
             schema_id: self.schema_id,
-            schema_version: None, // TODO: Add version tracking
+            schema_version: self.schema_version,
         };
 
         let req: ProtoStreamMessage = send_message.into();
@@ -219,5 +246,28 @@ impl TopicProducer {
         let client = ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone());
         self.stream_client = Some(client);
         Ok(())
+    }
+
+    /// Resolve schema_id and version from schema registry
+    ///
+    /// This method queries the schema registry to get the latest schema metadata
+    /// for the given schema subject. The metadata is cached and attached to all
+    /// messages sent by this producer.
+    ///
+    /// Note: Creates a temporary SchemaRegistryClient. The connection is efficiently
+    /// reused via the client's connection manager, so this is only done once during
+    /// producer creation.
+    async fn resolve_schema_metadata(
+        &mut self,
+        schema_ref: &SchemaReference,
+    ) -> Result<(u64, u32)> {
+        use crate::SchemaRegistryClient;
+
+        let mut schema_client = SchemaRegistryClient::new(&self.client).await?;
+
+        // Get latest schema for the subject
+        let schema_response = schema_client.get_latest_schema(&schema_ref.subject).await?;
+
+        Ok((schema_response.schema_id, schema_response.version))
     }
 }

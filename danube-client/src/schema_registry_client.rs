@@ -24,10 +24,15 @@ pub struct SchemaRegistryClient {
 impl SchemaRegistryClient {
     /// Create a new SchemaRegistryClient from a DanubeClient
     pub async fn new(client: &DanubeClient) -> Result<Self> {
-        Ok(SchemaRegistryClient {
-            client: client.clone(),
+        Ok(Self::new_internal(client.clone()))
+    }
+
+    /// Internal constructor for building schema registry client synchronously
+    pub(crate) fn new_internal(client: DanubeClient) -> Self {
+        SchemaRegistryClient {
+            client,
             grpc_client: None,
-        })
+        }
     }
 
     /// Connect to the schema registry service

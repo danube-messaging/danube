@@ -24,8 +24,6 @@ pub struct DanubeClient {
     pub(crate) uri: Uri,
     pub(crate) cnx_manager: Arc<ConnectionManager>,
     pub(crate) lookup_service: LookupService,
-    // TODO Phase 4: schema_service removed, use SchemaRegistry client
-    // pub(crate) schema_service: SchemaService,
     pub(crate) health_check_service: HealthCheckService,
     pub(crate) auth_service: AuthService,
 }
@@ -39,9 +37,6 @@ impl DanubeClient {
 
         let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
 
-        // TODO Phase 4: schema_service removed
-        // let schema_service = SchemaService::new(cnx_manager.clone(), auth_service.clone());
-
         let health_check_service =
             HealthCheckService::new(cnx_manager.clone(), auth_service.clone());
 
@@ -49,8 +44,6 @@ impl DanubeClient {
             uri: uri.clone(),
             cnx_manager,
             lookup_service,
-            // TODO Phase 4: schema_service removed
-            // schema_service,
             health_check_service,
             auth_service,
         }
