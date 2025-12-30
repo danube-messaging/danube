@@ -33,13 +33,11 @@ async fn backward_compatibility_add_optional_field() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{name}}");
 
     // Now set backward compatibility mode
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
-    println!("✅ Set compatibility mode to BACKWARD");
 
     // Version 2: Add optional field (BACKWARD COMPATIBLE)
     let schema_v2 = r#"{"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}, "required": ["name"]}"#;
@@ -54,7 +52,6 @@ async fn backward_compatibility_add_optional_field() -> Result<()> {
         result.is_ok(),
         "Adding optional field should be backward compatible"
     );
-    println!("✅ Version 2 registered: {{name, email?}} - BACKWARD COMPATIBLE");
 
     Ok(())
 }
@@ -80,7 +77,6 @@ async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{name, age}}");
 
     // Now set backward compatibility mode
     schema_client
@@ -101,7 +97,6 @@ async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
         result.is_err(),
         "Removing required field should fail backward compatibility"
     );
-    println!("✅ Version 2 rejected - removing 'age' is NOT backward compatible");
 
     Ok(())
 }
@@ -125,13 +120,11 @@ async fn forward_compatibility_remove_optional_field() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{name, nickname?}}");
 
     // Set forward compatibility mode
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Forward)
         .await?;
-    println!("✅ Set compatibility mode to FORWARD");
 
     // Version 2: Remove optional field (FORWARD COMPATIBLE)
     let schema_v2 =
@@ -147,7 +140,6 @@ async fn forward_compatibility_remove_optional_field() -> Result<()> {
         result.is_ok(),
         "Removing optional field should be forward compatible"
     );
-    println!("✅ Version 2 registered: {{name}} - FORWARD COMPATIBLE");
 
     Ok(())
 }
@@ -174,7 +166,6 @@ async fn forward_compatibility_add_required_field_fails() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{name}}");
 
     // Set forward compatibility mode
     schema_client
@@ -194,7 +185,6 @@ async fn forward_compatibility_add_required_field_fails() -> Result<()> {
         result.is_err(),
         "Adding required field should fail forward compatibility"
     );
-    println!("✅ Version 2 rejected - adding required 'email' is NOT forward compatible");
 
     Ok(())
 }
@@ -218,13 +208,11 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{id, name}}");
 
     // Set full compatibility mode
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Full)
         .await?;
-    println!("✅ Set compatibility mode to FULL");
 
     // Version 2: Add optional field (both backward and forward compatible)
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}, "description": {"type": "string"}}, "required": ["id", "name"]}"#;
@@ -238,7 +226,6 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
         result_ok.is_ok(),
         "Adding optional field should pass FULL compatibility"
     );
-    println!("✅ Version 2 registered: {{id, name, description?}} - FULL COMPATIBLE");
 
     // Version 3: Remove required field (BREAKS compatibility)
     let schema_v3 =
@@ -254,7 +241,6 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
     //     result_fail.is_err(),
     //     "Removing required field should fail FULL compatibility"
     // );
-    println!("✅ Version 3 rejected - removing 'name' is NOT fully compatible");
 
     Ok(())
 }
@@ -279,13 +265,11 @@ async fn compatibility_none_allows_breaking_changes() -> Result<()> {
         .with_schema_data(schema_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Version 1 registered: {{name}}");
 
     // Set compatibility mode to NONE
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::None)
         .await?;
-    println!("✅ Set compatibility mode to NONE");
 
     // Version 2: Completely different schema (allowed with NONE mode)
     let schema_v2 =
@@ -301,7 +285,6 @@ async fn compatibility_none_allows_breaking_changes() -> Result<()> {
         result.is_ok(),
         "Breaking change should be allowed with NONE compatibility"
     );
-    println!("✅ Version 2 registered: {{age}} - NONE mode allows breaking changes");
 
     Ok(())
 }
@@ -326,7 +309,6 @@ async fn avro_backward_compatibility() -> Result<()> {
         .with_schema_data(avro_v1.as_bytes())
         .execute()
         .await?;
-    println!("✅ Avro Version 1 registered");
 
     // Set backward compatibility mode
     schema_client
@@ -346,7 +328,6 @@ async fn avro_backward_compatibility() -> Result<()> {
         result.is_ok(),
         "Avro field with default should be backward compatible"
     );
-    println!("✅ Avro Version 2 registered - added field with default");
 
     Ok(())
 }
@@ -393,7 +374,6 @@ async fn check_compatibility_before_registration() -> Result<()> {
         compat_response.is_compatible,
         "Proposed schema should be compatible"
     );
-    println!("✅ Compatibility check passed without registration");
 
     // Check incompatible schema
     let incompatible_schema =
@@ -413,7 +393,6 @@ async fn check_compatibility_before_registration() -> Result<()> {
     //     !incompat_response.is_compatible,
     //     "Incompatible schema should be rejected"
     // );
-    println!("✅ Incompatible schema correctly identified");
 
     Ok(())
 }
@@ -443,7 +422,6 @@ async fn multiple_versions_evolution() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
-    println!("✅ Set compatibility mode to BACKWARD");
 
     // V2: {{id, name?}}
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["id"]}"#;
@@ -467,7 +445,6 @@ async fn multiple_versions_evolution() -> Result<()> {
         result.is_ok(),
         "V3 should be backward compatible with previous versions"
     );
-    println!("✅ Multiple version evolution validated successfully");
 
     Ok(())
 }

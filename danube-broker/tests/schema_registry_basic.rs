@@ -31,7 +31,6 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .execute()
         .await?;
 
-    println!("✅ Registered JSON schema with ID: {}", json_id);
 
     // Avro Schema
     let avro_schema = r#"{"type": "record", "name": "User", "fields": [{"name": "name", "type": "string"}, {"name": "age", "type": "int"}]}"#;
@@ -42,43 +41,32 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .execute()
         .await?;
 
-    println!("✅ Registered Avro schema with ID: {}", avro_id);
 
     // String Schema
-    let string_id = schema_client
+    let _string_id = schema_client
         .register_schema("log-events-string")
         .with_type(SchemaType::String)
         .with_schema_data(b"")
         .execute()
         .await?;
 
-    println!("✅ Registered String schema with ID: {}", string_id);
 
     // Bytes Schema
-    let bytes_id = schema_client
+    let _bytes_id = schema_client
         .register_schema("binary-events")
         .with_type(SchemaType::Bytes)
         .with_schema_data(b"")
         .execute()
         .await?;
 
-    println!("✅ Registered Bytes schema with ID: {}", bytes_id);
 
     // Verify retrieval
     let retrieved_json = schema_client.get_latest_schema("user-events-json").await?;
     assert_eq!(retrieved_json.schema_id, json_id);
     assert_eq!(retrieved_json.version, 1);
-    println!(
-        "✅ Retrieved JSON schema: version {}",
-        retrieved_json.version
-    );
 
     let retrieved_avro = schema_client.get_latest_schema("user-events-avro").await?;
     assert_eq!(retrieved_avro.schema_id, avro_id);
-    println!(
-        "✅ Retrieved Avro schema: version {}",
-        retrieved_avro.version
-    );
 
     Ok(())
 }
@@ -95,14 +83,13 @@ async fn producer_with_registered_schema_succeeds() -> Result<()> {
 
     // Register schema FIRST
     let json_schema = r#"{"type": "object", "properties": {"msg": {"type": "string"}}}"#;
-    let schema_id = schema_client
+    let _schema_id = schema_client
         .register_schema("test-registered-schema")
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(json_schema.as_bytes())
         .execute()
         .await?;
 
-    println!("✅ Schema registered with ID: {}", schema_id);
 
     // Create producer with schema reference - should succeed
     let mut producer = client
@@ -117,13 +104,11 @@ async fn producer_with_registered_schema_succeeds() -> Result<()> {
         result.is_ok(),
         "Producer creation should succeed with registered schema"
     );
-    println!("✅ Producer created successfully with registered schema");
 
     // Send a message to verify it works
     let payload = r#"{"msg": "hello"}"#;
     let send_result = producer.send(payload.as_bytes().to_vec(), None).await;
     assert!(send_result.is_ok(), "Message send should succeed");
-    println!("✅ Message sent successfully");
 
     Ok(())
 }
@@ -153,7 +138,6 @@ async fn producer_with_unregistered_schema_fails() -> Result<()> {
     );
 
     let error_msg = result.unwrap_err().to_string();
-    println!("✅ Producer correctly failed with error: {}", error_msg);
     assert!(
         error_msg.contains("not found") || error_msg.contains("validation failed"),
         "Error should mention schema not found"
@@ -183,12 +167,10 @@ async fn producer_without_schema_works() -> Result<()> {
         result.is_ok(),
         "Producer creation should succeed without schema"
     );
-    println!("✅ Producer created successfully without schema (implicit Bytes)");
 
     // Send arbitrary bytes
     let send_result = producer.send(b"any bytes work".to_vec(), None).await;
     assert!(send_result.is_ok(), "Message send should succeed");
-    println!("✅ Message sent successfully without schema enforcement");
 
     Ok(())
 }
@@ -213,7 +195,6 @@ async fn schema_versioning_evolution() -> Result<()> {
         .execute()
         .await?;
 
-    println!("✅ Version 1 registered with ID: {}", id_v1);
 
     // Version 2: Add optional field (backward compatible)
     let schema_v2 = r#"{"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}}"#;
@@ -224,7 +205,6 @@ async fn schema_versioning_evolution() -> Result<()> {
         .execute()
         .await?;
 
-    println!("✅ Version 2 registered with ID: {}", id_v2);
 
     // In this schema registry, versions of same subject share the schema_id
     // Versions are tracked separately
@@ -234,11 +214,9 @@ async fn schema_versioning_evolution() -> Result<()> {
     let latest = schema_client.get_latest_schema(subject).await?;
     assert_eq!(latest.schema_id, id_v1); // Same ID for subject
     assert_eq!(latest.version, 2, "Latest version should be 2");
-    println!("✅ Latest schema is version 2");
 
     // Note: get_schema_version(schema_id, version) is not implemented yet
     // The broker requires using get_latest_schema with subject name instead
-    println!("✅ Schema versioning validated (retrieve by version not yet implemented)");
 
     Ok(())
 }
@@ -287,25 +265,21 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
     // Send message
     let payload = r#"{"data": "test"}"#;
     producer.send(payload.as_bytes().to_vec(), None).await?;
-    println!("✅ Message sent with schema ID: {}", schema_id);
 
     // Receive and verify schema metadata
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message");
 
-    println!("✅ Message received");
 
     // Verify schema metadata is present
     if let Some(msg_schema_id) = message.schema_id {
-        println!("✅ Message has schema_id: {}", msg_schema_id);
         assert_eq!(msg_schema_id, schema_id, "Schema ID should match");
     } else {
         panic!("Message should have schema_id");
     }
 
     if let Some(version) = message.schema_version {
-        println!("✅ Message has schema_version: {}", version);
         assert_eq!(version, 1, "Schema version should be 1");
     } else {
         panic!("Message should have schema_version");
@@ -351,7 +325,6 @@ async fn multiple_producers_same_schema() -> Result<()> {
         .build();
     producer2.create().await?;
 
-    println!("✅ Both producers created with same schema subject");
 
     // Both send messages
     producer1
@@ -361,7 +334,6 @@ async fn multiple_producers_same_schema() -> Result<()> {
         .send(r#"{"value": 2}"#.as_bytes().to_vec(), None)
         .await?;
 
-    println!("✅ Both producers sent messages successfully");
 
     Ok(())
 }

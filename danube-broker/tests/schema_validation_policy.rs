@@ -33,7 +33,6 @@ async fn matching_schemas_end_to_end() -> Result<()> {
         .with_schema_data(json_schema.as_bytes())
         .execute()
         .await?;
-    println!("✅ Schema registered with ID: {}", schema_id);
 
     // Create producer with schema
     let mut producer = client
@@ -62,7 +61,6 @@ async fn matching_schemas_end_to_end() -> Result<()> {
     producer
         .send(serde_json::to_vec(&valid_payload)?, None)
         .await?;
-    println!("✅ Valid message sent");
 
     // Receive message
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
@@ -70,13 +68,11 @@ async fn matching_schemas_end_to_end() -> Result<()> {
         .expect("Should receive message");
 
     assert_eq!(message.schema_id, Some(schema_id));
-    println!("✅ Message received with correct schema_id");
 
     // Verify payload
     let received_data: serde_json::Value = serde_json::from_slice(&message.payload)?;
     assert_eq!(received_data["message"], "hello");
     assert_eq!(received_data["count"], 42);
-    println!("✅ Payload validated successfully");
 
     consumer.ack(&message).await?;
     Ok(())
@@ -140,10 +136,6 @@ async fn multiple_valid_payloads() -> Result<()> {
     for payload in &payloads {
         producer.send(serde_json::to_vec(payload)?, None).await?;
     }
-    println!(
-        "✅ Sent {} valid messages with different structures",
-        payloads.len()
-    );
 
     // Receive all messages
     for i in 0..payloads.len() {
@@ -155,7 +147,6 @@ async fn multiple_valid_payloads() -> Result<()> {
         assert_eq!(data["string_field"], payloads[i]["string_field"]);
         consumer.ack(&msg).await?;
     }
-    println!("✅ All {} messages received and validated", payloads.len());
 
     Ok(())
 }
@@ -205,7 +196,6 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
     producer1
         .send(json!({"id": 1}).to_string().as_bytes().to_vec(), None)
         .await?;
-    println!("✅ Sent message with schema V1");
 
     // V2: Add optional field
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["id"]}"#;
@@ -235,7 +225,6 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
             None,
         )
         .await?;
-    println!("✅ Sent message with schema V2");
 
     // Receive V1 message
     let msg1 = timeout(Duration::from_secs(5), async { stream.recv().await })
@@ -245,7 +234,6 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
     assert_eq!(data1["id"], 1);
     assert_eq!(msg1.schema_version, Some(1));
     consumer.ack(&msg1).await?;
-    println!("✅ Received and validated V1 message");
 
     // Receive V2 message
     let msg2 = timeout(Duration::from_secs(5), async { stream.recv().await })
@@ -256,7 +244,6 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
     assert_eq!(data2["name"], "test");
     assert_eq!(msg2.schema_version, Some(2));
     consumer.ack(&msg2).await?;
-    println!("✅ Received and validated V2 message");
 
     Ok(())
 }
@@ -288,7 +275,6 @@ async fn avro_schema_end_to_end() -> Result<()> {
         .with_schema_data(avro_schema.as_bytes())
         .execute()
         .await?;
-    println!("✅ Avro schema registered with ID: {}", schema_id);
 
     // Create producer
     let mut producer = client
@@ -320,14 +306,12 @@ async fn avro_schema_end_to_end() -> Result<()> {
     });
 
     producer.send(serde_json::to_vec(&avro_data)?, None).await?;
-    println!("✅ Avro message sent");
 
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message");
 
     assert_eq!(message.schema_id, Some(schema_id));
-    println!("✅ Avro message received with correct schema_id");
 
     consumer.ack(&message).await?;
     Ok(())
@@ -350,7 +334,6 @@ async fn string_schema_type() -> Result<()> {
         .with_schema_data(b"")
         .execute()
         .await?;
-    println!("✅ String schema registered with ID: {}", schema_id);
 
     let mut producer = client
         .new_producer()
@@ -381,7 +364,6 @@ async fn string_schema_type() -> Result<()> {
     for msg in &messages {
         producer.send(msg.as_bytes().to_vec(), None).await?;
     }
-    println!("✅ Sent {} string messages", messages.len());
 
     // Receive and verify
     for expected in &messages {
@@ -394,7 +376,6 @@ async fn string_schema_type() -> Result<()> {
         assert_eq!(msg.schema_id, Some(schema_id));
         consumer.ack(&msg).await?;
     }
-    println!("✅ All string messages validated");
 
     Ok(())
 }
@@ -416,7 +397,6 @@ async fn bytes_schema_type() -> Result<()> {
         .with_schema_data(b"")
         .execute()
         .await?;
-    println!("✅ Bytes schema registered with ID: {}", schema_id);
 
     let mut producer = client
         .new_producer()
@@ -440,7 +420,6 @@ async fn bytes_schema_type() -> Result<()> {
     // Send binary data
     let binary_data = vec![0x00, 0xFF, 0xAB, 0xCD, 0xEF];
     producer.send(binary_data.clone(), None).await?;
-    println!("✅ Binary data sent");
 
     let msg = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
@@ -448,7 +427,6 @@ async fn bytes_schema_type() -> Result<()> {
 
     assert_eq!(msg.payload, binary_data);
     assert_eq!(msg.schema_id, Some(schema_id));
-    println!("✅ Binary data validated");
 
     consumer.ack(&msg).await?;
     Ok(())
@@ -509,7 +487,6 @@ async fn verify_schema_metadata_in_messages() -> Result<()> {
     );
     assert_eq!(msg.schema_version.unwrap(), 1, "Schema version should be 1");
 
-    println!("✅ Schema metadata verified: id={}, version=1", schema_id);
 
     // Note: get_schema_version(schema_id, version) is not implemented yet in broker
     // Would normally use: schema_client.get_schema_version(schema_id, msg.schema_version)
@@ -519,7 +496,6 @@ async fn verify_schema_metadata_in_messages() -> Result<()> {
         .await?;
 
     assert_eq!(retrieved.schema_id, schema_id);
-    println!("✅ Successfully retrieved schema from registry using subject name");
 
     consumer.ack(&msg).await?;
     Ok(())
@@ -601,7 +577,6 @@ async fn multiple_schemas_same_topic() -> Result<()> {
         )
         .await?;
 
-    println!("✅ Sent messages from two producers with different schemas");
 
     // Receive and verify schema IDs differ
     let msg1 = timeout(Duration::from_secs(5), async { stream.recv().await })
@@ -621,11 +596,6 @@ async fn multiple_schemas_same_topic() -> Result<()> {
     assert!(
         received_ids.contains(&id2),
         "Should receive message with schema2"
-    );
-
-    println!(
-        "✅ Consumer received messages with different schema IDs: {} and {}",
-        id1, id2
     );
 
     consumer.ack(&msg1).await?;
