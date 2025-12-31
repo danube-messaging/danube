@@ -11,7 +11,7 @@ pub mod validator;
 
 // Re-export only the public API types that are used externally
 pub use registry::SchemaRegistry;
-pub use types::{CompatibilityMode, SchemaType, ValidationPolicy};
+pub use types::{CompatibilityMode, ValidationPolicy};
 
 // Internal types are available via their modules but not re-exported
 // (e.g., schema::metadata::SchemaMetadata, schema::compatibility::CompatibilityChecker)

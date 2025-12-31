@@ -123,10 +123,19 @@ async fn handle_put_event(
 
     let manager = broker_service.topic_manager.clone();
     match manager.ensure_local(&topic_name).await {
-        Ok((disp_strategy, schema_type)) => info!(
-            "Topic '{}' created on broker {} - Strategy: {}, Schema: {}",
-            topic_name, broker_id, disp_strategy, schema_type
-        ),
+        Ok((disp_strategy, _schema_subject)) => {
+            // Get full schema info for logging (fast LocalCache read)
+            let schema_info = match manager.get_schema_info(&topic_name).await {
+                Some((subject, schema_id, schema_type)) => {
+                    format!("subject={}, id={}, type={}", subject, schema_id, schema_type)
+                }
+                None => "none".to_string(),
+            };
+            info!(
+                "Topic '{}' created on broker {} - Strategy: {}, Schema: {}",
+                topic_name, broker_id, disp_strategy, schema_info
+            );
+        }
         Err(err) => {
             error!("Unable to create the topic due to error: {}", err)
         }
