@@ -16,11 +16,10 @@ pub struct NamespaceResponse {
 pub struct NewTopicRequest {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub schema_type: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub schema_data: ::prost::alloc::string::String,
-    #[prost(enumeration = "DispatchStrategy", tag = "4")]
+    /// Schema subject from Schema Registry (optional: topics can have no schema)
+    #[prost(string, optional, tag = "2")]
+    pub schema_subject: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "DispatchStrategy", tag = "3")]
     pub dispatch_strategy: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -41,11 +40,10 @@ pub struct PartitionedTopicRequest {
     /// number of partitions
     #[prost(uint32, tag = "2")]
     pub partitions: u32,
-    #[prost(string, tag = "3")]
-    pub schema_type: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub schema_data: ::prost::alloc::string::String,
-    #[prost(enumeration = "DispatchStrategy", tag = "5")]
+    /// Schema subject from Schema Registry (optional)
+    #[prost(string, optional, tag = "3")]
+    pub schema_subject: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "DispatchStrategy", tag = "4")]
     pub dispatch_strategy: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -141,17 +139,30 @@ pub struct DescribeTopicRequest {
 pub struct DescribeTopicResponse {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    #[prost(int32, tag = "2")]
-    pub type_schema: i32,
-    #[prost(bytes = "vec", tag = "3")]
-    pub schema_data: ::prost::alloc::vec::Vec<u8>,
-    #[prost(string, repeated, tag = "4")]
+    #[prost(string, repeated, tag = "2")]
     pub subscriptions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "3")]
     pub broker_id: ::prost::alloc::string::String,
     /// delivery: Reliable | NonReliable
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "4")]
     pub delivery: ::prost::alloc::string::String,
+    /// Schema Registry fields (all optional - topic may have no schema)
+    ///
+    /// Schema subject name
+    #[prost(string, optional, tag = "5")]
+    pub schema_subject: ::core::option::Option<::prost::alloc::string::String>,
+    /// Schema ID from registry
+    #[prost(uint64, optional, tag = "6")]
+    pub schema_id: ::core::option::Option<u64>,
+    /// Schema version
+    #[prost(uint32, optional, tag = "7")]
+    pub schema_version: ::core::option::Option<u32>,
+    /// "json_schema", "avro", "protobuf", "string", "bytes"
+    #[prost(string, optional, tag = "8")]
+    pub schema_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// "NONE", "BACKWARD", "FORWARD", "FULL"
+    #[prost(string, optional, tag = "9")]
+    pub compatibility_mode: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -4,6 +4,7 @@ mod topics_admin;
 
 use crate::{
     auth::{AuthConfig, AuthMode},
+    broker_server::SchemaRegistryService,
     broker_service::BrokerService,
     resources::Resources,
 };
@@ -11,6 +12,7 @@ use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, namespace_admin_server::NamespaceAdminServer,
     topic_admin_server::TopicAdminServer,
 };
+use danube_core::proto::danube_schema::schema_registry_server::SchemaRegistryServer;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -22,6 +24,7 @@ pub(crate) struct DanubeAdminImpl {
     broker_service: Arc<BrokerService>,
     resources: Resources,
     auth: AuthConfig,
+    schema_registry: Arc<SchemaRegistryService>,
 }
 
 impl DanubeAdminImpl {
@@ -30,12 +33,14 @@ impl DanubeAdminImpl {
         broker_service: Arc<BrokerService>,
         resources: Resources,
         auth: AuthConfig,
+        schema_registry: Arc<SchemaRegistryService>,
     ) -> Self {
         DanubeAdminImpl {
             admin_addr,
             broker_service,
             resources,
             auth,
+            schema_registry,
         }
     }
     pub(crate) async fn start(self) -> JoinHandle<()> {
@@ -46,10 +51,14 @@ impl DanubeAdminImpl {
             server_builder = self.configure_tls(server_builder).await;
         }
 
+        // Get schema registry service
+        let schema_registry_service = SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
+
         let server = server_builder
             .add_service(BrokerAdminServer::new(self.clone()))
             .add_service(NamespaceAdminServer::new(self.clone()))
-            .add_service(TopicAdminServer::new(self))
+            .add_service(TopicAdminServer::new(self.clone()))
+            .add_service(schema_registry_service)
             .serve(socket_addr);
 
         // Server has started

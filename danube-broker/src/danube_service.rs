@@ -218,7 +218,7 @@ impl DanubeService {
 
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
-            schema_registry,
+            schema_registry.clone(),
             self.service_config.broker_addr.clone(),
             self.service_config.auth.clone(),
         );
@@ -311,6 +311,7 @@ impl DanubeService {
             broker_service_cloned,
             self.resources.clone(),
             self.service_config.auth.clone(),
+            schema_registry,
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;

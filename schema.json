@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UserEvent",
+  "type": "object",
+  "required": ["event_type", "user_id", "timestamp"],
+  "properties": {
+    "event_type": {
+      "type": "string",
+      "enum": ["login", "logout", "signup"]
+    },
+    "user_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "integer"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "ip_address": {"type": "string"},
+        "user_agent": {"type": "string"}
+      }
+    }
+  }
+}

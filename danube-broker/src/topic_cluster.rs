@@ -125,12 +125,12 @@ impl TopicCluster {
                 .await?;
         }
 
-        // 5) add schema reference if provided
-        // TODO: Store schema_ref in ETCD when implementing schema enforcement
-        // For now, schema resolution happens dynamically when topic is loaded
-        if let Some(_schema_ref) = schema_ref {
-            // Schema reference will be resolved when producer connects
-            // and topic is loaded on broker
+        // 5) add schema subject if provided
+        if let Some(schema_ref) = schema_ref {
+            resources
+                .topic
+                .add_topic_schema_subject(topic_name, &schema_ref.subject)
+                .await?;
         }
 
         Ok(())

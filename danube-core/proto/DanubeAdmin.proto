@@ -54,9 +54,8 @@ message NamespaceResponse {
 
 message NewTopicRequest {
   string name = 1;
-  string schema_type = 2;
-  string schema_data = 3;
-  DispatchStrategy dispatch_strategy = 4;
+  optional string schema_subject = 2;  // Schema subject from Schema Registry (optional: topics can have no schema)
+  DispatchStrategy dispatch_strategy = 3;
 }
 
 message TopicRequest {
@@ -68,11 +67,10 @@ message TopicResponse {
 }
 
 message PartitionedTopicRequest {
-  string base_name = 1;          // /namespace/topic
-  uint32 partitions = 2;         // number of partitions
-  string schema_type = 3;
-  string schema_data = 4;
-  DispatchStrategy dispatch_strategy = 5;
+  string base_name = 1;                    // /namespace/topic
+  uint32 partitions = 2;                   // number of partitions
+  optional string schema_subject = 3;      // Schema subject from Schema Registry (optional)
+  DispatchStrategy dispatch_strategy = 4;
 }
 
 message SubscriptionRequest {
@@ -141,11 +139,16 @@ message DescribeTopicRequest {
 
 message DescribeTopicResponse {
   string name = 1;
-  int32 type_schema = 2;
-  bytes schema_data = 3;
-  repeated string subscriptions = 4;
-  string broker_id = 5;
-  string delivery = 6; // delivery: Reliable | NonReliable
+  repeated string subscriptions = 2;
+  string broker_id = 3;
+  string delivery = 4;                     // delivery: Reliable | NonReliable
+  
+  // Schema Registry fields (all optional - topic may have no schema)
+  optional string schema_subject = 5;      // Schema subject name
+  optional uint64 schema_id = 6;           // Schema ID from registry
+  optional uint32 schema_version = 7;      // Schema version
+  optional string schema_type = 8;         // "json_schema", "avro", "protobuf", "string", "bytes"
+  optional string compatibility_mode = 9;  // "NONE", "BACKWARD", "FORWARD", "FULL"
 }
 
 // Broker Unload

@@ -24,7 +24,7 @@ members = [
     # "danube-cli", 
 
     # -- Danube admin cli (Phase 5: Temporarily disabled for testing)
-    # "danube-admin-cli", 
+    "danube-admin-cli", 
     
     # -- Danube admin gateway (BFF for HTTP UI) (Phase 5: Temporarily disabled for testing)
     # "danube-admin-gateway",

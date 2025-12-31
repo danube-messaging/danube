@@ -237,4 +237,43 @@ impl SchemaResources {
         let _ = self.store.delete(&root_path).await;
         Ok(())
     }
+
+    /// Get schema details by subject for admin API
+    /// Returns schema information including schema_id, version, type, and compatibility mode
+    pub(crate) async fn get_schema_by_subject(&self, subject: &str) -> Option<SchemaDetails> {
+        // Get metadata
+        let metadata = match self.get_metadata(subject).await {
+            Ok(meta) => meta,
+            Err(_) => return None,
+        };
+
+        // Get latest version
+        let latest_version = metadata.latest_version;
+        let version_data = match self.get_version(subject, latest_version).await {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+
+        // Get schema type from the schema definition
+        let schema_type = version_data.schema_def.schema_type().to_string();
+
+        // Get compatibility mode (use Display trait)
+        let compatibility_mode = metadata.compatibility_mode.to_string().to_uppercase();
+
+        Some(SchemaDetails {
+            schema_id: metadata.id,
+            version: latest_version,
+            schema_type,
+            compatibility_mode,
+        })
+    }
+}
+
+/// Schema details for admin API responses
+#[derive(Debug, Clone)]
+pub(crate) struct SchemaDetails {
+    pub(crate) schema_id: u64,
+    pub(crate) version: u32,
+    pub(crate) schema_type: String,
+    pub(crate) compatibility_mode: String,
 }
