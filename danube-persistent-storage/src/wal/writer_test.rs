@@ -23,6 +23,8 @@ mod tests {
             producer_name: "test_producer".to_string(),
             subscription_name: None,
             attributes: std::collections::HashMap::new(),
+            schema_id: None,
+            schema_version: None,
         }
     }
 

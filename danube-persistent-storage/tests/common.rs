@@ -30,6 +30,8 @@ pub fn make_test_message(
         producer_name: format!("producer-{}", producer_id),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

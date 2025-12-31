@@ -45,6 +45,8 @@ mod tests {
             producer_name: "test-producer".to_string(),
             subscription_name: None,
             attributes: HashMap::new(),
+            schema_id: None,
+            schema_version: None,
         }
     }
 
