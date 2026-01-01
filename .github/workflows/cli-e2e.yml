@@ -3,10 +3,10 @@ name: CLI E2E Tests
 on:
   pull_request:
     paths:
-      - 'danube-admin-cli/**'
-      - 'danube-cli/**'
-      - 'danube-broker/**'
-      - 'danube-core/proto/DanubeAdmin.proto'
+      - "danube-admin-cli/**"
+      - "danube-cli/**"
+      - "danube-broker/**"
+      - "danube-core/proto/DanubeAdmin.proto"
 
 jobs:
   build_and_test:
@@ -57,6 +57,12 @@ jobs:
           printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
           printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
+      - name: Create test config without TLS for CLI tests
+        run: |
+          cp config/danube_broker.yml config/danube_broker_test.yml
+          # Replace 'mode: tls' with 'mode: none' for CLI tests
+          sed -i 's/mode: tls/mode: none/' config/danube_broker_test.yml
+
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
@@ -65,24 +71,43 @@ jobs:
           RUST_LOG: info
         run: |
           nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker.yml \
+            --config-file ./config/danube_broker_test.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
-          # Wait for admin and discovery ports to be ready
+          
+          # Wait for admin port (50051) to be ready
+          echo "Waiting for admin port 50051..."
           for i in {1..10}; do
             if nc -zv 127.0.0.1 50051; then
-              echo "Broker admin port is ready."
+              echo "✅ Broker admin port is ready."
               break
             elif [ $i -eq 10 ]; then
-              echo "Broker failed to start."
+              echo "❌ Broker admin port failed to start."
               cat broker.log
               exit 1
             fi
-            echo "Waiting for broker to start..."
+            echo "⏳ Waiting for admin port to start..."
             sleep 5
           done
+          
+          # Wait for broker port (6650) to be ready
+          echo "Waiting for broker port 6650..."
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 6650; then
+              echo "✅ Broker port is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "❌ Broker port failed to start."
+              cat broker.log
+              exit 1
+            fi
+            echo "⏳ Waiting for broker port to start..."
+            sleep 3
+          done
+          
+          echo "🎯 Broker is fully ready (admin:50051 and broker:6650 without TLS)"
 
       - name: Run admin CLI E2E tests
         env:

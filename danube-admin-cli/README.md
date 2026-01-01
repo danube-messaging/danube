@@ -140,6 +140,69 @@ Schema: String
 Subscriptions: ["s_pattern_3_excl_1", "s_pattern_3_excl_1", "s_pattern_3_shared_1", "s_pattern_3_shared_1"]
 ```
 
+### Schema Registry
+
+```bash
+# Register schema
+danube-admin-cli schemas register user-events \
+  --schema-type json_schema \
+  --file schemas/user-events.json \
+  --description "User event schema v1" \
+  --tags production users
+
+# Get schema by subject
+danube-admin-cli schemas get --subject user-events
+# JSON output
+danube-admin-cli schemas get --subject user-events --output json
+
+# Get schema by ID
+danube-admin-cli schemas get --id 123
+
+# List versions for a subject
+danube-admin-cli schemas versions user-events
+
+# Check schema compatibility before registering
+danube-admin-cli schemas check user-events \
+  --file schemas/user-events-v2.json \
+  --schema-type json_schema
+
+# Set compatibility mode (none, backward, forward, full)
+danube-admin-cli schemas set-compatibility user-events --mode backward
+
+# Delete specific version
+danube-admin-cli schemas delete user-events --version 1 --confirm
+```
+
+**Examples:**
+
+```bash
+target/debug/danube-admin-cli schemas register payment-events \
+  --schema-type json_schema \
+  --file schemas/payment.json \
+  --description "Payment transaction events"
+✅ Schema registered successfully
+   Subject: payment-events
+   Schema ID: 1
+   Version: 1
+```
+
+```bash
+target/debug/danube-admin-cli schemas versions user-events
+📋 Listing versions for subject 'user-events'...
+✅ Found 2 version(s):
+   • v1
+   • v2
+```
+
+```bash
+target/debug/danube-admin-cli schemas check user-events \
+  --file schemas/user-events-v3.json \
+  --schema-type json_schema
+🔍 Checking compatibility for subject 'user-events'...
+✅ Schema is COMPATIBLE
+   Safe to register as a new version for 'user-events'
+```
+
 ## Reliable dispatch options
 
 The `topics create` command accepts a `--dispatch-strategy` flag.
