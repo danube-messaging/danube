@@ -34,13 +34,13 @@ fn topic_lifecycle_non_partitioned() {
     let expected = format!("/{}", list_name);
     assert!(names.iter().any(|t| t == &expected), "missing {expected} in {names:?}");
 
-    // describe topic (json path contains schema)
+    // describe topic (json path contains schema fields)
     let mut describe = cli();
     describe
         .args(["topics", "describe", &topic, "--output", "json"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("\"schema\""));
+        .stdout(predicates::str::contains("\"schema_id\""));
 
     // subscriptions should be an array (we only assert success here)
     let mut subs = cli();
