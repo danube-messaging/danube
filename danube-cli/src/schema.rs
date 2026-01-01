@@ -186,7 +186,7 @@ pub enum SchemaTypeArg {
     Protobuf,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     Table,
     Json,
@@ -306,7 +306,11 @@ async fn handle_register(
     // Validate schema format before registration
     validate_schema_format(&schema_data, args.schema_type.into())?;
 
-    println!("📤 Registering schema '{}' (type: {:?})...", args.subject, args.schema_type);
+    if args.output == OutputFormat::Json {
+        eprintln!("📤 Registering schema '{}' (type: {:?})...", args.subject, args.schema_type);
+    } else {
+        println!("📤 Registering schema '{}' (type: {:?})...", args.subject, args.schema_type);
+    }
 
     let schema_id = client
         .register_schema(&args.subject)
@@ -348,7 +352,11 @@ async fn handle_get(
         ));
     }
 
-    println!("🔍 Fetching latest schema for subject '{}'...", args.subject);
+    if args.output == OutputFormat::Json {
+        eprintln!("🔍 Fetching latest schema for subject '{}'...", args.subject);
+    } else {
+        println!("🔍 Fetching latest schema for subject '{}'...", args.subject);
+    }
 
     let schema_response = client.get_latest_schema(&args.subject).await?;
 
@@ -391,7 +399,11 @@ async fn handle_versions(
     client: &mut SchemaRegistryClient,
     args: VersionsArgs,
 ) -> Result<()> {
-    println!("📋 Listing versions for subject '{}'...", args.subject);
+    if args.output == OutputFormat::Json {
+        eprintln!("📋 Listing versions for subject '{}'...", args.subject);
+    } else {
+        println!("📋 Listing versions for subject '{}'...", args.subject);
+    }
 
     let versions = client.list_versions(&args.subject).await?;
 
@@ -431,7 +443,11 @@ async fn handle_check(
     // Validate schema format
     validate_schema_format(&schema_data, args.schema_type.into())?;
 
-    println!("🔍 Checking compatibility for subject '{}'...", args.subject);
+    if args.output == OutputFormat::Json {
+        eprintln!("🔍 Checking compatibility for subject '{}'...", args.subject);
+    } else {
+        println!("🔍 Checking compatibility for subject '{}'...", args.subject);
+    }
 
     let compatibility_result = client
         .check_compatibility(&args.subject, schema_data, args.schema_type.into(), None)

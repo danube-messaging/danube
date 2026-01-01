@@ -1,9 +1,10 @@
-name: Admin CLI E2E
+name: CLI E2E Tests
 
 on:
   pull_request:
     paths:
       - 'danube-admin-cli/**'
+      - 'danube-cli/**'
       - 'danube-broker/**'
       - 'danube-core/proto/DanubeAdmin.proto'
 
@@ -88,6 +89,11 @@ jobs:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
         run: cargo test -p danube-admin-cli --tests -- --nocapture
+
+      - name: Run CLI E2E tests
+        env:
+          DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
+        run: cargo test -p danube-cli --tests -- --nocapture
 
       - name: Upload broker logs on failure
         if: failure()
