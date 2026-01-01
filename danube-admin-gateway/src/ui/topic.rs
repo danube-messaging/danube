@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::app::{AppState, CacheEntry};
 use serde::Serialize;
+use serde_json;
 
 #[derive(Clone, Serialize)]
 pub struct TopicPage {
@@ -18,7 +19,6 @@ pub struct TopicPage {
     pub metrics: TopicMetrics,
     pub errors: Vec<String>,
 }
-
 
 #[derive(Clone, Serialize)]
 pub struct Topic {
@@ -112,15 +112,40 @@ pub async fn topic_page(
 
     // Query Prometheus for topic metrics
     let mut errors: Vec<String> = Vec::new();
-    let (metrics, mut q_errors) = query_topic_metrics(&state, &topic).await.unwrap_or_else(|e| {
-        (empty_metrics(), vec![format!("prometheus query failed for topic {}: {}", topic, e)])
-    });
+    let (metrics, mut q_errors) = query_topic_metrics(&state, &topic)
+        .await
+        .unwrap_or_else(|e| {
+            (
+                empty_metrics(),
+                vec![format!(
+                    "prometheus query failed for topic {}: {}",
+                    topic, e
+                )],
+            )
+        });
     errors.append(&mut q_errors);
+
+    // Map new schema registry fields to old format for backward compatibility
+    // Web UI will be updated later to display schema registry information
+    let (type_schema, schema_data) = if let Some(subject) = desc.schema_subject {
+        // Topic has a schema from registry - encode info as JSON for potential debugging
+        let schema_info = serde_json::json!({
+            "schema_subject": subject,
+            "schema_id": desc.schema_id,
+            "schema_version": desc.schema_version,
+            "schema_type": desc.schema_type,
+            "compatibility_mode": desc.compatibility_mode,
+        });
+        (1, STANDARD.encode(schema_info.to_string().as_bytes()))
+    } else {
+        // No schema attached
+        (0, String::new())
+    };
 
     let topic_dto = Topic {
         name: desc.name,
-        type_schema: desc.type_schema,
-        schema_data: STANDARD.encode(desc.schema_data),
+        type_schema,
+        schema_data,
         subscriptions: subs.subscriptions,
     };
     let dto = TopicPage {
@@ -193,16 +218,22 @@ async fn query_topic_metrics(
     let mut errors: Vec<String> = Vec::new();
 
     let q_msg_in_total = format!("sum(danube_topic_messages_in_total{{topic=\"{}\"}})", topic);
-    let q_msg_out_total =
-        format!("sum(danube_consumer_messages_out_total{{topic=\"{}\"}})", topic);
+    let q_msg_out_total = format!(
+        "sum(danube_consumer_messages_out_total{{topic=\"{}\"}})",
+        topic
+    );
     let q_bytes_in_total = format!("sum(danube_topic_bytes_in_total{{topic=\"{}\"}})", topic);
-    let q_bytes_out_total =
-        format!("sum(danube_consumer_bytes_out_total{{topic=\"{}\"}})", topic);
+    let q_bytes_out_total = format!(
+        "sum(danube_consumer_bytes_out_total{{topic=\"{}\"}})",
+        topic
+    );
 
     let q_producers = format!("sum(danube_topic_active_producers{{topic=\"{}\"}})", topic);
     let q_consumers = format!("sum(danube_topic_active_consumers{{topic=\"{}\"}})", topic);
-    let q_subscriptions =
-        format!("sum(danube_topic_active_subscriptions{{topic=\"{}\"}})", topic);
+    let q_subscriptions = format!(
+        "sum(danube_topic_active_subscriptions{{topic=\"{}\"}})",
+        topic
+    );
 
     let q_publish_rate_1m = format!(
         "sum(rate(danube_topic_messages_in_total{{topic=\"{}\"}}[1m]))",
@@ -213,8 +244,10 @@ async fn query_topic_metrics(
         topic
     );
 
-    let q_send_ok_total =
-        format!("sum(danube_producer_send_total{{topic=\"{}\",result=\"ok\"}})", topic);
+    let q_send_ok_total = format!(
+        "sum(danube_producer_send_total{{topic=\"{}\",result=\"ok\"}})",
+        topic
+    );
     let q_send_error_total = format!(
         "sum(danube_producer_send_total{{topic=\"{}\",result=\"error\"}})",
         topic
@@ -236,15 +269,25 @@ async fn query_topic_metrics(
         "danube_producer_send_latency_ms{{topic=\"{}\",quantile=\"0.99\"}}",
         topic
     );
-    let q_size_sum =
-        format!("danube_topic_message_size_bytes_sum{{topic=\"{}\"}}", topic);
-    let q_size_count =
-        format!("danube_topic_message_size_bytes_count{{topic=\"{}\"}}", topic);
+    let q_size_sum = format!("danube_topic_message_size_bytes_sum{{topic=\"{}\"}}", topic);
+    let q_size_count = format!(
+        "danube_topic_message_size_bytes_count{{topic=\"{}\"}}",
+        topic
+    );
 
     let core = CoreCounters {
-        msg_in_total: sum_u64(state.metrics.query_instant(&q_msg_in_total).await, &mut errors),
-        msg_out_total: sum_u64(state.metrics.query_instant(&q_msg_out_total).await, &mut errors),
-        bytes_in_total: sum_u64(state.metrics.query_instant(&q_bytes_in_total).await, &mut errors),
+        msg_in_total: sum_u64(
+            state.metrics.query_instant(&q_msg_in_total).await,
+            &mut errors,
+        ),
+        msg_out_total: sum_u64(
+            state.metrics.query_instant(&q_msg_out_total).await,
+            &mut errors,
+        ),
+        bytes_in_total: sum_u64(
+            state.metrics.query_instant(&q_bytes_in_total).await,
+            &mut errors,
+        ),
         bytes_out_total: sum_u64(
             state.metrics.query_instant(&q_bytes_out_total).await,
             &mut errors,
@@ -271,10 +314,14 @@ async fn query_topic_metrics(
         ),
     };
 
-    let quality_send_ok =
-        sum_u64(state.metrics.query_instant(&q_send_ok_total).await, &mut errors);
-    let quality_send_err =
-        sum_u64(state.metrics.query_instant(&q_send_error_total).await, &mut errors);
+    let quality_send_ok = sum_u64(
+        state.metrics.query_instant(&q_send_ok_total).await,
+        &mut errors,
+    );
+    let quality_send_err = sum_u64(
+        state.metrics.query_instant(&q_send_error_total).await,
+        &mut errors,
+    );
     let mut send_error_by_code: Vec<(String, u64)> = Vec::new();
     match state.metrics.query_instant(&q_send_error_by_code).await {
         Ok(resp) => {
@@ -294,12 +341,28 @@ async fn query_topic_metrics(
         send_error_by_code,
     };
 
-    let p50 = one_f64(state.metrics.query_instant(&q_latency_p50).await, &mut errors);
-    let p95 = one_f64(state.metrics.query_instant(&q_latency_p95).await, &mut errors);
-    let p99 = one_f64(state.metrics.query_instant(&q_latency_p99).await, &mut errors);
+    let p50 = one_f64(
+        state.metrics.query_instant(&q_latency_p50).await,
+        &mut errors,
+    );
+    let p95 = one_f64(
+        state.metrics.query_instant(&q_latency_p95).await,
+        &mut errors,
+    );
+    let p99 = one_f64(
+        state.metrics.query_instant(&q_latency_p99).await,
+        &mut errors,
+    );
     let size_sum = one_f64(state.metrics.query_instant(&q_size_sum).await, &mut errors);
-    let size_count = one_f64(state.metrics.query_instant(&q_size_count).await, &mut errors);
-    let avg = if size_count > 0.0 { size_sum / size_count } else { 0.0 };
+    let size_count = one_f64(
+        state.metrics.query_instant(&q_size_count).await,
+        &mut errors,
+    );
+    let avg = if size_count > 0.0 {
+        size_sum / size_count
+    } else {
+        0.0
+    };
     let latency_size = LatencyAndSize {
         send_latency_ms_p50: p50,
         send_latency_ms_p95: p95,
@@ -375,27 +438,31 @@ async fn build_reliable_metrics(
     errors: &mut Vec<String>,
 ) -> Option<ReliableTopicMetrics> {
     let q_wal_app_total = format!("sum(danube_wal_append_total{{topic=\"{}\"}})", topic);
-    let q_wal_app_bytes = format!(
-        "sum(danube_wal_append_bytes_total{{topic=\"{}\"}})",
+    let q_wal_app_bytes = format!("sum(danube_wal_append_bytes_total{{topic=\"{}\"}})", topic);
+    let q_wal_fsync_total = format!("sum(danube_wal_fsync_total{{topic=\"{}\"}})", topic);
+    let q_wal_p50 = format!(
+        "danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.5\"}}",
         topic
     );
-    let q_wal_fsync_total = format!("sum(danube_wal_fsync_total{{topic=\"{}\"}})", topic);
-    let q_wal_p50 =
-        format!("danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.5\"}}", topic);
-    let q_wal_p95 =
-        format!("danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.95\"}}", topic);
-    let q_wal_p99 =
-        format!("danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.99\"}}", topic);
-    let q_cloud_bytes =
-        format!("sum(danube_cloud_upload_bytes_total{{topic=\"{}\"}})", topic);
+    let q_wal_p95 = format!(
+        "danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.95\"}}",
+        topic
+    );
+    let q_wal_p99 = format!(
+        "danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.99\"}}",
+        topic
+    );
+    let q_cloud_bytes = format!(
+        "sum(danube_cloud_upload_bytes_total{{topic=\"{}\"}})",
+        topic
+    );
     let q_cloud_objects = format!(
         "sum(danube_cloud_upload_objects_total{{topic=\"{}\",result=\"ok\"}})",
         topic
     );
 
     // Determine if reliable by presence of any WAL metric
-    let wal_append_total =
-        sum_u64(state.metrics.query_instant(&q_wal_app_total).await, errors);
+    let wal_append_total = sum_u64(state.metrics.query_instant(&q_wal_app_total).await, errors);
     if wal_append_total == 0
         && one_f64(state.metrics.query_instant(&q_wal_p50).await, errors) == 0.0
         && one_f64(state.metrics.query_instant(&q_wal_p95).await, errors) == 0.0
@@ -406,7 +473,10 @@ async fn build_reliable_metrics(
 
     let wal_append_bytes_total =
         sum_u64(state.metrics.query_instant(&q_wal_app_bytes).await, errors);
-    let wal_fsync_total = sum_u64(state.metrics.query_instant(&q_wal_fsync_total).await, errors);
+    let wal_fsync_total = sum_u64(
+        state.metrics.query_instant(&q_wal_fsync_total).await,
+        errors,
+    );
     let wal_flush_latency_ms_p50 = one_f64(state.metrics.query_instant(&q_wal_p50).await, errors);
     let wal_flush_latency_ms_p95 = one_f64(state.metrics.query_instant(&q_wal_p95).await, errors);
     let wal_flush_latency_ms_p99 = one_f64(state.metrics.query_instant(&q_wal_p99).await, errors);

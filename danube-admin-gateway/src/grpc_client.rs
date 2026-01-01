@@ -170,15 +170,17 @@ impl AdminGrpcClient {
     pub async fn create_topic(
         &self,
         name: &str,
-        schema_type: &str,
-        schema_data: &str,
+        _schema_type: &str,  // Deprecated: kept for API compatibility
+        _schema_data: &str,  // Deprecated: kept for API compatibility
         dispatch_strategy: i32,
     ) -> Result<admin::TopicResponse> {
         let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        // Note: schema_type and schema_data are deprecated.
+        // Topics now use schema_subject from Schema Registry.
+        // Web UI will be updated later to support schema registry.
         let req = admin::NewTopicRequest {
             name: name.to_string(),
-            schema_type: schema_type.to_string(),
-            schema_data: schema_data.to_string(),
+            schema_subject: None,  // No schema until web UI supports schema registry
             dispatch_strategy,
         };
         let fut = async move { client.create_topic(req).await };
@@ -193,16 +195,18 @@ impl AdminGrpcClient {
         &self,
         base_name: &str,
         partitions: u32,
-        schema_type: &str,
-        schema_data: &str,
+        _schema_type: &str,  // Deprecated: kept for API compatibility
+        _schema_data: &str,  // Deprecated: kept for API compatibility
         dispatch_strategy: i32,
     ) -> Result<admin::TopicResponse> {
         let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        // Note: schema_type and schema_data are deprecated.
+        // Topics now use schema_subject from Schema Registry.
+        // Web UI will be updated later to support schema registry.
         let req = admin::PartitionedTopicRequest {
             base_name: base_name.to_string(),
             partitions,
-            schema_type: schema_type.to_string(),
-            schema_data: schema_data.to_string(),
+            schema_subject: None,  // No schema until web UI supports schema registry
             dispatch_strategy,
         };
         let fut = async move { client.create_partitioned_topic(req).await };
