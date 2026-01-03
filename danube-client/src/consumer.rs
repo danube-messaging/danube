@@ -8,7 +8,10 @@ use crate::{
 use danube_core::message::StreamMessage;
 use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -183,7 +186,9 @@ impl Consumer {
                 };
 
                 loop {
-                    if shutdown.load(Ordering::SeqCst) { return; }
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
                     // Try to get stream from consumer (subscribe is handled internally with its own retry)
                     let stream_result = {
                         let mut locked = consumer.lock().await;
@@ -197,7 +202,9 @@ impl Consumer {
                             // Process messages until stream ends or errors
                             while !shutdown.load(Ordering::SeqCst) {
                                 let message_opt = stream.next().await;
-                                if message_opt.is_none() { break; }
+                                if message_opt.is_none() {
+                                    break;
+                                }
                                 let message = message_opt.unwrap();
                                 match message {
                                     Ok(stream_message) => {
@@ -216,17 +223,22 @@ impl Consumer {
                             // Stream ended, retry receive
                         }
                         Err(error) => {
-                            if shutdown.load(Ordering::SeqCst) { return; }
+                            if shutdown.load(Ordering::SeqCst) {
+                                return;
+                            }
                             // Check if this is an unrecoverable error (e.g., stream client not initialized)
                             if matches!(error, DanubeError::Unrecoverable(_)) {
-                                eprintln!("Unrecoverable error detected, attempting resubscription: {:?}", error);
-                                
+                                eprintln!(
+                                    "Unrecoverable error detected, attempting resubscription: {:?}",
+                                    error
+                                );
+
                                 // Attempt to resubscribe for unrecoverable errors
                                 let resubscribe_result = {
                                     let mut locked = consumer.lock().await;
                                     locked.subscribe().await
                                 };
-                                
+
                                 match resubscribe_result {
                                     Ok(_) => {
                                         eprintln!("Resubscription successful after unrecoverable error, continuing...");
@@ -234,24 +246,27 @@ impl Consumer {
                                         continue; // Go back to creating stream_result
                                     }
                                     Err(e) => {
-                                        eprintln!("Resubscription failed after unrecoverable error: {:?}", e);
+                                        eprintln!(
+                                            "Resubscription failed after unrecoverable error: {:?}",
+                                            e
+                                        );
                                         return; // Exit task if resubscription fails
                                     }
                                 }
                             }
-                            
+
                             // Failed to get stream, check if retryable
                             if retry_manager.is_retryable_error(&error) {
                                 attempts += 1;
                                 if attempts > max_retries {
                                     eprintln!("Max retries exceeded for consumer receive, attempting resubscription");
-                                    
+
                                     // Attempt to resubscribe
                                     let resubscribe_result = {
                                         let mut locked = consumer.lock().await;
                                         locked.subscribe().await
                                     };
-                                    
+
                                     match resubscribe_result {
                                         Ok(_) => {
                                             eprintln!("Resubscription successful, continuing...");

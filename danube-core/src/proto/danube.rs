@@ -9,11 +9,35 @@ pub struct ProducerRequest {
     #[prost(string, tag = "3")]
     pub topic_name: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "4")]
-    pub schema: ::core::option::Option<Schema>,
+    pub schema_ref: ::core::option::Option<SchemaReference>,
     #[prost(enumeration = "ProducerAccessMode", tag = "5")]
     pub producer_access_mode: i32,
     #[prost(enumeration = "DispatchStrategy", tag = "6")]
     pub dispatch_strategy: i32,
+}
+/// Reference to a schema in the schema registry
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SchemaReference {
+    /// Subject name (usually topic name)
+    #[prost(string, tag = "1")]
+    pub subject: ::prost::alloc::string::String,
+    #[prost(oneof = "schema_reference::VersionRef", tags = "2, 3, 4")]
+    pub version_ref: ::core::option::Option<schema_reference::VersionRef>,
+}
+/// Nested message and enum types in `SchemaReference`.
+pub mod schema_reference {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum VersionRef {
+        /// Use latest version (true)
+        #[prost(bool, tag = "2")]
+        UseLatest(bool),
+        /// Use specific version number
+        #[prost(uint32, tag = "3")]
+        PinnedVersion(u32),
+        /// Use version >= this number
+        #[prost(uint32, tag = "4")]
+        MinVersion(u32),
+    }
 }
 /// Create Producer response
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -134,6 +158,14 @@ pub struct StreamMessage {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// NEW: Schema identification for registry-based schemas
+    ///
+    /// Global schema ID from registry
+    #[prost(uint64, optional, tag = "8")]
+    pub schema_id: ::core::option::Option<u64>,
+    /// Schema version number
+    #[prost(uint32, optional, tag = "9")]
+    pub schema_version: ::core::option::Option<u32>,
 }
 /// Unique ID of the message
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -231,74 +263,6 @@ pub struct TopicPartitionsResponse {
     pub request_id: u64,
     #[prost(string, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SchemaRequest {
-    #[prost(uint64, tag = "1")]
-    pub request_id: u64,
-    #[prost(string, tag = "2")]
-    pub topic: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SchemaResponse {
-    #[prost(uint64, tag = "1")]
-    pub request_id: u64,
-    #[prost(message, optional, tag = "2")]
-    pub schema: ::core::option::Option<Schema>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Schema {
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(bytes = "vec", tag = "3")]
-    pub schema_data: ::prost::alloc::vec::Vec<u8>,
-    #[prost(enumeration = "schema::TypeSchema", tag = "4")]
-    pub type_schema: i32,
-}
-/// Nested message and enum types in `Schema`.
-pub mod schema {
-    #[derive(
-        Clone,
-        Copy,
-        Debug,
-        PartialEq,
-        Eq,
-        Hash,
-        PartialOrd,
-        Ord,
-        ::prost::Enumeration
-    )]
-    #[repr(i32)]
-    pub enum TypeSchema {
-        Bytes = 0,
-        String = 1,
-        Int64 = 2,
-        Json = 3,
-    }
-    impl TypeSchema {
-        /// String value of the enum field names used in the ProtoBuf definition.
-        ///
-        /// The values are not transformed in any way and thus are considered stable
-        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
-            match self {
-                Self::Bytes => "Bytes",
-                Self::String => "String",
-                Self::Int64 => "Int64",
-                Self::Json => "JSON",
-            }
-        }
-        /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-            match value {
-                "Bytes" => Some(Self::Bytes),
-                "String" => Some(Self::String),
-                "Int64" => Some(Self::Int64),
-                "JSON" => Some(Self::Json),
-                _ => None,
-            }
-        }
-    }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HealthCheckRequest {
@@ -1490,28 +1454,6 @@ pub mod discovery_client {
                 .insert(GrpcMethod::new("danube.Discovery", "TopicPartitions"));
             self.inner.unary(req, path, codec).await
         }
-        /// Get the schema associated with the topic
-        pub async fn get_schema(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SchemaRequest>,
-        ) -> std::result::Result<tonic::Response<super::SchemaResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/danube.Discovery/GetSchema",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("danube.Discovery", "GetSchema"));
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -1545,11 +1487,6 @@ pub mod discovery_server {
             tonic::Response<super::TopicPartitionsResponse>,
             tonic::Status,
         >;
-        /// Get the schema associated with the topic
-        async fn get_schema(
-            &self,
-            request: tonic::Request<super::SchemaRequest>,
-        ) -> std::result::Result<tonic::Response<super::SchemaResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct DiscoveryServer<T> {
@@ -1702,49 +1639,6 @@ pub mod discovery_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = TopicPartitionsSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/danube.Discovery/GetSchema" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetSchemaSvc<T: Discovery>(pub Arc<T>);
-                    impl<T: Discovery> tonic::server::UnaryService<super::SchemaRequest>
-                    for GetSchemaSvc<T> {
-                        type Response = super::SchemaResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::SchemaRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as Discovery>::get_schema(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetSchemaSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

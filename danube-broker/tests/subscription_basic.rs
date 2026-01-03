@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use tokio::time::{sleep, timeout, Duration};
 
 #[path = "test_utils.rs"]
@@ -19,7 +19,6 @@ async fn run_basic_subscription(topic_prefix: &str, sub_type: SubType) -> Result
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_basic")
-        .with_schema("my_schema".into(), SchemaType::String)
         .build();
     producer.create().await?;
 

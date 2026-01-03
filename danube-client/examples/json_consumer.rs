@@ -11,9 +11,6 @@ struct MyMessage {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup tracing
-    tracing_subscriber::fmt::init();
-
     let client = DanubeClient::builder()
         .service_url("http://127.0.0.1:6650")
         .build()
@@ -35,15 +32,12 @@ async fn main() -> Result<()> {
     consumer.subscribe().await?;
     println!("The Consumer {} was created", consumer_name);
 
-    let _schema = client.get_schema(topic).await.unwrap();
-
     // Start receiving messages
     let mut message_stream = consumer.receive().await?;
 
     while let Some(message) = message_stream.recv().await {
-        let payload = message.payload.clone();
-        // Deserialize the message using the schema
-        match serde_json::from_slice::<MyMessage>(&payload) {
+        // Deserialize the message payload from JSON
+        match serde_json::from_slice::<MyMessage>(&message.payload) {
             Ok(decoded_message) => {
                 println!("Received message: {:?}", decoded_message);
 
@@ -53,7 +47,7 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("Failed to decode message: {}", e);
+                eprintln!("Failed to deserialize message: {}", e);
             }
         }
     }

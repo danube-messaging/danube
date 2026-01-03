@@ -1,6 +1,10 @@
 use crate::{
-    errors::Result, message_router::MessageRouter, topic_producer::TopicProducer, DanubeClient,
-    Schema, SchemaType,
+    errors::Result,
+    message_router::MessageRouter,
+    topic_producer::TopicProducer,
+    DanubeClient,
+    // TODO Phase 4: Schema removed
+    // Schema, SchemaType,
 };
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
@@ -12,11 +16,13 @@ use tokio::sync::Mutex;
 ///
 /// The `Producer` struct is designed to handle the creation and management of a producer instance that sends messages to either partitioned or non-partitioned topics.
 /// It manages the producer's state and ensures that messages are sent according to the configured settings.
+use danube_core::proto::SchemaReference as ProtoSchemaReference;
+
 #[derive(Debug)]
 pub struct Producer {
     client: DanubeClient,
     topic_name: String,
-    schema: Schema,
+    schema_ref: Option<ProtoSchemaReference>,
     dispatch_strategy: ConfigDispatchStrategy,
     producer_name: String,
     partitions: Option<usize>,
@@ -29,20 +35,13 @@ impl Producer {
     pub(crate) fn new(
         client: DanubeClient,
         topic_name: String,
-        schema: Option<Schema>,
+        schema_ref: Option<ProtoSchemaReference>,
         dispatch_strategy: Option<ConfigDispatchStrategy>,
         producer_name: String,
         partitions: Option<usize>,
         message_router: Option<MessageRouter>,
         producer_options: ProducerOptions,
     ) -> Self {
-        // default schema is String if not specified
-        let schema = if let Some(sch) = schema {
-            sch
-        } else {
-            Schema::new("string_schema".into(), SchemaType::String)
-        };
-
         let dispatch_strategy = if let Some(retention) = dispatch_strategy {
             retention
         } else {
@@ -52,7 +51,7 @@ impl Producer {
         Producer {
             client,
             topic_name,
-            schema,
+            schema_ref,
             dispatch_strategy,
             producer_name,
             partitions,
@@ -74,7 +73,7 @@ impl Producer {
                     self.client.clone(),
                     self.topic_name.clone(),
                     self.producer_name.clone(),
-                    self.schema.clone(),
+                    self.schema_ref.clone(),
                     self.dispatch_strategy.clone(),
                     self.producer_options.clone(),
                 )]
@@ -91,7 +90,7 @@ impl Producer {
                             self.client.clone(),
                             topic,
                             format!("{}-{}", self.producer_name, partition_id),
-                            self.schema.clone(),
+                            self.schema_ref.clone(),
                             self.dispatch_strategy.clone(),
                             self.producer_options.clone(),
                         )
@@ -129,8 +128,8 @@ impl Producer {
         data: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
     ) -> Result<u64> {
-        use crate::retry_manager::RetryManager;
         use crate::errors::DanubeError;
+        use crate::retry_manager::RetryManager;
 
         let next_partition = match self.partitions {
             Some(_) => self
@@ -150,12 +149,18 @@ impl Producer {
         );
 
         let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 { 5 } else { self.producer_options.max_retries };
+        let max_retries = if self.producer_options.max_retries == 0 {
+            5
+        } else {
+            self.producer_options.max_retries
+        };
 
         loop {
             let send_result = {
                 let mut producers = self.producers.lock().await;
-                producers[next_partition].send(data.clone(), attributes.clone()).await
+                producers[next_partition]
+                    .send(data.clone(), attributes.clone())
+                    .await
             };
 
             match send_result {
@@ -164,13 +169,13 @@ impl Producer {
                     // Check if this is an unrecoverable error (e.g., stream client not initialized)
                     if matches!(error, DanubeError::Unrecoverable(_)) {
                         eprintln!("Unrecoverable error detected in producer send, attempting recreation: {:?}", error);
-                        
+
                         // Attempt to recreate the producer for unrecoverable errors
                         let recreate_result = {
                             let mut producers = self.producers.lock().await;
                             producers[next_partition].create().await
                         };
-                        
+
                         match recreate_result {
                             Ok(_) => {
                                 eprintln!("Producer recreation successful after unrecoverable error, continuing...");
@@ -178,25 +183,33 @@ impl Producer {
                                 continue; // Go back to sending
                             }
                             Err(e) => {
-                                eprintln!("Producer recreation failed after unrecoverable error: {:?}", e);
+                                eprintln!(
+                                    "Producer recreation failed after unrecoverable error: {:?}",
+                                    e
+                                );
                                 return Err(e); // Return error if recreation fails
                             }
                         }
                     }
-                    
+
                     // Failed to send, check if retryable
                     if retry_manager.is_retryable_error(&error) {
                         attempts += 1;
                         if attempts > max_retries {
                             eprintln!("Max retries exceeded for producer send, attempting broker lookup and recreation");
-                            
+
                             // Attempt broker lookup and producer recreation
                             let lookup_and_recreate_result = {
                                 let mut producers = self.producers.lock().await;
                                 let producer = &mut producers[next_partition];
-                                
+
                                 // Perform lookup and reconnect
-                                if let Ok(new_addr) = producer.client.lookup_service.handle_lookup(&producer.client.uri, &producer.topic).await {
+                                if let Ok(new_addr) = producer
+                                    .client
+                                    .lookup_service
+                                    .handle_lookup(&producer.client.uri, &producer.topic)
+                                    .await
+                                {
                                     producer.client.uri = new_addr;
                                     producer.connect(&producer.client.uri.clone()).await?;
                                     // Recreate producer on new connection
@@ -205,7 +218,7 @@ impl Producer {
                                     Err(error)
                                 }
                             };
-                            
+
                             match lookup_and_recreate_result {
                                 Ok(_) => {
                                     eprintln!("Broker lookup and producer recreation successful, continuing...");
@@ -213,7 +226,10 @@ impl Producer {
                                     continue; // Go back to sending
                                 }
                                 Err(e) => {
-                                    eprintln!("Broker lookup and producer recreation failed: {:?}", e);
+                                    eprintln!(
+                                        "Broker lookup and producer recreation failed: {:?}",
+                                        e
+                                    );
                                     return Err(e); // Return error if recreation fails
                                 }
                             }
@@ -234,13 +250,18 @@ impl Producer {
 ///
 /// `ProducerBuilder` provides a fluent API for configuring and instantiating a `Producer`.
 /// It allows you to set various properties that define how the producer will behave and interact with the message broker.
+use danube_core::proto::SchemaReference;
+
 #[derive(Debug, Clone)]
 pub struct ProducerBuilder {
     client: DanubeClient,
     topic: Option<String>,
     num_partitions: Option<usize>,
     producer_name: Option<String>,
-    schema: Option<Schema>,
+    // TODO Phase 4: schema removed
+    // schema: Option<Schema>,
+    // Phase 5: Schema registry support
+    schema_ref: Option<SchemaReference>,
     dispatch_strategy: Option<ConfigDispatchStrategy>,
     producer_options: ProducerOptions,
 }
@@ -252,7 +273,7 @@ impl ProducerBuilder {
             topic: None,
             num_partitions: None,
             producer_name: None,
-            schema: None,
+            schema_ref: None,
             dispatch_strategy: None,
             producer_options: ProducerOptions::default(),
         }
@@ -282,22 +303,27 @@ impl ProducerBuilder {
         self
     }
 
-    /// Sets the schema for the producer, defining the structure of the messages.
+    // ===== Schema Registry Methods =====
+
+    /// Set schema by subject name (uses latest version)
     ///
-    /// This method configures the schema used by the producer to serialize messages. The schema specifies how messages are structured and interpreted.
-    /// It is especially important for ensuring that messages adhere to a specific format and can be properly deserialized by consumers.
+    /// The producer will reference the latest schema version for the given subject.
+    /// The schema must be registered in the schema registry before use.
+    pub fn with_schema_subject(mut self, subject: impl Into<String>) -> Self {
+        use danube_core::proto::schema_reference::VersionRef;
+
+        self.schema_ref = Some(SchemaReference {
+            subject: subject.into(),
+            version_ref: Some(VersionRef::UseLatest(true)),
+        });
+        self
+    }
+
+    /// Set schema with a specific SchemaReference
     ///
-    /// # Parameters
-    ///
-    /// - `schema_name`: The name of the schema. This should be a non-empty string that identifies the schema.
-    ///
-    /// - `schema_type`: The type of the schema, which determines the format of the data:
-    ///   - `SchemaType::Bytes`: Indicates that the schema uses raw byte data.
-    ///   - `SchemaType::String`: Indicates that the schema uses string data.
-    ///   - `SchemaType::Int64`: Indicates that the schema uses 64-bit integer data.
-    ///   - `SchemaType::Json(String)`: Indicates that the schema uses JSON data. The `String` contains the JSON schema definition.
-    pub fn with_schema(mut self, schema_name: String, schema_type: SchemaType) -> Self {
-        self.schema = Some(Schema::new(schema_name, schema_type));
+    /// This allows full control over schema versioning (pinned version, min version, etc.)
+    pub fn with_schema_reference(mut self, schema_ref: SchemaReference) -> Self {
+        self.schema_ref = Some(schema_ref);
         self
     }
 
@@ -367,7 +393,7 @@ impl ProducerBuilder {
         Producer::new(
             self.client,
             topic_name,
-            self.schema,
+            self.schema_ref, // Phase 5: SchemaReference support
             self.dispatch_strategy,
             producer_name,
             self.num_partitions,

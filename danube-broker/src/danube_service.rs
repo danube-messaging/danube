@@ -23,7 +23,7 @@ use tracing::{info, trace, warn};
 use crate::{
     admin::DanubeAdminImpl,
     auth::AuthMode,
-    broker_server,
+    broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
     policies::Policies,
     resources::{Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE},
@@ -207,8 +207,17 @@ impl DanubeService {
         // Start the Broker GRPC server
         //==========================================================================
 
+        // Initialize Schema Registry Service
+        let schema_registry = Arc::new(SchemaRegistryService::new(
+            self.local_cache.clone(),
+            self.meta_store.clone(),
+        ));
+
+        info!("Schema Registry Service initialized");
+
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
+            schema_registry.clone(),
             self.service_config.broker_addr.clone(),
             self.service_config.auth.clone(),
         );
@@ -301,6 +310,7 @@ impl DanubeService {
             broker_service_cloned,
             self.resources.clone(),
             self.service_config.auth.clone(),
+            schema_registry,
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
@@ -322,10 +332,6 @@ impl DanubeService {
         if let Err(e) = result_admin {
             eprintln!("Danube Admin failed: {:?}", e);
         }
-        //server_handle.await?;
-
-        //TODO! evalueate other backgroud services like PublishRateLimiter, DispatchRateLimiter,
-        // compaction, innactivity monitor
 
         Ok(())
     }

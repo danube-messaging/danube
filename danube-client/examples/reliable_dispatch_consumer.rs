@@ -3,9 +3,6 @@ use danube_client::{DanubeClient, SubType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup tracing
-    tracing_subscriber::fmt::init();
-
     let client = DanubeClient::builder()
         .service_url("http://127.0.0.1:6650")
         .build()
@@ -39,9 +36,7 @@ async fn main() -> Result<()> {
             Ok(message_str) => {
                 println!(
                     "Received message: {} | offset: {} | total received bytes: {}",
-                    message_str,
-                    &message.msg_id.topic_offset,
-                    total_received_size
+                    message_str, &message.msg_id.topic_offset, total_received_size
                 );
 
                 consumer.ack(&message).await?;

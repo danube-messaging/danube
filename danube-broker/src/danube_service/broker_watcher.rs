@@ -123,10 +123,22 @@ async fn handle_put_event(
 
     let manager = broker_service.topic_manager.clone();
     match manager.ensure_local(&topic_name).await {
-        Ok((disp_strategy, schema_type)) => info!(
-            "Topic '{}' created on broker {} - Strategy: {}, Schema: {}",
-            topic_name, broker_id, disp_strategy, schema_type
-        ),
+        Ok((disp_strategy, _schema_subject)) => {
+            // Get full schema info for logging (fast LocalCache read)
+            let schema_info = match manager.get_schema_info(&topic_name).await {
+                Some((subject, schema_id, schema_type)) => {
+                    format!(
+                        "subject={}, id={}, type={}",
+                        subject, schema_id, schema_type
+                    )
+                }
+                None => "none".to_string(),
+            };
+            info!(
+                "Topic '{}' created on broker {} - Strategy: {}, Schema: {}",
+                topic_name, broker_id, disp_strategy, schema_info
+            );
+        }
         Err(err) => {
             error!("Unable to create the topic due to error: {}", err)
         }
@@ -271,7 +283,7 @@ async fn bounce_if_not_active(
     true
 }
 
-// Phase 1: Cache readiness verification with retry and fallback
+// Cache readiness verification with retry and fallback
 // Verifies that required metadata (policy/schema/dispatch config) is available in LocalCache
 // before calling create_topic_locally() to avoid watcher ordering races
 async fn verify_cache_readiness_with_retry(
@@ -282,20 +294,15 @@ async fn verify_cache_readiness_with_retry(
 ) -> anyhow::Result<()> {
     for attempt in 0..max_retries {
         // Check if required metadata is available in LocalCache
-        let (has_dispatch, has_schema, has_policies) = {
+        let (has_dispatch, has_policies) = {
             let resources = broker_service.resources.lock().await;
             let dispatch_strategy = resources.topic.get_dispatch_strategy(topic_name);
-            let schema = resources.topic.get_schema(topic_name);
             let policies = resources.topic.get_policies(topic_name);
 
-            (
-                dispatch_strategy.is_some(),
-                schema.is_some(),
-                policies.is_some(),
-            )
+            (dispatch_strategy.is_some(), policies.is_some())
         };
 
-        if has_dispatch && has_schema {
+        if has_dispatch {
             trace!(
                 "Cache readiness verified for topic {} on attempt {}",
                 topic_name,
@@ -306,10 +313,9 @@ async fn verify_cache_readiness_with_retry(
 
         if attempt < max_retries - 1 {
             trace!(
-                "Cache not ready for topic {} (dispatch: {}, schema: {}, policies: {}), retrying in {:?}",
+                "Cache not ready for topic {} (dispatch: {}, policies: {}), retrying in {:?}",
                 topic_name,
                 has_dispatch,
-                has_schema,
                 has_policies,
                 retry_delay
             );

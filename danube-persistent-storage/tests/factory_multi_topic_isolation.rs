@@ -32,6 +32,8 @@ fn make_msg(topic: &str, i: u64) -> StreamMessage {
         producer_name: "test-producer".to_string(),
         subscription_name: None,
         attributes: Default::default(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

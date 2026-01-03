@@ -9,7 +9,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
@@ -46,7 +46,6 @@ async fn test_notification_coalescing_recovery() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_coalescing")
-        .with_schema("schema_coalesce".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
@@ -145,7 +144,6 @@ async fn test_subscription_creation_race_condition() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_race")
-        .with_schema("schema_race".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
@@ -248,7 +246,6 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_disconnect")
-        .with_schema("schema_disconnect".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
@@ -380,7 +377,6 @@ async fn test_poll_next_returns_none_recovery() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_poll_none")
-        .with_schema("schema_poll_none".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;

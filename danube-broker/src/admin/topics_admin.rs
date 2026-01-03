@@ -1,13 +1,16 @@
 use crate::admin::DanubeAdminImpl;
-use crate::schema::{Schema, SchemaType};
 use danube_core::admin_proto::{
     topic_admin_server::TopicAdmin, BrokerRequest, DescribeTopicRequest, DescribeTopicResponse,
     NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse,
     SubscriptionRequest, SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest,
     TopicResponse,
 };
-use danube_core::proto::DispatchStrategy as CoreDispatchStrategy;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
+use danube_core::proto::{
+    DispatchStrategy as CoreDispatchStrategy,
+    SchemaReference,
+    schema_reference::VersionRef,
+};
 
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
@@ -42,11 +45,7 @@ impl TopicAdmin for DanubeAdminImpl {
                 .await
                 .unwrap_or_default();
             let lookup = normalized.trim_start_matches('/');
-            let delivery = match self
-                .resources
-                .topic
-                .get_dispatch_strategy(lookup)
-            {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -78,11 +77,7 @@ impl TopicAdmin for DanubeAdminImpl {
         let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
         for name in names.into_iter() {
             let lookup = name.trim_start_matches('/');
-            let delivery = match self
-                .resources
-                .topic
-                .get_dispatch_strategy(lookup)
-            {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -105,19 +100,11 @@ impl TopicAdmin for DanubeAdminImpl {
 
         trace!("Admin: creates a non-partitioned topic: {}", req.name);
 
-        let mut schema_type = match SchemaType::from_str(&req.schema_type) {
-            Some(schema_type) => schema_type,
-            None => {
-                let status = Status::not_found(format!(
-                    "Invalid schema_type, allowed values: Bytes, String, Int64, Json "
-                ));
-                return Err(status);
-            }
-        };
-
-        if schema_type == SchemaType::Json(String::new()) {
-            schema_type = SchemaType::Json(req.schema_data);
-        }
+        // Convert schema_subject to SchemaReference if provided
+        let schema_ref = req.schema_subject.map(|subject| SchemaReference {
+            subject,
+            version_ref: Some(VersionRef::UseLatest(true)),
+        });
 
         // Map admin NewTopicRequest.dispatch_strategy (enum i32) into core proto DispatchStrategy
         let dispatch_strategy =
@@ -126,10 +113,8 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let service = self.broker_service.as_ref();
 
-        let schema = Schema::new(format!("{}_schema", req.name), schema_type);
-
         let success = match service
-            .create_topic_cluster(&req.name, Some(dispatch_strategy), Some(schema.into()))
+            .create_topic_cluster(&req.name, Some(dispatch_strategy), schema_ref)
             .await
         {
             Ok(()) => true,
@@ -159,20 +144,11 @@ impl TopicAdmin for DanubeAdminImpl {
             req.partitions
         );
 
-        // Schema mapping
-        let mut schema_type = match SchemaType::from_str(&req.schema_type) {
-            Some(schema_type) => schema_type,
-            None => {
-                let status = Status::not_found(
-                    "Invalid schema_type, allowed values: Bytes, String, Int64, Json ",
-                );
-                return Err(status);
-            }
-        };
-
-        if schema_type == SchemaType::Json(String::new()) {
-            schema_type = SchemaType::Json(req.schema_data);
-        }
+        // Convert schema_subject to SchemaReference if provided
+        let schema_ref = req.schema_subject.map(|subject| SchemaReference {
+            subject,
+            version_ref: Some(VersionRef::UseLatest(true)),
+        });
 
         // Dispatch mapping: admin enum (i32) -> core proto enum
         let dispatch_strategy =
@@ -180,13 +156,12 @@ impl TopicAdmin for DanubeAdminImpl {
                 .map_err(|_| Status::invalid_argument("invalid dispatch_strategy value"))?;
 
         let service = self.broker_service.as_ref();
-        let schema = Schema::new(format!("{}_schema", req.base_name), schema_type);
 
         // Create all partitions; fail fast on error
         for partition_id in 0..req.partitions {
             let topic = format!("{}-part-{}", req.base_name, partition_id);
             if let Err(err) = service
-                .create_topic_cluster(&topic, Some(dispatch_strategy), Some(schema.clone().into()))
+                .create_topic_cluster(&topic, Some(dispatch_strategy), schema_ref.clone())
                 .await
             {
                 let status = Status::not_found(format!(
@@ -292,15 +267,7 @@ impl TopicAdmin for DanubeAdminImpl {
             .get_subscription_for_topic(&req.name)
             .await;
 
-        // Schema
         let service = self.broker_service.as_ref();
-        let schema = service.get_schema_async(&req.name).await;
-
-        let (type_schema, schema_data) = if let Some(s) = schema {
-            (s.type_schema, s.schema_data)
-        } else {
-            (0, Vec::new())
-        };
 
         // Identify serving broker id for this topic if known
         let broker_id = service
@@ -310,23 +277,26 @@ impl TopicAdmin for DanubeAdminImpl {
 
         // Delivery
         let lookup = req.name.trim_start_matches('/');
-        let delivery = match self
-            .resources
-            .topic
-            .get_dispatch_strategy(lookup)
-        {
+        let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
             Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
             Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
             None => "NonReliable".to_string(),
         };
 
+        // Get schema registry information if topic has a schema
+        let (schema_subject, schema_id, schema_version, schema_type, compatibility_mode) =
+            self.get_topic_schema_info(&req.name).await;
+
         let response = DescribeTopicResponse {
             name: req.name,
-            type_schema,
-            schema_data,
             subscriptions,
             broker_id,
             delivery,
+            schema_subject,
+            schema_id,
+            schema_version,
+            schema_type,
+            compatibility_mode,
         };
         Ok(tonic::Response::new(response))
     }
@@ -359,6 +329,52 @@ impl TopicAdmin for DanubeAdminImpl {
                 "Unable to unload the topic {} due to {}",
                 req.name, e
             ))),
+        }
+    }
+}
+
+impl DanubeAdminImpl {
+    /// Get schema registry information for a topic
+    ///
+    /// Returns: (schema_subject, schema_id, schema_version, schema_type, compatibility_mode)
+    async fn get_topic_schema_info(
+        &self,
+        topic_name: &str,
+    ) -> (Option<String>, Option<u64>, Option<u32>, Option<String>, Option<String>) {
+        // Get topic's schema subject from metadata
+        let schema_subject = match self.resources.topic.get_schema_subject(topic_name).await {
+            Some(subject) => subject,
+            None => return (None, None, None, None, None),
+        };
+
+        // Get schema details from schema registry
+        let resources = self.resources.clone();
+        let schema_details = resources.schema.get_schema_by_subject(&schema_subject).await;
+
+        match schema_details {
+            Some(details) => {
+                // Schema found in registry
+                let schema_type = match details.schema_type.as_str() {
+                    "json_schema" => Some("json_schema".to_string()),
+                    "avro" => Some("avro".to_string()),
+                    "protobuf" => Some("protobuf".to_string()),
+                    "string" => Some("string".to_string()),
+                    "bytes" => Some("bytes".to_string()),
+                    other => Some(other.to_string()),
+                };
+
+                (
+                    Some(schema_subject),
+                    Some(details.schema_id),
+                    Some(details.version),
+                    schema_type,
+                    Some(details.compatibility_mode),
+                )
+            }
+            None => {
+                // Schema subject exists but not found in registry
+                (Some(schema_subject), None, None, None, None)
+            }
         }
     }
 }

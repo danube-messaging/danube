@@ -6,6 +6,7 @@ use danube_core::admin_proto::{
     namespace_admin_client::NamespaceAdminClient,
     topic_admin_client::TopicAdminClient,
 };
+use danube_core::proto::danube_schema::schema_registry_client::SchemaRegistryClient;
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:50051";
 
@@ -56,4 +57,9 @@ pub async fn namespace_admin_client() -> Result<NamespaceAdminClient<Channel>, B
 pub async fn topic_admin_client() -> Result<TopicAdminClient<Channel>, Box<dyn std::error::Error>> {
     let ch = admin_channel().await?;
     Ok(TopicAdminClient::new(ch))
+}
+
+pub async fn schema_registry_client() -> Result<SchemaRegistryClient<Channel>, Box<dyn std::error::Error>> {
+    let ch = admin_channel().await?;
+    Ok(SchemaRegistryClient::new(ch))
 }

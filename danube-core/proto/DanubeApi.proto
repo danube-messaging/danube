@@ -25,9 +25,19 @@ message ProducerRequest {
     uint64 request_id = 1;
     string producer_name = 2;
     string topic_name = 3;
-    Schema schema = 4;
+    SchemaReference schema_ref = 4;
     ProducerAccessMode producer_access_mode = 5;
     DispatchStrategy dispatch_strategy = 6;
+}
+
+// Reference to a schema in the schema registry
+message SchemaReference {
+    string subject = 1;              // Subject name (usually topic name)
+    oneof version_ref {
+        bool use_latest = 2;         // Use latest version (true)
+        uint32 pinned_version = 3;   // Use specific version number
+        uint32 min_version = 4;      // Use version >= this number
+    }
 }
 
 // Create Producer response
@@ -97,7 +107,9 @@ message StreamMessage {
     string subscription_name = 6;
     // User-defined properties/attributes
     map<string, string> attributes = 7;
-    
+    // NEW: Schema identification for registry-based schemas
+    optional uint64 schema_id = 8;      // Global schema ID from registry
+    optional uint32 schema_version = 9; // Schema version number
 }
 
 // Unique ID of the message
@@ -133,8 +145,6 @@ service Discovery {
     // Query the Danube broker for information about topic partitions.
     // returns an array with the topic partitions names
     rpc TopicPartitions(TopicLookupRequest) returns (TopicPartitionsResponse);
-    // Get the schema associated with the topic
-    rpc GetSchema(SchemaRequest) returns (SchemaResponse);
 }
 
 message TopicLookupRequest {
@@ -156,30 +166,6 @@ message TopicLookupResponse {
 message TopicPartitionsResponse {
     uint64 request_id = 1;
     repeated string partitions = 2;
-
-}
-
-message SchemaRequest {
-    uint64 request_id = 1;
-    string topic = 2;
-}
-
-message SchemaResponse {
-    uint64 request_id = 1;
-    Schema schema = 2;
-}
-
-message Schema {
-    enum TypeSchema {
-        Bytes = 0;
-        String = 1;
-        Int64 = 2;
-        JSON = 3;
-    }
-
-    string name = 1;
-    bytes schema_data = 3;
-    TypeSchema type_schema = 4;
 }
 
 // ============================================================================================

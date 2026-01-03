@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Duration};
@@ -35,7 +35,6 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("prod_churn_shared")
-        .with_schema("schema_str".into(), SchemaType::String)
         .build();
     producer.create().await?;
 
@@ -183,7 +182,6 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("prod_churn_excl")
-        .with_schema("schema_str".into(), SchemaType::String)
         .build();
     producer.create().await?;
 

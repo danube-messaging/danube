@@ -1,5 +1,8 @@
 use crate::utils::get_random_id;
-use crate::{broker_metrics::{PRODUCER_SEND_LATENCY_MS, BROKER_RPC_TOTAL, PRODUCER_SEND_TOTAL}, broker_server::DanubeServerImpl};
+use crate::{
+    broker_metrics::{BROKER_RPC_TOTAL, PRODUCER_SEND_LATENCY_MS, PRODUCER_SEND_TOTAL},
+    broker_server::DanubeServerImpl,
+};
 use danube_core::proto::{
     producer_service_server::ProducerService, DispatchStrategy as ProtoDispatchStrategy,
     MessageResponse, ProducerRequest, ProducerResponse, StreamMessage as ProtoStreamMessage,
@@ -7,7 +10,7 @@ use danube_core::proto::{
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
-use metrics::{histogram, counter};
+use metrics::{counter, histogram};
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{info, trace, Level};
@@ -27,21 +30,18 @@ impl ProducerService for DanubeServerImpl {
                 .unwrap_or_default()
                 .into();
 
-        let schema_log = match &req.schema {
-            Some(s) => {
-                let broker_schema: crate::schema::Schema = s.clone().into();
-                broker_schema.to_string()
-            }
+        let schema_log = match &req.schema_ref {
+            Some(s) => format!("subject={}, version_ref={:?}", s.subject, s.version_ref),
             None => "None".to_string(),
         };
 
         info!(
-            "Received producer creation request - name: '{}', topic: '{}', schema: '{}', dispatch: '{}'",
+            "Received producer creation request - name: '{}', topic: '{}', schema_ref: '{}', dispatch: '{}'",
             req.producer_name,
             req.topic_name,
             schema_log,
             config_dispatch_strategy
-            );
+        );
         let service = self.service.as_ref();
 
         let requested_strategy =
@@ -49,7 +49,7 @@ impl ProducerService for DanubeServerImpl {
                 .ok();
 
         match service
-            .get_topic(&req.topic_name, requested_strategy, req.schema)
+            .get_topic(&req.topic_name, requested_strategy, req.schema_ref.clone())
             .await
         {
             Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
@@ -162,7 +162,8 @@ impl ProducerService for DanubeServerImpl {
                     "topic"=> topic_name.clone(),
                     "result"=> "error",
                     "error_code"=> "InvalidArgument"
-                ).increment(1);
+                )
+                .increment(1);
                 return Err(Status::invalid_argument(e.to_string()));
             }
         }
@@ -186,8 +187,7 @@ impl ProducerService for DanubeServerImpl {
         let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
 
         // Record the producer send latency (ms)
-        histogram!(PRODUCER_SEND_LATENCY_MS.name, "topic"=> topic_name.clone())
-            .record(elapsed_ms);
+        histogram!(PRODUCER_SEND_LATENCY_MS.name, "topic"=> topic_name.clone()).record(elapsed_ms);
 
         let response = MessageResponse { request_id: req_id };
         counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"ok").increment(1);
@@ -196,7 +196,8 @@ impl ProducerService for DanubeServerImpl {
             "topic"=> topic_name,
             "result"=> "ok",
             "error_code"=> "OK"
-        ).increment(1);
+        )
+        .increment(1);
         Ok(tonic::Response::new(response))
     }
 }

@@ -22,9 +22,9 @@ use crate::{
     policies::Policies,
     producer::Producer,
     rate_limiter::RateLimiter,
-    resources::TopicResources,
-    schema::Schema,
+    resources::{SchemaResources, TopicResources},
     subscription::{Subscription, SubscriptionOptions},
+    topic_schema::TopicSchemaContext,
 };
 
 #[cfg(test)]
@@ -55,7 +55,9 @@ pub(crate) enum TopicState {
 #[derive(Debug)]
 pub(crate) struct Topic {
     pub(crate) topic_name: String,
-    pub(crate) schema: Option<Schema>,
+    // Schema context encapsulating all schema-related functionality
+    schema_context: TopicSchemaContext,
+    // Topic-level policies
     pub(crate) topic_policies: Option<Policies>,
     // subscription_name -> Subscription
     pub(crate) subscriptions: Mutex<HashMap<String, Subscription>>,
@@ -80,6 +82,7 @@ impl Topic {
         dispatch_strategy: ConfigDispatchStrategy,
         wal_storage: Option<WalStorage>,
         resources_topic: TopicResources,
+        resources_schema: SchemaResources,
     ) -> Self {
         let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
@@ -89,7 +92,7 @@ impl Topic {
 
         Topic {
             topic_name: topic_name.into(),
-            schema: None,
+            schema_context: TopicSchemaContext::new(resources_schema),
             topic_policies: None,
             subscriptions: Mutex::new(HashMap::new()),
             producers: Mutex::new(HashMap::new()),
@@ -196,6 +199,12 @@ impl Topic {
 
         // Policy: max_message_size
         self.validate_message_size(stream_message.payload.len())?;
+
+        // Schema validation (if enabled)
+        self.schema_context
+            .validate_message(&stream_message, &self.topic_name)
+            .await?;
+
         // Validate producer without blocking
         let producer_id = stream_message.msg_id.producer_id;
         {
@@ -462,26 +471,18 @@ impl Topic {
         Ok(())
     }
 
-    // Add a schema to the topic.
-    pub(crate) fn add_schema(&mut self, schema: Schema) -> Result<()> {
-        self.schema = Some(schema);
-        Ok(())
+    /// Set schema reference and resolve to schema ID
+    ///
+    /// This should be called when a producer sets a schema for the topic.
+    /// Returns an error if schema subject is not found in registry.
+    pub(crate) fn set_schema_ref(
+        &self,
+        schema_ref: danube_core::proto::SchemaReference,
+    ) -> Result<()> {
+        self.schema_context
+            .set_schema_ref(schema_ref, &self.topic_name)
     }
 
-    // get topic's schema
-    #[allow(dead_code)]
-    pub(crate) fn get_schema(&self) -> Option<Schema> {
-        self.schema.clone()
-    }
-
-    // Add a schema to the topic.
-    #[allow(dead_code)]
-    pub(crate) fn delete_schema(&self, _schema: Schema) -> Result<()> {
-        todo!()
-    }
-}
-
-impl Topic {
     // ===== Helper counters =====
     pub(crate) async fn producer_count(&self) -> usize {
         let producers = self.producers.lock().await;

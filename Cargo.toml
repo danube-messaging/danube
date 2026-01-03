@@ -20,10 +20,10 @@ members = [
     # -- Danube lib client
     "danube-client",
 
-    # -- Danube client cli
+    # -- Danube client cli 
     "danube-cli", 
 
-    # -- Danube admin cli
+    # -- Danube admin cli 
     "danube-admin-cli", 
     
     # -- Danube admin gateway (BFF for HTTP UI)

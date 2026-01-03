@@ -4,10 +4,12 @@ use crate::LocalCache;
 
 mod cluster;
 mod namespace;
+mod schema;
 mod topic;
 
 pub(crate) use cluster::ClusterResources;
 pub(crate) use namespace::NamespaceResources;
+pub(crate) use schema::SchemaResources;
 pub(crate) use topic::TopicResources;
 
 pub(crate) static BASE_CLUSTER_PATH: &str = "/cluster";
@@ -16,6 +18,7 @@ pub(crate) static BASE_BROKER_PATH: &str = "/cluster/brokers";
 pub(crate) static BASE_NAMESPACES_PATH: &str = "/namespaces";
 pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
 pub(crate) static BASE_SUBSCRIPTIONS_PATH: &str = "/subscriptions";
+pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
 
 // Once new topic is created, it is posted to unassigned path in order to be alocated by Load Manager to a broker
 pub(crate) static BASE_UNASSIGNED_PATH: &str = "/cluster/unassigned";
@@ -51,6 +54,7 @@ pub(crate) struct Resources {
     pub(crate) cluster: ClusterResources,
     pub(crate) namespace: NamespaceResources,
     pub(crate) topic: TopicResources,
+    pub(crate) schema: SchemaResources,
     // should hold also the MetadataStore,
     // as the resources translate the Danube requests into MetadataStore paths puts & gets
 }
@@ -62,7 +66,8 @@ impl Resources {
             store: store.clone(),
             cluster: ClusterResources::new(local_cache.clone(), store.clone()),
             namespace: NamespaceResources::new(local_cache.clone(), store.clone()),
-            topic: TopicResources::new(local_cache, store),
+            topic: TopicResources::new(local_cache.clone(), store.clone()),
+            schema: SchemaResources::new(local_cache, store),
         }
     }
 }

@@ -3,7 +3,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Duration};
@@ -33,7 +33,6 @@ async fn pubsub_fanout_exclusive_unique_subscriptions() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_fanout_exclusive")
-        .with_schema("schema_str".into(), SchemaType::String)
         .build();
     producer.create().await?;
 

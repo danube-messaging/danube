@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use danube_client::{
-    Consumer as ClientConsumer, DanubeClient, Producer as ClientProducer, SchemaType, SubType,
+    Consumer as ClientConsumer, DanubeClient, Producer as ClientProducer, SubType,
 };
+// Phase 6: Old SchemaType import removed
+// use danube_client::SchemaType;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -45,7 +47,8 @@ impl Syncronizer {
             .new_producer()
             .with_topic(META_SYNC)
             .with_name("test_producer1")
-            .with_schema("my_app".into(), SchemaType::Bytes)
+            // Phase 6: Old schema API removed
+            // .with_schema("my_app".into(), SchemaType::Bytes)
             .build();
 
         let prod_id = producer.create().await?;

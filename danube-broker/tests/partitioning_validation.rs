@@ -61,7 +61,6 @@ async fn partitioning_validation() -> Result<()> {
         .new_producer()
         .with_topic(np_topic)
         .with_name("producer_part_np_lookup")
-        .with_schema("schema_np".into(), danube_client::SchemaType::String)
         .build();
     np_producer.create().await?;
     let mut np_consumer = danube_client
@@ -85,7 +84,6 @@ async fn partitioning_validation() -> Result<()> {
         .new_producer()
         .with_topic(p_topic)
         .with_name("producer_part_lookup")
-        .with_schema("schema_p".into(), danube_client::SchemaType::String)
         .with_partitions(partitions)
         .build();
     p_producer.create().await?;

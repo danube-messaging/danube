@@ -19,6 +19,7 @@ mod service_configuration;
 mod subscription;
 mod topic;
 mod topic_cluster;
+mod topic_schema;
 mod topic_control;
 mod topic_worker;
 mod utils;

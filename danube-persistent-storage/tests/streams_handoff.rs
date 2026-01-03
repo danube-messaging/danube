@@ -31,6 +31,8 @@ fn make_msg_tagged(i: u64, topic: &str, tag: &str) -> StreamMessage {
         producer_name: "producer".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 
@@ -48,6 +50,8 @@ fn make_msg_bin(topic: &str, off: u64, payload: &[u8]) -> StreamMessage {
         producer_name: "producer".to_string(),
         subscription_name: None,
         attributes: Default::default(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

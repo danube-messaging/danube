@@ -1,8 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, ValueEnum};
-use danube_client::{DanubeClient, SchemaType};
+use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
+
+use crate::utils::schema_helpers;
 
 #[derive(Debug, Parser)]
 #[command(after_help = EXAMPLES_TEXT)]
@@ -46,9 +49,10 @@ pub struct BasicArgs {
     #[arg(
         long,
         short = 'm',
-        help = "The message to send. This is a required argument."
+        required_unless_present = "file",
+        help = "The message to send (required unless --file is provided)"
     )]
-    pub message: String,
+    pub message: Option<String>,
 
     #[arg(
         long,
@@ -62,14 +66,22 @@ pub struct BasicArgs {
 pub struct ExtendedArgs {
     #[arg(
         long,
-        short = 'y',
-        value_enum,
-        help = "The schema type for the message: bytes, string, int64, or json. Default: string"
+        help = "Schema subject name (references a schema in the registry)"
     )]
-    pub schema: Option<SchemaTypeArg>,
+    pub schema_subject: Option<String>,
 
-    #[arg(long, help = "The JSON schema, required if schema type is Json.")]
-    pub json_schema: Option<String>,
+    #[arg(
+        long,
+        help = "Auto-register schema from file (requires --schema-type)"
+    )]
+    pub schema_file: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Schema type (required with --schema-file)"
+    )]
+    pub schema_type: Option<SchemaTypeArg>,
 
     #[arg(
         long,
@@ -107,34 +119,98 @@ pub struct ReliableArgs {
     // Legacy reliable tuning flags removed in Phase 1; broker uses defaults
 }
 
-// RetentionPolicyArg removed
-
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
 pub enum SchemaTypeArg {
-    Bytes,
-    String,
-    Int64,
-    Json,
+    #[value(name = "json_schema")]
+    JsonSchema,
+    Avro,
+    Protobuf,
+}
+
+impl From<SchemaTypeArg> for SchemaType {
+    fn from(arg: SchemaTypeArg) -> Self {
+        match arg {
+            SchemaTypeArg::JsonSchema => SchemaType::JsonSchema,
+            SchemaTypeArg::Avro => SchemaType::Avro,
+            SchemaTypeArg::Protobuf => SchemaType::Protobuf,
+        }
+    }
 }
 
 const EXAMPLES_TEXT: &str = r#"
 EXAMPLES:
-    # Basic message production
-    danube-cli produce --service-addr http://localhost:6650 --count 100 --message "Hello Danube"
+    # Basic message production (no schema)
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/test-topic \
+        -m "Hello Danube" \
+        -c 100
 
-    # Producing with JSON schema
-    danube-cli produce -s http://localhost:6650 -c 100 -y json --json-schema '{"type": "object", "properties": {"field1": {"type": "string"}}}' -m '{"field1":"Hello Danube"}'
+    # Produce with pre-registered schema subject
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/user-events \
+        --schema-subject "user-events" \
+        -m '{"user_id":"123","action":"login"}' \
+        -c 10
 
-    # Reliable message delivery
-    danube-cli produce -s http://localhost:6650 -m "Hello Danube" -c 100 \
-        --reliable
-    
-    # Reliable message delivery with binary file
-    danube-cli produce -s http://localhost:6650 -m "none" -f ./data.blob -c 100\
-        --reliable
+    # Auto-register schema from file
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/orders \
+        --schema-file ./schemas/order.json \
+        --schema-type json_schema \
+        -m '{"order_id":"ord_123","amount":99.99}' \
+        -c 10
 
-    # Producing with attributes
-    danube-cli produce -s http://localhost:6650 -m "Hello Danube" -a "key1:value1,key2:value2"
+    # Reliable message delivery with schema
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/critical-orders \
+        --schema-subject "orders" \
+        --reliable \
+        -m '{"order_id":"ord_456","amount":199.99}' \
+        -c 100
+
+    # Produce to partitioned topic
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/events \
+        --partitions 3 \
+        -m "Partitioned message" \
+        -c 50
+
+    # Produce with message attributes
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/notifications \
+        -m "Alert message" \
+        -a "priority:high,region:us-west" \
+        -c 10
+
+    # Produce binary file with schema
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/data-stream \
+        --schema-subject "binary-data" \
+        -f ./data.blob \
+        -c 1
+
+    # Produce with custom producer name and interval
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/metrics \
+        -n metrics-producer-1 \
+        -m '{"cpu":45.2,"memory":78.5}' \
+        -i 1000 \
+        -c 100
+
+    # Avro schema with auto-registration
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/products \
+        --schema-file ./schemas/product.avsc \
+        --schema-type avro \
+        -m '{"id":"prod_123","name":"Widget","price":29.99}'
+
+NOTES:
+    - Use --schema-subject to reference pre-registered schemas
+    - Use --schema-file + --schema-type to auto-register new schemas
+    - Cannot use both --schema-subject and --schema-file together
+    - --reliable enables guaranteed delivery with at-least-once semantics
+    - --interval controls the delay between messages (minimum 100ms)
+    - Message attributes are useful for routing and filtering
 "#;
 
 pub async fn handle_produce(produce: Produce) -> Result<()> {
@@ -143,24 +219,62 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         return Err(anyhow::anyhow!("The interval must be at least 100 milliseconds").into());
     }
 
+    // Validate schema arguments
+    if produce.extended_args.schema_file.is_some() && produce.extended_args.schema_type.is_none() {
+        return Err(anyhow::anyhow!("--schema-type is required when using --schema-file").into());
+    }
+
+    if produce.extended_args.schema_subject.is_some() && produce.extended_args.schema_file.is_some() {
+        return Err(anyhow::anyhow!("Cannot use both --schema-subject and --schema-file. Use one or the other.").into());
+    }
+
     let client = DanubeClient::builder()
         .service_url(&produce.basic_args.service_addr)
         .build()
         .await?;
 
-    let schema_type = validate_schema(
-        produce.extended_args.schema,
-        produce.extended_args.json_schema,
-    )?;
+    // Handle schema registration if --schema-file is provided
+    let schema_subject = if let Some(schema_file) = &produce.extended_args.schema_file {
+        let schema_type = produce.extended_args.schema_type
+            .ok_or_else(|| anyhow::anyhow!("--schema-type is required with --schema-file"))?;
+        
+        // Load and validate schema
+        let schema_data = schema_helpers::load_schema_file(schema_file)?;
+        schema_helpers::validate_schema_format(&schema_data, schema_type.into())?;
 
+        // Auto-generate subject name from topic if not provided
+        let subject = produce.basic_args.topic.trim_start_matches('/').replace('/', "-");
+        
+        println!("📤 Auto-registering schema for subject '{}' (type: {:?})...", subject, schema_type);
+        
+        let mut schema_client = SchemaRegistryClient::new(&client).await?;
+        let schema_id = schema_client
+            .register_schema(&subject)
+            .with_type(schema_type.into())
+            .with_schema_data(schema_data)
+            .execute()
+            .await
+            .context("Failed to register schema")?;
+        
+        println!("✅ Schema registered with ID: {}", schema_id);
+        Some(subject)
+    } else {
+        produce.extended_args.schema_subject.clone()
+    };
+
+    // Build producer with optional schema subject
     let mut producer_builder = client
         .new_producer()
-        .with_topic(produce.basic_args.topic)
-        .with_name(produce.basic_args.producer_name)
-        .with_schema("my_app".into(), schema_type); // Pass the correct schema type
+        .with_topic(produce.basic_args.topic.clone())
+        .with_name(produce.basic_args.producer_name.clone());
+    
+    if let Some(subject) = schema_subject {
+        producer_builder = producer_builder.with_schema_subject(&subject);
+        println!("📋 Using schema subject: {}", subject);
+    }
 
     if let Some(partitions) = produce.extended_args.partitions {
-        producer_builder = producer_builder.with_partitions(partitions as usize)
+        producer_builder = producer_builder.with_partitions(partitions as usize);
     }
 
     if produce.reliable_args.reliable {
@@ -169,70 +283,49 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     let mut producer = producer_builder.build();
 
-    producer.create().await?;
+    producer.create().await
+        .context("Failed to create producer")?;
+    
+    println!("✅ Producer '{}' created successfully", produce.basic_args.producer_name);
 
-    // Use the provided message or read from a file if provided
+    // Use the provided file or message
     let encoded_data = if let Some(file_path) = &produce.basic_args.file {
-        std::fs::read(file_path)?
+        std::fs::read(file_path)
+            .with_context(|| format!("Failed to read file: {}", file_path))?
+    } else if let Some(message) = &produce.basic_args.message {
+        message.as_bytes().to_vec()
     } else {
-        produce.basic_args.message.as_bytes().to_vec()
+        return Err(anyhow::anyhow!("Either --message or --file must be provided"));
     };
 
-    for _ in 0..produce.extended_args.count {
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for i in 0..produce.extended_args.count {
         let cloned_attributes = produce.extended_args.attributes.clone();
         match producer.send(encoded_data.clone(), cloned_attributes).await {
-            Ok(message_id) => println!("Message sent successfully with ID: {}", message_id),
-            Err(e) => eprintln!("Failed to send message: {}", e),
+            Ok(message_id) => {
+                println!("📤 Message {}/{} sent successfully (ID: {})", i + 1, produce.extended_args.count, message_id);
+                success_count += 1;
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to send message {}/{}: {}", i + 1, produce.extended_args.count, e);
+                error_count += 1;
+            }
         }
-        if produce.extended_args.count - 1 > 0 {
+        
+        if i < produce.extended_args.count - 1 {
             sleep(Duration::from_millis(produce.extended_args.interval)).await;
         }
     }
 
+    println!("\n📊 Summary:");
+    println!("   ✅ Success: {}", success_count);
+    if error_count > 0 {
+        println!("   ❌ Errors: {}", error_count);
+    }
+
     Ok(())
-}
-
-impl From<SchemaTypeArg> for SchemaType {
-    fn from(arg: SchemaTypeArg) -> Self {
-        match arg {
-            SchemaTypeArg::Bytes => SchemaType::Bytes,
-            SchemaTypeArg::String => SchemaType::String,
-            SchemaTypeArg::Int64 => SchemaType::Int64,
-            SchemaTypeArg::Json => SchemaType::Json(String::new()), // Placeholder
-        }
-    }
-}
-
-fn validate_schema(
-    schema_type: Option<SchemaTypeArg>,
-    json_schema: Option<String>,
-) -> Result<SchemaType> {
-    if let Some(schema_type) = schema_type {
-        if !SchemaTypeArg::value_variants().contains(&schema_type) {
-            return Err(anyhow::anyhow!(
-                "Unsupported schema type: '{:?}'. Supported values are: {:?}",
-                schema_type,
-                SchemaTypeArg::value_variants()
-            )
-            .into());
-        }
-    }
-
-    match schema_type {
-        Some(schema_type) => match schema_type {
-            SchemaTypeArg::Json => {
-                if let Some(json_schema) = json_schema {
-                    return Ok(SchemaType::Json(json_schema));
-                } else {
-                    return Err(
-                        anyhow::anyhow!("JSON schema is required for schema type 'Json'").into(),
-                    );
-                }
-            }
-            _ => return Ok(schema_type.into()),
-        },
-        None => return Ok(SchemaTypeArg::String.into()),
-    };
 }
 
 fn parse_attributes(val: &str) -> Result<HashMap<String, String>, String> {

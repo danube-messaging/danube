@@ -10,8 +10,7 @@ use crate::resources::BASE_TOPICS_PATH;
 use crate::utils::join_path;
 use crate::{
     broker_metrics::BROKER_TOPICS_OWNED, consumer::Consumer, resources::Resources,
-    schema::SchemaType, subscription::SubscriptionOptions, topic::Topic,
-    topic_worker::TopicWorkerPool,
+    subscription::SubscriptionOptions, topic::Topic, topic_worker::TopicWorkerPool,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_persistent_storage::WalStorageFactory;
@@ -55,11 +54,11 @@ impl TopicManager {
     }
 
     /// Ensures a topic exists locally by materializing it from Local Cache metadata.
-    /// Returns the configured dispatch strategy and schema type.
+    /// Returns the configured dispatch strategy and optional schema subject.
     pub(crate) async fn ensure_local(
         &self,
         topic_name: &str,
-    ) -> Result<(ConfigDispatchStrategy, SchemaType)> {
+    ) -> Result<(ConfigDispatchStrategy, Option<String>)> {
         //get retention strategy from local_cache
         let dispatch_strategy = {
             let resources = self.resources.lock().await;
@@ -80,20 +79,19 @@ impl TopicManager {
             None
         };
 
-        let mut new_topic = Topic::new(topic_name, dispatch_strategy.clone(), wal_storage, {
-            let resources = self.resources.lock().await;
-            resources.topic.clone()
-        });
-
-        let schema = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_schema(topic_name)
-        };
-        if schema.is_none() {
-            return Err(anyhow!("Unable to create topic without a valid schema"));
-        }
-        let schema = schema.unwrap();
-        let _ = new_topic.add_schema(schema.clone());
+        let mut new_topic = Topic::new(
+            topic_name,
+            dispatch_strategy.clone(),
+            wal_storage,
+            {
+                let resources = self.resources.lock().await;
+                resources.topic.clone()
+            },
+            {
+                let resources = self.resources.lock().await;
+                resources.schema.clone()
+            },
+        );
 
         // get policies from local_cache
         let policies = {
@@ -126,7 +124,30 @@ impl TopicManager {
 
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
-        Ok((dispatch_strategy, schema.type_schema))
+        // Get schema subject from metadata if topic has one
+        let schema_subject = {
+            let resources = self.resources.lock().await;
+            resources.topic.get_schema_subject(topic_name).await
+        };
+
+        Ok((dispatch_strategy, schema_subject))
+    }
+    
+    /// Get schema information for logging (non-blocking, from LocalCache)
+    pub(crate) async fn get_schema_info(&self, topic_name: &str) -> Option<(String, u64, String)> {
+        let resources = self.resources.lock().await;
+        
+        // Get schema subject from topic metadata
+        let schema_subject = resources.topic.get_schema_subject(topic_name).await?;
+        
+        // Get schema details from registry (reads from LocalCache - fast)
+        let schema_details = resources.schema.get_schema_by_subject(&schema_subject).await?;
+        
+        Some((
+            schema_subject,
+            schema_details.schema_id,
+            schema_details.schema_type,
+        ))
     }
 
     /// Flush and seal persistent storage (WAL/uploader/deleter).

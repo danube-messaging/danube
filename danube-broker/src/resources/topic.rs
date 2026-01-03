@@ -3,9 +3,9 @@ use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use serde_json::Value;
 
-use crate::{
-    policies::Policies, resources::BASE_TOPICS_PATH, schema::Schema, utils::join_path, LocalCache,
-};
+use crate::{policies::Policies, resources::BASE_TOPICS_PATH, utils::join_path, LocalCache};
+// Phase 6: Old schema API import removed
+// use crate::schema::Schema;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TopicResources {
@@ -44,18 +44,6 @@ impl TopicResources {
     ) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "policy"]);
         let data = serde_json::to_value(policies).unwrap();
-        self.create(&path, data).await?;
-
-        Ok(())
-    }
-
-    pub(crate) async fn add_topic_schema(
-        &mut self,
-        topic_name: &str,
-        schema: Schema,
-    ) -> Result<()> {
-        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
-        let data = serde_json::to_value(&schema).unwrap();
         self.create(&path, data).await?;
 
         Ok(())
@@ -186,16 +174,6 @@ impl TopicResources {
         Ok(())
     }
 
-    pub(crate) fn get_schema(&self, topic_name: &str) -> Option<Schema> {
-        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
-        let result = self.local_cache.get(&path);
-        if let Some(value) = result {
-            let schema: Option<Schema> = serde_json::from_value(value).ok();
-            return schema;
-        }
-        None
-    }
-
     pub(crate) fn get_dispatch_strategy(&self, topic_name: &str) -> Option<ConfigDispatchStrategy> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "delivery"]);
         let result = self.local_cache.get(&path);
@@ -273,5 +251,27 @@ impl TopicResources {
             }
         }
         Ok(None)
+    }
+
+    /// Store schema subject reference for a topic
+    pub(crate) async fn add_topic_schema_subject(
+        &mut self,
+        topic_name: &str,
+        schema_subject: &str,
+    ) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_subject"]);
+        let data = serde_json::to_value(schema_subject)?;
+        self.create(&path, data).await?;
+        Ok(())
+    }
+
+    /// Get schema subject for a topic
+    pub(crate) async fn get_schema_subject(&self, topic_name: &str) -> Option<String> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_subject"]);
+        let result = self.local_cache.get(&path);
+        if let Some(value) = result {
+            return serde_json::from_value(value).ok();
+        }
+        None
     }
 }

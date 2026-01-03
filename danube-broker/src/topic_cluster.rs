@@ -5,14 +5,10 @@ use tokio::sync::Mutex;
 use tonic::Status;
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_core::proto::{
-    DispatchStrategy as ProtoDispatchStrategy, ErrorType, Schema as ProtoSchema,
-};
+use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, ErrorType, SchemaReference};
 
 use crate::{
-    broker_service::validate_topic_format,
-    error_message::create_error_status,
-    policies::Policies,
+    broker_service::validate_topic_format, error_message::create_error_status, policies::Policies,
     resources::Resources,
 };
 
@@ -36,14 +32,14 @@ impl TopicCluster {
 
     /// Creates a topic in the cluster metadata.
     ///
-    /// Validates topic format and required inputs (`schema`, `dispatch_strategy`), ensures
-    /// the namespace exists, and then posts the topic with delivery, schema and policies.
+    /// Validates topic format and required inputs (`dispatch_strategy`), ensures
+    /// the namespace exists, and then posts the topic with delivery, schema_ref and policies.
     /// After creation, Load Manager will assign it to a broker.
     pub(crate) async fn create_on_cluster(
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
-        schema: Option<ProtoSchema>,
+        schema_ref: Option<SchemaReference>,
         policies: Option<Policies>,
     ) -> Result<(), Status> {
         // The topic format is /{namespace_name}/{topic_name}
@@ -56,17 +52,6 @@ impl TopicCluster {
                 tonic::Code::InvalidArgument,
                 ErrorType::InvalidTopicName,
                 &error_string,
-                None,
-            );
-            return Err(status);
-        }
-
-        if schema.is_none() {
-            let error_string = "Unable to create a topic without specifying the Schema";
-            let status = create_error_status(
-                tonic::Code::InvalidArgument,
-                ErrorType::UnknownError,
-                error_string,
                 None,
             );
             return Err(status);
@@ -96,26 +81,22 @@ impl TopicCluster {
             return Err(status);
         }
 
-        self
-            .post_new_topic(
-                topic_name,
-                dispatch_strategy.unwrap(),
-                schema.unwrap(),
-                policies,
-            )
+        self.post_new_topic(topic_name, dispatch_strategy.unwrap(), schema_ref, policies)
             .await
-            .map_err(|e| Status::internal(format!(
-                "The broker unable to post the topic to metadata store, due to error: {}",
-                e
-            )))
+            .map_err(|e| {
+                Status::internal(format!(
+                    "The broker unable to post the topic to metadata store, due to error: {}",
+                    e
+                ))
+            })
     }
 
-    /// Posts a new topic and its metadata to the store (unassigned + namespace + delivery + schema + policies).
+    /// Posts a new topic and its metadata to the store (unassigned + namespace + delivery + schema_ref + policies).
     pub(crate) async fn post_new_topic(
         &self,
         topic_name: &str,
         dispatch_strategy: ProtoDispatchStrategy,
-        schema: ProtoSchema,
+        schema_ref: Option<SchemaReference>,
         policies: Option<Policies>,
     ) -> Result<()> {
         let mut resources = self.resources.lock().await;
@@ -144,11 +125,13 @@ impl TopicCluster {
                 .await?;
         }
 
-        // 5) add schema
-        resources
-            .topic
-            .add_topic_schema(topic_name, schema.into())
-            .await?;
+        // 5) add schema subject if provided
+        if let Some(schema_ref) = schema_ref {
+            resources
+                .topic
+                .add_topic_schema_subject(topic_name, &schema_ref.subject)
+                .await?;
+        }
 
         Ok(())
     }

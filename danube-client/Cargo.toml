@@ -35,3 +35,4 @@ workspace = true
 anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }
 rustls = { version = "0.23.34", default-features = false, features = ["ring"] }
+jsonschema = "0.18"  # For json_consumer_validated.rs example

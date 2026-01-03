@@ -8,7 +8,7 @@ use futures::StreamExt;
 
 use crate::danube_service::LocalCache;
 use crate::policies::Policies;
-use crate::resources::TopicResources;
+use crate::resources::{SchemaResources, TopicResources};
 use crate::subscription::SubscriptionOptions;
 use crate::topic::Topic;
 use crate::topic::TopicStore;
@@ -60,12 +60,14 @@ async fn mk_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let local_cache = LocalCache::new(store.clone());
-    let topic_resources = TopicResources::new(local_cache, store);
+    let topic_resources = TopicResources::new(local_cache.clone(), store.clone());
+    let schema_resources = SchemaResources::new(local_cache, store);
     Topic::new(
         name,
         ConfigDispatchStrategy::NonReliable,
         None,
         topic_resources,
+        schema_resources,
     )
 }
 
@@ -205,6 +207,8 @@ async fn policy_limit_max_message_size() -> AnyResult<()> {
         producer_name: "p".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     };
 
     let err = topic.publish_message_async(msg).await.unwrap_err();
@@ -226,6 +230,8 @@ fn make_msg(i: u64, topic: &str) -> StreamMessage {
         producer_name: "producer-wal".to_string(),
         subscription_name: None,
         attributes: HashMap::new(),
+        schema_id: None,
+        schema_version: None,
     }
 }
 

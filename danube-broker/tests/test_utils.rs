@@ -29,6 +29,7 @@ pub async fn setup_client() -> Result<DanubeClient> {
     Ok(client)
 }
 
+#[allow(dead_code)]
 pub fn unique_topic(prefix: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

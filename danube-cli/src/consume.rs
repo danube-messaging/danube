@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use danube_client::{DanubeClient, SchemaType, SubType};
+use danube_client::{DanubeClient, SchemaRegistryClient, SubType};
 use danube_core::message::MessageID;
 use serde_json::{from_slice, Value};
 use std::{collections::HashMap, str::from_utf8};
@@ -54,17 +54,37 @@ pub enum SubTypeArg {
 
 const EXAMPLES_TEXT: &str = r#"
 EXAMPLES:
-    # Receive messages from a shared subscription (default)
-    danube-cli consume --service-addr http://localhost:6650 --subscription my_shared_subscription
+    # Basic: Receive messages from a shared subscription (default)
+    danube-cli consume --service-addr http://localhost:6650 \
+        --subscription my_shared_subscription
 
-    # Receive messages from an exclusive subscription
-    danube-cli consume -s http://localhost:6650 -m my_exclusive --sub-type exclusive
+    # Consume with automatic schema validation (if topic has schema)
+    danube-cli consume -s http://localhost:6650 \
+        -t /default/user-events \
+        -m my_subscription
 
-    # Receive messages for a custom consumer name
-    danube-cli consume -s http://localhost:6650 -n my_consumer -m my_subscription
+    # Consume from exclusive subscription
+    danube-cli consume -s http://localhost:6650 \
+        -m my_exclusive \
+        --sub-type exclusive
 
-    # Receive messages from a specific topic
-    danube-cli consume -s http://localhost:6650 -t my_topic -m my_subscription
+    # Consume with custom consumer name and topic
+    danube-cli consume -s http://localhost:6650 \
+        -n my_consumer \
+        -t /default/orders \
+        -m my_subscription \
+        --sub-type shared
+
+    # Consume from failover subscription
+    danube-cli consume -s http://localhost:6650 \
+        -m my_failover \
+        --sub-type fail-over
+
+NOTE:
+    - Consumer automatically detects and validates messages against registered schemas
+    - JSON messages are validated and pretty-printed
+    - Topics without schemas consume raw bytes
+    - Press Ctrl+C to stop consuming
 "#;
 
 pub async fn handle_consume(consume: Consume) -> Result<()> {
@@ -83,24 +103,42 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         .with_subscription_type(sub_type)
         .build();
 
-    // Retrieve schema type and schema definition
-    let schema = client.get_schema(consume.topic).await?;
+    // Retrieve schema from registry if topic has one
+    println!("🔍 Checking for schema associated with topic...");
 
-    let schema_validator = match schema.type_schema.clone() {
-        SchemaType::Json(schema_str) => {
-            if schema_str.is_empty() {
-                println!("Warning: Empty JSON schema received, proceeding without validation");
-                None
-            } else {
-                let schema_value: Value =
-                    serde_json::from_str(&schema_str).context("Failed to parse JSON schema")?;
-                Some(
-                    jsonschema::validator_for(&schema_value)
-                        .context("Failed to compile JSON schema")?,
-                )
-            }
+    let schema_info = match get_topic_schema_info(&client, &consume.topic).await {
+        Ok(Some(info)) => {
+            println!("✅ Topic has schema:");
+            println!("   Subject: {}", info.subject);
+            println!("   Version: {}", info.version);
+            println!("   Type: {}", info.schema_type);
+            Some(info)
         }
-        _ => None,
+        Ok(None) => {
+            println!("ℹ️  Topic has no schema - consuming raw bytes");
+            None
+        }
+        Err(e) => {
+            println!("⚠️  Warning: Could not retrieve schema info: {}", e);
+            println!("   Continuing without schema validation...");
+            None
+        }
+    };
+
+    // Compile JSON schema validator if applicable
+    let schema_validator = if let Some(ref info) = schema_info {
+        if info.schema_type == "json_schema" {
+            let schema_value: Value = serde_json::from_slice(&info.schema_definition)
+                .context("Failed to parse JSON schema")?;
+            Some(
+                jsonschema::validator_for(&schema_value)
+                    .context("Failed to compile JSON schema")?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     consumer.subscribe().await?;
@@ -118,7 +156,7 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         if let Err(e) = process_message(
             &payload,
             attr,
-            &schema.type_schema,
+            schema_info.as_ref(),
             &schema_validator,
             &stream_message.msg_id,
             &mut state,
@@ -135,31 +173,41 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
     Ok(())
 }
 
+struct SchemaInfo {
+    subject: String,
+    version: u32,
+    schema_type: String,
+    schema_definition: Vec<u8>,
+}
+
+async fn get_topic_schema_info(client: &DanubeClient, topic: &str) -> Result<Option<SchemaInfo>> {
+    let mut schema_client = SchemaRegistryClient::new(client).await?;
+
+    // Try to derive subject name from topic (e.g., /default/events -> default-events)
+    let subject = topic.trim_start_matches('/').replace('/', "-");
+
+    match schema_client.get_latest_schema(&subject).await {
+        Ok(schema_response) => Ok(Some(SchemaInfo {
+            subject: schema_response.subject,
+            version: schema_response.version,
+            schema_type: schema_response.schema_type,
+            schema_definition: schema_response.schema_definition,
+        })),
+        Err(_) => Ok(None), // Topic has no schema
+    }
+}
+
 fn process_message(
     payload: &[u8],
     attr: HashMap<String, String>,
-    schema_type: &SchemaType,
+    schema_info: Option<&SchemaInfo>,
     schema_validator: &Option<jsonschema::Validator>,
     msg_id: &MessageID,
     state: &mut ConsumerState,
 ) -> Result<()> {
-    match schema_type {
-        SchemaType::Bytes => {
-            let decoded_message = from_utf8(payload)?;
-            print_to_console(decoded_message, attr, msg_id, payload.len(), state);
-        }
-        SchemaType::String => {
-            let decoded_message = from_utf8(payload)?;
-            print_to_console(decoded_message, attr, msg_id, payload.len(), state);
-        }
-        SchemaType::Int64 => {
-            let message = std::str::from_utf8(payload)
-                .context("Invalid UTF-8 sequence")?
-                .parse::<i64>()
-                .context("Failed to parse Int64")?;
-            print_to_console(&message.to_string(), attr, msg_id, payload.len(), state);
-        }
-        SchemaType::Json(_) => {
+    match schema_info {
+        Some(info) if info.schema_type == "json_schema" || info.schema_type == "avro" => {
+            // Parse as JSON
             if payload.is_empty() {
                 return Err(anyhow::anyhow!("Received empty JSON payload").into());
             }
@@ -171,6 +219,7 @@ fn process_message(
                 )
             })?;
 
+            // Validate against schema if we have a validator
             if let Some(validator) = schema_validator {
                 if !validator.is_valid(&json_value) {
                     let errors: Vec<_> = validator.iter_errors(&json_value).collect();
@@ -181,6 +230,23 @@ fn process_message(
             let json_str =
                 serde_json::to_string_pretty(&json_value).context("Failed to format JSON")?;
             print_to_console(&json_str, attr, msg_id, payload.len(), state);
+        }
+        Some(info) if info.schema_type == "protobuf" => {
+            // For protobuf, just show as bytes
+            let decoded_message = format!("[Protobuf binary data - {} bytes]", payload.len());
+            print_to_console(&decoded_message, attr, msg_id, payload.len(), state);
+        }
+        _ => {
+            // No schema or unknown type - try to decode as UTF-8 string
+            match from_utf8(payload) {
+                Ok(decoded_message) => {
+                    print_to_console(decoded_message, attr, msg_id, payload.len(), state);
+                }
+                Err(_) => {
+                    let decoded_message = format!("[Binary data - {} bytes]", payload.len());
+                    print_to_console(&decoded_message, attr, msg_id, payload.len(), state);
+                }
+            }
         }
     }
     Ok(())

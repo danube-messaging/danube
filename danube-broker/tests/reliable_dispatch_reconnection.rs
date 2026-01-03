@@ -7,7 +7,7 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::{SchemaType, SubType};
+use danube_client::SubType;
 use tokio::time::{sleep, timeout, Duration};
 
 #[path = "test_utils.rs"]
@@ -41,7 +41,6 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_exclusive_reconnect")
-        .with_schema("schema_str".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
@@ -160,7 +159,6 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_shared_reconnect")
-        .with_schema("schema_str".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
@@ -352,7 +350,6 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_multi_reconnect")
-        .with_schema("schema_str".into(), SchemaType::String)
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
