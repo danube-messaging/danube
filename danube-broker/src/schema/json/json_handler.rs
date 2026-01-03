@@ -3,9 +3,9 @@ use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
 /// Handler for JSON schemas
-pub struct JsonSchemaHandler;
+pub struct JsonHandler;
 
-impl JsonSchemaHandler {
+impl JsonHandler {
     /// Parse and validate a JSON Schema from raw bytes
     pub fn parse(raw_schema_bytes: &[u8]) -> Result<JsonSchemaDefinition> {
         // Convert bytes to string
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_schema_generates_fingerprint() {
-        let result = JsonSchemaHandler::parse(VALID_JSON_SCHEMA.as_bytes());
+        let result = JsonHandler::parse(VALID_JSON_SCHEMA.as_bytes());
         assert!(result.is_ok());
 
         let schema = result.unwrap();
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_parse_malformed_json_returns_error() {
-        let result = JsonSchemaHandler::parse(MALFORMED_JSON.as_bytes());
+        let result = JsonHandler::parse(MALFORMED_JSON.as_bytes());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid JSON"));
     }
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn test_fingerprint_consistency_for_deduplication() {
         // Critical: Same schema must always produce same fingerprint for deduplication
-        let fp1 = JsonSchemaHandler::compute_fingerprint(VALID_JSON_SCHEMA);
-        let fp2 = JsonSchemaHandler::compute_fingerprint(VALID_JSON_SCHEMA);
+        let fp1 = JsonHandler::compute_fingerprint(VALID_JSON_SCHEMA);
+        let fp2 = JsonHandler::compute_fingerprint(VALID_JSON_SCHEMA);
         assert_eq!(fp1, fp2);
     }
 
@@ -138,8 +138,8 @@ mod tests {
         let schema1 = r#"{"type": "object", "properties": {"x": {"type": "integer"}}}"#;
         let schema2 = r#"{"type": "object", "properties": {"y": {"type": "string"}}}"#;
 
-        let fp1 = JsonSchemaHandler::compute_fingerprint(schema1);
-        let fp2 = JsonSchemaHandler::compute_fingerprint(schema2);
+        let fp1 = JsonHandler::compute_fingerprint(schema1);
+        let fp2 = JsonHandler::compute_fingerprint(schema2);
         assert_ne!(fp1, fp2);
     }
 
@@ -157,8 +157,8 @@ mod tests {
 
         let schema_compact = r#"{"type":"object","properties":{"name":{"type":"string"}}}"#;
 
-        let fp1 = JsonSchemaHandler::compute_fingerprint(schema_pretty);
-        let fp2 = JsonSchemaHandler::compute_fingerprint(schema_compact);
+        let fp1 = JsonHandler::compute_fingerprint(schema_pretty);
+        let fp2 = JsonHandler::compute_fingerprint(schema_compact);
 
         assert_eq!(fp1, fp2);
     }

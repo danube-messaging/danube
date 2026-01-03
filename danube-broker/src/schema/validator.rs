@@ -1,4 +1,7 @@
+use crate::schema::avro::AvroValidator;
+use crate::schema::json::JsonValidator;
 use crate::schema::metadata::SchemaDefinition;
+use crate::schema::protobuf::ProtobufValidator;
 use anyhow::{anyhow, Result};
 use std::fmt;
 
@@ -70,142 +73,10 @@ impl PayloadValidator for NumberValidator {
     }
 }
 
-/// Avro validator (validates against Avro schema)
-#[derive(Debug)]
-pub struct AvroValidator {
-    schema: apache_avro::Schema,
-    #[allow(dead_code)]
-    raw_schema: String,
-}
-
-impl AvroValidator {
-    pub fn new(raw_schema: String) -> Result<Self> {
-        let schema = apache_avro::Schema::parse_str(&raw_schema)
-            .map_err(|e| anyhow!("Failed to parse Avro schema: {}", e))?;
-
-        Ok(Self { schema, raw_schema })
-    }
-
-    #[allow(dead_code)]
-    pub fn schema(&self) -> &apache_avro::Schema {
-        &self.schema
-    }
-}
-
-impl PayloadValidator for AvroValidator {
-    fn validate(&self, data: &[u8]) -> Result<()> {
-        // Try to decode the data using the Avro schema
-        let reader = apache_avro::Reader::with_schema(&self.schema, data)
-            .map_err(|e| anyhow!("Avro validation failed: {}", e))?;
-
-        // Attempt to read at least one value to ensure it's valid
-        for value in reader {
-            match value {
-                Ok(_) => return Ok(()),
-                Err(e) => return Err(anyhow!("Avro validation failed: {}", e)),
-            }
-        }
-
-        Err(anyhow!("Avro validation failed: no data found"))
-    }
-
-    fn schema_type(&self) -> &str {
-        "avro"
-    }
-
-    fn description(&self) -> String {
-        format!(
-            "Avro validator: {}",
-            self.raw_schema.chars().take(100).collect::<String>()
-        )
-    }
-}
-
-/// JSON Schema validator
-#[derive(Debug)]
-pub struct JsonSchemaValidator {
-    validator: jsonschema::Validator,
-    #[allow(dead_code)]
-    raw_schema: String,
-}
-
-impl JsonSchemaValidator {
-    pub fn new(raw_schema: String) -> Result<Self> {
-        let schema_value: serde_json::Value = serde_json::from_str(&raw_schema)
-            .map_err(|e| anyhow!("Failed to parse JSON schema: {}", e))?;
-
-        let validator = jsonschema::validator_for(&schema_value)
-            .map_err(|e| anyhow!("Failed to compile JSON schema: {}", e))?;
-
-        Ok(Self {
-            validator,
-            raw_schema,
-        })
-    }
-}
-
-impl PayloadValidator for JsonSchemaValidator {
-    fn validate(&self, data: &[u8]) -> Result<()> {
-        // Parse the data as JSON
-        let json_value: serde_json::Value =
-            serde_json::from_slice(data).map_err(|e| anyhow!("Invalid JSON data: {}", e))?;
-
-        // Validate against the schema
-        if self.validator.is_valid(&json_value) {
-            Ok(())
-        } else {
-            let errors: Vec<String> = self
-                .validator
-                .iter_errors(&json_value)
-                .map(|e| e.to_string())
-                .collect();
-            Err(anyhow!(
-                "JSON Schema validation failed: {}",
-                errors.join(", ")
-            ))
-        }
-    }
-
-    fn schema_type(&self) -> &str {
-        "json_schema"
-    }
-
-    fn description(&self) -> String {
-        format!(
-            "JSON Schema validator: {}",
-            self.raw_schema.chars().take(100).collect::<String>()
-        )
-    }
-}
-
-/// Protobuf validator (future implementation)
-#[derive(Debug)]
-pub struct ProtobufValidator {
-    #[allow(dead_code)]
-    message_name: String,
-}
-
-impl ProtobufValidator {
-    pub fn new(_raw_proto: String, message_name: String) -> Result<Self> {
-        // TODO: Implement protobuf validation using prost-reflect
-        Ok(Self { message_name })
-    }
-}
-
-impl PayloadValidator for ProtobufValidator {
-    fn validate(&self, _data: &[u8]) -> Result<()> {
-        // TODO: Implement actual protobuf validation
-        unimplemented!("Protobuf validation not yet implemented")
-    }
-
-    fn schema_type(&self) -> &str {
-        "protobuf"
-    }
-
-    fn description(&self) -> String {
-        format!("Protobuf validator: {}", self.message_name)
-    }
-}
+// Format-specific validators moved to their respective modules:
+// - avro/avro_validator.rs
+// - json/json_validator.rs
+// - protobuf/protobuf_validator.rs
 
 /// Factory for creating validators from schema definitions
 pub struct ValidatorFactory;
@@ -222,7 +93,7 @@ impl ValidatorFactory {
                 Ok(Box::new(validator))
             }
             SchemaDefinition::JsonSchema(json) => {
-                let validator = JsonSchemaValidator::new(json.raw_schema.clone())?;
+                let validator = JsonValidator::new(json.raw_schema.clone())?;
                 Ok(Box::new(validator))
             }
             SchemaDefinition::Protobuf(proto) => {
@@ -257,40 +128,6 @@ mod tests {
     }
 
     #[test]
-    fn test_json_schema_validator_validates_structure() {
-        let schema = r#"{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}"#;
-        let validator = JsonSchemaValidator::new(schema.to_string()).unwrap();
-
-        let valid_data = br#"{"name": "John"}"#;
-        assert!(validator.validate(valid_data).is_ok());
-
-        let invalid_type = br#"{"name": 123}"#;
-        assert!(validator.validate(invalid_type).is_err());
-
-        let missing_required = br#"{"age": 30}"#;
-        assert!(validator.validate(missing_required).is_err());
-    }
-
-    #[test]
-    fn test_avro_validator_with_record() {
-        let schema = r#"{
-            "type": "record",
-            "name": "User",
-            "fields": [
-                {"name": "name", "type": "string"},
-                {"name": "age", "type": "int"}
-            ]
-        }"#;
-
-        let validator = AvroValidator::new(schema.to_string()).unwrap();
-
-        // Valid Avro binary data for the User record
-        // This would need actual Avro-encoded data to test properly
-        // For now, just verify validator creation works
-        assert_eq!(validator.schema_type(), "avro");
-    }
-
-    #[test]
     fn test_validator_factory_creates_correct_validators() {
         // String validator
         let string_def = SchemaDefinition::String;
@@ -313,4 +150,9 @@ mod tests {
         let validator = ValidatorFactory::create(&avro_def).unwrap();
         assert_eq!(validator.schema_type(), "avro");
     }
+
+    // Format-specific validator tests moved to their respective modules:
+    // - avro/avro_validator.rs
+    // - json/json_validator.rs
+    // - protobuf/protobuf_validator.rs
 }

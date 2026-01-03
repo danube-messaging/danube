@@ -1,11 +1,18 @@
 // Schema Registry Module
 // This module provides comprehensive schema management for Danube messaging
+//
+// The module is organized by schema type, where each schema format (Avro, JSON, Protobuf)
+// has its own submodule containing:
+// - Handler: Parsing and fingerprinting
+// - Compatibility: Schema evolution checking
+// - Validator: Payload validation
 
+pub mod avro;
 pub mod compatibility;
-pub mod formats;
+pub mod json;
 pub mod metadata;
+pub mod protobuf;
 pub mod registry;
-// Phase 6: storage.rs deleted - SchemaRegistry now uses SchemaResources directly
 pub mod types;
 pub mod validator;
 

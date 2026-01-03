@@ -3,9 +3,9 @@ use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
 /// Handler for Avro schemas
-pub struct AvroSchemaHandler;
+pub struct AvroHandler;
 
-impl AvroSchemaHandler {
+impl AvroHandler {
     /// Parse and validate an Avro schema from raw bytes
     pub fn parse(raw_schema_bytes: &[u8]) -> Result<AvroSchema> {
         // Convert bytes to string
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_schema_generates_fingerprint() {
-        let result = AvroSchemaHandler::parse(VALID_AVRO_SCHEMA.as_bytes());
+        let result = AvroHandler::parse(VALID_AVRO_SCHEMA.as_bytes());
         assert!(result.is_ok());
 
         let schema = result.unwrap();
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_schema_returns_error() {
-        let result = AvroSchemaHandler::parse(INVALID_AVRO_SCHEMA.as_bytes());
+        let result = AvroHandler::parse(INVALID_AVRO_SCHEMA.as_bytes());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid Avro"));
     }
@@ -108,8 +108,8 @@ mod tests {
     #[test]
     fn test_fingerprint_consistency_for_deduplication() {
         // Critical: Same schema must always produce same fingerprint for deduplication
-        let fp1 = AvroSchemaHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
-        let fp2 = AvroSchemaHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
+        let fp1 = AvroHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
+        let fp2 = AvroHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
         assert_eq!(fp1, fp2);
     }
 
@@ -121,8 +121,8 @@ mod tests {
         let schema2 =
             r#"{"type": "record", "name": "B", "fields": [{"name": "y", "type": "string"}]}"#;
 
-        let fp1 = AvroSchemaHandler::compute_fingerprint(schema1);
-        let fp2 = AvroSchemaHandler::compute_fingerprint(schema2);
+        let fp1 = AvroHandler::compute_fingerprint(schema1);
+        let fp2 = AvroHandler::compute_fingerprint(schema2);
         assert_ne!(fp1, fp2);
     }
 
@@ -139,8 +139,8 @@ mod tests {
 
         let schema_compact = r#"{"type":"record","name":"User","fields":[{"name":"id","type":"int"}]}"#;
 
-        let fp1 = AvroSchemaHandler::compute_fingerprint(schema_pretty);
-        let fp2 = AvroSchemaHandler::compute_fingerprint(schema_compact);
+        let fp1 = AvroHandler::compute_fingerprint(schema_pretty);
+        let fp2 = AvroHandler::compute_fingerprint(schema_compact);
 
         // After canonicalization, fingerprints should match
         assert_eq!(fp1, fp2);
