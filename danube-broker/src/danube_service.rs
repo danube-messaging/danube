@@ -208,7 +208,6 @@ impl DanubeService {
         //==========================================================================
 
         // Initialize Schema Registry Service
-        // Phase 6: Now properly using SchemaResources pattern
         let schema_registry = Arc::new(SchemaRegistryService::new(
             self.local_cache.clone(),
             self.meta_store.clone(),
@@ -333,10 +332,6 @@ impl DanubeService {
         if let Err(e) = result_admin {
             eprintln!("Danube Admin failed: {:?}", e);
         }
-        //server_handle.await?;
-
-        //TODO! evalueate other backgroud services like PublishRateLimiter, DispatchRateLimiter,
-        // compaction, innactivity monitor
 
         Ok(())
     }

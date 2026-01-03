@@ -22,9 +22,6 @@ use danube_core::proto::SchemaReference as ProtoSchemaReference;
 pub struct Producer {
     client: DanubeClient,
     topic_name: String,
-    // TODO Phase 4: schema removed - use SchemaReference
-    // schema: Schema,
-    // Phase 5: Schema registry support
     schema_ref: Option<ProtoSchemaReference>,
     dispatch_strategy: ConfigDispatchStrategy,
     producer_name: String,
@@ -38,7 +35,7 @@ impl Producer {
     pub(crate) fn new(
         client: DanubeClient,
         topic_name: String,
-        schema_ref: Option<ProtoSchemaReference>, // Phase 5: SchemaReference support
+        schema_ref: Option<ProtoSchemaReference>,
         dispatch_strategy: Option<ConfigDispatchStrategy>,
         producer_name: String,
         partitions: Option<usize>,
@@ -276,9 +273,6 @@ impl ProducerBuilder {
             topic: None,
             num_partitions: None,
             producer_name: None,
-            // TODO Phase 4: schema removed
-            // schema: None,
-            // Phase 5: Schema registry support
             schema_ref: None,
             dispatch_strategy: None,
             producer_options: ProducerOptions::default(),
@@ -309,9 +303,7 @@ impl ProducerBuilder {
         self
     }
 
-    // TODO Phase 4: with_schema() removed - use SchemaRegistry client instead
-
-    // ===== Phase 5: Schema Registry Methods =====
+    // ===== Schema Registry Methods =====
 
     /// Set schema by subject name (uses latest version)
     ///
@@ -334,24 +326,6 @@ impl ProducerBuilder {
         self.schema_ref = Some(schema_ref);
         self
     }
-    // /// Sets the schema for the producer, defining the structure of the messages.
-    // ///
-    // /// This method configures the schema used by the producer to serialize messages. The schema specifies how messages are structured and interpreted.
-    // /// It is especially important for ensuring that messages adhere to a specific format and can be properly deserialized by consumers.
-    // ///
-    // /// # Parameters
-    // ///
-    // /// - `schema_name`: The name of the schema. This should be a non-empty string that identifies the schema.
-    // ///
-    // /// - `schema_type`: The type of the schema, which determines the format of the data:
-    // ///   - `SchemaType::Bytes`: Indicates that the schema uses raw byte data.
-    // ///   - `SchemaType::String`: Indicates that the schema uses string data.
-    // ///   - `SchemaType::Int64`: Indicates that the schema uses 64-bit integer data.
-    // ///   - `SchemaType::Json(String)`: Indicates that the schema uses JSON data. The `String` contains the JSON schema definition.
-    // pub fn with_schema(mut self, schema_name: String, schema_type: SchemaType) -> Self {
-    //     self.schema = Some(Schema::new(schema_name, schema_type));
-    //     self
-    // }
 
     /// Sets the reliable dispatch options for the producer.
     /// This method configures the dispatch strategy for the producer, which determines how messages are stored and managed.

@@ -181,9 +181,6 @@ struct SchemaInfo {
 }
 
 async fn get_topic_schema_info(client: &DanubeClient, topic: &str) -> Result<Option<SchemaInfo>> {
-    // Note: In a real implementation, you'd call an admin API to get topic metadata
-    // For now, we'll try to get the schema directly by attempting common subject patterns
-
     let mut schema_client = SchemaRegistryClient::new(client).await?;
 
     // Try to derive subject name from topic (e.g., /default/events -> default-events)

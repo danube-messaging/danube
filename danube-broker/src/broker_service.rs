@@ -290,16 +290,6 @@ impl BrokerService {
     // Producer operations (delegated to TopicManager)
     // =====================================================================
 
-    // TODO Phase 4: get_schema_async() removed - old schema system deprecated
-    // /// Returns the topic schema from Local Cache as core proto schema (async).
-    // pub(crate) async fn get_schema_async(&self, topic_name: &str) -> Option<ProtoSchema> {
-    //     let resources = self.resources.lock().await;
-    //     resources
-    //         .topic
-    //         .get_schema(topic_name)
-    //         .map(ProtoSchema::from)
-    // }
-
     /// Returns an existing producer id if a producer with `producer_name` is already attached.
     pub(crate) async fn check_if_producer_exist(
         &self,

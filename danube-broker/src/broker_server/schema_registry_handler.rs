@@ -21,7 +21,6 @@ pub struct SchemaRegistryService {
 
 impl SchemaRegistryService {
     pub fn new(local_cache: LocalCache, metadata_storage: MetadataStorage) -> Self {
-        // Phase 6: SchemaRegistry now uses SchemaResources directly (no wrapper needed)
         let schema_resources = SchemaResources::new(local_cache, metadata_storage);
         let registry = Arc::new(SchemaRegistry::new(Arc::new(schema_resources)));
 
@@ -313,19 +312,5 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 )))
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    // Note: Integration tests would require setting up a test metadata store
-    // For now, these are placeholder tests showing the structure
-
-    #[test]
-    fn test_service_creation() {
-        // This would need a mock MetadataStorage
-        // let metadata_storage = Arc::new(Mutex::new(MetadataStorage::new(/* ... */)));
-        // let service = SchemaRegistryService::new(metadata_storage);
-        // assert!(service.get_registry().is_ok());
     }
 }

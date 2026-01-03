@@ -10,9 +10,6 @@ use crate::{
     health_check::HealthCheckService,
     lookup_service::{LookupResult, LookupService},
     producer::ProducerBuilder,
-    // TODO Phase 4: Old schema_service removed
-    // schema::Schema,
-    // schema_service::SchemaService,
 };
 
 /// The main client for interacting with the Danube messaging system.
@@ -96,23 +93,6 @@ impl DanubeClient {
     pub async fn lookup_topic(&self, addr: &Uri, topic: impl Into<String>) -> Result<LookupResult> {
         self.lookup_service.lookup_topic(addr, topic).await
     }
-
-    // TODO Phase 4: get_schema() removed - use SchemaRegistry client instead
-    // /// Retrieves the schema associated with a specified topic from the schema service.
-    // ///
-    // /// This asynchronous method fetches the schema for the given topic from the schema service. The schema describes the structure and format of the messages for the specified topic. The method returns the schema details or an error if the retrieval fails.
-    // ///
-    // /// # Parameters
-    // ///
-    // /// - `topic`: The name of the topic for which the schema is to be retrieved.
-    // ///
-    // /// # Returns
-    // ///
-    // /// - `Ok(Schema)`: The schema associated with the specified topic. This includes information about the schema type and its definition, if available.
-    // /// - `Err(e)`: An error if the schema retrieval fails or if there are issues during the operation. This could include errors such as non-existent topics, connectivity issues, or internal service errors.
-    // pub async fn get_schema(&self, topic: impl Into<String>) -> Result<Schema> {
-    //     self.schema_service.get_schema(&self.uri, topic).await
-    // }
 }
 
 /// A builder for configuring and creating a `DanubeClient` instance.

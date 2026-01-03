@@ -49,19 +49,6 @@ impl TopicResources {
         Ok(())
     }
 
-    // Phase 6: Old schema methods commented out - use SchemaResources instead
-    // pub(crate) async fn add_topic_schema(
-    //     &mut self,
-    //     topic_name: &str,
-    //     schema: Schema,
-    // ) -> Result<()> {
-    //     let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
-    //     let data = serde_json::to_value(&schema).unwrap();
-    //     self.create(&path, data).await?;
-    //
-    //     Ok(())
-    // }
-
     pub(crate) async fn add_topic_delivery(
         &mut self,
         topic_name: &str,

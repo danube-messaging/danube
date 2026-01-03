@@ -20,13 +20,13 @@ members = [
     # -- Danube lib client
     "danube-client",
 
-    # -- Danube client cli (Phase 5: Temporarily disabled for testing)
+    # -- Danube client cli 
     "danube-cli", 
 
-    # -- Danube admin cli (Phase 5: Temporarily disabled for testing)
+    # -- Danube admin cli 
     "danube-admin-cli", 
     
-    # -- Danube admin gateway (BFF for HTTP UI) (Phase 5: Temporarily disabled for testing)
+    # -- Danube admin gateway (BFF for HTTP UI)
     "danube-admin-gateway",
 ]
 

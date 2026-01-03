@@ -127,7 +127,10 @@ async fn handle_put_event(
             // Get full schema info for logging (fast LocalCache read)
             let schema_info = match manager.get_schema_info(&topic_name).await {
                 Some((subject, schema_id, schema_type)) => {
-                    format!("subject={}, id={}, type={}", subject, schema_id, schema_type)
+                    format!(
+                        "subject={}, id={}, type={}",
+                        subject, schema_id, schema_type
+                    )
                 }
                 None => "none".to_string(),
             };
@@ -280,7 +283,7 @@ async fn bounce_if_not_active(
     true
 }
 
-// Phase 1: Cache readiness verification with retry and fallback
+// Cache readiness verification with retry and fallback
 // Verifies that required metadata (policy/schema/dispatch config) is available in LocalCache
 // before calling create_topic_locally() to avoid watcher ordering races
 async fn verify_cache_readiness_with_retry(
@@ -291,18 +294,12 @@ async fn verify_cache_readiness_with_retry(
 ) -> anyhow::Result<()> {
     for attempt in 0..max_retries {
         // Check if required metadata is available in LocalCache
-        // Phase 6: Schema check removed - topics now use SchemaRegistry references
         let (has_dispatch, has_policies) = {
             let resources = broker_service.resources.lock().await;
             let dispatch_strategy = resources.topic.get_dispatch_strategy(topic_name);
-            // let schema = resources.topic.get_schema(topic_name);
             let policies = resources.topic.get_policies(topic_name);
 
-            (
-                dispatch_strategy.is_some(),
-                // schema.is_some(),
-                policies.is_some(),
-            )
+            (dispatch_strategy.is_some(), policies.is_some())
         };
 
         if has_dispatch {

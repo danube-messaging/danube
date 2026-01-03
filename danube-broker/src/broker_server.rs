@@ -64,7 +64,6 @@ impl DanubeServerImpl {
         let discovery_service = DiscoveryServer::new(self.clone());
         let health_check_service = HealthCheckServer::new(self.clone());
         let auth_service = AuthServiceServer::new(self.clone());
-        // Phase 6: Clone the Arc to pass ownership to SchemaRegistryServer
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
