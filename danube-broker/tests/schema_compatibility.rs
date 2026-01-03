@@ -60,9 +60,7 @@ async fn backward_compatibility_add_optional_field() -> Result<()> {
 /// 
 /// **What:** Attempts to remove a required field under BACKWARD compatibility mode.
 /// **Why:** Ensures backward compatibility prevents breaking changes that would fail old consumers.
-/// **Note:** Currently ignored - broker compatibility checking needs to be stricter.
 #[tokio::test]
-#[ignore = "Broker compatibility checking needs refinement"]
 async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let mut schema_client = SchemaRegistryClient::new(&client).await?;
@@ -148,9 +146,7 @@ async fn forward_compatibility_remove_optional_field() -> Result<()> {
 /// 
 /// **What:** Attempts to add a required field under FORWARD compatibility mode.
 /// **Why:** Ensures forward compatibility prevents changes that would fail new consumers reading old data.
-/// **Note:** Currently ignored - broker compatibility checking needs to be stricter.
 #[tokio::test]
-#[ignore = "Broker compatibility checking needs refinement"]
 async fn forward_compatibility_add_required_field_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let mut schema_client = SchemaRegistryClient::new(&client).await?;
@@ -230,17 +226,16 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
     // Version 3: Remove required field (BREAKS compatibility)
     let schema_v3 =
         r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
-    let _result_fail = schema_client
+    let result_fail = schema_client
         .register_schema(subject)
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(schema_v3.as_bytes())
         .execute()
         .await;
-    // TODO: Broker should reject this but currently accepts it
-    // assert!(
-    //     result_fail.is_err(),
-    //     "Removing required field should fail FULL compatibility"
-    // );
+    assert!(
+        result_fail.is_err(),
+        "Removing required field should fail FULL compatibility"
+    );
 
     Ok(())
 }
@@ -375,11 +370,11 @@ async fn check_compatibility_before_registration() -> Result<()> {
         "Proposed schema should be compatible"
     );
 
-    // Check incompatible schema
+    // Check incompatible schema (removes required field 'id')
     let incompatible_schema =
         r#"{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}"#;
 
-    let _incompat_response = schema_client
+    let incompat_response = schema_client
         .check_compatibility(
             subject,
             incompatible_schema.as_bytes().to_vec(),
@@ -388,11 +383,10 @@ async fn check_compatibility_before_registration() -> Result<()> {
         )
         .await?;
 
-    // TODO: Broker should mark this as incompatible but currently doesn't
-    // assert!(
-    //     !incompat_response.is_compatible,
-    //     "Incompatible schema should be rejected"
-    // );
+    assert!(
+        !incompat_response.is_compatible,
+        "Incompatible schema should be rejected"
+    );
 
     Ok(())
 }

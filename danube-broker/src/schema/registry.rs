@@ -1,9 +1,11 @@
 use crate::resources::SchemaResources;
+use crate::schema::avro::AvroHandler;
 use crate::schema::compatibility::CompatibilityChecker;
-use crate::schema::formats::{AvroSchemaHandler, JsonSchemaHandler};
+use crate::schema::json::JsonHandler;
 use crate::schema::metadata::{
     CompatibilityResult, SchemaDefinition, SchemaMetadata, SchemaVersion,
 };
+use crate::schema::protobuf::ProtobufHandler;
 use crate::schema::types::{CompatibilityMode, SchemaType};
 use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,8 +65,16 @@ impl SchemaRegistry {
             // Check compatibility
             let compatibility_mode = metadata.compatibility_mode;
             if !matches!(compatibility_mode, CompatibilityMode::None) {
-                self.check_compatibility_internal(&metadata, &schema_def, compatibility_mode)
+                let compat_result = self.check_compatibility_internal(&metadata, &schema_def, compatibility_mode)
                     .await?;
+                if !compat_result.is_compatible {
+                    return Err(anyhow!(
+                        "Schema is not compatible with subject '{}' (mode: {:?}): {}",
+                        subject,
+                        compatibility_mode,
+                        compat_result.errors.join("; ")
+                    ));
+                }
             }
 
             // Create new version
@@ -239,16 +249,18 @@ impl SchemaRegistry {
             SchemaType::String => Ok(SchemaDefinition::String),
             SchemaType::Number => Ok(SchemaDefinition::Number),
             SchemaType::Avro => {
-                let avro_schema = AvroSchemaHandler::parse(schema_bytes)?;
+                let avro_schema = AvroHandler::parse(schema_bytes)?;
                 Ok(SchemaDefinition::Avro(avro_schema))
             }
             SchemaType::JsonSchema => {
-                let json_schema = JsonSchemaHandler::parse(schema_bytes)?;
+                let json_schema = JsonHandler::parse(schema_bytes)?;
                 Ok(SchemaDefinition::JsonSchema(json_schema))
             }
             SchemaType::Protobuf => {
-                // TODO: Implement protobuf parsing
-                Err(anyhow!("Protobuf schemas not yet supported"))
+                // TODO: Extract message name from schema_bytes or accept as parameter
+                let message_name = "DefaultMessage".to_string();
+                let proto_schema = ProtobufHandler::parse(schema_bytes, message_name)?;
+                Ok(SchemaDefinition::Protobuf(proto_schema))
             }
         }
     }
