@@ -1,4 +1,4 @@
-# ![D from Danube](Danube_logo_2.png) Danube
+# 🌊 Danube Messaging
 
 **A lightweight and scalable Cloud-Native Messaging Platform with Cloud Object Storage (S3/GCS/Azure)**
 
