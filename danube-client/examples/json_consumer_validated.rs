@@ -1,6 +1,6 @@
 use anyhow::Result;
 use danube_client::{DanubeClient, SchemaRegistryClient, SubType};
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -37,20 +37,20 @@ async fn validate_struct_against_registry<T: Serialize>(
     let schema_def: serde_json::Value = serde_json::from_slice(&schema_response.schema_definition)?;
 
     println!("🔨 Compiling JSON Schema validator...");
-    let validator = JSONSchema::compile(&schema_def)
-        .map_err(|e| anyhow::anyhow!("Invalid JSON schema: {}", e))?;
+    let validator =
+        Validator::new(&schema_def).map_err(|e| anyhow::anyhow!("Invalid JSON schema: {}", e))?;
 
     println!("✅ Validating struct against schema...");
     let sample_json = serde_json::to_value(sample)?;
 
-    if let Err(errors) = validator.validate(&sample_json) {
+    if let Err(_validation_error) = validator.validate(&sample_json) {
         eprintln!(
             "\n❌ VALIDATION FAILED: Struct does not match schema v{}",
             schema_response.version
         );
         eprintln!("   The consumer struct definition is incompatible with the registered schema.");
         eprintln!("\n   Validation errors:");
-        for error in errors {
+        for error in validator.iter_errors(&sample_json) {
             eprintln!("   - {}", error);
         }
         eprintln!("\n   💡 Fix: Update the MyMessage struct to match the schema in the registry.");

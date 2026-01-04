@@ -36,7 +36,7 @@ num_cpus = "1.17.0"
 
 # Schema registry dependencies
 apache-avro = "0.21"
-jsonschema = "0.37"
+jsonschema = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 
