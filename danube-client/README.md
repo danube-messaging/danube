@@ -2,7 +2,7 @@
 
 An async Rust client library for interacting with Danube Messaging platform.
 
-[Danube](https://github.com/danube-messaging/danube) is an open-source **distributed** Messaging Broker platform written in Rust. Consult [the documentation](https://danube-docs.dev-state.com/) for supported concepts and the platform architecture.
+🌊 [Danube Messaging](https://github.com/danube-messaging/danube) is an open-source **distributed** Messaging Broker platform written in Rust. Consult [the documentation](https://danube-docs.dev-state.com/) for supported concepts and the platform architecture.
 
 ## Features
 
