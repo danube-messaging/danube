@@ -1,3 +1,26 @@
+<!-- v0.6.0 START -->
+## v0.6.0 - 2026-01-04
+
+This release introduces the **Schema Registry** with full compatibility checking, reliability improvements for at-least-once delivery guarantees, and significant refactoring for maintainability.
+
+### 🎯 Major Features
+
+* **Schema Registry with JSON Schema Compatibility** (#166) - Implemented backward, forward, and full compatibility checking for JSON Schema in `danube-broker/src/schema/json/`. Complements existing Avro support. by @danrusei in 81ddac7
+
+* **Complete Schema Registry Implementation** (#165) - Added centralized schema management with versioning, compatibility enforcement (Backward/Forward/Full/None modes), and support for JSON Schema, Avro, and Protobuf. See [Schema Registry Architecture](https://danube-docs.dev-state.com/architecture/schema_registry_architecture/) for details. by @danrusei in 6c6571a
+
+### 🔧 Reliability & Performance
+
+* **Hybrid Lag Monitor for At-Least-Once Delivery** (#162) - Implemented a dual-path dispatch system combining fast notification-based delivery with a 500ms heartbeat watchdog. Ensures reliable message delivery even when `tokio::Notify` coalescing, subscription races, consumer disconnects, or storage lags occur. Guarantees at-least-once delivery semantics. by @danrusei in 6f334b1
+
+### 🏗️ Refactoring & Code Quality
+
+* **Dispatcher Refactoring** (#164) - Restructured `danube-broker/src/dispatcher/` for improved readability, maintainability, and separation of concerns. by @danrusei in a05c5de
+
+* **Consumer Lifecycle Simplification** (#161) - Introduced `ConsumerSession` to manage consumer state and lifecycle, simplifying connection handling and session management in `danube-broker/src/consumer.rs`. by @danrusei in ef70cd0
+
+<!-- v0.6.0 END -->
+
 <!-- v0.5.2 START -->
 ## v0.5.2 - 2025-11-22
 ### What's Changed

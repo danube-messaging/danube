@@ -1,4 +1,40 @@
 #!/usr/bin/env bash
+#
+# prepare-changelog.sh - Generate changelog entries from git commits
+#
+# DESCRIPTION:
+#   Automatically generates changelog entries by extracting commit messages
+#   between git tags and prepends them to CHANGELOG.md in the repository root.
+#
+# USAGE:
+#   ./scripts/prepare-changelog.sh <next_tag> [previous_tag]
+#
+# ARGUMENTS:
+#   next_tag       - The upcoming release version (e.g., v0.5.3)
+#   previous_tag   - (Optional) The previous release tag to compare against.
+#                    If omitted, uses the most recent tag matching v*.*.* pattern.
+#                    If no tags exist, uses the first commit in the repository.
+#
+# EXAMPLES:
+#   # Generate changelog for v0.5.3 (auto-detects previous tag)
+#   ./scripts/prepare-changelog.sh v0.5.3
+#
+#   # Generate changelog between specific tags
+#   ./scripts/prepare-changelog.sh v0.5.3 v0.5.2
+#
+#   # First release (no previous tags)
+#   ./scripts/prepare-changelog.sh v0.1.0
+#
+# OUTPUT:
+#   Updates CHANGELOG.md in the repository root with a new section at the top
+#   containing all commits since the previous tag.
+#
+# NOTES:
+#   - Merge commits are excluded from the changelog
+#   - Commit format: "* <commit message> by @<author> in <hash>"
+#   - Prevents duplicate sections if the same tag already exists
+#   - Script can be run from any directory within the repository
+#
 set -euo pipefail
 
 usage() {
