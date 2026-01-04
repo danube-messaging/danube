@@ -10,7 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 futures-util = "0.3.31"
-jsonschema = "0.28.3"
+jsonschema = { workspace = true }
 
 danube-client = {path = "../danube-client"}
 danube-core = {path = "../danube-core"}
