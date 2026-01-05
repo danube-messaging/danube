@@ -10,7 +10,7 @@ mod topic;
 pub(crate) use cluster::ClusterResources;
 pub(crate) use namespace::NamespaceResources;
 pub(crate) use schema::SchemaResources;
-pub(crate) use topic::TopicResources;
+pub(crate) use topic::{TopicResources, TopicSchemaConfig};
 
 pub(crate) static BASE_CLUSTER_PATH: &str = "/cluster";
 pub(crate) static BASE_REGISTER_PATH: &str = "/cluster/register";

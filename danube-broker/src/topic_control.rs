@@ -3,10 +3,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use metrics::gauge;
-use tracing::{error, warn};
+use tonic::Status;
+use tracing::{error, info, warn};
 
 use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::resources::BASE_TOPICS_PATH;
+use crate::schema::ValidationPolicy;
 use crate::utils::join_path;
 use crate::{
     broker_metrics::BROKER_TOPICS_OWNED, consumer::Consumer, resources::Resources,
@@ -113,6 +115,40 @@ impl TopicManager {
             if let Ok(ns_policies) = ns_policies {
                 let _ = new_topic.policies_update(ns_policies);
             }
+        }
+
+        // Load schema configuration from ETCD if it exists
+        let schema_config = {
+            let resources = self.resources.lock().await;
+            resources.topic.get_schema_config(topic_name).await.ok().flatten()
+        };
+
+        if let Some(config) = schema_config {
+            info!(
+                "Loading persisted schema config for topic '{}': subject='{}', policy='{:?}'",
+                topic_name, config.subject, config.validation_policy
+            );
+            
+            // Apply schema configuration to the topic
+            if let Err(e) = new_topic
+                .set_schema_ref(danube_core::proto::SchemaReference {
+                    subject: config.subject.clone(),
+                    version_ref: None,
+                })
+                .await
+            {
+                warn!(
+                    "Failed to apply persisted schema subject '{}' to topic '{}': {}",
+                    config.subject, topic_name, e
+                );
+            }
+            
+            new_topic
+                .configure_schema_validation(
+                    config.validation_policy,
+                    config.enable_payload_validation,
+                )
+                .await;
         }
 
         // Wrap topic in Arc for concurrent access
@@ -532,6 +568,199 @@ impl TopicManager {
         Err(anyhow!(
             "Unable to unsubscribe as the subscription {} has active consumers",
             subscription_name
+        ))
+    }
+
+    // ===== Schema Configuration Operations (Admin) =====
+
+    /// Configure schema settings for a topic (admin-only).
+    /// 
+    /// This allows administrators to assign or change a topic's schema subject
+    /// and validation settings, overriding first producer's assignment.
+    pub(crate) async fn configure_topic_schema(
+        &self,
+        topic_name: &str,
+        schema_subject: String,
+        validation_policy: ValidationPolicy,
+        enable_payload_validation: bool,
+    ) -> Result<String, Status> {
+        info!(
+            "TopicManager: Configuring schema for topic='{}', subject='{}', policy='{:?}'",
+            topic_name, schema_subject, validation_policy
+        );
+
+        // Get the topic from worker pool
+        let topic = self
+            .topic_worker_pool
+            .get_topic(topic_name)
+            .ok_or_else(|| {
+                Status::not_found(format!("Topic '{}' not found on this broker", topic_name))
+            })?;
+
+        // Set schema subject for the topic
+        topic
+            .set_schema_ref(danube_core::proto::SchemaReference {
+                subject: schema_subject.clone(),
+                version_ref: None,
+            })
+            .await
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Failed to set schema subject '{}': {}",
+                    schema_subject, e
+                ))
+            })?;
+
+        // Configure validation settings
+        topic
+            .configure_schema_validation(validation_policy, enable_payload_validation)
+            .await;
+
+        // Persist configuration to ETCD
+        {
+            let mut resources = self.resources.lock().await;
+            let config = crate::resources::TopicSchemaConfig {
+                subject: schema_subject.clone(),
+                validation_policy,
+                enable_payload_validation,
+            };
+            resources
+                .topic
+                .store_schema_config(topic_name, &config)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!(
+                        "Failed to persist schema config to ETCD: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        info!(
+            "Successfully configured topic '{}' with schema '{}' (persisted to ETCD)",
+            topic_name, schema_subject
+        );
+
+        Ok(format!(
+            "Topic '{}' configured with schema '{}', validation policy '{:?}', payload validation {}",
+            topic_name,
+            schema_subject,
+            validation_policy,
+            if enable_payload_validation { "enabled" } else { "disabled" }
+        ))
+    }
+
+    /// Update validation policy for a topic (admin-only).
+    /// 
+    /// This allows administrators to adjust validation strictness without
+    /// changing the schema subject.
+    pub(crate) async fn update_topic_validation_policy(
+        &self,
+        topic_name: &str,
+        validation_policy: ValidationPolicy,
+        enable_payload_validation: bool,
+    ) -> Result<String, Status> {
+        info!(
+            "TopicManager: Updating validation policy for topic='{}', policy='{:?}'",
+            topic_name, validation_policy
+        );
+
+        // Get the topic from worker pool
+        let topic = self
+            .topic_worker_pool
+            .get_topic(topic_name)
+            .ok_or_else(|| {
+                Status::not_found(format!("Topic '{}' not found on this broker", topic_name))
+            })?;
+
+        // Update validation settings
+        topic
+            .configure_schema_validation(validation_policy, enable_payload_validation)
+            .await;
+
+        // Get current schema subject (required for ETCD storage)
+        let schema_subject = topic.get_schema_subject().await.ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "Topic '{}' has no schema subject configured. Use ConfigureTopicSchema first.",
+                topic_name
+            ))
+        })?;
+
+        // Persist updated configuration to ETCD
+        {
+            let mut resources = self.resources.lock().await;
+            let config = crate::resources::TopicSchemaConfig {
+                subject: schema_subject,
+                validation_policy,
+                enable_payload_validation,
+            };
+            resources
+                .topic
+                .store_schema_config(topic_name, &config)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!(
+                        "Failed to persist validation policy to ETCD: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        info!(
+            "Successfully updated validation policy for topic '{}' (persisted to ETCD)",
+            topic_name
+        );
+
+        Ok(format!(
+            "Validation policy updated to '{:?}', payload validation {}",
+            validation_policy,
+            if enable_payload_validation { "enabled" } else { "disabled" }
+        ))
+    }
+
+    /// Get current schema configuration for a topic.
+    /// 
+    /// Returns the schema subject, validation policy, payload validation setting,
+    /// and cached schema_id.
+    pub(crate) async fn get_topic_schema_config(
+        &self,
+        topic_name: &str,
+    ) -> Result<(String, ValidationPolicy, bool, u64), Status> {
+        info!("TopicManager: Getting schema config for topic='{}'", topic_name);
+
+        // Get the topic from worker pool
+        let topic = self
+            .topic_worker_pool
+            .get_topic(topic_name)
+            .ok_or_else(|| {
+                Status::not_found(format!("Topic '{}' not found on this broker", topic_name))
+            })?;
+
+        // Get schema subject
+        let schema_subject = topic
+            .get_schema_subject()
+            .await
+            .unwrap_or_else(|| String::from(""));
+
+        // Get validation policy
+        let validation_policy = topic.get_validation_policy().await;
+
+        // Get payload validation setting
+        let enable_payload_validation = topic.get_payload_validation_enabled().await;
+
+        // Get cached schema_id (if available)
+        let schema_id = topic.get_cached_schema_id().await.unwrap_or(0);
+
+        info!(
+            "Topic '{}' schema config: subject='{}', policy='{:?}', schema_id={}",
+            topic_name, schema_subject, validation_policy, schema_id
+        );
+
+        Ok((
+            schema_subject,
+            validation_policy,
+            enable_payload_validation,
+            schema_id,
         ))
     }
 }

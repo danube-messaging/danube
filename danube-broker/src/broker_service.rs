@@ -130,17 +130,45 @@ impl BrokerService {
                 }
             }
 
-            // Schema reference validation: if producer explicitly sets schema, it MUST exist
+            // Schema reference validation: if producer explicitly sets schema, validate it
             if let Some(schema_ref) = schema_ref {
                 if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
-                    topic.set_schema_ref(schema_ref).map_err(|e| {
-                        create_error_status(
-                            Code::FailedPrecondition,
-                            ErrorType::UnknownError,
-                            &format!("Schema validation failed for topic {}: {}", topic_name, e),
-                            None,
-                        )
-                    })?;
+                    let subject = schema_ref.subject.clone();
+                    
+                    // Check if topic already has a schema subject assigned
+                    let existing_subject = topic.get_schema_subject().await;
+                    
+                    match existing_subject {
+                        Some(existing) => {
+                            // Topic has schema - producer's subject must match
+                            if existing != subject {
+                                return Err(create_error_status(
+                                    Code::FailedPrecondition,
+                                    ErrorType::UnknownError,
+                                    &format!(
+                                        "Topic '{}' uses schema subject '{}', cannot use '{}'. Only admin can change topic schema.",
+                                        topic_name, existing, subject
+                                    ),
+                                    None,
+                                ));
+                            }
+                            // Subject matches - already set, no action needed
+                        }
+                        None => {
+                            // Topic has no schema yet - first producer assigns it
+                            topic.set_schema_ref(schema_ref).await.map_err(|e| {
+                                create_error_status(
+                                    Code::FailedPrecondition,
+                                    ErrorType::UnknownError,
+                                    &format!(
+                                        "Failed to assign schema '{}' to topic '{}': {}. Ensure schema is registered first.",
+                                        subject, topic_name, e
+                                    ),
+                                    None,
+                                )
+                            })?;
+                        }
+                    }
                 }
             }
 

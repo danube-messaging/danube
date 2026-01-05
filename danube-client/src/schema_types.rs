@@ -77,3 +77,47 @@ impl SchemaType {
         }
     }
 }
+
+use danube_core::proto::danube_schema::GetSchemaResponse as ProtoGetSchemaResponse;
+
+/// Information about a schema retrieved from the registry
+///
+/// This is a user-friendly wrapper around the proto GetSchemaResponse.
+/// Consumers can use this to fetch and validate schemas.
+#[derive(Debug, Clone)]
+pub struct SchemaInfo {
+    /// Schema ID (identifies the subject)
+    pub schema_id: u64,
+    /// Subject name
+    pub subject: String,
+    /// Schema version number
+    pub version: u32,
+    /// Schema type (avro, json, protobuf, etc.)
+    pub schema_type: String,
+    /// Schema definition as bytes (e.g., Avro schema JSON, Protobuf descriptor)
+    pub schema_definition: Vec<u8>,
+    /// Fingerprint for deduplication
+    pub fingerprint: String,
+}
+
+impl SchemaInfo {
+    /// Get schema definition as a UTF-8 string (for JSON-based schemas)
+    ///
+    /// Returns None if the schema definition is not valid UTF-8
+    pub fn schema_definition_as_string(&self) -> Option<String> {
+        String::from_utf8(self.schema_definition.clone()).ok()
+    }
+}
+
+impl From<ProtoGetSchemaResponse> for SchemaInfo {
+    fn from(proto: ProtoGetSchemaResponse) -> Self {
+        SchemaInfo {
+            schema_id: proto.schema_id,
+            subject: proto.subject,
+            version: proto.version,
+            schema_type: proto.schema_type,
+            schema_definition: proto.schema_definition,
+            fingerprint: proto.fingerprint,
+        }
+    }
+}

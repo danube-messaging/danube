@@ -163,6 +163,68 @@ pub struct SetCompatibilityModeResponse {
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
+/// Request to configure schema for a topic (admin-only)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureTopicSchemaRequest {
+    /// Topic to configure (e.g., "/default/user-events")
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+    /// Schema subject to assign
+    #[prost(string, tag = "2")]
+    pub schema_subject: ::prost::alloc::string::String,
+    /// "none", "warn", or "enforce"
+    #[prost(string, tag = "3")]
+    pub validation_policy: ::prost::alloc::string::String,
+    /// Enable deep payload validation
+    #[prost(bool, tag = "4")]
+    pub enable_payload_validation: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureTopicSchemaResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+/// Request to update validation policy (admin-only)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateTopicValidationPolicyRequest {
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+    /// "none", "warn", or "enforce"
+    #[prost(string, tag = "2")]
+    pub validation_policy: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub enable_payload_validation: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateTopicValidationPolicyResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+/// Request to get topic schema configuration
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTopicSchemaConfigRequest {
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTopicSchemaConfigResponse {
+    /// Schema subject assigned to topic
+    #[prost(string, tag = "1")]
+    pub schema_subject: ::prost::alloc::string::String,
+    /// Current validation policy
+    #[prost(string, tag = "2")]
+    pub validation_policy: ::prost::alloc::string::String,
+    /// Whether payload validation is enabled
+    #[prost(bool, tag = "3")]
+    pub enable_payload_validation: bool,
+    /// Cached schema_id for the subject
+    #[prost(uint64, tag = "4")]
+    pub schema_id: u64,
+}
 /// Generated client implementations.
 pub mod schema_registry_client {
     #![allow(
@@ -446,6 +508,97 @@ pub mod schema_registry_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Configure schema settings for a topic (admin-only)
+        /// Allows admin to assign/change schema subject and validation settings
+        pub async fn configure_topic_schema(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureTopicSchemaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureTopicSchemaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_schema.SchemaRegistry/ConfigureTopicSchema",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_schema.SchemaRegistry",
+                        "ConfigureTopicSchema",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Update validation policy for a topic (admin-only)
+        pub async fn update_topic_validation_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateTopicValidationPolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateTopicValidationPolicyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_schema.SchemaRegistry/UpdateTopicValidationPolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_schema.SchemaRegistry",
+                        "UpdateTopicValidationPolicy",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Get current schema configuration for a topic
+        pub async fn get_topic_schema_config(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTopicSchemaConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTopicSchemaConfigResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_schema.SchemaRegistry/GetTopicSchemaConfig",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_schema.SchemaRegistry",
+                        "GetTopicSchemaConfig",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -515,6 +668,31 @@ pub mod schema_registry_server {
             request: tonic::Request<super::SetCompatibilityModeRequest>,
         ) -> std::result::Result<
             tonic::Response<super::SetCompatibilityModeResponse>,
+            tonic::Status,
+        >;
+        /// Configure schema settings for a topic (admin-only)
+        /// Allows admin to assign/change schema subject and validation settings
+        async fn configure_topic_schema(
+            &self,
+            request: tonic::Request<super::ConfigureTopicSchemaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureTopicSchemaResponse>,
+            tonic::Status,
+        >;
+        /// Update validation policy for a topic (admin-only)
+        async fn update_topic_validation_policy(
+            &self,
+            request: tonic::Request<super::UpdateTopicValidationPolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateTopicValidationPolicyResponse>,
+            tonic::Status,
+        >;
+        /// Get current schema configuration for a topic
+        async fn get_topic_schema_config(
+            &self,
+            request: tonic::Request<super::GetTopicSchemaConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTopicSchemaConfigResponse>,
             tonic::Status,
         >;
     }
@@ -906,6 +1084,156 @@ pub mod schema_registry_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = SetCompatibilityModeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_schema.SchemaRegistry/ConfigureTopicSchema" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureTopicSchemaSvc<T: SchemaRegistry>(pub Arc<T>);
+                    impl<
+                        T: SchemaRegistry,
+                    > tonic::server::UnaryService<super::ConfigureTopicSchemaRequest>
+                    for ConfigureTopicSchemaSvc<T> {
+                        type Response = super::ConfigureTopicSchemaResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureTopicSchemaRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SchemaRegistry>::configure_topic_schema(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureTopicSchemaSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_schema.SchemaRegistry/UpdateTopicValidationPolicy" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateTopicValidationPolicySvc<T: SchemaRegistry>(pub Arc<T>);
+                    impl<
+                        T: SchemaRegistry,
+                    > tonic::server::UnaryService<
+                        super::UpdateTopicValidationPolicyRequest,
+                    > for UpdateTopicValidationPolicySvc<T> {
+                        type Response = super::UpdateTopicValidationPolicyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::UpdateTopicValidationPolicyRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SchemaRegistry>::update_topic_validation_policy(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateTopicValidationPolicySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_schema.SchemaRegistry/GetTopicSchemaConfig" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetTopicSchemaConfigSvc<T: SchemaRegistry>(pub Arc<T>);
+                    impl<
+                        T: SchemaRegistry,
+                    > tonic::server::UnaryService<super::GetTopicSchemaConfigRequest>
+                    for GetTopicSchemaConfigSvc<T> {
+                        type Response = super::GetTopicSchemaConfigResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetTopicSchemaConfigRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SchemaRegistry>::get_topic_schema_config(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetTopicSchemaConfigSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

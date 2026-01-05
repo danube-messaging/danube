@@ -475,12 +475,44 @@ impl Topic {
     ///
     /// This should be called when a producer sets a schema for the topic.
     /// Returns an error if schema subject is not found in registry.
-    pub(crate) fn set_schema_ref(
+    pub(crate) async fn set_schema_ref(
         &self,
         schema_ref: danube_core::proto::SchemaReference,
     ) -> Result<()> {
         self.schema_context
             .set_schema_ref(schema_ref, &self.topic_name)
+            .await
+    }
+
+    /// Get the current schema subject assigned to this topic
+    pub(crate) async fn get_schema_subject(&self) -> Option<String> {
+        self.schema_context.get_schema_subject().await
+    }
+
+    /// Configure schema validation settings (admin-only)
+    pub(crate) async fn configure_schema_validation(
+        &self,
+        validation_policy: crate::schema::ValidationPolicy,
+        enable_payload_validation: bool,
+    ) {
+        self.schema_context
+            .configure(validation_policy, enable_payload_validation)
+            .await;
+    }
+
+    /// Get validation policy
+    pub(crate) async fn get_validation_policy(&self) -> crate::schema::ValidationPolicy {
+        self.schema_context.validation_policy().await
+    }
+
+    /// Get payload validation setting
+    pub(crate) async fn get_payload_validation_enabled(&self) -> bool {
+        self.schema_context.get_payload_validation_enabled().await
+    }
+
+    /// Get cached schema_id
+    pub(crate) async fn get_cached_schema_id(&self) -> Option<u64> {
+        self.schema_context.get_cached_schema_id().await
     }
 
     // ===== Helper counters =====

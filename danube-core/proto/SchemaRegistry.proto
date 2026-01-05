@@ -24,6 +24,18 @@ service SchemaRegistry {
     
     // Set or update compatibility mode for a subject
     rpc SetCompatibilityMode(SetCompatibilityModeRequest) returns (SetCompatibilityModeResponse);
+    
+    // ===== Admin-only operations for topic schema configuration =====
+    
+    // Configure schema settings for a topic (admin-only)
+    // Allows admin to assign/change schema subject and validation settings
+    rpc ConfigureTopicSchema(ConfigureTopicSchemaRequest) returns (ConfigureTopicSchemaResponse);
+    
+    // Update validation policy for a topic (admin-only)
+    rpc UpdateTopicValidationPolicy(UpdateTopicValidationPolicyRequest) returns (UpdateTopicValidationPolicyResponse);
+    
+    // Get current schema configuration for a topic
+    rpc GetTopicSchemaConfig(GetTopicSchemaConfigRequest) returns (GetTopicSchemaConfigResponse);
 }
 
 // Request to register a new schema
@@ -126,4 +138,43 @@ message SetCompatibilityModeRequest {
 message SetCompatibilityModeResponse {
     bool success = 1;
     string message = 2;
+}
+
+// ===== Topic Schema Configuration (Admin Operations) =====
+
+// Request to configure schema for a topic (admin-only)
+message ConfigureTopicSchemaRequest {
+    string topic_name = 1;               // Topic to configure (e.g., "/default/user-events")
+    string schema_subject = 2;           // Schema subject to assign
+    string validation_policy = 3;        // "none", "warn", or "enforce"
+    bool enable_payload_validation = 4;  // Enable deep payload validation
+}
+
+message ConfigureTopicSchemaResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Request to update validation policy (admin-only)
+message UpdateTopicValidationPolicyRequest {
+    string topic_name = 1;
+    string validation_policy = 2;        // "none", "warn", or "enforce"
+    bool enable_payload_validation = 3;
+}
+
+message UpdateTopicValidationPolicyResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Request to get topic schema configuration
+message GetTopicSchemaConfigRequest {
+    string topic_name = 1;
+}
+
+message GetTopicSchemaConfigResponse {
+    string schema_subject = 1;           // Schema subject assigned to topic
+    string validation_policy = 2;        // Current validation policy
+    bool enable_payload_validation = 3;  // Whether payload validation is enabled
+    uint64 schema_id = 4;                // Cached schema_id for the subject
 }

@@ -1,13 +1,13 @@
 use crate::{
     errors::{DanubeError, Result},
     retry_manager::RetryManager,
-    schema_types::{CompatibilityMode, SchemaType},
+    schema_types::{CompatibilityMode, SchemaInfo, SchemaType},
     DanubeClient,
 };
 use danube_core::proto::danube_schema::{
     schema_registry_client::SchemaRegistryClient as GrpcSchemaRegistryClient,
     CheckCompatibilityRequest, CheckCompatibilityResponse, GetLatestSchemaRequest,
-    GetSchemaRequest, GetSchemaResponse, ListVersionsRequest, RegisterSchemaRequest,
+    GetSchemaRequest, ListVersionsRequest, RegisterSchemaRequest,
     RegisterSchemaResponse, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
 };
 
@@ -65,7 +65,10 @@ impl SchemaRegistryClient {
     }
 
     /// Get schema by ID
-    pub async fn get_schema_by_id(&mut self, schema_id: u64) -> Result<GetSchemaResponse> {
+    ///
+    /// Returns schema information for the given schema ID.
+    /// Schema ID identifies a subject (not a specific version).
+    pub async fn get_schema_by_id(&mut self, schema_id: u64) -> Result<SchemaInfo> {
         self.connect().await?;
 
         let request = GetSchemaRequest {
@@ -87,15 +90,17 @@ impl SchemaRegistryClient {
             .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get schema: {}", e)))?
             .into_inner();
 
-        Ok(response)
+        Ok(SchemaInfo::from(response))
     }
 
-    /// Get schema version (latest if version is None)
+    /// Get specific schema version
+    ///
+    /// Returns schema information for a specific version of a schema subject.
     pub async fn get_schema_version(
         &mut self,
         schema_id: u64,
         version: Option<u32>,
-    ) -> Result<GetSchemaResponse> {
+    ) -> Result<SchemaInfo> {
         self.connect().await?;
 
         let request = GetSchemaRequest { schema_id, version };
@@ -114,14 +119,16 @@ impl SchemaRegistryClient {
             .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get schema: {}", e)))?
             .into_inner();
 
-        Ok(response)
+        Ok(SchemaInfo::from(response))
     }
 
     /// Get latest schema for a subject
+    ///
+    /// Returns the latest schema version for the given subject.
     pub async fn get_latest_schema(
         &mut self,
         subject: impl Into<String>,
-    ) -> Result<GetSchemaResponse> {
+    ) -> Result<SchemaInfo> {
         self.connect().await?;
 
         let request = GetLatestSchemaRequest {
@@ -142,7 +149,7 @@ impl SchemaRegistryClient {
             .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get latest schema: {}", e)))?
             .into_inner();
 
-        Ok(response)
+        Ok(SchemaInfo::from(response))
     }
 
     /// Check if a schema is compatible with existing versions
@@ -291,7 +298,43 @@ impl SchemaRegistryClient {
     }
 }
 
-/// Builder for schema registration
+/// Builder for schema registration with fluent API
+///
+/// This builder provides a convenient way to register schemas in the Danube Schema Registry.
+/// It supports all schema types (Avro, Protobuf, JSON Schema, etc.) and handles version management.
+///
+/// # Example
+///
+/// ```no_run
+/// use danube_client::{DanubeClient, SchemaType};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = DanubeClient::builder()
+///     .service_url("http://localhost:6650")
+///     .build()
+///     .await?;
+///
+/// let mut schema_client = client.schema_registry_client();
+///
+/// // Register an Avro schema
+/// let schema_id = schema_client
+///     .register_schema("user-events-value")
+///     .with_type(SchemaType::Avro)
+///     .with_schema_data(avro_schema_bytes)
+///     .execute()
+///     .await?;
+///
+/// println!("Schema registered with ID: {}", schema_id);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Schema Versioning
+///
+/// The registry automatically handles versioning:
+/// - If the schema definition is new, a new version is created
+/// - If the schema definition already exists, the existing schema_id and version are returned
+/// - Compatibility checks are performed based on the subject's compatibility mode
 pub struct SchemaRegistrationBuilder<'a> {
     client: &'a mut SchemaRegistryClient,
     subject: String,
