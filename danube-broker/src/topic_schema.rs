@@ -113,16 +113,6 @@ impl TopicSchemaContext {
         );
     }
 
-    /// Set validation policy for this topic (admin-only)
-    pub(crate) async fn set_validation_policy(&self, policy: ValidationPolicy) {
-        *self.validation_policy.lock().await = policy;
-    }
-
-    /// Enable or disable deep payload validation (admin-only)
-    pub(crate) async fn set_payload_validation(&self, enabled: bool) {
-        *self.enable_payload_validation.lock().await = enabled;
-    }
-
     /// Get the current validation policy
     pub(crate) async fn validation_policy(&self) -> ValidationPolicy {
         *self.validation_policy.lock().await

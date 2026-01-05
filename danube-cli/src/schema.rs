@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
+use danube_client::{DanubeClient, SchemaInfo, SchemaRegistryClient, SchemaType};
 use serde_json;
 use std::fs;
 use std::path::PathBuf;
@@ -358,35 +358,42 @@ async fn handle_get(
         println!("🔍 Fetching latest schema for subject '{}'...", args.subject);
     }
 
-    let schema_response = client.get_latest_schema(&args.subject).await?;
+    let schema_info: SchemaInfo = client.get_latest_schema(&args.subject).await?;
 
     match args.output {
         OutputFormat::Json => {
+            let schema_def_str = schema_info.schema_definition_as_string()
+                .unwrap_or_else(|| "[binary data]".to_string());
             let result = serde_json::json!({
-                "subject": schema_response.subject,
-                "version": schema_response.version,
-                "schema_id": schema_response.schema_id,
-                "schema_type": schema_response.schema_type,
-                "schema_definition": String::from_utf8_lossy(&schema_response.schema_definition),
+                "subject": schema_info.subject,
+                "version": schema_info.version,
+                "schema_id": schema_info.schema_id,
+                "schema_type": schema_info.schema_type,
+                "schema_definition": schema_def_str,
+                "fingerprint": schema_info.fingerprint,
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         OutputFormat::Table => {
             println!("✅ Schema details:");
-            println!("   Subject: {}", schema_response.subject);
-            println!("   Version: {}", schema_response.version);
-            println!("   Schema ID: {}", schema_response.schema_id);
-            println!("   Type: {}", schema_response.schema_type);
+            println!("   Subject: {}", schema_info.subject);
+            println!("   Version: {}", schema_info.version);
+            println!("   Schema ID: {}", schema_info.schema_id);
+            println!("   Type: {}", schema_info.schema_type);
+            println!("   Fingerprint: {}", schema_info.fingerprint);
             println!("\n   Schema Definition:");
-            let schema_str = String::from_utf8_lossy(&schema_response.schema_definition);
-            if schema_response.schema_type == "json_schema" {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&schema_str) {
-                    println!("{}", serde_json::to_string_pretty(&json)?);
+            if let Some(schema_str) = schema_info.schema_definition_as_string() {
+                if schema_info.schema_type == "json_schema" {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&schema_str) {
+                        println!("{}", serde_json::to_string_pretty(&json)?);
+                    } else {
+                        println!("{}", schema_str);
+                    }
                 } else {
                     println!("{}", schema_str);
                 }
             } else {
-                println!("{}", schema_str);
+                println!("[binary data - {} bytes]", schema_info.schema_definition.len());
             }
         }
     }

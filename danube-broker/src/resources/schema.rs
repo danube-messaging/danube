@@ -148,13 +148,6 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Get subject name for a given schema_id from LocalCache
-    pub(crate) fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
-        let path = format!("/schemas/_index/by_id/{}", schema_id);
-        self.local_cache.get(&path)
-            .and_then(|v| v.get("subject")?.as_str().map(String::from))
-    }
-
     /// Get subject name from ETCD if not in cache
     pub(crate) async fn fetch_subject_by_schema_id(&self, schema_id: u64) -> Result<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);

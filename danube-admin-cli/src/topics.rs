@@ -1,8 +1,11 @@
-use crate::client::topic_admin_client;
+use crate::client::{schema_registry_client, topic_admin_client};
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
     BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
     NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionRequest, TopicRequest,
+};
+use danube_core::proto::danube_schema::{
+    ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
 };
 
 #[derive(Debug, Args)]
@@ -129,6 +132,61 @@ pub(crate) enum TopicsCommands {
         topic: String,
         #[arg(long)]
         namespace: Option<String>,
+    },
+    #[command(
+        about = "Configure schema for a topic (admin-only)",
+        long_about = "Configure schema settings for a topic. Assigns schema subject and sets validation policies.",
+        after_help = "Examples:\n  danube-admin-cli topics configure-schema /default/user-events --subject user-events-value --validation-policy enforce --enable-payload-validation\n  danube-admin-cli topics configure-schema mytopic --namespace default --subject events --validation-policy warn",
+        arg_required_else_help = true
+    )]
+    ConfigureSchema {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, help = "Schema subject name")]
+        subject: String,
+        #[arg(
+            long,
+            value_parser = ["none", "warn", "enforce"],
+            default_value = "none",
+            help = "Validation policy: none|warn|enforce"
+        )]
+        validation_policy: String,
+        #[arg(long, help = "Enable deep payload validation")]
+        enable_payload_validation: bool,
+    },
+    #[command(
+        about = "Update validation policy for a topic (admin-only)",
+        after_help = "Examples:\n  danube-admin-cli topics set-validation-policy /default/user-events --policy enforce --enable-payload-validation\n  danube-admin-cli topics set-validation-policy mytopic --namespace default --policy warn",
+        arg_required_else_help = true
+    )]
+    SetValidationPolicy {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(
+            long,
+            value_parser = ["none", "warn", "enforce"],
+            help = "Validation policy: none|warn|enforce"
+        )]
+        policy: String,
+        #[arg(long, help = "Enable deep payload validation")]
+        enable_payload_validation: bool,
+    },
+    #[command(
+        about = "Get schema configuration for a topic",
+        after_help = "Examples:\n  danube-admin-cli topics get-schema-config /default/user-events\n  danube-admin-cli topics get-schema-config mytopic --namespace default --output json",
+        arg_required_else_help = true
+    )]
+    GetSchemaConfig {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
+        output: Option<String>,
     },
 }
 
@@ -349,6 +407,140 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
             let request = TopicRequest { name };
             let response = client.unload_topic(request).await?;
             println!("Topic Unloaded: {:?}", response.into_inner().success);
+        }
+
+        // Configure schema for a topic
+        TopicsCommands::ConfigureSchema {
+            topic,
+            namespace,
+            subject,
+            validation_policy,
+            enable_payload_validation,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let mut schema_client = schema_registry_client().await?;
+
+            let request = ConfigureTopicSchemaRequest {
+                topic_name: topic_name.clone(),
+                schema_subject: subject.clone(),
+                validation_policy: validation_policy.to_uppercase(),
+                enable_payload_validation,
+            };
+
+            let response = schema_client.configure_topic_schema(request).await?;
+            let result = response.into_inner();
+
+            if result.success {
+                println!("✅ Schema configuration set for topic '{}'", topic_name);
+                println!("   Schema Subject: {}", subject);
+                println!("   Validation Policy: {}", validation_policy.to_uppercase());
+                println!(
+                    "   Payload Validation: {}",
+                    if enable_payload_validation {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                );
+            } else {
+                println!("❌ Failed to configure schema for topic '{}'", topic_name);
+                if !result.message.is_empty() {
+                    println!("Error: {}", result.message);
+                }
+            }
+        }
+
+        // Update validation policy for a topic
+        TopicsCommands::SetValidationPolicy {
+            topic,
+            namespace,
+            policy,
+            enable_payload_validation,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let mut schema_client = schema_registry_client().await?;
+
+            let request = UpdateTopicValidationPolicyRequest {
+                topic_name: topic_name.clone(),
+                validation_policy: policy.to_uppercase(),
+                enable_payload_validation,
+            };
+
+            let response = schema_client
+                .update_topic_validation_policy(request)
+                .await?;
+            let result = response.into_inner();
+
+            if result.success {
+                println!(
+                    "✅ Validation policy updated for topic '{}'",
+                    topic_name
+                );
+                println!("   Policy: {}", policy.to_uppercase());
+                println!(
+                    "   Payload Validation: {}",
+                    if enable_payload_validation {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                );
+            } else {
+                println!(
+                    "❌ Failed to update validation policy for topic '{}'",
+                    topic_name
+                );
+                if !result.message.is_empty() {
+                    println!("Error: {}", result.message);
+                }
+            }
+        }
+
+        // Get schema configuration for a topic
+        TopicsCommands::GetSchemaConfig {
+            topic,
+            namespace,
+            output,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let mut schema_client = schema_registry_client().await?;
+
+            let request = GetTopicSchemaConfigRequest {
+                topic_name: topic_name.clone(),
+            };
+
+            let response = schema_client.get_topic_schema_config(request).await?;
+            let result = response.into_inner();
+
+            if matches!(output.as_deref(), Some("json")) {
+                let out = serde_json::json!({
+                    "topic": topic_name,
+                    "schema_subject": result.schema_subject,
+                    "validation_policy": result.validation_policy,
+                    "enable_payload_validation": result.enable_payload_validation,
+                    "schema_id": result.schema_id,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Topic: {}", topic_name);
+                if !result.schema_subject.is_empty() {
+                    println!("Schema Subject: {}", result.schema_subject);
+                    println!("Validation Policy: {}", result.validation_policy);
+                    println!(
+                        "Payload Validation: {}",
+                        if result.enable_payload_validation {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    );
+                    if result.schema_id > 0 {
+                        println!("Cached Schema ID: {}", result.schema_id);
+                    }
+                } else {
+                    println!("No schema configured for this topic");
+                }
+            }
         }
     }
 
