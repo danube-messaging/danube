@@ -510,9 +510,10 @@ impl Topic {
         self.schema_context.get_payload_validation_enabled().await
     }
 
-    /// Get cached schema_id
-    pub(crate) async fn get_cached_schema_id(&self) -> Option<u64> {
-        self.schema_context.get_cached_schema_id().await
+    /// Get subject's schema_id (base ID for the schema subject, not version-specific)
+    /// Returns None if no schema subject is configured for this topic
+    pub(crate) async fn get_subject_schema_id(&self) -> Option<u64> {
+        self.schema_context.get_subject_schema_id().await
     }
 
     // ===== Helper counters =====

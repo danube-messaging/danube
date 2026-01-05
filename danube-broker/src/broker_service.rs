@@ -134,10 +134,10 @@ impl BrokerService {
             if let Some(schema_ref) = schema_ref {
                 if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
                     let subject = schema_ref.subject.clone();
-                    
+
                     // Check if topic already has a schema subject assigned
                     let existing_subject = topic.get_schema_subject().await;
-                    
+
                     match existing_subject {
                         Some(existing) => {
                             // Topic has schema - producer's subject must match

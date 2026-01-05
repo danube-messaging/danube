@@ -721,7 +721,8 @@ impl TopicManager {
     /// Get current schema configuration for a topic.
     /// 
     /// Returns the schema subject, validation policy, payload validation setting,
-    /// and cached schema_id.
+    /// and subject's schema_id (base ID for the subject, not version-specific).
+    /// Note: Topics can have messages with multiple schema versions from the same subject.
     pub(crate) async fn get_topic_schema_config(
         &self,
         topic_name: &str,
@@ -748,11 +749,11 @@ impl TopicManager {
         // Get payload validation setting
         let enable_payload_validation = topic.get_payload_validation_enabled().await;
 
-        // Get cached schema_id (if available)
-        let schema_id = topic.get_cached_schema_id().await.unwrap_or(0);
+        // Get subject's schema_id (base ID for the subject, not version-specific)
+        let schema_id = topic.get_subject_schema_id().await.unwrap_or(0);
 
         info!(
-            "Topic '{}' schema config: subject='{}', policy='{:?}', schema_id={}",
+            "Topic '{}' schema config: subject='{}', policy='{:?}', subject_schema_id={}",
             topic_name, schema_subject, validation_policy, schema_id
         );
 

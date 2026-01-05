@@ -227,7 +227,7 @@ fn process_message(
             })?;
 
             // Validate against schema if we have a validator
-            if let Some(&validator) = schema_validator {
+            if let Some(validator) = schema_validator {
                 if !validator.is_valid(&json_value) {
                     let errors: Vec<_> = validator.iter_errors(&json_value).collect();
                     eprintln!("⚠️  Schema validation failed: {:?}", errors);

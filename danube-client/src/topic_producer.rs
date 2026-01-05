@@ -129,27 +129,25 @@ impl TopicProducer {
                         .await;
 
                     // If producer has schema_ref, resolve schema metadata and cache it
+                    // IMPORTANT: Schema resolution errors must fail producer creation to ensure
+                    // that invalid versions are rejected early
                     if let Some(schema_ref) = self.schema_ref.clone() {
-                        match self.resolve_schema_metadata(&schema_ref).await {
-                            Ok((schema_id, schema_version)) => {
-                                self.schema_id = Some(schema_id);
-                                self.schema_version = Some(schema_version);
-                                tracing::debug!(
-                                    "Producer '{}' cached schema: id={}, version={}",
-                                    self.producer_name,
-                                    schema_id,
-                                    schema_version
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Producer '{}' failed to resolve schema metadata: {}. Messages will not have schema info.",
-                                    self.producer_name,
-                                    e
-                                );
-                                // Don't fail producer creation, just log warning
-                            }
-                        }
+                        let (schema_id, schema_version) = self.resolve_schema_metadata(&schema_ref).await
+                            .map_err(|e| {
+                                DanubeError::Unrecoverable(format!(
+                                    "Failed to resolve schema for producer '{}': {}",
+                                    self.producer_name, e
+                                ))
+                            })?;
+                        
+                        self.schema_id = Some(schema_id);
+                        self.schema_version = Some(schema_version);
+                        tracing::debug!(
+                            "Producer '{}' cached schema: id={}, version={}",
+                            self.producer_name,
+                            schema_id,
+                            schema_version
+                        );
                     }
 
                     return Ok(response.producer_id);
@@ -250,9 +248,12 @@ impl TopicProducer {
 
     /// Resolve schema_id and version from schema registry
     ///
-    /// This method queries the schema registry to get the latest schema metadata
-    /// for the given schema subject. The metadata is cached and attached to all
-    /// messages sent by this producer.
+    /// This method queries the schema registry based on the version_ref:
+    /// - PinnedVersion: Fetches the specific version
+    /// - MinVersion: Fetches latest and validates it's >= min_version
+    /// - UseLatest/None: Fetches the latest version
+    ///
+    /// The resolved metadata is cached and attached to all messages sent by this producer.
     ///
     /// Note: Creates a temporary SchemaRegistryClient. The connection is efficiently
     /// reused via the client's connection manager, so this is only done once during
@@ -262,12 +263,71 @@ impl TopicProducer {
         schema_ref: &SchemaReference,
     ) -> Result<(u64, u32)> {
         use crate::SchemaRegistryClient;
+        use danube_core::proto::schema_reference::VersionRef;
 
         let mut schema_client = SchemaRegistryClient::new(&self.client).await?;
 
-        // Get latest schema for the subject
-        let schema_response = schema_client.get_latest_schema(&schema_ref.subject).await?;
+        // Resolve based on version_ref
+        match &schema_ref.version_ref {
+            Some(VersionRef::PinnedVersion(pinned_version)) => {
+                tracing::debug!(
+                    "Resolving pinned version {} for subject '{}'",
+                    pinned_version,
+                    schema_ref.subject
+                );
 
-        Ok((schema_response.schema_id, schema_response.version))
+                // First get latest to obtain schema_id for the subject
+                let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
+                
+                // Validate pinned version exists (must be <= latest)
+                if *pinned_version > latest.version {
+                    return Err(DanubeError::Unrecoverable(format!(
+                        "Pinned version {} does not exist for subject '{}'. Latest version is {}",
+                        pinned_version, schema_ref.subject, latest.version
+                    )));
+                }
+                
+                // If pinned version is the latest, use it directly
+                if *pinned_version == latest.version {
+                    return Ok((latest.schema_id, latest.version));
+                }
+                
+                // Otherwise fetch the specific pinned version
+                let pinned_schema = schema_client
+                    .get_schema_version(latest.schema_id, Some(*pinned_version))
+                    .await?;
+                    
+                Ok((pinned_schema.schema_id, pinned_schema.version))
+            }
+
+            Some(VersionRef::MinVersion(min_version)) => {
+                tracing::debug!(
+                    "Resolving minimum version {} for subject '{}'",
+                    min_version,
+                    schema_ref.subject
+                );
+
+                // Get latest schema
+                let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
+                
+                // Validate latest version meets minimum requirement
+                if latest.version < *min_version {
+                    return Err(DanubeError::Unrecoverable(format!(
+                        "Latest version {} does not meet minimum version requirement {} for subject '{}'",
+                        latest.version, min_version, schema_ref.subject
+                    )));
+                }
+                
+                Ok((latest.schema_id, latest.version))
+            }
+
+            Some(VersionRef::UseLatest(_)) | None => {
+                tracing::debug!("Resolving latest version for subject '{}'", schema_ref.subject);
+                
+                // Get latest schema (default behavior)
+                let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
+                Ok((latest.schema_id, latest.version))
+            }
+        }
     }
 }

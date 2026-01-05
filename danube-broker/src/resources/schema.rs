@@ -160,6 +160,22 @@ impl SchemaResources {
             .map(String::from)
             .ok_or_else(|| anyhow!("Invalid index data for schema_id {}", schema_id))
     }
+    
+    /// Get subject name by schema_id (tries LocalCache first, then ETCD)
+    /// This is the preferred method for fast lookups during message validation
+    pub(crate) fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
+        let path = format!("/schemas/_index/by_id/{}", schema_id);
+        
+        // Try LocalCache first (fast path)
+        if let Some(value) = self.local_cache.get(&path) {
+            return value.get("subject")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+        }
+        
+        // Not in cache - caller should use fetch_subject_by_schema_id for async lookup
+        None
+    }
 
     // Additional methods for SchemaStorage compatibility
 
