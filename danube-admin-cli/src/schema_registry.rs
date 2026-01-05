@@ -218,7 +218,7 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
                     "created_by": result.created_by,
                     "tags": result.tags,
                     "fingerprint": result.fingerprint,
-                    "compatibility_mode": result.compatibility_mode,
+                    "compatibility_mode": result.compatibility_mode.to_uppercase(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
@@ -226,7 +226,7 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
                 println!("Version: {}", result.version);
                 println!("Subject: {}", result.subject);
                 println!("Type: {}", result.schema_type);
-                println!("Compatibility Mode: {}", result.compatibility_mode);
+                println!("Compatibility Mode: {}", result.compatibility_mode.to_uppercase());
                 if !result.description.is_empty() {
                     println!("Description: {}", result.description);
                 }
@@ -334,12 +334,12 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
             if matches!(output.as_deref(), Some("json")) {
                 let out = serde_json::json!({
                     "subject": subject,
-                    "compatibility_mode": result.compatibility_mode,
+                    "compatibility_mode": result.compatibility_mode.to_uppercase(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 println!("Subject: {}", subject);
-                println!("Compatibility Mode: {}", result.compatibility_mode);
+                println!("Compatibility Mode: {}", result.compatibility_mode.to_uppercase());
             }
         }
 

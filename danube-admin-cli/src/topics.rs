@@ -516,7 +516,7 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
                 let out = serde_json::json!({
                     "topic": topic_name,
                     "schema_subject": result.schema_subject,
-                    "validation_policy": result.validation_policy,
+                    "validation_policy": result.validation_policy.to_uppercase(),
                     "enable_payload_validation": result.enable_payload_validation,
                     "schema_id": result.schema_id,
                 });
@@ -525,7 +525,7 @@ pub async fn handle_command(topics: Topics) -> Result<(), Box<dyn std::error::Er
                 println!("Topic: {}", topic_name);
                 if !result.schema_subject.is_empty() {
                     println!("Schema Subject: {}", result.schema_subject);
-                    println!("Validation Policy: {}", result.validation_policy);
+                    println!("Validation Policy: {}", result.validation_policy.to_uppercase());
                     println!(
                         "Payload Validation: {}",
                         if result.enable_payload_validation {
