@@ -47,11 +47,11 @@ Download the latest release for your system from [Danube Releases](https://githu
 
 ```bash
 # Linux
-wget https://github.com/danube-messaging/danube/releases/download/v0.6.0/danube-cli-linux
+wget https://github.com/danube-messaging/danube/releases/download/v0.6.1/danube-cli-linux
 chmod +x danube-cli-linux
 
 # macOS (Apple Silicon)
-wget https://github.com/danube-messaging/danube/releases/download/v0.6.0/danube-cli-macos
+wget https://github.com/danube-messaging/danube/releases/download/v0.6.1/danube-cli-macos
 chmod +x danube-cli-macos
 
 # Windows

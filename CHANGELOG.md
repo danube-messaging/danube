@@ -1,3 +1,19 @@
+<!-- v0.6.1 START -->
+## v0.6.1 - 2026-01-06
+
+This release completes the Schema Registry implementation with distributed schema ID generation, producer-level validation, and topic-level schema governance.
+
+### 🔧 Schema Registry Enhancements
+
+* **Distributed Schema ID Generation** - Replaced local counters with ETCD-based atomic counters, eliminating ID collisions in multi-broker environments. Added reverse index (`schema_id → subject`) for efficient consumer schema lookups via `get_schema_by_id()`.
+
+* **Producer Schema Validation** - Enhanced producer creation to validate schema subjects. First producer assigns schema to topic; subsequent producers must use the same subject. Exported `SchemaRegistrationBuilder` from `danube-client` for improved API ergonomics.
+
+* **Topic-Level Schema Governance** - Implemented admin APIs (`ConfigureTopicSchema`, `UpdateTopicValidationPolicy`, `GetTopicSchemaConfig`) enabling per-topic validation policies. Multiple topics can share the same schema subject while enforcing different validation rules (e.g., `Warn` for dev, `Enforce` for prod). All configurations persist to ETCD.
+
+**Full details**: Schema registry improvements (#168) by @danrusei in 6d0ade1
+<!-- v0.6.1 END -->
+
 <!-- v0.6.0 START -->
 ## v0.6.0 - 2026-01-04
 
