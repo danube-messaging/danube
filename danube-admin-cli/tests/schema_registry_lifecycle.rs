@@ -82,7 +82,7 @@ fn schema_registry_lifecycle() {
     // Tests: schemas register command, schema creation in ETCD
     // ============================================================================
     let mut register_cmd = cli();
-    register_cmd
+    let register_output = register_cmd
         .args([
             "schemas",
             "register",
@@ -92,10 +92,22 @@ fn schema_registry_lifecycle() {
             "--file",
             schema_file.to_str().unwrap(),
         ])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("Schema ID: 1"))
-        .stdout(predicates::str::contains("Version: 1"));
+        .output()
+        .expect("register schema");
+
+    assert!(register_output.status.success());
+    let register_stdout = String::from_utf8(register_output.stdout).unwrap();
+    
+    // Extract schema_id from output (format: "Schema ID: <number>")
+    let schema_id: u64 = register_stdout
+        .lines()
+        .find(|line| line.contains("Schema ID:"))
+        .and_then(|line| line.split("Schema ID:").nth(1))
+        .and_then(|s| s.trim().parse().ok())
+        .expect("Failed to parse schema_id from register output");
+    
+    // Verify version is 1 (first version)
+    assert!(register_stdout.contains("Version: 1"));
 
     // ============================================================================
     // STEP 2: Retrieve schema details by subject
@@ -114,7 +126,7 @@ fn schema_registry_lifecycle() {
         .assert()
         .success()
         .stdout(predicates::str::contains(schema_subject))
-        .stdout(predicates::str::contains("\"schema_id\": 1"));
+        .stdout(predicates::str::contains(&format!("\"schema_id\": {}", schema_id)));
 
     // ============================================================================
     // STEP 3: List all versions for the schema subject
@@ -165,7 +177,7 @@ fn schema_registry_lifecycle() {
         topic_info["schema_subject"].as_str().unwrap(),
         schema_subject
     );
-    assert_eq!(topic_info["schema_id"].as_u64().unwrap(), 1);
+    assert_eq!(topic_info["schema_id"].as_u64().unwrap(), schema_id);
     assert_eq!(topic_info["schema_version"].as_u64().unwrap(), 1);
     assert_eq!(topic_info["schema_type"].as_str().unwrap(), "json_schema");
     assert_eq!(

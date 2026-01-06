@@ -1,9 +1,16 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{policies::Policies, resources::BASE_TOPICS_PATH, utils::join_path, LocalCache};
+use crate::{
+    policies::Policies, 
+    resources::BASE_TOPICS_PATH, 
+    schema::types::ValidationPolicy,
+    utils::join_path, 
+    LocalCache
+};
 // Phase 6: Old schema API import removed
 // use crate::schema::Schema;
 
@@ -274,4 +281,47 @@ impl TopicResources {
         }
         None
     }
+
+    // ========== Topic Schema Configuration (New) ==========
+
+    /// Store topic schema configuration (subject + validation settings)
+    pub(crate) async fn store_schema_config(
+        &mut self,
+        topic_name: &str,
+        config: &TopicSchemaConfig,
+    ) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_config"]);
+        let data = serde_json::to_value(config)?;
+        self.store.put(&path, data, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    /// Get topic schema configuration
+    pub(crate) async fn get_schema_config(
+        &self,
+        topic_name: &str,
+    ) -> Result<Option<TopicSchemaConfig>> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_config"]);
+        
+        match self.local_cache.get(&path) {
+            Some(value) => {
+                let config: TopicSchemaConfig = serde_json::from_value(value)
+                    .map_err(|e| anyhow!("Failed to deserialize schema config: {}", e))?;
+                Ok(Some(config))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+/// Topic schema configuration
+/// Stores schema subject and validation settings at the topic level
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopicSchemaConfig {
+    /// Schema subject assigned to this topic
+    pub subject: String,
+    /// Validation policy (None/Warn/Enforce) - topic-level
+    pub validation_policy: ValidationPolicy,
+    /// Enable deep payload validation - topic-level
+    pub enable_payload_validation: bool,
 }

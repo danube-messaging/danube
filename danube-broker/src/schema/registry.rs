@@ -8,17 +8,14 @@ use crate::schema::metadata::{
 use crate::schema::protobuf::ProtobufHandler;
 use crate::schema::types::{CompatibilityMode, SchemaType};
 use anyhow::{anyhow, Result};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tracing::info;
 
 /// Core schema registry managing all schemas in the cluster
 #[derive(Debug)]
 pub struct SchemaRegistry {
     /// Storage backend using Resources pattern (LocalCache + ETCD)
     storage: Arc<SchemaResources>,
-
-    /// Schema ID generator (globally unique)
-    id_generator: Arc<AtomicU64>,
 
     /// Compatibility checker
     compatibility_checker: Arc<CompatibilityChecker>,
@@ -28,8 +25,38 @@ impl SchemaRegistry {
     pub fn new(storage: Arc<SchemaResources>) -> Self {
         Self {
             storage,
-            id_generator: Arc::new(AtomicU64::new(1)), // Start from 1
             compatibility_checker: Arc::new(CompatibilityChecker::new()),
+        }
+    }
+
+    /// Generate globally unique schema ID using ETCD atomic counter
+    /// 
+    /// This uses ETCD's compare-and-swap to ensure uniqueness across all brokers.
+    /// Since schema registration is infrequent, the network round-trip is acceptable.
+    async fn generate_schema_id(&self) -> Result<u64> {
+        const MAX_RETRIES: u32 = 10;
+        let mut retries = 0;
+        
+        loop {
+            // Get current counter value (or initialize)
+            let current = self.storage.get_global_schema_id_counter().await?;
+            let next_id = current + 1;
+            
+            // Atomic compare-and-swap
+            match self.storage.increment_schema_id_counter(current, next_id).await {
+                Ok(_) => {
+                    info!("Generated new schema_id: {} for new subject", current);
+                    return Ok(current);
+                }
+                Err(_) => {
+                    // Another broker updated the counter, retry
+                    retries += 1;
+                    if retries >= MAX_RETRIES {
+                        return Err(anyhow!("Failed to generate schema ID after {} retries", MAX_RETRIES));
+                    }
+                    continue;
+                }
+            }
         }
     }
 
@@ -100,7 +127,8 @@ impl SchemaRegistry {
             Ok((metadata.id, new_version_number, true, metadata))
         } else {
             // New subject, create first version
-            let schema_id = self.id_generator.fetch_add(1, Ordering::SeqCst);
+            // Generate globally unique ID via ETCD
+            let schema_id = self.generate_schema_id().await?;
 
             let first_version = SchemaVersion::new(
                 1,
@@ -123,25 +151,33 @@ impl SchemaRegistry {
                 .store_schema_version(subject, &first_version)
                 .await?;
             self.storage.store_schema_metadata(&metadata).await?;
+            
+            // Store reverse index (schema_id -> subject)
+            self.storage.store_schema_id_index(schema_id, subject).await?;
+
+            info!("Registered new subject '{}' with schema_id {}", subject, schema_id);
 
             Ok((schema_id, 1, true, metadata))
         }
     }
 
     /// Get a specific schema by ID and optional version
-    /// Note: This requires maintaining a reverse index from schema_id to subject
-    /// Currently unimplemented - use get_latest_schema with subject instead
-    #[allow(dead_code)]
+    /// Uses reverse index (schema_id -> subject) for lookup
     pub async fn get_schema(
         &self,
-        _schema_id: u64,
-        _version: Option<u32>,
+        schema_id: u64,
+        version: Option<u32>,
     ) -> Result<(String, SchemaVersion)> {
-        // TODO: We need a reverse index from schema_id to subject
-        // For now, this is a limitation - we'll need to add schema_id index to storage
-        Err(anyhow!(
-            "get_schema by ID not fully implemented yet - need reverse index"
-        ))
+        // Look up subject using reverse index
+        let subject = self.storage.fetch_subject_by_schema_id(schema_id).await?;
+        
+        // Get the requested version or latest
+        let schema_version = match version {
+            Some(v) => self.get_schema_version(&subject, v).await?,
+            None => self.get_latest_schema(&subject).await?,
+        };
+        
+        Ok((subject, schema_version))
     }
 
     /// Get the latest schema for a subject

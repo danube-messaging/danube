@@ -72,6 +72,18 @@ pub struct ExtendedArgs {
 
     #[arg(
         long,
+        help = "Pin to specific schema version (requires --schema-subject)"
+    )]
+    pub schema_version: Option<u32>,
+
+    #[arg(
+        long,
+        help = "Use minimum schema version or newer (requires --schema-subject)"
+    )]
+    pub schema_min_version: Option<u32>,
+
+    #[arg(
+        long,
         help = "Auto-register schema from file (requires --schema-type)"
     )]
     pub schema_file: Option<PathBuf>,
@@ -145,10 +157,26 @@ EXAMPLES:
         -m "Hello Danube" \
         -c 100
 
-    # Produce with pre-registered schema subject
+    # Produce with pre-registered schema subject (latest version)
     danube-cli produce -s http://localhost:6650 \
         -t /default/user-events \
         --schema-subject "user-events" \
+        -m '{"user_id":"123","action":"login"}' \
+        -c 10
+
+    # Produce with pinned schema version
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/user-events \
+        --schema-subject "user-events" \
+        --schema-version 2 \
+        -m '{"user_id":"123","action":"login"}' \
+        -c 10
+
+    # Produce with minimum schema version
+    danube-cli produce -s http://localhost:6650 \
+        -t /default/user-events \
+        --schema-subject "user-events" \
+        --schema-min-version 2 \
         -m '{"user_id":"123","action":"login"}' \
         -c 10
 
@@ -205,9 +233,12 @@ EXAMPLES:
         -m '{"id":"prod_123","name":"Widget","price":29.99}'
 
 NOTES:
-    - Use --schema-subject to reference pre-registered schemas
+    - Use --schema-subject to reference pre-registered schemas (latest version)
+    - Use --schema-version to pin to a specific schema version
+    - Use --schema-min-version to use a minimum version or newer
     - Use --schema-file + --schema-type to auto-register new schemas
     - Cannot use both --schema-subject and --schema-file together
+    - Cannot use both --schema-version and --schema-min-version together
     - --reliable enables guaranteed delivery with at-least-once semantics
     - --interval controls the delay between messages (minimum 100ms)
     - Message attributes are useful for routing and filtering
@@ -226,6 +257,18 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     if produce.extended_args.schema_subject.is_some() && produce.extended_args.schema_file.is_some() {
         return Err(anyhow::anyhow!("Cannot use both --schema-subject and --schema-file. Use one or the other.").into());
+    }
+
+    if produce.extended_args.schema_version.is_some() && produce.extended_args.schema_subject.is_none() {
+        return Err(anyhow::anyhow!("--schema-version requires --schema-subject").into());
+    }
+
+    if produce.extended_args.schema_min_version.is_some() && produce.extended_args.schema_subject.is_none() {
+        return Err(anyhow::anyhow!("--schema-min-version requires --schema-subject").into());
+    }
+
+    if produce.extended_args.schema_version.is_some() && produce.extended_args.schema_min_version.is_some() {
+        return Err(anyhow::anyhow!("Cannot use both --schema-version and --schema-min-version").into());
     }
 
     let client = DanubeClient::builder()
@@ -262,15 +305,24 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         produce.extended_args.schema_subject.clone()
     };
 
-    // Build producer with optional schema subject
+    // Build producer with optional schema subject and version control
     let mut producer_builder = client
         .new_producer()
         .with_topic(produce.basic_args.topic.clone())
         .with_name(produce.basic_args.producer_name.clone());
     
     if let Some(subject) = schema_subject {
-        producer_builder = producer_builder.with_schema_subject(&subject);
-        println!("📋 Using schema subject: {}", subject);
+        // Apply version control if specified
+        if let Some(version) = produce.extended_args.schema_version {
+            producer_builder = producer_builder.with_schema_version(&subject, version);
+            println!("📋 Using schema subject: {} (pinned to version {})", subject, version);
+        } else if let Some(min_version) = produce.extended_args.schema_min_version {
+            producer_builder = producer_builder.with_schema_min_version(&subject, min_version);
+            println!("📋 Using schema subject: {} (minimum version {})", subject, min_version);
+        } else {
+            producer_builder = producer_builder.with_schema_subject(&subject);
+            println!("📋 Using schema subject: {} (latest version)", subject);
+        }
     }
 
     if let Some(partitions) = produce.extended_args.partitions {

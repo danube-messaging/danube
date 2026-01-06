@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use danube_client::{DanubeClient, SchemaRegistryClient, SubType};
+use danube_client::{DanubeClient, SchemaInfo, SchemaRegistryClient, SubType};
 use danube_core::message::MessageID;
 use serde_json::{from_slice, Value};
 use std::{collections::HashMap, str::from_utf8};
@@ -58,7 +58,7 @@ EXAMPLES:
     danube-cli consume --service-addr http://localhost:6650 \
         --subscription my_shared_subscription
 
-    # Consume with automatic schema validation (if topic has schema)
+    # Consume with automatic schema validation (if messages have schema_id)
     danube-cli consume -s http://localhost:6650 \
         -t /default/user-events \
         -m my_subscription
@@ -81,9 +81,10 @@ EXAMPLES:
         --sub-type fail-over
 
 NOTE:
-    - Consumer automatically detects and validates messages against registered schemas
-    - JSON messages are validated and pretty-printed
-    - Topics without schemas consume raw bytes
+    - Consumer automatically fetches schema using schema_id from message metadata
+    - Falls back to deriving subject from topic name if no schema_id present
+    - JSON messages are validated and pretty-printed if schema is found
+    - Messages without schemas consume raw bytes
     - Press Ctrl+C to stop consuming
 "#;
 
@@ -103,43 +104,14 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         .with_subscription_type(sub_type)
         .build();
 
-    // Retrieve schema from registry if topic has one
-    println!("🔍 Checking for schema associated with topic...");
+    // Initialize schema registry client for runtime schema fetching
+    let mut schema_client = SchemaRegistryClient::new(&client).await
+        .context("Failed to create schema registry client")?;
 
-    let schema_info = match get_topic_schema_info(&client, &consume.topic).await {
-        Ok(Some(info)) => {
-            println!("✅ Topic has schema:");
-            println!("   Subject: {}", info.subject);
-            println!("   Version: {}", info.version);
-            println!("   Type: {}", info.schema_type);
-            Some(info)
-        }
-        Ok(None) => {
-            println!("ℹ️  Topic has no schema - consuming raw bytes");
-            None
-        }
-        Err(e) => {
-            println!("⚠️  Warning: Could not retrieve schema info: {}", e);
-            println!("   Continuing without schema validation...");
-            None
-        }
-    };
-
-    // Compile JSON schema validator if applicable
-    let schema_validator = if let Some(ref info) = schema_info {
-        if info.schema_type == "json_schema" {
-            let schema_value: Value = serde_json::from_slice(&info.schema_definition)
-                .context("Failed to parse JSON schema")?;
-            Some(
-                jsonschema::validator_for(&schema_value)
-                    .context("Failed to compile JSON schema")?,
-            )
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    println!("ℹ️  Consumer will fetch schemas dynamically based on message metadata");
+    
+    // Cache for schema validators
+    let mut schema_cache: HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)> = HashMap::new();
 
     consumer.subscribe().await?;
     let mut message_stream = consumer.receive().await?;
@@ -153,11 +125,29 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         let payload = stream_message.payload.clone();
         let attr = stream_message.attributes.clone();
 
+        // Fetch schema if message has schema_id
+        let (schema_info, validator) = if let Some(schema_id) = stream_message.schema_id {
+            // Check cache first
+            if !schema_cache.contains_key(&schema_id) {
+                match fetch_and_cache_schema(&mut schema_client, schema_id, &mut schema_cache).await {
+                    Ok(_) => {},
+                    Err(e) => {
+                        eprintln!("⚠️  Failed to fetch schema {}: {}", schema_id, e);
+                    }
+                }
+            }
+            schema_cache.get(&schema_id)
+                .map(|(info, val)| (Some(info), val.as_ref()))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+
         if let Err(e) = process_message(
             &payload,
             attr,
-            schema_info.as_ref(),
-            &schema_validator,
+            schema_info,
+            &validator,
             &stream_message.msg_id,
             &mut state,
         ) {
@@ -173,35 +163,52 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
     Ok(())
 }
 
-struct SchemaInfo {
-    subject: String,
-    version: u32,
-    schema_type: String,
-    schema_definition: Vec<u8>,
-}
+/// Fetch schema by ID and cache it with validator
+async fn fetch_and_cache_schema(
+    schema_client: &mut SchemaRegistryClient,
+    schema_id: u64,
+    cache: &mut HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)>,
+) -> Result<()> {
+    let schema_info: SchemaInfo = schema_client.get_schema_by_id(schema_id).await
+        .context("Failed to fetch schema from registry")?;
 
-async fn get_topic_schema_info(client: &DanubeClient, topic: &str) -> Result<Option<SchemaInfo>> {
-    let mut schema_client = SchemaRegistryClient::new(client).await?;
+    println!("✅ Loaded schema: {} v{} (ID: {}, Type: {})", 
+        schema_info.subject, schema_info.version, schema_info.schema_id, schema_info.schema_type);
 
-    // Try to derive subject name from topic (e.g., /default/events -> default-events)
-    let subject = topic.trim_start_matches('/').replace('/', "-");
+    // Compile JSON schema validator if applicable
+    let validator = if schema_info.schema_type == "json_schema" {
+        if let Some(schema_str) = schema_info.schema_definition_as_string() {
+            match serde_json::from_str::<Value>(&schema_str) {
+                Ok(schema_value) => {
+                    match jsonschema::validator_for(&schema_value) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!("⚠️  Warning: Failed to compile JSON schema validator: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Warning: Failed to parse JSON schema: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    match schema_client.get_latest_schema(&subject).await {
-        Ok(schema_response) => Ok(Some(SchemaInfo {
-            subject: schema_response.subject,
-            version: schema_response.version,
-            schema_type: schema_response.schema_type,
-            schema_definition: schema_response.schema_definition,
-        })),
-        Err(_) => Ok(None), // Topic has no schema
-    }
+    cache.insert(schema_id, (schema_info, validator));
+    Ok(())
 }
 
 fn process_message(
     payload: &[u8],
     attr: HashMap<String, String>,
     schema_info: Option<&SchemaInfo>,
-    schema_validator: &Option<jsonschema::Validator>,
+    schema_validator: &Option<&jsonschema::Validator>,
     msg_id: &MessageID,
     state: &mut ConsumerState,
 ) -> Result<()> {
@@ -223,7 +230,8 @@ fn process_message(
             if let Some(validator) = schema_validator {
                 if !validator.is_valid(&json_value) {
                     let errors: Vec<_> = validator.iter_errors(&json_value).collect();
-                    return Err(anyhow::anyhow!("JSON validation failed: {:?}", errors));
+                    eprintln!("⚠️  Schema validation failed: {:?}", errors);
+                    // Continue processing but log the validation error
                 }
             }
 

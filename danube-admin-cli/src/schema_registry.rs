@@ -94,6 +94,15 @@ pub(crate) enum SchemaCommands {
         mode: Option<String>,
     },
 
+    #[command(about = "Get compatibility mode for a subject")]
+    GetCompatibility {
+        #[arg(help = "Schema subject name")]
+        subject: String,
+
+        #[arg(long, value_parser = ["json"], help = "Output format")]
+        output: Option<String>,
+    },
+
     #[command(about = "Set compatibility mode for a subject")]
     SetCompatibility {
         #[arg(help = "Schema subject name")]
@@ -209,7 +218,7 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
                     "created_by": result.created_by,
                     "tags": result.tags,
                     "fingerprint": result.fingerprint,
-                    "compatibility_mode": result.compatibility_mode,
+                    "compatibility_mode": result.compatibility_mode.to_uppercase(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
@@ -217,7 +226,7 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
                 println!("Version: {}", result.version);
                 println!("Subject: {}", result.subject);
                 println!("Type: {}", result.schema_type);
-                println!("Compatibility Mode: {}", result.compatibility_mode);
+                println!("Compatibility Mode: {}", result.compatibility_mode.to_uppercase());
                 if !result.description.is_empty() {
                     println!("Description: {}", result.description);
                 }
@@ -310,6 +319,27 @@ pub async fn handle_command(schemas: SchemaRegistry) -> Result<(), Box<dyn std::
                         println!("  - {}", error);
                     }
                 }
+            }
+        }
+
+        SchemaCommands::GetCompatibility { subject, output } => {
+            // Get latest schema to extract compatibility mode
+            let request = GetLatestSchemaRequest {
+                subject: subject.clone(),
+            };
+
+            let response = client.get_latest_schema(request).await?;
+            let result = response.into_inner();
+
+            if matches!(output.as_deref(), Some("json")) {
+                let out = serde_json::json!({
+                    "subject": subject,
+                    "compatibility_mode": result.compatibility_mode.to_uppercase(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Subject: {}", subject);
+                println!("Compatibility Mode: {}", result.compatibility_mode.to_uppercase());
             }
         }
 

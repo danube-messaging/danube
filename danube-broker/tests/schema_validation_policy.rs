@@ -501,19 +501,19 @@ async fn verify_schema_metadata_in_messages() -> Result<()> {
     Ok(())
 }
 
-/// Test 8: Different producers with different schemas on same topic
+/// Test 8: Second producer with different schema subject fails (first producer privilege)
 /// 
-/// **What:** Two producers with different schemas send to same topic, consumer distinguishes by schema_id.
-/// **Why:** Validates that topics can support multiple schema types and consumers can handle heterogeneous messages.
+/// **What:** First producer assigns schema subject to topic, second producer tries different subject.
+/// **Why:** Validates that first producer privilege locks the topic to one schema subject.
 #[tokio::test]
-async fn multiple_schemas_same_topic() -> Result<()> {
+async fn second_producer_different_subject_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/multi_schema");
     let mut schema_client = SchemaRegistryClient::new(&client).await?;
 
-    // Register two different schemas
+    // Register two different schema subjects
     let schema1 = r#"{"type": "object", "properties": {"type": {"type": "string", "enum": ["event"]}, "data": {"type": "string"}}}"#;
-    let id1 = schema_client
+    schema_client
         .register_schema("event-schema")
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(schema1.as_bytes())
@@ -521,14 +521,14 @@ async fn multiple_schemas_same_topic() -> Result<()> {
         .await?;
 
     let schema2 = r#"{"type": "object", "properties": {"type": {"type": "string", "enum": ["metric"]}, "value": {"type": "number"}}}"#;
-    let id2 = schema_client
+    schema_client
         .register_schema("metric-schema")
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(schema2.as_bytes())
         .execute()
         .await?;
 
-    // Two producers with different schemas
+    // First producer with event-schema (locks topic to this subject)
     let mut producer1 = client
         .new_producer()
         .with_topic(&topic)
@@ -537,68 +537,26 @@ async fn multiple_schemas_same_topic() -> Result<()> {
         .build();
     producer1.create().await?;
 
+    // Second producer tries metric-schema (should fail - different subject)
     let mut producer2 = client
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_metrics")
         .with_schema_subject("metric-schema")
         .build();
-    producer2.create().await?;
-
-    // Consumer receives both
-    let mut consumer = client
-        .new_consumer()
-        .with_topic(topic.clone())
-        .with_consumer_name("consumer_multi")
-        .with_subscription("sub_multi")
-        .build();
-    consumer.subscribe().await?;
-    let mut stream = consumer.receive().await?;
-
-    sleep(Duration::from_millis(200)).await;
-
-    // Send from both producers
-    producer1
-        .send(
-            json!({"type": "event", "data": "user_login"})
-                .to_string()
-                .as_bytes()
-                .to_vec(),
-            None,
-        )
-        .await?;
-    producer2
-        .send(
-            json!({"type": "metric", "value": 42.5})
-                .to_string()
-                .as_bytes()
-                .to_vec(),
-            None,
-        )
-        .await?;
-
-
-    // Receive and verify schema IDs differ
-    let msg1 = timeout(Duration::from_secs(5), async { stream.recv().await })
-        .await?
-        .expect("Should receive first message");
-
-    let msg2 = timeout(Duration::from_secs(5), async { stream.recv().await })
-        .await?
-        .expect("Should receive second message");
-
-    // One should be id1, one should be id2
-    let received_ids = vec![msg1.schema_id.unwrap(), msg2.schema_id.unwrap()];
+    
+    let result = producer2.create().await;
+    
     assert!(
-        received_ids.contains(&id1),
-        "Should receive message with schema1"
+        result.is_err(),
+        "Second producer with different schema subject should fail"
     );
+    
+    let error_msg = result.unwrap_err().to_string();
     assert!(
-        received_ids.contains(&id2),
-        "Should receive message with schema2"
+        error_msg.contains("event-schema") || error_msg.contains("cannot use"),
+        "Error should mention schema mismatch"
     );
 
-    consumer.ack(&msg1).await?;
-    consumer.ack(&msg2).await?;
     Ok(())
 }

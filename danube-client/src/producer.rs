@@ -309,6 +309,18 @@ impl ProducerBuilder {
     ///
     /// The producer will reference the latest schema version for the given subject.
     /// The schema must be registered in the schema registry before use.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use danube_client::DanubeClient;
+    /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let producer = client.producer()
+    ///     .with_topic("user-events")
+    ///     .with_schema_subject("user-events-value")  // Uses latest version
+    ///     .build();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_schema_subject(mut self, subject: impl Into<String>) -> Self {
         use danube_core::proto::schema_reference::VersionRef;
 
@@ -319,9 +331,76 @@ impl ProducerBuilder {
         self
     }
 
-    /// Set schema with a specific SchemaReference
+    /// Set schema with a pinned version
     ///
-    /// This allows full control over schema versioning (pinned version, min version, etc.)
+    /// The producer will use a specific schema version and won't automatically
+    /// upgrade to newer versions.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use danube_client::DanubeClient;
+    /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let producer = client.producer()
+    ///     .with_topic("user-events")
+    ///     .with_schema_version("user-events-value", 2)  // Pin to version 2
+    ///     .build();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_schema_version(mut self, subject: impl Into<String>, version: u32) -> Self {
+        use danube_core::proto::schema_reference::VersionRef;
+
+        self.schema_ref = Some(SchemaReference {
+            subject: subject.into(),
+            version_ref: Some(VersionRef::PinnedVersion(version)),
+        });
+        self
+    }
+
+    /// Set schema with a minimum version requirement
+    ///
+    /// The producer will use the specified version or any newer compatible version.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use danube_client::DanubeClient;
+    /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let producer = client.producer()
+    ///     .with_topic("user-events")
+    ///     .with_schema_min_version("user-events-value", 2)  // Use v2 or newer
+    ///     .build();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_schema_min_version(mut self, subject: impl Into<String>, min_version: u32) -> Self {
+        use danube_core::proto::schema_reference::VersionRef;
+
+        self.schema_ref = Some(SchemaReference {
+            subject: subject.into(),
+            version_ref: Some(VersionRef::MinVersion(min_version)),
+        });
+        self
+    }
+
+    /// Set schema with a custom SchemaReference (advanced use)
+    ///
+    /// This allows full control over schema versioning. For most use cases,
+    /// prefer `with_schema_subject()`, `with_schema_version()`, or `with_schema_min_version()`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use danube_client::{DanubeClient, SchemaReference, VersionRef};
+    /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let producer = client.producer()
+    ///     .with_topic("user-events")
+    ///     .with_schema_reference(SchemaReference {
+    ///         subject: "user-events-value".to_string(),
+    ///         version_ref: Some(VersionRef::PinnedVersion(2)),
+    ///     })
+    ///     .build();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_schema_reference(mut self, schema_ref: SchemaReference) -> Self {
         self.schema_ref = Some(schema_ref);
         self

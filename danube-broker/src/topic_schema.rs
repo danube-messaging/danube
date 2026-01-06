@@ -4,6 +4,7 @@
 //! including schema reference management, validation policies, and message validation.
 
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -16,107 +17,154 @@ use crate::{
 };
 use metrics::counter;
 
+/// Cached schema information for validation
+#[derive(Debug, Clone)]
+pub(crate) struct CachedSchemaInfo {
+    pub(crate) subject: String,
+    pub(crate) version: u32,
+    #[allow(dead_code)]  // Stored for future use and debugging
+    pub(crate) schema_id: u64,
+}
+
 /// Schema configuration and caching for a topic
 ///
 /// This struct manages all schema-related state for a topic, including:
-/// - Schema reference from producer/topic configuration
-/// - Cached schema ID for fast validation
-/// - Validation policy (None/Warn/Enforce)
-/// - Payload validation settings
+/// - Schema subject assigned to this topic (single subject per topic)
+/// - Cache of all schema versions seen (by schema_id)
+/// - Validation policy (None/Warn/Enforce) - topic-level
+/// - Payload validation settings - topic-level
 #[derive(Debug)]
 pub(crate) struct TopicSchemaContext {
-    /// Reference to schema subject (from producer/topic config)
-    schema_ref: Mutex<Option<SchemaReference>>,
-    /// Cached schema ID for fast validation (resolved from registry)
-    resolved_schema_id: Mutex<Option<u64>>,
-    /// Validation policy: None/Warn/Enforce
-    validation_policy: ValidationPolicy,
-    /// Enable deep payload validation (default: false for performance)
-    enable_payload_validation: bool,
-    /// Handle to schema resources for resolution
+    /// Schema subject assigned to this topic (e.g., "user-events-value")
+    /// Once set, only schemas from this subject are allowed
+    schema_subject: Mutex<Option<String>>,
+    
+    /// Cache of schema info by schema_id (supports multiple versions)
+    /// Key: schema_id (e.g., 201, 202, 203 for V1, V2, V3)
+    /// Value: CachedSchemaInfo with subject, version, schema_id
+    schema_cache: Mutex<HashMap<u64, CachedSchemaInfo>>,
+    
+    /// Validation policy: None/Warn/Enforce (topic-level, can be changed by admin)
+    validation_policy: Mutex<ValidationPolicy>,
+    
+    /// Enable deep payload validation (topic-level, can be changed by admin)
+    enable_payload_validation: Mutex<bool>,
+    
+    /// Handle to schema resources for resolution and lookup
     resources: SchemaResources,
 }
 
 impl TopicSchemaContext {
     /// Create a new schema context with default settings
     ///
-    /// Default: no schema, no validation, no deep payload checks
+    /// Default: no schema assigned yet, ValidationPolicy::Warn for visibility
     pub(crate) fn new(resources: SchemaResources) -> Self {
         Self {
-            schema_ref: Mutex::new(None),
-            resolved_schema_id: Mutex::new(None),
-            validation_policy: ValidationPolicy::None,
-            enable_payload_validation: false,
+            schema_subject: Mutex::new(None),
+            schema_cache: Mutex::new(HashMap::new()),
+            validation_policy: Mutex::new(ValidationPolicy::Warn),  // Default: Warn for visibility
+            enable_payload_validation: Mutex::new(false),
             resources,
         }
     }
 
-    /// Set schema reference and resolve to schema ID
+    /// Set schema subject for this topic (first producer or admin)
     ///
     /// This method is called when a producer sets a schema for the topic.
-    /// It validates that the schema exists in the registry and caches the schema ID.
+    /// It validates that the schema exists in the registry.
     ///
     /// # Returns
-    /// - `Ok(())` if schema is found and resolved
+    /// - `Ok(())` if schema is found
     /// - `Err` if schema subject is not found in registry
-    pub(crate) fn set_schema_ref(
+    pub(crate) async fn set_schema_subject(
+        &self,
+        subject: String,
+        topic_name: &str,
+    ) -> Result<()> {
+        // Verify subject exists in registry
+        let schema_id = self.resources.get_schema_id(&subject)
+            .ok_or_else(|| anyhow!(
+                "Schema subject '{}' not found in registry. Please register schema first.",
+                subject
+            ))?;
+
+        // Set the subject (schema versions will be cached as messages arrive)
+        *self.schema_subject.lock().await = Some(subject.clone());
+
+        info!(
+            "Topic {} schema subject set: {} (subject schema_id={})",
+            topic_name, subject, schema_id
+        );
+        Ok(())
+    }
+
+    /// Set schema reference and resolve to schema ID (backward compatibility)
+    ///
+    /// This method maintains backward compatibility with existing code.
+    pub(crate) async fn set_schema_ref(
         &self,
         schema_ref: SchemaReference,
         topic_name: &str,
     ) -> Result<()> {
-        let subject = schema_ref.subject.clone();
-
-        // Resolve schema_ref to schema_id using SchemaResources
-        if let Some(schema_id) = self.resources.get_schema_id(&subject) {
-            // Update both fields atomically
-            if let Ok(mut schema_ref_guard) = self.schema_ref.try_lock() {
-                *schema_ref_guard = Some(schema_ref);
-            }
-            if let Ok(mut resolved_id_guard) = self.resolved_schema_id.try_lock() {
-                *resolved_id_guard = Some(schema_id);
-            }
-
-            info!(
-                "Topic {} resolved schema: subject={}, schema_id={}",
-                topic_name, subject, schema_id
-            );
-            Ok(())
-        } else {
-            // Schema not found in registry - this is now an error
-            Err(anyhow!(
-                "Schema '{}' not found in registry. Please register schema before using .with_schema_subject()",
-                subject
-            ))
-        }
+        self.set_schema_subject(schema_ref.subject, topic_name).await
     }
 
-    /// Set validation policy for this topic
-    ///
-    /// # Arguments
-    /// - `policy`: ValidationPolicy (None, Warn, or Enforce)
-    #[allow(dead_code)]
-    pub(crate) fn set_validation_policy(&mut self, policy: ValidationPolicy) {
-        self.validation_policy = policy;
+    /// Get the topic's schema subject
+    pub(crate) async fn get_schema_subject(&self) -> Option<String> {
+        self.schema_subject.lock().await.clone()
     }
 
-    /// Enable or disable deep payload validation (default: false for performance)
-    ///
-    /// When enabled, validates message payload content against schema definition.
-    /// This is CPU-intensive and should only be enabled when needed.
-    #[allow(dead_code)]
-    pub(crate) fn set_payload_validation(&mut self, enabled: bool) {
-        self.enable_payload_validation = enabled;
+    /// Configure validation settings (admin-only via admin API)
+    pub(crate) async fn configure(
+        &self,
+        validation_policy: ValidationPolicy,
+        enable_payload_validation: bool,
+    ) {
+        *self.validation_policy.lock().await = validation_policy;
+        *self.enable_payload_validation.lock().await = enable_payload_validation;
+        info!(
+            "Validation configured: policy={:?}, payload_validation={}",
+            validation_policy, enable_payload_validation
+        );
     }
 
     /// Get the current validation policy
-    #[allow(dead_code)]
-    pub(crate) fn validation_policy(&self) -> &ValidationPolicy {
-        &self.validation_policy
+    pub(crate) async fn validation_policy(&self) -> ValidationPolicy {
+        *self.validation_policy.lock().await
+    }
+
+    /// Get payload validation enabled setting
+    pub(crate) async fn get_payload_validation_enabled(&self) -> bool {
+        *self.enable_payload_validation.lock().await
+    }
+
+    /// Get cached schema info for a specific schema_id
+    pub(crate) async fn get_cached_schema(&self, schema_id: u64) -> Option<CachedSchemaInfo> {
+        self.schema_cache.lock().await.get(&schema_id).cloned()
+    }
+    
+    /// Get the subject's schema_id (base ID, not version-specific)
+    /// Returns None if no schema subject is configured
+    pub(crate) async fn get_subject_schema_id(&self) -> Option<u64> {
+        let subject = self.schema_subject.lock().await.clone()?;
+        self.resources.get_schema_id(&subject)
+    }
+    
+    /// Cache schema information from message metadata
+    async fn cache_schema_info(&self, schema_id: u64, version: u32, subject: String) {
+        let info = CachedSchemaInfo {
+            subject,
+            version,
+            schema_id,
+        };
+        self.schema_cache.lock().await.insert(schema_id, info);
     }
 
     /// Validate a message against topic's schema
     ///
-    /// This performs schema ID validation and optionally deep payload validation.
+    /// NEW APPROACH: Validates that message's schema_id belongs to the topic's subject.
+    /// Supports multiple versions of the same subject.
+    /// Caches schema info on-demand as messages arrive.
     ///
     /// # Returns
     /// - `Ok(())` if validation passes or is skipped
@@ -126,8 +174,11 @@ impl TopicSchemaContext {
         message: &StreamMessage,
         topic_name: &str,
     ) -> Result<()> {
+        // Get current validation policy
+        let policy = *self.validation_policy.lock().await;
+        
         // Skip validation if policy is None
-        if matches!(self.validation_policy, ValidationPolicy::None) {
+        if matches!(policy, ValidationPolicy::None) {
             return Ok(());
         }
 
@@ -135,40 +186,34 @@ impl TopicSchemaContext {
         counter!(
             SCHEMA_VALIDATION_TOTAL.name,
             "topic" => topic_name.to_string(),
-            "policy" => format!("{:?}", self.validation_policy)
+            "policy" => format!("{:?}", policy)
         )
         .increment(1);
 
-        // Check if topic has schema enforcement enabled
-        let expected_schema_id = {
-            let resolved_id_guard = self
-                .resolved_schema_id
-                .try_lock()
-                .map_err(|_| anyhow!("Failed to acquire schema lock"))?;
-
-            match *resolved_id_guard {
-                Some(id) => id,
-                None => {
-                    // No schema set for topic
-                    if matches!(self.validation_policy, ValidationPolicy::Enforce) {
-                        return Err(anyhow!(
-                            "Topic {} requires schema but none is configured",
-                            topic_name
-                        ));
-                    }
-                    return Ok(()); // Warn mode: allow messages without schema
-                }
+        // Check if topic has a schema subject assigned
+        let topic_subject = self.schema_subject.lock().await.clone();
+        
+        if topic_subject.is_none() {
+            // Topic has no schema configured
+            if matches!(policy, ValidationPolicy::Enforce) {
+                return Err(anyhow!(
+                    "Topic {} requires schema but none is configured",
+                    topic_name
+                ));
             }
-        };
+            return Ok(()); // Warn/None mode: allow messages without schema
+        }
+        
+        let topic_subject = topic_subject.unwrap();
 
         // Check if message has schema_id
         let message_schema_id = match message.schema_id {
             Some(id) => id,
             None => {
                 let err = anyhow!(
-                    "Message missing schema_id for topic {} (expected schema_id: {})",
+                    "Message missing schema_id for topic {} (expected subject: {})",
                     topic_name,
-                    expected_schema_id
+                    topic_subject
                 );
 
                 // Record failure
@@ -179,7 +224,7 @@ impl TopicSchemaContext {
                 )
                 .increment(1);
 
-                match self.validation_policy {
+                match policy {
                     ValidationPolicy::Warn => {
                         warn!("{}", err);
                         return Ok(()); // Warn but allow
@@ -190,41 +235,83 @@ impl TopicSchemaContext {
             }
         };
 
-        // Validate schema_id matches
-        if message_schema_id != expected_schema_id {
-            let err = anyhow!(
-                "Schema mismatch for topic {}: message has schema_id={}, expected={}",
-                topic_name,
-                message_schema_id,
-                expected_schema_id
-            );
+        // Check cache first
+        if let Some(cached) = self.get_cached_schema(message_schema_id).await {
+            // Validate subject matches
+            if cached.subject != topic_subject {
+                let err = anyhow!(
+                    "Schema subject mismatch for topic {}: message schema_id={} belongs to subject '{}', but topic requires '{}'",
+                    topic_name,
+                    message_schema_id,
+                    cached.subject,
+                    topic_subject
+                );
 
-            // Record failure
-            counter!(
-                SCHEMA_VALIDATION_FAILURES_TOTAL.name,
-                "topic" => topic_name.to_string(),
-                "reason" => "schema_mismatch"
-            )
-            .increment(1);
+                counter!(
+                    SCHEMA_VALIDATION_FAILURES_TOTAL.name,
+                    "topic" => topic_name.to_string(),
+                    "reason" => "subject_mismatch"
+                )
+                .increment(1);
 
-            match self.validation_policy {
-                ValidationPolicy::Warn => {
-                    warn!("{}", err);
-                    Ok(()) // Warn but allow
+                match policy {
+                    ValidationPolicy::Warn => {
+                        warn!("{}", err);
+                        return Ok(());
+                    }
+                    ValidationPolicy::Enforce => return Err(err),
+                    ValidationPolicy::None => return Ok(()),
                 }
-                ValidationPolicy::Enforce => Err(err),
-                ValidationPolicy::None => Ok(()),
             }
+            
+            // Cached and valid - success!
         } else {
-            // Schema ID validation passed
+            // Not in cache - look up schema_id in registry
+            let schema_subject = self.resources.get_subject_by_schema_id(message_schema_id)
+                .ok_or_else(|| anyhow!(
+                    "Schema ID {} not found in registry",
+                    message_schema_id
+                ))?;
+                
+            // Validate subject matches topic
+            if schema_subject != topic_subject {
+                let err = anyhow!(
+                    "Schema subject mismatch for topic {}: message schema_id={} belongs to subject '{}', but topic requires '{}'",
+                    topic_name,
+                    message_schema_id,
+                    schema_subject,
+                    topic_subject
+                );
 
-            // Deep payload validation (optional, disabled by default)
-            if self.enable_payload_validation {
-                self.validate_payload_content(message, topic_name).await?;
+                counter!(
+                    SCHEMA_VALIDATION_FAILURES_TOTAL.name,
+                    "topic" => topic_name.to_string(),
+                    "reason" => "subject_mismatch"
+                )
+                .increment(1);
+
+                match policy {
+                    ValidationPolicy::Warn => {
+                        warn!("{}", err);
+                        return Ok(());
+                    }
+                    ValidationPolicy::Enforce => return Err(err),
+                    ValidationPolicy::None => return Ok(()),
+                }
             }
-
-            Ok(())
+            
+            // Cache it for next time
+            let version = message.schema_version.unwrap_or(1);
+            self.cache_schema_info(message_schema_id, version, schema_subject).await;
         }
+
+        // Schema validation passed - optionally do deep payload validation
+        let enable_payload_validation = *self.enable_payload_validation.lock().await;
+        if enable_payload_validation {
+            self.validate_payload_content(message, topic_name).await?;
+        }
+
+        Ok(())
     }
 
     /// Validate message payload content against schema definition (deep validation)
@@ -237,37 +324,34 @@ impl TopicSchemaContext {
     ) -> Result<()> {
         use crate::schema::validator::ValidatorFactory;
 
-        // Get schema definition from resources
-        let schema_id_guard = self
-            .resolved_schema_id
-            .try_lock()
-            .map_err(|_| anyhow!("Failed to acquire schema lock"))?;
-
-        let _schema_id = match *schema_id_guard {
+        // Get schema_id from message
+        let schema_id = match message.schema_id {
             Some(id) => id,
-            None => return Ok(()), // No schema configured, skip validation
+            None => return Ok(()), // No schema_id, skip validation
         };
-        drop(schema_id_guard);
 
-        // Get the subject from schema_ref
-        let schema_ref_guard = self
-            .schema_ref
-            .try_lock()
-            .map_err(|_| anyhow!("Failed to acquire schema ref lock"))?;
-
-        let subject = match &*schema_ref_guard {
-            Some(ref_val) => ref_val.subject.clone(),
-            None => return Ok(()), // No subject, skip
+        // Get cached schema info (should be cached by now from validate_message)
+        let cached = match self.get_cached_schema(schema_id).await {
+            Some(c) => c,
+            None => {
+                // Not cached yet - look it up
+                let subject = self.resources.get_subject_by_schema_id(schema_id)
+                    .ok_or_else(|| anyhow!("Schema ID {} not found", schema_id))?;
+                let version = message.schema_version.unwrap_or(1);
+                CachedSchemaInfo {
+                    subject,
+                    version,
+                    schema_id,
+                }
+            }
         };
-        drop(schema_ref_guard);
 
         // Fetch schema version from resources
-        let version = message.schema_version.unwrap_or(1);
         let schema_version = self
             .resources
-            .get_version(&subject, version)
+            .get_version(&cached.subject, cached.version)
             .await
-            .map_err(|e| anyhow!("Schema version not found: {}/{} - {}", subject, version, e))?;
+            .map_err(|e| anyhow!("Schema version not found: {}/{} - {}", cached.subject, cached.version, e))?;
 
         // Create validator and validate payload
         let validator = ValidatorFactory::create(&schema_version.schema_def)

@@ -211,6 +211,7 @@ impl DanubeService {
         let schema_registry = Arc::new(SchemaRegistryService::new(
             self.local_cache.clone(),
             self.meta_store.clone(),
+            self.broker.topic_manager.clone(),
         ));
 
         info!("Schema Registry Service initialized");
