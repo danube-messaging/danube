@@ -10,7 +10,7 @@ use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     broker_metrics::{
@@ -132,7 +132,7 @@ impl Topic {
             }
             Entry::Occupied(entry) => {
                 //let current_producer = entry.get();
-                info!("the requested producer: {} already exists", entry.key());
+                debug!(producer_id = %entry.key(), topic = %self.topic_name, "producer already exists");
                 return Err(anyhow!(" the producer already exist"));
             }
         }
@@ -185,8 +185,8 @@ impl Topic {
         if let Some(lim) = &self.publish_rate_limiter {
             if !lim.try_acquire(1).await {
                 warn!(
-                    "Publish rate limit exceeded for topic {} (warn-only)",
-                    self.topic_name
+                    topic = %self.topic_name,
+                    "publish rate limit exceeded (warn-only)"
                 );
             }
         }
@@ -272,9 +272,11 @@ impl Topic {
                     .send_message_to_dispatcher(stream_message.clone())
                     .await;
                 if let Err(err) = result {
-                    info!(
-                        "The subscription {}, has no active consumers, got error: {} ",
-                        subscription_name, err
+                    debug!(
+                        subscription = %subscription_name,
+                        topic = %self.topic_name,
+                        error = %err,
+                        "subscription has no active consumers"
                     );
                     subscriptions_to_remove.push(subscription_name.clone());
                 }

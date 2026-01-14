@@ -132,7 +132,7 @@ impl ReliableExclusiveDispatcher {
                 .init_stream_from_progress_or_latest()
                 .await
             {
-                warn!("Reliable exclusive dispatcher failed to init stream: {}", e);
+                warn!(error = %e, "Reliable exclusive dispatcher failed to init stream");
             }
             let _ = ready_tx.send(true);
         }
@@ -184,8 +184,8 @@ impl ReliableExclusiveDispatcher {
         match cmd {
             DispatcherCommand::AddConsumer(c) => {
                 trace!(
-                    "AddConsumer: consumer {} added to reliable exclusive dispatcher",
-                    c.consumer_id
+                    consumer_id = %c.consumer_id,
+                    "consumer added to reliable exclusive dispatcher"
                 );
                 state.add_consumer(c);
                 if !*pending {
@@ -197,7 +197,7 @@ impl ReliableExclusiveDispatcher {
             }
             DispatcherCommand::DisconnectAllConsumers => {
                 if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!("DisconnectAllConsumers: flush progress failed: {}", e);
+                    warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
                 }
                 state.disconnect_all();
             }
@@ -217,13 +217,13 @@ impl ReliableExclusiveDispatcher {
                 Self::handle_poll_and_dispatch(state, engine, pending, pending_message).await;
             }
             DispatcherCommand::ResetPending => {
-                trace!("ResetPending: clearing pending flag to allow retry");
+                trace!("clearing pending flag to allow retry");
                 *pending = false;
                 let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
             }
             DispatcherCommand::FlushProgressNow => {
                 if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!("FlushProgressNow: failed to flush: {}", e);
+                    warn!(error = %e, "FlushProgressNow: failed to flush");
                 }
             }
         }
@@ -238,7 +238,7 @@ impl ReliableExclusiveDispatcher {
         let acked_offset = ack_msg.msg_id.topic_offset;
 
         if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
-            warn!("Ack handling failed: {}", e);
+            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
         }
 
         let should_clear = pending_message
@@ -248,17 +248,17 @@ impl ReliableExclusiveDispatcher {
 
         if should_clear {
             trace!(
-                "Ack received for pending message req_id={}, offset={}, clearing buffer",
-                ack_msg.request_id,
-                acked_offset
+                request_id = %ack_msg.request_id,
+                offset = %acked_offset,
+                "ack received for pending message, clearing buffer"
             );
             *pending = false;
             *pending_message = None;
         } else {
             trace!(
-                "Ignoring late ack for req_id={}, offset={} (not the pending message)",
-                ack_msg.request_id,
-                acked_offset
+                request_id = %ack_msg.request_id,
+                offset = %acked_offset,
+                "ignoring late ack (not the pending message)"
             );
         }
     }
@@ -281,15 +281,15 @@ impl ReliableExclusiveDispatcher {
             // Get message: buffered (resend) or new from stream
             let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
                 trace!(
-                    "Resending buffered message offset={}",
-                    buffered_msg.msg_id.topic_offset
+                    offset = %buffered_msg.msg_id.topic_offset,
+                    "resending buffered message"
                 );
                 Some(buffered_msg)
             } else {
                 match engine.lock().await.poll_next().await {
                     Ok(msg_opt) => msg_opt,
                     Err(e) => {
-                        warn!("poll_next error: {}", e);
+                        warn!(error = %e, "poll_next error");
                         None
                     }
                 }
@@ -301,8 +301,9 @@ impl ReliableExclusiveDispatcher {
 
                 if let Err(e) = cons.send_message(msg).await {
                     warn!(
-                        "Failed to send message offset={}: {}. Will retry on reconnect.",
-                        offset, e
+                        offset = %offset,
+                        error = %e,
+                        "Failed to send message. Will retry on reconnect."
                     );
                 } else {
                     *pending = true;
@@ -335,8 +336,8 @@ impl ReliableExclusiveDispatcher {
 
         if lag_info.has_lag {
             trace!(
-                "Heartbeat detected lag: {} messages behind",
-                lag_info.lag_messages
+                lag_messages = %lag_info.lag_messages,
+                "heartbeat detected lag"
             );
             counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
             let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;

@@ -501,7 +501,11 @@ impl BrokerService {
     /// Shuts down the worker pool gracefully.
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
         let topic_count = self.topic_worker_pool.get_all_topics().len();
-        info!("Shutting down BrokerService with {} topics", topic_count);
+        info!(
+            broker_id = %self.broker_id,
+            topic_count = %topic_count,
+            "shutting down broker service"
+        );
 
         // Shutdown the topic worker pool
         Arc::get_mut(&mut self.topic_worker_pool)
@@ -509,7 +513,10 @@ impl BrokerService {
             .shutdown()
             .await;
 
-        info!("BrokerService shutdown completed");
+        info!(
+            broker_id = %self.broker_id,
+            "broker service shutdown completed"
+        );
         Ok(())
     }
 }

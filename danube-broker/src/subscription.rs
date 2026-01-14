@@ -102,9 +102,10 @@ impl Subscription {
         .increment(1.0);
 
         trace!(
-            "A dispatcher {:?} has been added on subscription {}",
-            &dispatcher,
-            self.subscription_name
+            subscription = %self.subscription_name,
+            topic = %self.topic_name,
+            dispatcher = ?dispatcher,
+            "dispatcher added on subscription"
         );
 
         Ok(consumer_id)
@@ -223,8 +224,9 @@ impl Subscription {
         if let Some(lim) = &self.dispatch_rate_limiter {
             if !lim.try_acquire(1).await {
                 warn!(
-                    "Dispatch rate limit exceeded for subscription {} on topic {} (warn-only)",
-                    self.subscription_name, self.topic_name
+                    subscription = %self.subscription_name,
+                    topic = %self.topic_name,
+                    "dispatch rate limit exceeded (warn-only)"
                 );
             }
         }

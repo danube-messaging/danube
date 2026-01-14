@@ -45,7 +45,7 @@ impl SchemaRegistry {
             // Atomic compare-and-swap
             match self.storage.increment_schema_id_counter(current, next_id).await {
                 Ok(_) => {
-                    info!("Generated new schema_id: {} for new subject", current);
+                    info!(schema_id = %current, "generated new schema_id for new subject");
                     return Ok(current);
                 }
                 Err(_) => {
@@ -155,7 +155,7 @@ impl SchemaRegistry {
             // Store reverse index (schema_id -> subject)
             self.storage.store_schema_id_index(schema_id, subject).await?;
 
-            info!("Registered new subject '{}' with schema_id {}", subject, schema_id);
+            info!(subject = %subject, schema_id = %schema_id, "registered new subject");
 
             Ok((schema_id, 1, true, metadata))
         }

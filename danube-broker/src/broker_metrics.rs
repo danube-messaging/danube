@@ -150,7 +150,7 @@ pub(crate) const CONSUMER_BYTES_OUT_TOTAL: Metric = Metric {
 };
 
 pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u64) {
-    info!("Initializing metrics exporter");
+    info!("initializing metrics exporter");
 
     if let Some(addr) = prom_addr {
         PrometheusBuilder::new()

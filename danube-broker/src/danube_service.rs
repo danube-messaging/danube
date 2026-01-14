@@ -18,7 +18,7 @@ use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     admin::DanubeAdminImpl,
@@ -107,8 +107,9 @@ impl DanubeService {
 
     pub(crate) async fn start(&mut self) -> Result<()> {
         info!(
-            "Initializing Danube cluster '{}'",
-            self.service_config.cluster_name
+            cluster = %self.service_config.cluster_name,
+            broker_id = %self.broker_id,
+            "initializing Danube cluster"
         );
 
         // Start the Local Cache
@@ -121,7 +122,7 @@ impl DanubeService {
         // Process the ETCD Watch events
         tokio::spawn(async move { local_cache_cloned.process_event(watch_stream).await });
 
-        info!("Local Cache service initialized and ready");
+        info!("local cache service initialized and ready");
 
         // Cluster metadata setup
         //==========================================================================
@@ -202,7 +203,11 @@ impl DanubeService {
             .await?;
         }
 
-        info!("Cluster metadata initialization completed successfully");
+        info!(
+            broker_id = %self.broker_id,
+            cluster = %self.service_config.cluster_name,
+            "cluster metadata initialization completed successfully"
+        );
 
         // Start the Broker GRPC server
         //==========================================================================
@@ -214,7 +219,7 @@ impl DanubeService {
             self.broker.topic_manager.clone(),
         ));
 
-        info!("Schema Registry Service initialized");
+        info!("schema registry service initialized");
 
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
@@ -229,8 +234,9 @@ impl DanubeService {
         let server_handle = grpc_server.start(ready_tx).await;
 
         info!(
-            "Broker gRPC server listening on {}",
-            self.service_config.broker_addr
+            broker_addr = %self.service_config.broker_addr,
+            broker_id = %self.broker_id,
+            "broker gRPC server listening"
         );
 
         // Start the Syncronizer
@@ -260,7 +266,7 @@ impl DanubeService {
         tokio::spawn(async move {
             leader_election_cloned.start(leader_check_interval).await;
         });
-        info!("Leader Election service initialized and ready");
+        info!("leader election service initialized and ready");
 
         // Start the Load Manager Service
         //==========================================================================
@@ -283,7 +289,7 @@ impl DanubeService {
         let broker_service_cloned = Arc::clone(&self.broker);
         let meta_store_cloned = self.meta_store.clone();
 
-        info!("Load Manager service initialized and ready");
+        info!("load manager service initialized and ready");
 
         // Publish periodic Load Reports
         // This enable the broker to register with Load Manager
@@ -317,8 +323,9 @@ impl DanubeService {
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
 
         info!(
-            "Admin gRPC server listening on {}",
-            self.service_config.admin_addr
+            admin_addr = %self.service_config.admin_addr,
+            broker_id = %self.broker_id,
+            "admin gRPC server listening"
         );
 
         // Wait for the server task to complete
@@ -357,7 +364,7 @@ pub(crate) async fn create_namespace_if_absent(
             .create_namespace(namespace_name, Some(policies))
             .await?;
     } else {
-        info!("Namespace {} already exists.", namespace_name);
+        info!(namespace = %namespace_name, "namespace already exists");
         // ensure that the policies are in place for the Default Namespace
         // wrong line below as the local cache have not yet loaded all the info
         //let _policies = resources.namespace.get_policies(DEFAULT_NAMESPACE)?;
@@ -394,15 +401,15 @@ async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store:
         if let Ok(value) = serde_json::to_value(&load_report) {
             let path = join_path(&[BASE_BROKER_LOAD_PATH, &broker_id.to_string()]);
             match meta_store.put(&path, value, MetaOptions::None).await {
-                Ok(_) => trace!(
-                    "Broker {} posted a new Load Report: {:?}",
-                    broker_id,
+                Ok(_) => debug!(
+                    broker_id = %broker_id,
+                    "broker posted a new load report: {:?}",
                     &load_report
                 ),
-                Err(err) => trace!(
-                    "Broker {} unable to post Load Report dues to this issue {}",
-                    broker_id,
-                    err
+                Err(err) => debug!(
+                    broker_id = %broker_id,
+                    error = %err,
+                    "unable to post load report"
                 ),
             }
         }

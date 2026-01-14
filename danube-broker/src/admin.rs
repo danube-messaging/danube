@@ -65,7 +65,7 @@ impl DanubeAdminImpl {
         let handle = tokio::spawn(async move {
             // info!("Admin is listening on address: {}", socket_addr);
             if let Err(e) = server.await {
-                warn!("Server error: {:?}", e);
+                warn!(error = ?e, "admin server error");
             }
         });
 
@@ -74,7 +74,7 @@ impl DanubeAdminImpl {
     async fn configure_tls(&self, server: Server) -> Server {
         // Install crypto provider only when TLS is being configured
         if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
-            warn!("Failed to install crypto provider: {:?}", e);
+            warn!(error = ?e, "failed to install crypto provider");
             return server;
         }
 
@@ -92,7 +92,7 @@ impl DanubeAdminImpl {
                 let ca = Certificate::from_pem(ca_pem);
                 tls = tls.client_ca_root(ca);
             } else {
-                warn!("verify_client enabled but unable to read CA file: {}", tls_config.ca_file);
+                warn!(ca_file = %tls_config.ca_file, "verify_client enabled but unable to read CA file");
             }
         }
 

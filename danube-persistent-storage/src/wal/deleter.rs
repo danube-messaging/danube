@@ -53,7 +53,7 @@ impl Deleter {
             let mut ticker = interval(Duration::from_secs(self.cfg.check_interval_minutes * 60));
             // run immediately
             if let Err(e) = self.run_cycle().await {
-                warn!(target = "wal_deleter", topic = %self.topic_path, error = %format!("{}", e), "initial retention cycle failed");
+                warn!(target = "wal_deleter", topic = %self.topic_path, error = %e, "initial retention cycle failed");
             }
             loop {
                 tokio::select! {
@@ -63,7 +63,7 @@ impl Deleter {
                     }
                     _ = ticker.tick() => {
                         if let Err(e) = self.run_cycle().await {
-                            warn!(target = "wal_deleter", topic = %self.topic_path, error = %format!("{}", e), "retention cycle failed");
+                            warn!(target = "wal_deleter", topic = %self.topic_path, error = %e, "retention cycle failed");
                         }
                     }
                 }

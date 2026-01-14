@@ -99,11 +99,11 @@ impl NonReliableExclusiveDispatcher {
             } else {
                 match cons.send_message(msg).await {
                     Ok(()) => {
-                        trace!("Message dispatched to active consumer {}", cons.consumer_id);
+                        trace!(consumer_id = %cons.consumer_id, "Message dispatched to active consumer");
                         Ok(())
                     }
                     Err(e) => {
-                        warn!("Failed to dispatch to active consumer: {}", e);
+                        warn!(consumer_id = %cons.consumer_id, error = %e, "Failed to dispatch to active consumer");
                         Err(e)
                     }
                 }

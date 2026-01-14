@@ -4,7 +4,7 @@ use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::broker_metrics::{CONSUMER_BYTES_OUT_TOTAL, CONSUMER_MESSAGES_OUT_TOTAL};
 use crate::utils::get_random_id;
@@ -192,11 +192,14 @@ impl Consumer {
         if let Err(err) = self.tx_cons.send(message).await {
             // Log the error and handle the channel closure scenario
             warn!(
-                "Failed to send message to consumer with id: {}. Error: {:?}",
-                self.consumer_id, err
+                consumer_id = %self.consumer_id,
+                subscription = %self.subscription_name,
+                topic = %self.topic_name,
+                error = ?err,
+                "failed to send message to consumer"
             );
         } else {
-            trace!("Sending the message over channel to {}", self.consumer_id);
+            trace!(consumer_id = %self.consumer_id, "sending the message over channel to consumer");
             counter!(CONSUMER_MESSAGES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(1);
             counter!(CONSUMER_BYTES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(payload_size as u64);
         }
@@ -302,9 +305,9 @@ impl ConsumerSession {
         self.active = true;
         self.cancellation = CancellationToken::new();
 
-        trace!(
-            "Consumer session takeover: new session_id={}",
-            self.session_id
+        debug!(
+            session_id = %self.session_id,
+            "consumer session takeover"
         );
         self.cancellation.clone()
     }
@@ -313,9 +316,9 @@ impl ConsumerSession {
     #[allow(dead_code)]
     pub(crate) fn disconnect(&mut self) {
         self.active = false;
-        trace!(
-            "Consumer session disconnected: session_id={}",
-            self.session_id
+        debug!(
+            session_id = %self.session_id,
+            "consumer session disconnected"
         );
     }
 

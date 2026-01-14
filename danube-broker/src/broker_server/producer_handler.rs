@@ -13,7 +13,7 @@ use danube_core::message::StreamMessage;
 use metrics::{counter, histogram};
 use std::time::Instant;
 use tonic::{Request, Response, Status};
-use tracing::{info, trace, Level};
+use tracing::{debug, info, trace, Level};
 
 #[tonic::async_trait]
 impl ProducerService for DanubeServerImpl {
@@ -30,17 +30,12 @@ impl ProducerService for DanubeServerImpl {
                 .unwrap_or_default()
                 .into();
 
-        let schema_log = match &req.schema_ref {
-            Some(s) => format!("subject={}, version_ref={:?}", s.subject, s.version_ref),
-            None => "None".to_string(),
-        };
-
         info!(
-            "Received producer creation request - name: '{}', topic: '{}', schema_ref: '{}', dispatch: '{}'",
-            req.producer_name,
-            req.topic_name,
-            schema_log,
-            config_dispatch_strategy
+            producer_name = %req.producer_name,
+            topic = %req.topic_name,
+            dispatch_strategy = %config_dispatch_strategy,
+            has_schema = req.schema_ref.is_some(),
+            "received producer creation request"
         );
         let service = self.service.as_ref();
 
@@ -52,9 +47,9 @@ impl ProducerService for DanubeServerImpl {
             .get_topic(&req.topic_name, requested_strategy, req.schema_ref.clone())
             .await
         {
-            Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
+            Ok(_) => trace!(topic = %req.topic_name, "topic found for producer request"),
             Err(status) => {
-                info!("Error topic request: {}", status.message());
+                debug!(topic = %req.topic_name, error = %status.message(), "topic request failed");
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"error").increment(1);
                 return Err(status);
             }
@@ -103,8 +98,10 @@ impl ProducerService for DanubeServerImpl {
             })?;
 
         info!(
-            "Producer '{}' successfully created with ID '{}'",
-            req.producer_name, new_producer_id
+            producer_id = %new_producer_id,
+            producer_name = %req.producer_name,
+            topic = %req.topic_name,
+            "producer successfully created"
         );
 
         let response = ProducerResponse {
@@ -126,9 +123,9 @@ impl ProducerService for DanubeServerImpl {
         let stream_message: StreamMessage = req.into();
 
         trace!(
-            "New message {} from producer {} was received",
-            stream_message.request_id,
-            stream_message.msg_id.producer_id,
+            message_id = %stream_message.request_id,
+            producer_id = %stream_message.msg_id.producer_id,
+            "message received from producer"
         );
 
         // Get the start time before sending the message

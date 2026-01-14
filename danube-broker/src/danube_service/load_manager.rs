@@ -1,20 +1,20 @@
 pub(crate) mod load_report;
 mod rankings;
 
+use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
 use anyhow::{anyhow, Result};
 use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
 use load_report::{LoadReport, ResourceType};
+use metrics::counter;
 use rankings::{rankings_composite, rankings_simple};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info, trace, warn};
-use metrics::counter;
-use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
+use tracing::{debug, error, info, warn};
 
 use crate::{
     resources::{
@@ -208,19 +208,19 @@ impl LoadManager {
                                 if let Err(e) =
                                     self.handle_unassigned_topic(&key, &value, state).await
                                 {
-                                    error!("Error handling unassigned topic: {}", e);
+                                    error!(error = %e, "error handling unassigned topic");
                                 }
                             } else if key.starts_with(BASE_REGISTER_PATH.as_bytes()) {
                                 if let Err(e) = self.handle_broker_registration(&event, state).await
                                 {
-                                    error!("Error handling broker registration: {}", e);
+                                    error!(error = %e, "error handling broker registration");
                                 }
                             } else if key.starts_with(BASE_BROKER_LOAD_PATH.as_bytes()) {
                                 if let Err(e) = self
                                     .handle_load_update(&key, &value, state, broker_id)
                                     .await
                                 {
-                                    error!("Error handling load update: {}", e);
+                                    error!(error = %e, "error handling load update");
                                 }
                             }
                         }
@@ -228,14 +228,14 @@ impl LoadManager {
                             if key.starts_with(BASE_REGISTER_PATH.as_bytes()) {
                                 if let Err(e) = self.handle_broker_registration(&event, state).await
                                 {
-                                    error!("Error handling broker registration: {}", e);
+                                    error!(error = %e, "error handling broker registration");
                                 }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Error receiving watch event: {}", e);
+                    error!(error = %e, "error receiving watch event");
                 }
             }
         }
@@ -276,7 +276,7 @@ impl LoadManager {
         let key_str =
             std::str::from_utf8(key).map_err(|e| anyhow!("Invalid UTF-8 in key: {}", e))?;
 
-        info!("Attempting to assign the new topic {} to a broker", key_str);
+        info!(topic = %key_str, "attempting to assign the new topic to a broker");
 
         // Create WatchEvent for assign_topic_to_broker
         self.assign_topic_to_broker(WatchEvent::Put {
@@ -337,12 +337,12 @@ impl LoadManager {
                 let remove_broker = match key_str.split('/').last().unwrap().parse::<u64>() {
                     Ok(id) => id,
                     Err(err) => {
-                        error!("Unable to parse the broker id: {}", err);
+                        error!(error = %err, "unable to parse the broker id");
                         return Ok(());
                     }
                 };
 
-                info!("Broker {} is no longer alive", remove_broker);
+                info!(broker_id = %remove_broker, "broker is no longer alive");
 
                 // Remove from brokers usage
                 {
@@ -359,8 +359,9 @@ impl LoadManager {
                 // Trigger topic reassignment for failed broker
                 if let Err(err) = self.delete_topic_allocation(remove_broker).await {
                     error!(
-                        "Unable to delete resources of the unregistered broker {}, due to error {}",
-                        remove_broker, err
+                        broker_id = %remove_broker,
+                        error = %err,
+                        "unable to delete resources of the unregistered broker"
                     );
                 }
             }
@@ -379,7 +380,7 @@ impl LoadManager {
         let key_str =
             std::str::from_utf8(key).map_err(|e| anyhow!("Invalid UTF-8 in key: {}", e))?;
 
-        trace!("A new load report has been received from: {}", key_str);
+        debug!(broker_key = %key_str, "a new load report has been received");
 
         // Process the event locally
         self.process_event(WatchEvent::Put {
@@ -426,7 +427,7 @@ impl LoadManager {
                 let key_str = match std::str::from_utf8(&key) {
                     Ok(s) => s,
                     Err(e) => {
-                        error!("Invalid UTF-8 in key: {}", e);
+                        error!(error = %e, "invalid UTF-8 in key");
                         return;
                     }
                 };
@@ -454,7 +455,7 @@ impl LoadManager {
                     match self.get_next_broker_excluding(ex).await {
                         Ok(id) => id,
                         Err(e) => {
-                            error!("Cannot reassign topic {} for unload: {}", topic_name, e);
+                            error!(topic = %topic_name, error = %e, "cannot reassign topic for unload");
                             // Keep unassigned marker for future reassignment
                             return;
                         }
@@ -471,18 +472,22 @@ impl LoadManager {
                 {
                     Ok(_) => {
                         info!(
-                        "The topic {} was successfully assign to broker {}",
-                        topic_name, broker_id
+                            topic = %topic_name,
+                            broker_id = %broker_id,
+                            "the topic was successfully assigned to broker"
                         );
                         counter!(
                             BROKER_ASSIGNMENTS_TOTAL.name,
                             "broker_id" => broker_id.to_string(),
                             "action" => "assign"
-                        ).increment(1);
-                    },
+                        )
+                        .increment(1);
+                    }
                     Err(err) => warn!(
-                        "Unable to assign topic {} to the broker {}, due to error: {}",
-                        topic_name, broker_id, err
+                        topic = %topic_name,
+                        broker_id = %broker_id,
+                        error = %err,
+                        "unable to assign topic to the broker"
                     ),
                 }
 
@@ -490,8 +495,9 @@ impl LoadManager {
                 let unassigned_key = key_str.to_string();
                 if let Err(err) = self.meta_store.delete(&unassigned_key).await {
                     warn!(
-                        "Failed to delete unassigned entry {} after assignment: {}",
-                        unassigned_key, err
+                        key = %unassigned_key,
+                        error = %err,
+                        "failed to delete unassigned entry after assignment"
                     );
                 }
 
@@ -548,8 +554,7 @@ impl LoadManager {
         }
         let next_broker = chosen.unwrap_or_else(|| {
             // fallback to current atomic value if none active found (should be rare)
-            self.next_broker
-                .load(std::sync::atomic::Ordering::SeqCst)
+            self.next_broker.load(std::sync::atomic::Ordering::SeqCst)
         });
 
         let _ = self
@@ -611,26 +616,28 @@ impl LoadManager {
         for full_assignment_path in childrens {
             // get_childrens now returns full paths (matching ETCD behavior)
             info!(
-                "Attempting to delete broker assignment: {}",
-                full_assignment_path
+                path = %full_assignment_path,
+                "attempting to delete broker assignment"
             );
 
             // Delete only the broker assignment: /cluster/brokers/{dead-broker}/{ns}/{topic}
             if let Err(e) = self.meta_store.delete(&full_assignment_path).await {
                 error!(
-                    "Failed to delete broker assignment {}: {}",
-                    full_assignment_path, e
+                    path = %full_assignment_path,
+                    error = %e,
+                    "failed to delete broker assignment"
                 );
             } else {
                 info!(
-                    "Successfully deleted broker assignment: {}",
-                    full_assignment_path
+                    path = %full_assignment_path,
+                    "successfully deleted broker assignment"
                 );
                 counter!(
                     BROKER_ASSIGNMENTS_TOTAL.name,
                     "broker_id" => broker_id.to_string(),
                     "action" => "unassign"
-                ).increment(1);
+                )
+                .increment(1);
             }
 
             // Extract namespace and topic from the full path
@@ -651,13 +658,14 @@ impl LoadManager {
                     .await
                 {
                     warn!(
-                        "Failed to create unassigned entry for {}: {}",
-                        unassigned_path, e
+                        path = %unassigned_path,
+                        error = %e,
+                        "failed to create unassigned entry"
                     );
                 } else {
                     info!(
-                        "Created unassigned entry for topic reassignment: {}",
-                        unassigned_path
+                        path = %unassigned_path,
+                        "created unassigned entry for topic reassignment"
                     );
                 }
             }

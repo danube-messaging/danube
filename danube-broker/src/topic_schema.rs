@@ -92,8 +92,10 @@ impl TopicSchemaContext {
         *self.schema_subject.lock().await = Some(subject.clone());
 
         info!(
-            "Topic {} schema subject set: {} (subject schema_id={})",
-            topic_name, subject, schema_id
+            topic = %topic_name,
+            subject = %subject,
+            schema_id = %schema_id,
+            "topic schema subject set"
         );
         Ok(())
     }
@@ -123,8 +125,9 @@ impl TopicSchemaContext {
         *self.validation_policy.lock().await = validation_policy;
         *self.enable_payload_validation.lock().await = enable_payload_validation;
         info!(
-            "Validation configured: policy={:?}, payload_validation={}",
-            validation_policy, enable_payload_validation
+            policy = ?validation_policy,
+            payload_validation = %enable_payload_validation,
+            "Validation configured"
         );
     }
 
@@ -226,7 +229,7 @@ impl TopicSchemaContext {
 
                 match policy {
                     ValidationPolicy::Warn => {
-                        warn!("{}", err);
+                        warn!(topic = %topic_name, subject = %topic_subject, error = %err, "Message missing schema_id");
                         return Ok(()); // Warn but allow
                     }
                     ValidationPolicy::Enforce => return Err(err),
@@ -256,7 +259,13 @@ impl TopicSchemaContext {
 
                 match policy {
                     ValidationPolicy::Warn => {
-                        warn!("{}", err);
+                        warn!(
+                            topic = %topic_name,
+                            message_schema_id = %message_schema_id,
+                            cached_subject = %cached.subject,
+                            topic_subject = %topic_subject,
+                            "Schema subject mismatch (cached)"
+                        );
                         return Ok(());
                     }
                     ValidationPolicy::Enforce => return Err(err),
@@ -292,7 +301,13 @@ impl TopicSchemaContext {
 
                 match policy {
                     ValidationPolicy::Warn => {
-                        warn!("{}", err);
+                        warn!(
+                            topic = %topic_name,
+                            message_schema_id = %message_schema_id,
+                            registry_subject = %schema_subject,
+                            topic_subject = %topic_subject,
+                            "Schema subject mismatch (registry lookup)"
+                        );
                         return Ok(());
                     }
                     ValidationPolicy::Enforce => return Err(err),

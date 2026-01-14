@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use tracing::{info, trace, warn, Level};
+use tracing::{debug, info, trace, warn, Level};
 
 #[tonic::async_trait]
 impl ConsumerService for DanubeServerImpl {
@@ -26,8 +26,11 @@ impl ConsumerService for DanubeServerImpl {
         let req = request.into_inner();
 
         info!(
-            "Received consumer creation request - name: '{}', topic: '{}', type: '{}'",
-            req.consumer_name, req.topic_name, req.subscription_type
+            consumer_name = %req.consumer_name,
+            topic = %req.topic_name,
+            subscription_type = %req.subscription_type,
+            subscription = %req.subscription,
+            "received consumer creation request"
         );
 
         // TODO! check if the subscription is authorized to consume from the topic (isTopicOperationAllowed)
@@ -36,9 +39,9 @@ impl ConsumerService for DanubeServerImpl {
 
         // the client is allowed to create the subscription only if the topic is served by this broker
         match service.get_topic(&req.topic_name, None, None).await {
-            Ok(_) => trace!("topic_name: {} was found", &req.topic_name),
+            Ok(_) => trace!(topic = %req.topic_name, "topic found for consumer request"),
             Err(status) => {
-                info!("Error topic request: {}", status.message());
+                debug!(topic = %req.topic_name, error = %status.message(), "topic request failed");
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"subscribe", "result"=>"error").increment(1);
                 return Err(status);
             }
@@ -118,8 +121,11 @@ impl ConsumerService for DanubeServerImpl {
             })?;
 
         info!(
-            "Consumer successfully created - ID: '{}', subscription: '{}'",
-            consumer_id, sub_name
+            consumer_id = %consumer_id,
+            consumer_name = %req.consumer_name,
+            subscription = %sub_name,
+            topic = %req.topic_name,
+            "consumer successfully created"
         );
 
         let response = ConsumerResponse {
@@ -143,7 +149,7 @@ impl ConsumerService for DanubeServerImpl {
         // Create a new mpsc channel to stream messages to the client via gRPC
         let (grpc_tx, grpc_rx) = mpsc::channel(4); // Small buffer to trigger send failures quickly
 
-        info!("Consumer {} is ready to receive messages", consumer_id);
+        info!(consumer_id = %consumer_id, "consumer ready to receive messages");
 
         let service = self.service.as_ref();
 
@@ -175,8 +181,8 @@ impl ConsumerService for DanubeServerImpl {
                     // If the gRPC response stream is dropped (client disconnected), mark inactive
                     _ = grpc_tx.closed() => {
                         warn!(
-                            "Client disconnected for consumer_id: {}, marking inactive",
-                            consumer_id
+                            consumer_id = %consumer_id,
+                            "Client disconnected, marking consumer inactive"
                         );
                         if let Some(consumer) = service_for_disconnect
                             .find_consumer_by_id(consumer_id)
@@ -190,7 +196,7 @@ impl ConsumerService for DanubeServerImpl {
                     }
                     // Check for cancellation
                     _ = token_for_task.cancelled() => {
-                        trace!("Streaming task cancelled for consumer_id: {}", consumer_id);
+                        trace!(consumer_id = %consumer_id, "streaming task cancelled");
                         // Don't modify consumer status on cancellation - new connection might be active
                         break;
                     }
@@ -201,8 +207,8 @@ impl ConsumerService for DanubeServerImpl {
                                 if grpc_tx.send(Ok(stream_message.into())).await.is_err() {
                                     // Error handling for when the client disconnects
                                     warn!(
-                                        "Client disconnected for consumer_id: {}, marking inactive",
-                                        consumer_id
+                                        consumer_id = %consumer_id,
+                                        "client disconnected, marking consumer inactive"
                                     );
 
                                     // Mark the consumer as inactive on disconnect
@@ -246,13 +252,13 @@ impl ConsumerService for DanubeServerImpl {
         let request_id = ack_request.request_id.clone();
         let msg_id = ack.msg_id.clone();
 
-        trace!("Received ack request for message_id: {}", ack.msg_id);
+        trace!(message_id = %ack.msg_id, "received ack request");
 
         let service = self.service.as_ref();
 
         match service.ack_message_async(ack).await {
             Ok(()) => {
-                trace!("Message with id: {} was acknowledged", msg_id);
+                trace!(message_id = %msg_id, "message acknowledged");
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"ack", "result"=>"ok").increment(1);
                 Ok(tonic::Response::new(AckResponse { request_id }))
             }

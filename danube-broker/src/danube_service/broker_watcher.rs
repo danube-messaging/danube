@@ -42,7 +42,7 @@ pub(crate) async fn watch_events_for_broker(
                 while let Some(result) = watch_stream.next().await {
                     match result {
                         Ok(event) => {
-                            info!("A new Watch event has been received {}", event);
+                            info!("a new watch event has been received {}", event);
 
                             match event {
                                 WatchEvent::Put { key, .. } => {
@@ -61,14 +61,18 @@ pub(crate) async fn watch_events_for_broker(
                             }
                         }
                         Err(e) => {
-                            warn!("Error receiving watch event: {}", e);
+                            warn!(error = %e, "Error receiving watch event");
                         }
                     }
                 }
             });
         }
         Err(e) => {
-            error!("Failed to create watch stream: {}", e);
+            error!(
+                broker_id = %broker_id,
+                error = %e,
+                "Failed to create watch stream"
+            );
         }
     }
 }
@@ -88,14 +92,14 @@ async fn handle_put_event(
     let key_str = match std::str::from_utf8(key) {
         Ok(s) => s,
         Err(e) => {
-            error!("Invalid UTF-8 in key: {}", e);
+            error!(error = %e, "Invalid UTF-8 in key during Put event");
             return;
         }
     };
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!("Invalid topic path format: {}", key_str);
+        warn!(path = %key_str, "Invalid topic path format in Put event");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);
@@ -115,8 +119,9 @@ async fn handle_put_event(
     .await
     {
         error!(
-            "Cache readiness verification failed for {}: {}",
-            topic_name, err
+            topic = %topic_name,
+            error = %err,
+            "Cache readiness verification failed"
         );
         return;
     }
@@ -135,12 +140,15 @@ async fn handle_put_event(
                 None => "none".to_string(),
             };
             info!(
-                "Topic '{}' created on broker {} - Strategy: {}, Schema: {}",
-                topic_name, broker_id, disp_strategy, schema_info
+                topic = %topic_name,
+                broker_id = %broker_id,
+                strategy = %disp_strategy,
+                schema = %schema_info,
+                "topic created on broker"
             );
         }
         Err(err) => {
-            error!("Unable to create the topic due to error: {}", err)
+            error!(topic = %topic_name, error = %err, "Unable to create topic")
         }
     }
 }
@@ -160,14 +168,14 @@ async fn handle_delete_event(
     let key_str = match std::str::from_utf8(key) {
         Ok(s) => s,
         Err(e) => {
-            error!("Invalid UTF-8 in key: {}", e);
+            error!(error = %e, "Invalid UTF-8 in key during Delete event");
             return;
         }
     };
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!("Invalid topic path format: {}", key_str);
+        warn!(path = %key_str, "Invalid topic path format in Delete event");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);
@@ -183,21 +191,23 @@ async fn handle_delete_event(
     if is_unload {
         match manager.unload_topic(&topic_name).await {
             Ok(()) => info!(
-                "Topic '{}' unloaded locally on broker {}",
-                topic_name, broker_id
+                topic = %topic_name,
+                broker_id = %broker_id,
+                "Topic unloaded locally"
             ),
             Err(err) => {
-                error!("Unable to unload the topic due to error: {}", err)
+                error!(topic = %topic_name, error = %err, "Unable to unload topic")
             }
         }
     } else {
         match manager.delete_local(&topic_name).await {
             Ok(_) => info!(
-                "The topic {} , was successfully deleted from the broker {}",
-                topic_name, broker_id
+                topic = %topic_name,
+                broker_id = %broker_id,
+                "Topic deleted from broker"
             ),
             Err(err) => {
-                error!("Unable to delete the topic due to error: {}", err)
+                error!(topic = %topic_name, error = %err, "Unable to delete topic")
             }
         }
     }
@@ -226,11 +236,11 @@ async fn handle_delete_event(
                 )
                 .await
             {
-                warn!("Failed to set broker {} state to drained: {}", broker_id, e);
+                warn!(broker_id = %broker_id, error = %e, "Failed to set broker state to drained");
             } else {
                 info!(
-                    "Broker {} transitioned to drained (no topics remaining)",
-                    broker_id
+                    broker_id = %broker_id,
+                    "Broker transitioned to drained (no topics remaining)"
                 );
             }
         }
@@ -262,7 +272,7 @@ async fn bounce_if_not_active(
         return false;
     }
     if let Err(e) = meta_store.delete(key_str).await {
-        warn!("Failed to delete assignment during drain redirect: {}", e);
+        warn!(error = %e, "Failed to delete assignment during drain redirect");
         return true; // treated as handled to avoid loops
     }
     let unassigned_path = join_path(&[BASE_UNASSIGNED_PATH, topic_name]);
@@ -278,7 +288,7 @@ async fn bounce_if_not_active(
         )
         .await
     {
-        warn!("Failed to post unassigned drain_redirect marker: {}", e);
+        warn!(error = %e, "Failed to post unassigned drain_redirect marker");
     }
     true
 }
@@ -304,28 +314,29 @@ async fn verify_cache_readiness_with_retry(
 
         if has_dispatch {
             trace!(
-                "Cache readiness verified for topic {} on attempt {}",
-                topic_name,
-                attempt + 1
+                topic = %topic_name,
+                attempt = %(attempt + 1),
+                "cache readiness verified"
             );
             return Ok(());
         }
 
         if attempt < max_retries - 1 {
             trace!(
-                "Cache not ready for topic {} (dispatch: {}, policies: {}), retrying in {:?}",
-                topic_name,
-                has_dispatch,
-                has_policies,
-                retry_delay
+                topic = %topic_name,
+                has_dispatch = %has_dispatch,
+                has_policies = %has_policies,
+                retry_delay = ?retry_delay,
+                "Cache not ready, retrying"
             );
             sleep(retry_delay).await;
         }
     }
 
     warn!(
-        "Cache readiness verification failed for topic {} after {} attempts",
-        topic_name, max_retries
+        topic = %topic_name,
+        max_retries = %max_retries,
+        "Cache readiness verification failed"
     );
     Err(anyhow::anyhow!(
         "Required metadata not available in LocalCache after {} retries",

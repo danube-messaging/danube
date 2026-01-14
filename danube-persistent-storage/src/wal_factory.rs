@@ -222,7 +222,7 @@ impl WalStorageFactory {
             let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
             // Best-effort preload from disk
             if let Err(e) = store.load_from_disk().await {
-                warn!(target = "wal_factory", topic = %topic_path, error = %format!("{}", e), "failed to preload checkpoints from disk");
+                warn!(target = "wal_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
         }

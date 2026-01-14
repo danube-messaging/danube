@@ -145,11 +145,13 @@ impl EtcdStore {
         let (mut keeper, mut stream) = client.lease_keep_alive(lease_id).await?;
         // Attempt to send a keep-alive request
         match keeper.keep_alive().await {
-            Ok(_) => debug!("{}, keep-alive request sent for lease {} ", role, lease_id),
+            Ok(_) => debug!(role = %role, lease_id = %lease_id, "keep-alive request sent for lease"),
             Err(e) => {
                 error!(
-                    "{}, failed to send keep-alive request for lease {}: {}",
-                    role, lease_id, e
+                    role = %role,
+                    lease_id = %lease_id,
+                    error = %e,
+                    "failed to send keep-alive request for lease"
                 );
             }
         }
@@ -158,20 +160,24 @@ impl EtcdStore {
         match stream.message().await {
             Ok(Some(_response)) => {
                 debug!(
-                    "{}, received keep-alive response for lease {}",
-                    role, lease_id
+                    role = %role,
+                    lease_id = %lease_id,
+                    "received keep-alive response for lease"
                 );
             }
             Ok(None) => {
                 error!(
-                    "{}, keep-alive response stream ended unexpectedly for lease {}",
-                    role, lease_id
+                    role = %role,
+                    lease_id = %lease_id,
+                    "keep-alive response stream ended unexpectedly for lease"
                 );
             }
             Err(e) => {
                 error!(
-                    "{}, failed to receive keep-alive response for lease {}: {}",
-                    role, lease_id, e
+                    role = %role,
+                    lease_id = %lease_id,
+                    error = %e,
+                    "failed to receive keep-alive response for lease"
                 );
             }
         }
