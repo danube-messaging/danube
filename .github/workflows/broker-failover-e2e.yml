@@ -150,7 +150,7 @@ jobs:
             echo "Checking reassignment progress... ($((ELAPSED/5 + 1))/12)"
             
             # Check Broker B logs for topic assignment messages
-            if grep -q "Topic '/default/failover-test' created on broker" broker-b.log 2>/dev/null; then
+            if grep -q "topic created on broker topic=/default/failover-test" broker-b.log 2>/dev/null; then
               echo "✓ Topic successfully reassigned to Broker B (found in logs)"
               break
             elif [ $ELAPSED -ge $((REASSIGNMENT_TIMEOUT - 5)) ]; then
