@@ -15,7 +15,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         _request: Request<Empty>,
     ) -> std::result::Result<Response<BrokerListResponse>, tonic::Status> {
-        trace!("Admin: list brokers command");
+        trace!("list brokers command");
 
         let mut brokers_info = Vec::new();
 
@@ -44,7 +44,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         _request: Request<Empty>,
     ) -> std::result::Result<Response<BrokerResponse>, tonic::Status> {
-        trace!("Admin: get leader broker command");
+        trace!("get leader broker command");
 
         let leader = if let Some(lead) = self.resources.cluster.get_cluster_leader() {
             lead.to_string()
@@ -61,7 +61,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         _request: Request<Empty>,
     ) -> std::result::Result<Response<NamespaceListResponse>, tonic::Status> {
-        trace!("Admin: get cluster namespaces command");
+        trace!("get cluster namespaces command");
 
         let namespaces = self.resources.cluster.get_namespaces().await;
 

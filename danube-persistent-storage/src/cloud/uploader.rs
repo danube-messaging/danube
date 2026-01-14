@@ -86,7 +86,7 @@ impl Uploader {
                 error!(
                     target = "uploader",
                     topic = %self.cfg.topic_path,
-                    error = %format!("{}", e),
+                    error = %e,
                     "uploader run_once failed on startup"
                 );
                 let provider = self.cloud.provider().to_string();
@@ -110,7 +110,7 @@ impl Uploader {
                             error!(
                                 target = "uploader",
                                 topic = %self.cfg.topic_path,
-                                error = %format!("{}", e),
+                                error = %e,
                                 "uploader run_once failed"
                             );
                             let provider = self.cloud.provider().to_string();

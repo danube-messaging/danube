@@ -22,7 +22,7 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<NamespaceRequest>,
     ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
-        trace!("Admin: list topics with broker_id for a namespace");
+        trace!("list topics with broker_id for a namespace");
 
         let req = request.into_inner();
         let names = self
@@ -65,7 +65,7 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<BrokerRequest>,
     ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
-        trace!("Admin: list topics hosted by a broker");
+        trace!("list topics hosted by a broker");
 
         let req = request.into_inner();
         let names = self
@@ -98,7 +98,7 @@ impl TopicAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Admin: creates a non-partitioned topic: {}", req.name);
+        trace!(topic = %req.name, "creates a non-partitioned topic");
 
         // Convert schema_subject to SchemaReference if provided
         let schema_ref = req.schema_subject.map(|subject| SchemaReference {
@@ -139,9 +139,9 @@ impl TopicAdmin for DanubeAdminImpl {
         let req = request.into_inner();
 
         trace!(
-            "Admin: creates a partitioned topic: {} with {} partitions",
-            req.base_name,
-            req.partitions
+            base_name = %req.base_name,
+            partitions = %req.partitions,
+            "creates a partitioned topic"
         );
 
         // Convert schema_subject to SchemaReference if provided
@@ -182,7 +182,7 @@ impl TopicAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Admin: delete the topic: {}", req.name);
+        trace!(topic = %req.name, "delete the topic");
 
         let service = self.broker_service.as_ref();
 
@@ -209,8 +209,8 @@ impl TopicAdmin for DanubeAdminImpl {
         let req = request.into_inner();
 
         trace!(
-            "Admin: get the list of subscriptions on the topic: {}",
-            req.name
+            topic = %req.name,
+            "get the list of subscriptions on the topic"
         );
 
         let subscriptions = self
@@ -231,9 +231,9 @@ impl TopicAdmin for DanubeAdminImpl {
         let req = request.into_inner();
 
         trace!(
-            "Admin: Unsubscribe subscription {} from topic: {}",
-            req.subscription,
-            req.topic
+            subscription = %req.subscription,
+            topic = %req.topic,
+            "unsubscribe subscription from topic"
         );
 
         let service = self.broker_service.as_ref();
@@ -308,7 +308,7 @@ impl TopicAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Admin: unload the topic: {}", req.name);
+        trace!(topic = %req.name, "unload the topic");
         let service = self.broker_service.as_ref();
 
         // 1) Ensure there is an alternative broker available (cluster size >= 2)

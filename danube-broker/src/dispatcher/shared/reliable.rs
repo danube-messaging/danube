@@ -149,7 +149,7 @@ impl ReliableSharedDispatcher {
                 .init_stream_from_progress_or_latest()
                 .await
             {
-                warn!("Reliable shared dispatcher failed to init stream: {}", e);
+                warn!(error = %e, "Reliable shared dispatcher failed to init stream");
             }
             let _ = ready_tx.send(true);
         }
@@ -195,7 +195,7 @@ impl ReliableSharedDispatcher {
     ) {
         match cmd {
             DispatcherCommand::AddConsumer(c) => {
-                trace!("AddConsumer: consumer {} added", c.consumer_id);
+                trace!(consumer_id = %c.consumer_id, "consumer added");
                 state.add_consumer(c);
                 if !*pending {
                     let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
@@ -206,7 +206,7 @@ impl ReliableSharedDispatcher {
             }
             DispatcherCommand::DisconnectAllConsumers => {
                 if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!("DisconnectAllConsumers: flush failed: {}", e);
+                    warn!(error = %e, "DisconnectAllConsumers: flush failed");
                 }
                 state.disconnect_all();
             }
@@ -232,7 +232,7 @@ impl ReliableSharedDispatcher {
             }
             DispatcherCommand::FlushProgressNow => {
                 if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!("FlushProgressNow: failed: {}", e);
+                    warn!(error = %e, "FlushProgressNow: failed");
                 }
             }
         }
@@ -247,7 +247,7 @@ impl ReliableSharedDispatcher {
         let acked_offset = ack_msg.msg_id.topic_offset;
 
         if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
-            warn!("Ack handling failed: {}", e);
+            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
         }
 
         let should_clear = pending_message
@@ -256,11 +256,11 @@ impl ReliableSharedDispatcher {
             .unwrap_or(false);
 
         if should_clear {
-            trace!("Ack received, clearing buffer offset={}", acked_offset);
+            trace!(offset = %acked_offset, "ack received, clearing buffer");
             *pending = false;
             *pending_message = None;
         } else {
-            trace!("Ignoring late ack offset={}", acked_offset);
+            trace!(offset = %acked_offset, "ignoring late ack");
         }
     }
 
@@ -277,15 +277,15 @@ impl ReliableSharedDispatcher {
         // Get message
         let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
             trace!(
-                "Resending buffered offset={}",
-                buffered_msg.msg_id.topic_offset
+                offset = %buffered_msg.msg_id.topic_offset,
+                "resending buffered message"
             );
             Some(buffered_msg)
         } else {
             match engine.lock().await.poll_next().await {
                 Ok(msg_opt) => msg_opt,
                 Err(e) => {
-                    warn!("poll_next error: {}", e);
+                    warn!(error = %e, "poll_next error");
                     None
                 }
             }
@@ -309,8 +309,10 @@ impl ReliableSharedDispatcher {
 
                     if let Err(e) = target.send_message(msg.clone()).await {
                         warn!(
-                            "Failed to send offset={} to consumer {}: {}",
-                            offset, target.consumer_id, e
+                            offset = %offset,
+                            consumer_id = %target.consumer_id,
+                            error = %e,
+                            "Failed to send message to consumer"
                         );
                         attempts += 1;
                         continue;
@@ -346,7 +348,7 @@ impl ReliableSharedDispatcher {
         .set(lag_info.lag_messages as f64);
 
         if lag_info.has_lag {
-            trace!("Heartbeat detected lag: {}", lag_info.lag_messages);
+            trace!(lag_messages = %lag_info.lag_messages, "heartbeat detected lag");
             counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
             let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
         }

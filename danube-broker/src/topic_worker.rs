@@ -6,7 +6,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     dispatcher::DispatchStrategy, message::AckMessage, subscription::SubscriptionOptions,
@@ -61,7 +61,7 @@ impl TopicWorker {
         let message_rx = self.message_rx.clone();
 
         let handle = tokio::spawn(async move {
-            info!("Topic worker {} started", worker_id);
+            debug!(worker_id = %worker_id, "topic worker started");
 
             loop {
                 match message_rx.recv_async().await {
@@ -73,7 +73,7 @@ impl TopicWorker {
                         let result =
                             Self::handle_publish_message(&topics, &topic_name, message).await;
                         if let Err(e) = response_tx.send_async(result).await {
-                            error!("Failed to send publish response: {}", e);
+                            error!(worker_id = %worker_id, error = %e, "failed to send publish response");
                         }
                     }
                     Ok(TopicWorkerMessage::Subscribe {
@@ -84,7 +84,7 @@ impl TopicWorker {
                         let result =
                             Self::handle_subscribe(&topics, &topic_name.clone(), options).await;
                         if let Err(e) = response_tx.send_async(result).await {
-                            error!("Failed to send subscribe response: {}", e);
+                            error!(worker_id = %worker_id, error = %e, "failed to send subscribe response");
                         }
                     }
                     Ok(TopicWorkerMessage::AckMessage {
@@ -93,21 +93,21 @@ impl TopicWorker {
                     }) => {
                         let result = Self::handle_ack_message(&topics, ack_msg).await;
                         if let Err(e) = response_tx.send_async(result).await {
-                            error!("Failed to send ack response: {}", e);
+                            error!(worker_id = %worker_id, error = %e, "failed to send ack response");
                         }
                     }
                     Ok(TopicWorkerMessage::Shutdown) => {
-                        info!("Topic worker {} shutting down", worker_id);
+                        info!(worker_id = %worker_id, "topic worker shutting down");
                         break;
                     }
                     Err(flume::RecvError::Disconnected) => {
-                        warn!("Topic worker {} channel disconnected", worker_id);
+                        warn!(worker_id = %worker_id, "topic worker channel disconnected");
                         break;
                     }
                 }
             }
 
-            info!("Topic worker {} stopped", worker_id);
+            info!(worker_id = %worker_id, "topic worker stopped");
         });
 
         // Store handle reference for shutdown (JoinHandle doesn't implement Clone)
@@ -138,8 +138,9 @@ impl TopicWorker {
             let available_topics: Vec<String> =
                 topics.iter().map(|entry| entry.key().clone()).collect();
             error!(
-                "Topic {} not found in worker. Available topics: {:?}",
-                topic_name, available_topics
+                topic = %topic_name,
+                available_topics = ?available_topics,
+                "topic not found in worker"
             );
             Err(anyhow::anyhow!("Topic {} not found in worker", topic_name))
         }
@@ -160,7 +161,7 @@ impl TopicWorker {
     }
 
     pub fn add_topic(&self, topic_name: String, topic: Arc<Topic>) {
-        info!("Worker {} adding topic: {}", self.worker_id, topic_name);
+        info!(worker_id = %self.worker_id, topic = %topic_name, "worker adding topic");
         self.topics.insert(topic_name, topic);
     }
 
@@ -226,6 +227,8 @@ impl TopicWorkerPool {
             worker_senders.push(tx);
             worker_handles.push(handle);
         }
+
+        info!(worker_count = %worker_count, "topic worker pool initialized");
 
         Self {
             workers,

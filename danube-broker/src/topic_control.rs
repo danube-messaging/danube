@@ -125,8 +125,10 @@ impl TopicManager {
 
         if let Some(config) = schema_config {
             info!(
-                "Loading persisted schema config for topic '{}': subject='{}', policy='{:?}'",
-                topic_name, config.subject, config.validation_policy
+                topic = %topic_name,
+                subject = %config.subject,
+                policy = ?config.validation_policy,
+                "loading persisted schema config for topic"
             );
             
             // Apply schema configuration to the topic
@@ -138,8 +140,10 @@ impl TopicManager {
                 .await
             {
                 warn!(
-                    "Failed to apply persisted schema subject '{}' to topic '{}': {}",
-                    config.subject, topic_name, e
+                    topic = %topic_name,
+                    subject = %config.subject,
+                    error = %e,
+                    "Failed to apply persisted schema subject to topic"
                 );
             }
             
@@ -231,14 +235,16 @@ impl TopicManager {
         if is_reliable {
             if let Err(e) = self.flush_and_seal(topic_name).await {
                 error!(
-                    "flush_and_seal failed during delete for {}: {}",
-                    topic_name, e
+                    topic = %topic_name,
+                    error = %e,
+                    "flush_and_seal failed during delete"
                 );
             }
             if let Err(e) = self.delete_storage_metadata(topic_name).await {
                 error!(
-                    "delete_storage_metadata failed during delete for {}: {}",
-                    topic_name, e
+                    topic = %topic_name,
+                    error = %e,
+                    "delete_storage_metadata failed during delete"
                 );
             }
 
@@ -258,8 +264,12 @@ impl TopicManager {
                     join_path(&[BASE_TOPICS_PATH, ns, topic, "subscriptions", &sub, "cursor"]);
                 if let Err(e) = resources.topic.delete(&cursor_path).await {
                     warn!(
-                        "Failed to delete reliable cursor for {}/{} subscription {} at {}: {}",
-                        ns, topic, sub, cursor_path, e
+                        namespace = %ns,
+                        topic = %topic,
+                        subscription = %sub,
+                        path = %cursor_path,
+                        error = %e,
+                        "failed to delete reliable cursor"
                     );
                 }
             }
@@ -519,7 +529,7 @@ impl TopicManager {
                 if let Some(subscription) = subscriptions.get(&subscription_name) {
                     if let Some(dispatcher) = &subscription.dispatcher {
                         if let Err(e) = dispatcher.reset_pending().await {
-                            tracing::warn!("Failed to reset pending state: {}", e);
+                            tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
                         }
                     }
                 }
@@ -531,14 +541,14 @@ impl TopicManager {
                 }
             } else {
                 tracing::warn!(
-                    "Topic not found when trying to trigger dispatcher for consumer {}",
-                    consumer_id
+                    consumer_id = %consumer_id,
+                    "topic not found when trying to trigger dispatcher"
                 );
             }
         } else {
             tracing::warn!(
-                "Consumer {} not found in consumer registry when trying to trigger dispatcher",
-                consumer_id
+                consumer_id = %consumer_id,
+                "consumer not found in consumer registry when trying to trigger dispatcher"
             );
         }
     }
@@ -585,8 +595,10 @@ impl TopicManager {
         enable_payload_validation: bool,
     ) -> Result<String, Status> {
         info!(
-            "TopicManager: Configuring schema for topic='{}', subject='{}', policy='{:?}'",
-            topic_name, schema_subject, validation_policy
+            topic = %topic_name,
+            subject = %schema_subject,
+            policy = ?validation_policy,
+            "configuring schema for topic"
         );
 
         // Get the topic from worker pool
@@ -637,8 +649,9 @@ impl TopicManager {
         }
 
         info!(
-            "Successfully configured topic '{}' with schema '{}' (persisted to ETCD)",
-            topic_name, schema_subject
+            topic = %topic_name,
+            subject = %schema_subject,
+            "successfully configured topic with schema (persisted to ETCD)"
         );
 
         Ok(format!(
@@ -661,8 +674,9 @@ impl TopicManager {
         enable_payload_validation: bool,
     ) -> Result<String, Status> {
         info!(
-            "TopicManager: Updating validation policy for topic='{}', policy='{:?}'",
-            topic_name, validation_policy
+            topic = %topic_name,
+            policy = ?validation_policy,
+            "updating validation policy for topic"
         );
 
         // Get the topic from worker pool
@@ -707,8 +721,8 @@ impl TopicManager {
         }
 
         info!(
-            "Successfully updated validation policy for topic '{}' (persisted to ETCD)",
-            topic_name
+            topic = %topic_name,
+            "successfully updated validation policy (persisted to ETCD)"
         );
 
         Ok(format!(
@@ -727,7 +741,7 @@ impl TopicManager {
         &self,
         topic_name: &str,
     ) -> Result<(String, ValidationPolicy, bool, u64), Status> {
-        info!("TopicManager: Getting schema config for topic='{}'", topic_name);
+        info!(topic = %topic_name, "getting schema config for topic");
 
         // Get the topic from worker pool
         let topic = self
@@ -753,8 +767,11 @@ impl TopicManager {
         let schema_id = topic.get_subject_schema_id().await.unwrap_or(0);
 
         info!(
-            "Topic '{}' schema config: subject='{}', policy='{:?}', subject_schema_id={}",
-            topic_name, schema_subject, validation_policy, schema_id
+            topic = %topic_name,
+            subject = %schema_subject,
+            policy = ?validation_policy,
+            subject_schema_id = %schema_id,
+            "topic schema config"
         );
 
         Ok((

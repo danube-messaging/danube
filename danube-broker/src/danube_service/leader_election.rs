@@ -62,7 +62,7 @@ impl LeaderElection {
     }
 
     async fn elect(&mut self) {
-        debug!("Broker {} attempting to become the leader", self.broker_id);
+        debug!(broker_id = %self.broker_id, "attempting to become the leader");
         match self.try_to_become_leader().await {
             Ok(is_leader) => {
                 if is_leader {
@@ -72,7 +72,7 @@ impl LeaderElection {
                 }
             }
             Err(e) => {
-                warn!("Election error: {}", e);
+                warn!(broker_id = %self.broker_id, error = %e, "election error");
             }
         }
     }
@@ -102,6 +102,7 @@ impl LeaderElection {
                         // Start lease keepalive in background
                         tokio::spawn({
                             let store = self.store.clone();
+                            let broker_id = self.broker_id;
                             async move {
                                 loop {
                                     match store.keep_lease_alive(lease_id, "Leader Election").await
@@ -110,7 +111,7 @@ impl LeaderElection {
                                             sleep(Duration::from_secs(ttl as u64 / 2)).await;
                                         }
                                         Err(e) => {
-                                            error!("Failed to keep leader lease alive: {}", e);
+                                            error!(broker_id = %broker_id, error = %e, "Failed to keep leader lease alive");
                                             break;
                                         }
                                     }
@@ -138,15 +139,15 @@ impl LeaderElection {
                         .expect("Broker Id should be a valid u64");
                     if leader_id == self.broker_id {
                         self.set_state(LeaderElectionState::Leading).await;
-                        debug!("Broker {} is the leader", self.broker_id);
+                        debug!(broker_id = %self.broker_id, "broker is the leader");
                     } else {
                         self.set_state(LeaderElectionState::Following).await;
-                        debug!("Broker {} is a follower", self.broker_id);
+                        debug!(broker_id = %self.broker_id, "broker is a follower");
                     }
                 }
             }
             Err(e) => {
-                warn!("Failed to check leader: {}", e);
+                warn!(broker_id = %self.broker_id, error = %e, "failed to check leader");
             }
         }
         Ok(())

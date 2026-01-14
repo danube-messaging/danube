@@ -19,7 +19,7 @@ impl Discovery for DanubeServerImpl {
     ) -> std::result::Result<Response<TopicLookupResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Topic Lookup request for topic: {}", req.topic);
+        trace!(topic = %req.topic, "topic lookup request");
 
         // The topic format is /{namespace_name}/{topic_name}
         if !validate_topic_format(&req.topic) {
@@ -41,22 +41,22 @@ impl Discovery for DanubeServerImpl {
         let result = match service.lookup_topic(&req.topic).await {
             Some((true, _)) => {
                 trace!(
-                    "Topic Lookup response for topic: {} is served by this broker {}",
-                    req.topic,
-                    self.broker_addr
+                    topic = %req.topic,
+                    broker_addr = %self.broker_addr,
+                    "topic lookup response: served by this broker"
                 );
                 (self.broker_addr.to_string(), LookupType::Connect)
             }
             Some((false, addr)) => {
                 trace!(
-                    "Topic Lookup response for topic: {} is served by other broker {}",
-                    req.topic,
-                    addr
+                    topic = %req.topic,
+                    broker_addr = %addr,
+                    "topic lookup response: served by other broker"
                 );
                 (addr, LookupType::Redirect)
             }
             None => {
-                debug!("Topic Lookup response for topic: {} failed ", req.topic);
+                debug!(topic = %req.topic, "topic lookup failed");
                 let error_string = &format!("Unable to find the requested topic: {}", &req.topic);
                 let status = create_error_status(
                     Code::InvalidArgument,
@@ -85,7 +85,7 @@ impl Discovery for DanubeServerImpl {
     ) -> std::result::Result<Response<TopicPartitionsResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Topic Lookup request for topic: {}", req.topic);
+        trace!(topic = %req.topic, "topic partitions request");
 
         // The topic format is /{namespace_name}/{topic_name}
         if !validate_topic_format(&req.topic) {

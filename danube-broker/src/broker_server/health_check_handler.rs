@@ -18,7 +18,7 @@ impl HealthCheck for DanubeServerImpl {
     ) -> std::result::Result<Response<HealthCheckResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        trace!("Health check from {} with id {}", req.client, req.id);
+        trace!(client_type = %req.client, client_id = %req.id, "health check received");
 
         let mut client_status = ClientStatus::Ok;
 

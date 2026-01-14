@@ -41,15 +41,24 @@ pub(crate) async fn register_broker(
             };
 
             store.put_with_lease(&path, payload, lease_id).await?;
-            info!("Broker {} registered in the cluster", broker_id);
+            info!(
+                broker_id = %broker_id,
+                broker_addr = %broker_addr,
+                "broker registered in the cluster"
+            );
 
             // Lease management is ETCD-specific
+            let broker_id_owned = broker_id.to_string();
             tokio::spawn(async move {
                 loop {
                     match store.keep_lease_alive(lease_id, "Broker Register").await {
                         Ok(_) => sleep(Duration::from_secs((ttl as u64) / 3)).await,
                         Err(e) => {
-                            error!("Failed to keep lease alive: {}", e);
+                            error!(
+                                broker_id = %broker_id_owned,
+                                error = %e,
+                                "Failed to keep broker registration lease alive"
+                            );
                             break;
                         }
                     }

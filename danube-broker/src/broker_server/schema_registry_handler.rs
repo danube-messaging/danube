@@ -54,8 +54,9 @@ impl SchemaRegistryTrait for SchemaRegistryService {
     ) -> Result<Response<RegisterSchemaResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "Registering schema for subject: {}, type: {}",
-            req.subject, req.schema_type
+            subject = %req.subject,
+            schema_type = %req.schema_type,
+            "registering schema for subject"
         );
 
         match self
@@ -77,8 +78,11 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                     .ok_or_else(|| Status::internal("Version not found after registration"))?;
 
                 info!(
-                    "Schema registered: id={}, version={}, new={}",
-                    schema_id, version, is_new_version
+                    schema_id = %schema_id,
+                    version = %version,
+                    is_new_version = %is_new_version,
+                    subject = %req.subject,
+                    "schema registered"
                 );
 
                 Ok(Response::new(RegisterSchemaResponse {
@@ -89,7 +93,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 }))
             }
             Err(e) => {
-                error!("Failed to register schema: {}", e);
+                error!(subject = %req.subject, error = %e, "failed to register schema");
                 Err(Status::internal(format!(
                     "Failed to register schema: {}",
                     e
@@ -103,7 +107,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         request: Request<GetSchemaRequest>,
     ) -> Result<Response<GetSchemaResponse>, Status> {
         let req = request.into_inner();
-        info!("Getting schema by ID: {}, version: {:?}", req.schema_id, req.version);
+        info!(schema_id = %req.schema_id, version = ?req.version, "getting schema by ID");
 
         // Use reverse index to look up subject and fetch schema
         match self.registry.get_schema(req.schema_id, req.version).await {
@@ -121,7 +125,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
 
                 let schema_type = schema_version.schema_def.schema_type().to_string();
 
-                info!("Found schema: subject={}, version={}", subject, schema_version.version);
+                info!(subject = %subject, version = %schema_version.version, schema_id = %req.schema_id, "found schema");
 
                 Ok(Response::new(GetSchemaResponse {
                     schema_id: req.schema_id,
@@ -138,7 +142,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 }))
             }
             Err(e) => {
-                error!("Failed to get schema by ID {}: {}", req.schema_id, e);
+                error!(schema_id = %req.schema_id, error = %e, "failed to get schema by ID");
                 Err(Status::not_found(format!(
                     "Schema not found for ID: {}",
                     req.schema_id
@@ -152,7 +156,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         request: Request<GetLatestSchemaRequest>,
     ) -> Result<Response<GetSchemaResponse>, Status> {
         let req = request.into_inner();
-        info!("Getting latest schema for subject: {}", req.subject);
+        info!(subject = %req.subject, "getting latest schema for subject");
 
         match self.registry.get_latest_schema(&req.subject).await {
             Ok(schema_version) => {
@@ -183,7 +187,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 }))
             }
             Err(e) => {
-                error!("Failed to get latest schema: {}", e);
+                error!(subject = %req.subject, error = %e, "failed to get latest schema");
                 Err(Status::not_found(format!(
                     "Schema not found for subject: {}",
                     req.subject
@@ -197,7 +201,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         request: Request<ListVersionsRequest>,
     ) -> Result<Response<ListVersionsResponse>, Status> {
         let req = request.into_inner();
-        info!("Listing versions for subject: {}", req.subject);
+        info!(subject = %req.subject, "listing versions for subject");
 
         // Get metadata for schema_id
         let metadata = self
@@ -205,7 +209,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             .get_metadata(&req.subject)
             .await
             .map_err(|e| {
-                error!("Failed to get metadata: {}", e);
+                error!(subject = %req.subject, error = %e, "failed to get metadata");
                 Status::not_found(format!("Subject not found: {}", req.subject))
             })?;
 
@@ -215,7 +219,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             .list_versions(&req.subject)
             .await
             .map_err(|e| {
-                error!("Failed to list versions: {}", e);
+                error!(subject = %req.subject, error = %e, "failed to list versions");
                 Status::internal("Failed to retrieve version list")
             })?;
 
@@ -238,7 +242,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                     });
                 }
                 Err(e) => {
-                    warn!("Failed to get version {} details: {}", version_num, e);
+                    warn!(subject = %req.subject, version = %version_num, error = %e, "failed to get version details");
                     // Continue with other versions
                 }
             }
@@ -260,8 +264,9 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             .and_then(|s| crate::schema::CompatibilityMode::from_str(s));
 
         info!(
-            "Checking compatibility for subject: {}, mode_override: {:?} (will use subject's default if None)",
-            req.subject, mode_override
+            subject = %req.subject,
+            mode_override = ?mode_override,
+            "checking compatibility for subject (will use subject's default if None)"
         );
 
         match self
@@ -279,7 +284,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 errors: result.errors,
             })),
             Err(e) => {
-                error!("Failed to check compatibility: {}", e);
+                error!(subject = %req.subject, error = %e, "failed to check compatibility");
                 Err(Status::internal(format!(
                     "Failed to check compatibility: {}",
                     e
@@ -294,8 +299,9 @@ impl SchemaRegistryTrait for SchemaRegistryService {
     ) -> Result<Response<DeleteSchemaVersionResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "Deleting schema version: subject={}, version={}",
-            req.subject, req.version
+            subject = %req.subject,
+            version = %req.version,
+            "deleting schema version"
         );
 
         match self
@@ -311,7 +317,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 ),
             })),
             Err(e) => {
-                error!("Failed to delete schema version: {}", e);
+                error!(subject = %req.subject, version = %req.version, error = %e, "failed to delete schema version");
                 Err(Status::internal(format!(
                     "Failed to delete schema version: {}",
                     e
@@ -326,8 +332,9 @@ impl SchemaRegistryTrait for SchemaRegistryService {
     ) -> Result<Response<SetCompatibilityModeResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "Setting compatibility mode for subject: {}, mode: {}",
-            req.subject, req.compatibility_mode
+            subject = %req.subject,
+            mode = %req.compatibility_mode,
+            "Setting compatibility mode for subject"
         );
 
         let mode = crate::schema::CompatibilityMode::from_str(&req.compatibility_mode).ok_or_else(
@@ -352,7 +359,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                 ),
             })),
             Err(e) => {
-                error!("Failed to set compatibility mode: {}", e);
+                error!(subject = %req.subject, error = %e, "Failed to set compatibility mode");
                 Err(Status::internal(format!(
                     "Failed to set compatibility mode: {}",
                     e

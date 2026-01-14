@@ -121,7 +121,7 @@ impl LocalCache {
                     .await;
             }
         }
-        info!("Initial cache populated");
+        info!("initial cache populated");
 
         // Create combined watch stream for all prefixes
         let mut streams = Vec::new();
@@ -147,7 +147,7 @@ impl LocalCache {
                         let key_str = match std::str::from_utf8(&key) {
                             Ok(s) => s,
                             Err(e) => {
-                                error!("Invalid UTF-8 in key: {}", e);
+                                error!(error = %e, "Invalid UTF-8 in key during Put event");
                                 continue;
                             }
                         };
@@ -158,7 +158,7 @@ impl LocalCache {
                         let key_str = match std::str::from_utf8(&key) {
                             Ok(s) => s,
                             Err(e) => {
-                                error!("Invalid UTF-8 in key: {}", e);
+                                error!(error = %e, "Invalid UTF-8 in key during Delete event");
                                 continue;
                             }
                         };
@@ -166,7 +166,7 @@ impl LocalCache {
                     }
                 },
                 Err(e) => {
-                    error!("Error receiving watch event: {}", e);
+                    error!(error = %e, "Error receiving watch event");
                 }
             }
         }

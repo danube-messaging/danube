@@ -19,8 +19,8 @@ mod service_configuration;
 mod subscription;
 mod topic;
 mod topic_cluster;
-mod topic_schema;
 mod topic_control;
+mod topic_schema;
 mod topic_worker;
 mod utils;
 
@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
     }
 
     // initialize the metadata storage layer for Danube Broker
-    info!("Initializing ETCD as metadata persistent store");
+    info!("initializing ETCD as metadata persistent store");
     let metadata_store: MetadataStorage =
         MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
 
@@ -203,8 +203,9 @@ async fn main() -> Result<()> {
 
     let broker_addr = service_config.broker_addr;
     info!(
-        "Initializing Danube Message Broker service on {}",
-        broker_addr
+        broker_addr = %broker_addr,
+        broker_id = %broker_id,
+        "initializing Danube message broker service"
     );
 
     // DanubeService coordinate and start all the services
@@ -225,7 +226,11 @@ async fn main() -> Result<()> {
         .await
         .expect("Danube Message Broker service unable to start");
 
-    info!("Danube Message Broker service has started succesfully");
+    info!(
+        broker_addr = %broker_addr,
+        broker_id = %broker_id,
+        "Danube message broker service started successfully"
+    );
 
     Ok(())
 }
