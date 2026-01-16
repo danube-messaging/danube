@@ -87,10 +87,13 @@ impl TopicCluster {
             // Extract base name: /default/topic_name-part-0 -> /default/topic_name
             if let Some(base_name) = topic_name.rsplit_once("-part-") {
                 let base_topic = base_name.0;
-                
+
                 // Check if a non-partitioned topic with this base name exists
                 let resources = self.resources.lock().await;
-                if resources.namespace.check_if_topic_exist(ns_name, base_topic) {
+                if resources
+                    .namespace
+                    .check_if_topic_exist(ns_name, base_topic)
+                {
                     let status = create_error_status(
                         tonic::Code::AlreadyExists,
                         ErrorType::UnknownError,
@@ -107,11 +110,17 @@ impl TopicCluster {
             // This is a normal (non-partitioned) topic
             // Check if any partitioned topics with this base name exist
             let resources = self.resources.lock().await;
-            let partitions = resources
+            let all_topics = resources
                 .namespace
                 .get_topic_partitions(ns_name, topic_name)
                 .await;
-            
+
+            // Filter to get only actual partitions (exclude the base topic itself)
+            let partitions: Vec<String> = all_topics
+                .into_iter()
+                .filter(|t| t != topic_name && t.contains("-part-"))
+                .collect();
+
             if !partitions.is_empty() {
                 let status = create_error_status(
                     tonic::Code::AlreadyExists,
@@ -228,10 +237,76 @@ impl TopicCluster {
     /// Schedules deletion of a topic and removes associated metadata entries.
     ///
     /// Steps:
-    /// 1. Schedule deletion at assigned broker (watch triggers cleanup there).
-    /// 2. Remove topic from namespace topics list.
+    /// 1. Validate: prevent deletion of individual partitions, only base topic allowed.
+    /// 2. If base topic has partitions, delete all partitions.
+    /// 3. Schedule deletion at assigned broker (watch triggers cleanup there).
+    /// 4. Remove topic from namespace topics list.
     pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
-        // find the broker owning the topic
+        // Validation: prevent deleting individual partitions
+        // Users must delete the base topic, which will delete all partitions
+        if topic_name.contains("-part-") {
+            return Err(anyhow!(
+                "Cannot delete individual partition '{}'. Delete the base topic instead (e.g., if partition is '/default/mytopic-part-0', delete '/default/mytopic').",
+                topic_name
+            ));
+        }
+
+        let ns_name = get_nsname_from_topic(topic_name);
+
+        // Check if this is a partitioned topic (has partitions)
+        let all_topics = {
+            let resources = self.resources.lock().await;
+            resources
+                .namespace
+                .get_topic_partitions(ns_name, topic_name)
+                .await
+        };
+
+        // Filter to get only actual partitions (exclude the base topic itself)
+        let partitions: Vec<String> = all_topics
+            .into_iter()
+            .filter(|t| t != topic_name && t.contains("-part-"))
+            .collect();
+
+        if !partitions.is_empty() {
+            // This is a partitioned topic - delete all partitions
+            tracing::info!(
+                base_topic = %topic_name,
+                partition_count = %partitions.len(),
+                "deleting partitioned topic with all its partitions"
+            );
+
+            for partition in &partitions {
+                tracing::debug!(partition = %partition, "deleting partition");
+
+                if let Err(e) = self.delete_single_topic(partition).await {
+                    tracing::warn!(
+                        partition = %partition,
+                        error = %e,
+                        "failed to delete partition, continuing with others"
+                    );
+                }
+            }
+
+            tracing::info!(
+                base_topic = %topic_name,
+                partitions_deleted = %partitions.len(),
+                "successfully deleted the topic with all its partitions"
+            );
+
+            return Ok(());
+        }
+
+        // This is a normal (non-partitioned) topic - delete it directly
+        self.delete_single_topic(topic_name).await?;
+        tracing::info!(topic = %topic_name, "successfully deleted non-partitioned topic");
+        Ok(())
+    }
+
+    /// Helper function to delete a single topic (either a normal topic or a partition).
+    /// Performs: broker assignment deletion, namespace removal, and metadata cleanup.
+    async fn delete_single_topic(&self, topic_name: &str) -> Result<()> {
+        // Find the broker owning the topic
         let broker_id = match self
             .resources
             .lock()
@@ -241,10 +316,10 @@ impl TopicCluster {
             .await
         {
             Some(broker_id) => broker_id,
-            None => return Err(anyhow!("Unable to find topic")),
+            None => return Err(anyhow!("Unable to find topic: {}", topic_name)),
         };
 
-        // 1) schedule delete at assigned broker (triggers watch)
+        // 1) Schedule delete at assigned broker (triggers watch)
         {
             let mut resources = self.resources.lock().await;
             resources
@@ -253,16 +328,16 @@ impl TopicCluster {
                 .await?;
         }
 
-        // 2) delete from namespace
+        // 2) Delete from namespace
         {
             let mut resources = self.resources.lock().await;
             resources.namespace.delete_topic(topic_name).await?;
         }
 
-        // 3) delete topic metadata: producers, subscriptions, delivery, policy, schema, root
+        // 3) Delete topic metadata: producers, subscriptions, delivery, policy, schema, root
         {
             let mut resources = self.resources.lock().await;
-            // best-effort cleanup; continue even if individual steps fail
+            // Best-effort cleanup; continue even if individual steps fail
             let _ = resources.topic.delete_all_producers(topic_name).await;
             let _ = resources.topic.delete_all_subscriptions(topic_name).await;
             let _ = resources.topic.delete_topic_delivery(topic_name).await;
