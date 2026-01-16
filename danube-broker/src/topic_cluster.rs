@@ -81,6 +81,20 @@ impl TopicCluster {
             return Err(status);
         }
 
+        // Check if topic already exists (prevent duplicate creation)
+        {
+            let resources = self.resources.lock().await;
+            if resources.namespace.check_if_topic_exist(ns_name, topic_name) {
+                let status = create_error_status(
+                    tonic::Code::AlreadyExists,
+                    ErrorType::UnknownError,
+                    &format!("Topic '{}' already exists", topic_name),
+                    None,
+                );
+                return Err(status);
+            }
+        }
+
         // Validation: prevent creating both normal and partitioned topics with the same base name
         // Check if this is a partitioned topic (contains "-part-")
         if topic_name.contains("-part-") {
@@ -110,16 +124,10 @@ impl TopicCluster {
             // This is a normal (non-partitioned) topic
             // Check if any partitioned topics with this base name exist
             let resources = self.resources.lock().await;
-            let all_topics = resources
+            let partitions = resources
                 .namespace
                 .get_topic_partitions(ns_name, topic_name)
                 .await;
-
-            // Filter to get only actual partitions (exclude the base topic itself)
-            let partitions: Vec<String> = all_topics
-                .into_iter()
-                .filter(|t| t != topic_name && t.contains("-part-"))
-                .collect();
 
             if !partitions.is_empty() {
                 let status = create_error_status(
