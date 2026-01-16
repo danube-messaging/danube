@@ -49,14 +49,24 @@ fn topic_lifecycle_partitioned() {
     let part0_cli = format!("{}-part-0", base_cli);
     subs.args(["topics", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
 
-    // delete both partitions
-    let part1_cli = format!("{}-part-1", base_cli);
-    let mut delete_cmd1 = cli();
-    delete_cmd1.args(["topics", "delete", &part0_cli]).assert().success();
-    let mut delete_cmd2 = cli();
-    delete_cmd2.args(["topics", "delete", &part1_cli]).assert().success();
+    // verify that individual partition deletion is NOT allowed
+    let mut delete_partition_attempt = cli();
+    let result = delete_partition_attempt
+        .args(["topics", "delete", &part0_cli])
+        .output()
+        .expect("run delete partition attempt");
+    assert!(!result.status.success(), "Expected partition deletion to fail");
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(
+        stderr.contains("Cannot delete individual partition"),
+        "Expected error message about partition deletion, got: {}", stderr
+    );
 
-    // verify deletion: list should not include them anymore (parse JSON)
+    // delete the base topic (this deletes all partitions)
+    let mut delete_cmd = cli();
+    delete_cmd.args(["topics", "delete", &base_cli]).assert().success();
+
+    // verify deletion: list should not include any partitions anymore (parse JSON)
     let mut list2 = cli();
     let out2 = list2
         .args(["topics", "list", "--namespace", &ns, "--output", "json"]) 
@@ -72,6 +82,6 @@ fn topic_lifecycle_partitioned() {
     assert!(!names2.iter().any(|t| t == &part0), "{part0} still present: {names2:?}");
     assert!(!names2.iter().any(|t| t == &part1), "{part1} still present: {names2:?}");
 
-    // teardown: no explicit topic delete RPC for partitioned base name; remove namespace
+    // teardown
     delete_ns(&ns);
 }
