@@ -81,6 +81,51 @@ impl TopicCluster {
             return Err(status);
         }
 
+        // Validation: prevent creating both normal and partitioned topics with the same base name
+        // Check if this is a partitioned topic (contains "-part-")
+        if topic_name.contains("-part-") {
+            // Extract base name: /default/topic_name-part-0 -> /default/topic_name
+            if let Some(base_name) = topic_name.rsplit_once("-part-") {
+                let base_topic = base_name.0;
+                
+                // Check if a non-partitioned topic with this base name exists
+                let resources = self.resources.lock().await;
+                if resources.namespace.check_if_topic_exist(ns_name, base_topic) {
+                    let status = create_error_status(
+                        tonic::Code::AlreadyExists,
+                        ErrorType::UnknownError,
+                        &format!(
+                            "Cannot create partitioned topic '{}': a non-partitioned topic '{}' already exists. Delete the non-partitioned topic first.",
+                            topic_name, base_topic
+                        ),
+                        None,
+                    );
+                    return Err(status);
+                }
+            }
+        } else {
+            // This is a normal (non-partitioned) topic
+            // Check if any partitioned topics with this base name exist
+            let resources = self.resources.lock().await;
+            let partitions = resources
+                .namespace
+                .get_topic_partitions(ns_name, topic_name)
+                .await;
+            
+            if !partitions.is_empty() {
+                let status = create_error_status(
+                    tonic::Code::AlreadyExists,
+                    ErrorType::UnknownError,
+                    &format!(
+                        "Cannot create topic '{}': partitioned topics with this base name already exist (found {} partitions). Delete the partitioned topics first.",
+                        topic_name, partitions.len()
+                    ),
+                    None,
+                );
+                return Err(status);
+            }
+        }
+
         self.post_new_topic(topic_name, dispatch_strategy.unwrap(), schema_ref, policies)
             .await
             .map_err(|e| {
