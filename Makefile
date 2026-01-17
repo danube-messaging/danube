@@ -12,7 +12,7 @@ PROM_CONFIG := $(PWD)/scripts/prometheus.yml
 NUM_BROKERS := 3
 
 # Path to configuration file
-CONFIG_FILE := ./config/danube_broker.yml
+CONFIG_FILE := ./config/danube_broker_no_auth.yml
 
 # ETCD configuration
 ETCD_NAME := etcd-danube
