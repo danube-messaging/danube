@@ -129,6 +129,16 @@ impl WalStorageFactory {
                 wal_dir = %dir.display(),
                 "created per-topic WAL"
             );
+            // Clean up sealed state marker after successful topic load to prevent reuse
+            // This is non-critical, so we log but don't fail if cleanup fails
+            if let Err(e) = self.etcd.delete_storage_state_sealed(&topic_path).await {
+                warn!(
+                    target = "wal_factory",
+                    topic = %topic_path,
+                    error = %e,
+                    "failed to cleanup sealed state marker (non-critical)"
+                );
+            }
         } else {
             info!(
                 target = "wal_factory",
@@ -226,8 +236,48 @@ impl WalStorageFactory {
             }
             ckpt_store = Some(store);
         }
-        // Create WAL asynchronously with injected CheckpointStore
-        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone()).await?;
+
+        // Check for sealed state from previous broker to ensure offset continuity
+        let initial_offset = match self.etcd.get_storage_state_sealed(&topic_path).await {
+            Ok(Some(sealed_state)) if sealed_state.sealed => {
+                let next_offset = sealed_state.last_committed_offset.saturating_add(1);
+                info!(
+                    target = "wal_factory",
+                    topic = %topic_path,
+                    sealed_offset = sealed_state.last_committed_offset,
+                    from_broker = sealed_state.broker_id,
+                    resuming_from = next_offset,
+                    "found sealed state, resuming WAL from next offset to ensure continuity"
+                );
+                Some(next_offset)
+            }
+            Ok(Some(state)) => {
+                // State exists but not sealed - shouldn't happen normally
+                warn!(
+                    target = "wal_factory",
+                    topic = %topic_path,
+                    state = ?state,
+                    "found unsealed storage state marker, ignoring"
+                );
+                None
+            }
+            Ok(None) => {
+                // No sealed state - new topic or same broker restart (will use local checkpoint)
+                None
+            }
+            Err(e) => {
+                warn!(
+                    target = "wal_factory",
+                    topic = %topic_path,
+                    error = %e,
+                    "failed to read sealed state, starting WAL from 0"
+                );
+                None
+            }
+        };
+
+        // Create WAL asynchronously with injected CheckpointStore and initial offset
+        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone(), initial_offset).await?;
         self.topics.insert(topic_path.to_string(), wal.clone());
         Ok((wal, root_path, ckpt_store))
     }

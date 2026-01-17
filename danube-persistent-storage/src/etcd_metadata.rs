@@ -140,6 +140,38 @@ impl EtcdMetadata {
         Ok(())
     }
 
+    /// Get sealed state marker from `/storage/topics/<ns>/<topic>/state`.
+    /// Returns None if the state does not exist.
+    pub async fn get_storage_state_sealed(
+        &self,
+        topic_path: &str,
+    ) -> Result<Option<StorageStateSealed>, PersistentStorageError> {
+        let key = format!("{}/storage/topics/{}/state", self.root, topic_path);
+        match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => {
+                let state = serde_json::from_value::<StorageStateSealed>(value)
+                    .map_err(|e| PersistentStorageError::Other(e.to_string()))?;
+                Ok(Some(state))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PersistentStorageError::Metadata(e.to_string())),
+        }
+    }
+
+    /// Delete sealed state marker from `/storage/topics/<ns>/<topic>/state`.
+    /// Used after successfully loading a topic from sealed state to prevent re-use.
+    pub async fn delete_storage_state_sealed(
+        &self,
+        topic_path: &str,
+    ) -> Result<(), PersistentStorageError> {
+        let key = format!("{}/storage/topics/{}/state", self.root, topic_path);
+        self.store
+            .delete(&key)
+            .await
+            .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
+        Ok(())
+    }
+
     /// Delete all storage metadata for a topic under `/storage/topics/<topic_path>/`.
     /// This includes object descriptors, current pointer, and sealed state.
     pub async fn delete_storage_topic(
