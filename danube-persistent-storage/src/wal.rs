@@ -171,12 +171,14 @@ impl Wal {
     /// - If `cfg.dir` is set, ensures the directory exists and prepares the active file path.
     /// - Spawns a background writer task (`writer::run`) that owns I/O state and services `LogCommand`s.
     /// - Initializes in-memory cache and broadcast channel for live tailing.
+    /// - If `initial_offset` is provided, starts offset counter from that value (used for topic moves).
     ///
     /// Returns
     /// - `Ok(Wal)` ready for `append()` and `tail_reader()`; I/O happens in the background task.
     pub async fn with_config_with_store(
         cfg: WalConfig,
         ckpt_store: Option<Arc<CheckpointStore>>,
+        initial_offset: Option<u64>,
     ) -> Result<Self, PersistentStorageError> {
         let (tx, _rx) = broadcast::channel(256);
         let (cmd_tx, cmd_rx) = mpsc::channel(4096);
@@ -211,6 +213,9 @@ impl Wal {
             d
         });
 
+        // Determine starting offset: use initial_offset if provided, otherwise 0
+        let start_offset = initial_offset.unwrap_or(0);
+
         // Log effective configuration for visibility
         if let Some(dir) = cfg.wal_dir() {
             info!(
@@ -222,6 +227,7 @@ impl Wal {
                 rotate_max_bytes = rotate_max_bytes.unwrap_or(0),
                 rotate_max_seconds = rotate_max_seconds.unwrap_or(0),
                 checkpoint = %checkpoint_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".to_string()),
+                initial_offset = start_offset,
                 "WAL configuration applied"
             );
         } else {
@@ -230,13 +236,14 @@ impl Wal {
                 cache_capacity = capacity,
                 fsync_interval_ms,
                 fsync_max_batch_bytes,
+                initial_offset = start_offset,
                 "WAL configuration applied (no dir)"
             );
         }
 
         let wal = Self {
             inner: Arc::new(WalInner {
-                next_offset: AtomicU64::new(0),
+                next_offset: AtomicU64::new(start_offset),
                 tx,
                 wal_path: Mutex::new(wal_path_opt),
                 cache: Mutex::new(Cache::new()),
@@ -269,7 +276,7 @@ impl Wal {
 
     /// Backward-compatible helper that constructs a WAL without passing a CheckpointStore.
     pub async fn with_config(cfg: WalConfig) -> Result<Self, PersistentStorageError> {
-        Self::with_config_with_store(cfg, None).await
+        Self::with_config_with_store(cfg, None, None).await
     }
 
     /// Append a message and return the assigned offset.

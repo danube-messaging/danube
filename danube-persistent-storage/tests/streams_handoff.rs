@@ -85,7 +85,7 @@ async fn local_cache_only_handoff() {
     let uploader_ckpt = wal_dir.join("uploader.ckpt");
     let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
     let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
         .await
         .expect("wal init");
 
@@ -157,7 +157,7 @@ async fn local_files_cache_live_handoff() {
     let uploader_ckpt = wal_dir.join("uploader.ckpt");
     let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
     let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
         .await
         .expect("wal init");
 
@@ -258,11 +258,10 @@ async fn chaining_stream_handoff_memory() {
     let uploader_ckpt = wal_dir.join("uploader.ckpt");
     let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
     let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
         .await
         .expect("wal init");
 
-    // Append 0..2 and upload
     for i in 0..3u64 {
         let m = make_msg_tagged(i, topic_path, "cloud");
         wal.append(&m).await.expect("append pre-upload");

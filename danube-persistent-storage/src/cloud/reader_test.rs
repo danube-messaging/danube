@@ -59,7 +59,7 @@ mod tests {
         let uploader_ckpt = wal_dir.join("uploader.ckpt");
         let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
         let _ = store.load_from_disk().await;
-        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
             .await
             .expect("wal init");
 
@@ -159,7 +159,7 @@ mod tests {
         let uploader_ckpt = wal_dir.join("uploader.ckpt");
         let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
         let _ = store.load_from_disk().await;
-        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
             .await
             .expect("wal init");
 

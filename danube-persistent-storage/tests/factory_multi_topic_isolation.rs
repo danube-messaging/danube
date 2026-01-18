@@ -151,10 +151,10 @@ async fn test_multi_topic_uploader_isolation() {
     ));
     let _ = store_a.load_from_disk().await;
     let _ = store_b.load_from_disk().await;
-    let wal_a = Wal::with_config_with_store(cfg_a, Some(store_a.clone()))
+    let wal_a = Wal::with_config_with_store(cfg_a, Some(store_a.clone()), None)
         .await
         .expect("wal a");
-    let wal_b = Wal::with_config_with_store(cfg_b, Some(store_b.clone()))
+    let wal_b = Wal::with_config_with_store(cfg_b, Some(store_b.clone()), None)
         .await
         .expect("wal b");
 

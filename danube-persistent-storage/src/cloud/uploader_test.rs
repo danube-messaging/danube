@@ -74,7 +74,7 @@ mod tests {
         let _ = store.load_from_disk().await; // best-effort preload
 
         // Create WAL with the injected CheckpointStore so writer will persist checkpoints through it.
-        let wal = Wal::with_config_with_store(cfg, Some(store.clone()))
+        let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
             .await
             .expect("wal init");
 
