@@ -2,6 +2,10 @@
 //!
 //! This test validates that when a reliable topic is moved from one broker to another,
 //! the offset sequence remains continuous and consumers can read all messages without gaps.
+//!
+//! **IMPORTANT**: This test requires `cloud.backend: "fs"` (or s3/gcs) in the broker config.
+//! Using `backend: "memory"` will cause this test to fail because each broker has isolated
+//! in-memory storage, and Broker B cannot access messages uploaded by Broker A.
 
 extern crate danube_client;
 

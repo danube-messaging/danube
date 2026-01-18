@@ -62,15 +62,15 @@ wal_cloud:
   # Uploader, runs every interval_seconds, reads raw WAL frames, writes to configured cloud storage
   uploader:
     enabled: true
-    interval_seconds: 300       # Default: Upload every 5 minutes
+    interval_seconds: 30        # Upload every 30 seconds for testing (production: 300)
     root_prefix: "/danube-data"
     # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
     max_object_mb: 1024
   
-  # Cloud storage backend - Default: memory for development
+  # Cloud storage backend - Use fs for multi-broker scenarios (topic moves)
   cloud:
-    backend: "memory"         # options: memory | fs | s3 | gcs
-    root: "mem-prefix"        # when backend: memory, this is a namespace prefix (ignored by some backends)
+    backend: "fs"             # options: memory | fs | s3 | gcs
+    root: "./danube-data/cloud-storage"  # Shared directory for all brokers
   
   # Metadata configuration - Default: ETCD
   metadata:

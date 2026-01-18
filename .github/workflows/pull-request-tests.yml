@@ -67,6 +67,7 @@ jobs:
           RUST_LOG: info
         run: |
           mkdir -p temp
+          mkdir -p danube-data/cloud-storage
           ./target/release/danube-broker \
             --config-file config/danube_broker.yml \
             --broker-addr 0.0.0.0:6650 \
