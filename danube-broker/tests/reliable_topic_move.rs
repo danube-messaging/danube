@@ -79,12 +79,9 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/reliable_move");
 
-    eprintln!("[TEST] Starting reliable topic move test for topic: {}", topic);
-
     // ========================================================================
     // Phase 1: Initial setup - Create producer and consumer
     // ========================================================================
-    eprintln!("[PHASE 1] Creating producer and consumer");
     let mut producer = client
         .new_producer()
         .with_topic(&topic)
@@ -92,7 +89,6 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_reliable_dispatch()
         .build();
     producer.create().await?;
-    eprintln!("[PHASE 1] Producer created");
 
     // Create and subscribe consumer BEFORE producing messages
     let mut consumer = client
@@ -104,7 +100,6 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .build();
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
-    eprintln!("[PHASE 1] Consumer subscribed and stream ready");
 
     // Give consumer time to be ready
     sleep(Duration::from_millis(500)).await;
@@ -112,18 +107,15 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     // ========================================================================
     // Phase 2: Produce messages and consumer reads first 5
     // ========================================================================
-    eprintln!("[PHASE 2] Producing 10 messages");
     // Produce 10 messages (offsets 0-9)
     let blob_data = fs::read("./tests/test.blob")?;
     for _ in 0..10 {
         producer.send(blob_data.clone(), None).await?;
     }
 
-    eprintln!("[PHASE 2] Messages sent, waiting for persistence");
     // Give time for messages to be written
     sleep(Duration::from_millis(300)).await;
 
-    eprintln!("[PHASE 2] Reading first 5 messages");
     // Read and ack first 5 messages (0-4)
     let receive_first_batch = async {
         let mut received = 0;
@@ -140,8 +132,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         }
         Ok::<(), anyhow::Error>(())
     };
-    timeout(Duration::from_secs(20), receive_first_batch).await??;
-    eprintln!("[PHASE 2] Successfully read and acked messages 0-4");
+    timeout(Duration::from_secs(10), receive_first_batch).await??;
 
     // Disconnect consumer
     drop(stream);
@@ -150,15 +141,12 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     // ========================================================================
     // Phase 3: Unload topic (moves to another broker)
     // ========================================================================
-    eprintln!("[PHASE 3] Disconnecting producer and consumer");
-
     // Stop producer before unload
     drop(producer);
 
     // Give time for graceful shutdown
     sleep(Duration::from_millis(500)).await;
 
-    eprintln!("[PHASE 3] Executing topic unload via admin CLI");
     // Unload topic using admin CLI
     let output = admin_cli()
         .args(["topics", "unload", &topic])
@@ -173,11 +161,9 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         println!("  stderr: {}", stderr);
         anyhow::bail!("Topic unload failed");
     }
-    eprintln!("[PHASE 3] Topic unload successful, waiting for reassignment");
 
     // Wait for topic to be reassigned to another broker
-    // In CI environments, this can take longer due to slower I/O and CPU
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Verify topic moved using describe command
     // let describe_output = admin_cli()
@@ -193,8 +179,6 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     // ========================================================================
     // Phase 4: Reconnect producer and send more messages
     // ========================================================================
-    eprintln!("[PHASE 4] Reconnecting producer to new broker");
-
     // Create new producer connection (will connect to new broker)
     let mut producer2 = client
         .new_producer()
@@ -203,25 +187,20 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_reliable_dispatch()
         .build();
     producer2.create().await?;
-    eprintln!("[PHASE 4] Producer reconnected");
 
-    // Give producer time to fully connect in CI environment
-    sleep(Duration::from_millis(1000)).await;
-
-    eprintln!("[PHASE 4] Sending 8 more messages");
+    // Give producer time to fully connect
+    sleep(Duration::from_millis(500)).await;
     // Send 8 more messages (should get offsets 10-17 if continuity preserved)
     for _ in 10..18 {
         producer2.send(blob_data.clone(), None).await?;
     }
 
-    eprintln!("[PHASE 4] Messages sent, waiting for persistence");
     // Give time for messages to be persisted
     sleep(Duration::from_millis(500)).await;
 
     // ========================================================================
     // Phase 5: Consumer reconnects and reads remaining messages
     // ========================================================================
-    eprintln!("[PHASE 5] Reconnecting consumer");
 
     let mut consumer2 = client
         .new_consumer()
@@ -232,12 +211,9 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .build();
     consumer2.subscribe().await?;
     let mut stream2 = consumer2.receive().await?;
-    eprintln!("[PHASE 5] Consumer subscribed, stream ready");
 
-    // Give consumer time to initialize tiered reader (cloud + WAL) in CI
-    sleep(Duration::from_millis(1000)).await;
-
-    eprintln!("[PHASE 5] Starting to read remaining 13 messages (offsets 5-17)");
+    // Give consumer time to initialize tiered reader (cloud + WAL)
+    sleep(Duration::from_millis(500)).await;
     // Read remaining messages (5-17 = 13 messages)
     let receive_remaining = async {
         let mut received = 0;
@@ -253,11 +229,6 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
 
                 consumer2.ack(&msg).await?;
                 received += 1;
-                
-                // Log progress every 5 messages
-                if received % 5 == 0 {
-                    eprintln!("[PHASE 5] Received {} messages so far, last offset: {}", received, offset);
-                }
             }
         }
 
@@ -287,14 +258,10 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
             );
         }
 
-        eprintln!("[PHASE 5] Successfully received all 13 messages");
         Ok::<(), anyhow::Error>(())
     };
 
-    eprintln!("[PHASE 5] Waiting for messages with 30s timeout...");
-    // Longer timeout for CI: reading from cloud storage + WAL can be slow
-    timeout(Duration::from_secs(30), receive_remaining).await??;
-
-    eprintln!("[TEST] ✅ Test completed successfully!");
+    // Timeout for reading from cloud storage + WAL
+    timeout(Duration::from_secs(15), receive_remaining).await??;
     Ok(())
 }
