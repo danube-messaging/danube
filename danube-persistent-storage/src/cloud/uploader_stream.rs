@@ -55,16 +55,16 @@ impl UploadState {
 /// - For each file chunk, we compute a "safe prefix" length via `scan_safe_frame_boundary_with_crc`:
 ///   this finds the largest prefix that ends exactly on a full frame while validating CRC per frame.
 /// - When we first see a complete frame, we lazily open the cloud streaming writer using a
-///   pending object name `data-<start>-pending.dnb1` derived from the first frame's offset.
+///   timestamp-based final object name `data-<start>-<timestamp>.dnb1` for uniqueness.
+///   The end_offset is stored in ETCD metadata, not the object name.
 /// - Over the safe prefix, we do two additional lightweight scans in memory:
 ///   1) `extract_offsets_in_prefix` to determine `first_offset`/`last_offset` (first time sets
 ///      both; subsequent times updates `last_offset`).
 ///   2) A frame-walking loop to build a sparse `(offset -> byte_pos)` index every N messages
 ///      (currently every 1000), used later by readers to seek efficiently.
 /// - We upload the safe prefix bytes, drain them from `carry`, and update `next_seq_out`/`next_pos_out`.
-/// - After finishing the first file that produced frames, we close the writer and finalize by copying
-///   the pending key to the final key `data-<start>-<end>.dnb1` (with a read+write fallback) and
-///   delete the pending key.
+/// - After finishing the first file that produced frames, we close the writer and return the
+///   final object metadata (no copy/rename needed).
 ///
 /// Notes:
 /// - The three scans (boundary/CRC, offsets, sparse index) are over the same in-memory safe prefix;
@@ -127,8 +127,7 @@ pub async fn stream_frames_to_cloud(
     };
 
     // 4) Finalize uploaded object and return
-    let (final_object_id, end, meta) =
-        finalize_uploaded_object(cloud, topic_path, &mut state).await?;
+    let (final_object_id, end, meta) = finalize_uploaded_object(&mut state).await?;
     // Metrics: upload latency, bytes, objects (ok)
     let provider = cloud.provider().to_string();
 
@@ -217,7 +216,12 @@ async fn process_file_and_upload_once(
                 state.first_offset = first;
                 state.last_offset = last;
                 if let Some(s) = state.first_offset {
-                    let obj = format!("data-{}-pending.dnb1", s);
+                    // Use timestamp-based naming for uniqueness (eliminates copy/rename)
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let obj = format!("data-{}-{}.dnb1", s, timestamp);
                     let path = format!("storage/topics/{}/objects/{}", topic_path, obj);
                     let writer = cloud
                         .open_streaming_writer(&path, 8 * 1024 * 1024, 4)
@@ -268,35 +272,20 @@ async fn process_file_and_upload_once(
 }
 
 async fn finalize_uploaded_object(
-    cloud: &CloudStore,
-    topic_path: &str,
     state: &mut UploadState,
 ) -> Result<(String, u64, opendal::Metadata), PersistentStorageError> {
+    // 1. Close cloud writer (finalizes upload)
     let mut cw = state
         .cloud_writer
         .take()
         .expect("writer must exist for finalize");
     let meta = cw.close().await?;
+
+    // 2. Extract offsets and object ID
     let first_offset = state.first_offset.expect("first_offset must be set");
     let end = state.last_offset.unwrap_or(first_offset);
-    let final_object_id = format!("data-{}-{}.dnb1", first_offset, end);
-    // Perform server-side copy from pending key to final key and delete pending key
-    let pending_path = format!(
-        "storage/topics/{}/objects/{}",
-        topic_path,
-        format!("data-{}-pending.dnb1", first_offset)
-    );
-    let final_path = format!("storage/topics/{}/objects/{}", topic_path, final_object_id);
-    match cloud.copy_object(&pending_path, &final_path).await {
-        Ok(()) => {
-            let _ = cloud.delete_object(&pending_path).await;
-        }
-        Err(_e) => {
-            if let Ok(bytes) = cloud.get_object(&pending_path).await {
-                let _ = cloud.put_object_meta(&final_path, &bytes).await;
-            }
-            let _ = cloud.delete_object(&pending_path).await;
-        }
-    }
+    let final_object_id = state.object_id.take().expect("object_id must be set");
+
+    // Object is already written with final timestamp-based name - no copy/rename needed
     Ok((final_object_id, end, meta))
 }
