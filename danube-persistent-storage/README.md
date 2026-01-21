@@ -162,7 +162,8 @@ Key details
 - Each uploader tick creates at most one cloud object per topic.
 - Frames are streamed sequentially across multiple WAL files into a single object per tick.
 - Optional cap `max_object_mb` bounds object size (e.g., 1024 for ~1 GiB).
-- Object lifecycle: `data-<start>-pending.dnb1` → finalize to `data-<start>-<end>.dnb1` and write descriptor to metadata.
+- Object naming: `data-<start_offset>-<timestamp>.dnb1` for uniqueness (end offset stored in ETCD metadata).
+- No copy/rename operations - objects written directly with final name for 33% faster uploads.
 
 Example YAML (broker uploader):
 

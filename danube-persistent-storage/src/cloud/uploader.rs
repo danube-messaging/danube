@@ -283,7 +283,7 @@ impl Default for UploaderBaseConfig {
     fn default() -> Self {
         Self {
             interval_seconds: 300,
-            max_object_mb: None,
+            max_object_mb: Some(256),
         }
     }
 }
@@ -294,7 +294,7 @@ impl Default for UploaderConfig {
             interval_seconds: 300,
             topic_path: "default/topic".to_string(),
             root_prefix: "/danube".to_string(),
-            max_object_mb: None,
+            max_object_mb: Some(256),
         }
     }
 }

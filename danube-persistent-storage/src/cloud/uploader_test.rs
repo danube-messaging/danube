@@ -372,7 +372,7 @@ mod tests {
     ///
     /// Purpose
     /// - Validate that uploaded objects follow correct naming convention
-    /// - Ensure object IDs contain start and end offsets for easy identification
+    /// - Ensure object IDs follow timestamp-based naming convention
     ///
     /// Flow
     /// - Add messages with specific offsets (10-12) to WAL
@@ -380,9 +380,9 @@ mod tests {
     /// - Retrieve object descriptor and verify object_id format
     ///
     /// Expected
-    /// - Object ID follows pattern: "data-<start>-<end>.dnb1"
-    /// - Object ID contains start offset (10) and end offset (12)
-    /// - Object ID has proper DNB1 file extension
+    /// - Object ID follows pattern: "data-<start>-<timestamp>.dnb1"
+    /// - Object ID starts with "data-" and ends with ".dnb1"
+    /// - Descriptor contains correct start/end offsets in metadata
     #[tokio::test]
     async fn test_uploader_object_naming() {
         let (wal, cloud, meta, mem, store, _tmp) = create_test_setup().await;
