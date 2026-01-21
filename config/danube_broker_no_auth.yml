@@ -65,7 +65,7 @@ wal_cloud:
     interval_seconds: 30 # Default: Upload every 5 minutes
     root_prefix: "/danube-data"
     # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
-    max_object_mb: 1024
+    max_object_mb: 256
 
   # Cloud storage backend - Default: memory for development
   cloud:

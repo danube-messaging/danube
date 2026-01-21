@@ -64,8 +64,8 @@ wal_cloud:
     enabled: true
     interval_seconds: 30        # Upload every 30 seconds for testing (production: 300)
     root_prefix: "/danube-data"
-    # Optional: maximum size per cloud object created in a single tick (in MiB). If unset, no cap.
-    max_object_mb: 1024
+    # Maximum size per cloud object (256 MB optimal for S3/GCS multipart uploads and read performance)
+    max_object_mb: 256
   
   # Cloud storage backend - Use fs for multi-broker scenarios (topic moves)
   cloud:
