@@ -130,9 +130,9 @@ impl NamespaceResources {
         let mut topics = Vec::new();
 
         for key in keys {
-            let parts: Vec<&str> = key.split('/').collect();
+            let parts: Vec<&str> = key.split('/').filter(|s| !s.is_empty()).collect();
 
-            if let (Some(namespace), Some(topic)) = (parts.get(4), parts.get(5)) {
+            if let (Some(namespace), Some(topic)) = (parts.get(3), parts.get(4)) {
                 let topic_name = join_path(&[namespace, topic]);
                 topics.push(topic_name);
             }
@@ -153,9 +153,9 @@ impl NamespaceResources {
         let mut topics = Vec::new();
 
         for key in keys {
-            let parts: Vec<&str> = key.split('/').collect();
+            let parts: Vec<&str> = key.split('/').filter(|s| !s.is_empty()).collect();
 
-            if let (Some(namespace), Some(topic)) = (parts.get(4), parts.get(5)) {
+            if let (Some(namespace), Some(topic)) = (parts.get(3), parts.get(4)) {
                 let topic_name = join_path(&["/", namespace, topic]);
                 topics.push(topic_name);
             }

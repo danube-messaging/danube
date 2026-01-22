@@ -97,12 +97,13 @@ async fn handle_put_event(
         }
     };
 
-    let parts: Vec<_> = key_str.split('/').collect();
-    if parts.len() < 6 {
+    let parts: Vec<_> = key_str.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 5 {
         warn!(path = %key_str, "Invalid topic path format in Put event");
         return;
     }
-    let topic_name = format!("/{}/{}", parts[4], parts[5]);
+    // parts: ["cluster", "brokers", "{broker_id}", "{namespace}", "{topic}"]
+    let topic_name = format!("/{}/{}", parts[3], parts[4]);
 
     if bounce_if_not_active(meta_store, broker_id, key_str, &topic_name).await {
         return;
@@ -173,12 +174,13 @@ async fn handle_delete_event(
         }
     };
 
-    let parts: Vec<_> = key_str.split('/').collect();
-    if parts.len() < 6 {
+    let parts: Vec<_> = key_str.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 5 {
         warn!(path = %key_str, "Invalid topic path format in Delete event");
         return;
     }
-    let topic_name = format!("/{}/{}", parts[4], parts[5]);
+    // parts: ["cluster", "brokers", "{broker_id}", "{namespace}", "{topic}"]
+    let topic_name = format!("/{}/{}", parts[3], parts[4]);
     let manager = broker_service.topic_manager.clone();
 
     // Determine if this Delete is part of an unload by inspecting unassigned marker

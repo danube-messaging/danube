@@ -133,11 +133,11 @@ impl ClusterResources {
         let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
         let mut topics = Vec::new();
         for key in keys {
-            let parts: Vec<&str> = key.split('/').collect();
-            if parts.len() >= 6 {
-                // /cluster/brokers/{broker_id}/{ns}/{topic}
-                let ns = parts[4];
-                let topic = parts[5];
+            let parts: Vec<&str> = key.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 5 {
+                // parts: ["cluster", "brokers", "{broker_id}", "{ns}", "{topic}"]
+                let ns = parts[3];
+                let topic = parts[4];
                 topics.push(format!("/{}/{}", ns, topic));
             }
         }
