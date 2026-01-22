@@ -1,0 +1,28 @@
+[package]
+name = "danube-load-manager"
+version = "0.6.2"
+description = "Load balancing and cluster orchestration for Danube messaging"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+readme = "README.md"
+license = "Apache-2.0"
+edition = "2021"
+
+[dependencies]
+danube-metadata-store = { path = "../danube-metadata-store" }
+
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+metrics = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

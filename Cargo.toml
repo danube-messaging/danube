@@ -14,6 +14,9 @@ members = [
     # -- Danube Metadata Store lib
     "danube-metadata-store", 
 
+    # -- Danube load manager (cluster orchestration)
+    "danube-load-manager",
+
     # -- Danube persistent storage
     "danube-persistent-storage",
 

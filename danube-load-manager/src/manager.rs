@@ -1,14 +1,9 @@
-pub(crate) mod load_report;
-mod rankings;
+use crate::load_report::LoadReport;
+use crate::rankings::{rankings_composite, rankings_simple};
 
-use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
 use anyhow::{anyhow, Result};
-use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
-use load_report::{LoadReport, ResourceType};
-use metrics::counter;
-use rankings::{rankings_composite, rankings_simple};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
@@ -16,14 +11,12 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    resources::{
-        BASE_BROKER_LOAD_PATH, BASE_BROKER_PATH, BASE_REGISTER_PATH, BASE_UNASSIGNED_PATH,
-    },
-    utils::join_path,
-};
-
-use super::{LeaderElection, LeaderElectionState};
+/// Constants for metadata store paths
+/// These should be provided by the broker crate
+pub const BASE_BROKER_LOAD_PATH: &str = "/cluster/brokers/load";
+pub const BASE_BROKER_PATH: &str = "/cluster/brokers";
+pub const BASE_REGISTER_PATH: &str = "/cluster/register";
+pub const BASE_UNASSIGNED_PATH: &str = "/cluster/unassigned";
 
 /// LoadManager - Distributed Broker Load Balancing and Failover Management
 ///
@@ -44,8 +37,8 @@ use super::{LeaderElection, LeaderElectionState};
 ///
 /// ## Thread Safety:
 /// All internal state is protected by Arc<Mutex> or atomic operations for safe concurrent access.
-#[derive(Debug, Clone)]
-pub(crate) struct LoadManager {
+#[derive(Clone)]
+pub struct LoadManager {
     /// Maps broker IDs to their current load reports (CPU, memory, topic count, etc.)
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
 
@@ -58,6 +51,19 @@ pub(crate) struct LoadManager {
 
     /// Metadata store interface for persisting broker assignments and watching events
     meta_store: MetadataStorage,
+
+    /// Callback for recording broker assignment metrics
+    assignment_callback: Option<Arc<dyn Fn(u64, &str) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for LoadManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadManager")
+            .field("next_broker", &self.next_broker)
+            .field("meta_store", &self.meta_store)
+            .field("has_callback", &self.assignment_callback.is_some())
+            .finish()
+    }
 }
 
 impl LoadManager {
@@ -68,8 +74,19 @@ impl LoadManager {
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(AtomicU64::new(broker_id)),
             meta_store,
+            assignment_callback: None,
         }
     }
+
+    /// Sets a callback for recording broker assignment metrics
+    pub fn with_assignment_callback<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(u64, &str) + Send + Sync + 'static,
+    {
+        self.assignment_callback = Some(Arc::new(callback));
+        self
+    }
+
     /// Initializes the LoadManager and starts watching for cluster events
     ///
     /// ## Purpose:
@@ -129,7 +146,9 @@ impl LoadManager {
     /// 2. **Parse Broker IDs**: Extracts broker IDs from the key paths
     /// 3. **Deserialize Load Reports**: Converts JSON data to `LoadReport` structs
     /// 4. **Update Internal State**: Populates the `brokers_usage` HashMap
-    pub(crate) async fn fetch_initial_load(&self) -> Result<()> {
+    async fn fetch_initial_load(&self) -> Result<()> {
+        use danube_metadata_store::EtcdGetOptions;
+        
         // Query all broker load reports from metadata store
         let response = self
             .meta_store
@@ -190,16 +209,16 @@ impl LoadManager {
     /// ## Leader Election Integration:
     /// Only the elected leader processes assignment events to prevent conflicts.
     /// All brokers can process load updates for local state consistency.
-    pub(crate) async fn start(
+    pub async fn start<S: LeaderStateProvider>(
         &mut self,
         mut watch_stream: WatchStream,
         broker_id: u64,
-        leader_election: LeaderElection,
+        leader_state_provider: S,
     ) {
         while let Some(result) = watch_stream.next().await {
             match result {
                 Ok(event) => {
-                    let state = leader_election.get_state().await;
+                    let state = leader_state_provider.get_state().await;
 
                     match &event {
                         WatchEvent::Put { key, value, .. } => {
@@ -242,34 +261,14 @@ impl LoadManager {
     }
 
     /// Handles assignment of unassigned topics to available brokers
-    ///
-    /// ## Purpose:
-    /// Processes unassigned topic events from the metadata store and assigns them
-    /// to the least loaded broker. This is triggered when new topics are created
-    /// or when topics need reassignment after broker failures.
-    ///
-    /// ## Leader-Only Operation:
-    /// Only the elected cluster leader processes topic assignments to prevent
-    /// conflicts and ensure consistent assignment decisions across the cluster.
-    ///
-    /// ## Process:
-    /// 1. **Leader Check**: Verifies current broker is the elected leader
-    /// 2. **Key Validation**: Converts byte key to UTF-8 string format
-    /// 3. **Assignment Delegation**: Calls `assign_topic_to_broker()` with event data
-    ///
-    /// ## Event Flow:
-    /// - Unassigned topics appear at `/cluster/unassigned/{namespace}/{topic}`
-    /// - Leader processes the event and selects optimal broker
-    /// - Topic gets assigned to `/cluster/brokers/{broker_id}/{namespace}/{topic}`
-    /// - Unassigned entry is removed after successful assignment
     async fn handle_unassigned_topic(
         &mut self,
         key: &[u8],
         value: &[u8],
-        state: LeaderElectionState,
+        state: LeaderState,
     ) -> Result<()> {
         // Only leader assigns topics
-        if state == LeaderElectionState::Following {
+        if state == LeaderState::Following {
             return Ok(());
         }
 
@@ -291,41 +290,13 @@ impl LoadManager {
     }
 
     /// Handles broker registration and deregistration events
-    ///
-    /// ## Purpose:
-    /// Processes broker lifecycle events to maintain accurate cluster membership
-    /// and handle broker failures. Updates internal state and triggers topic
-    /// reassignment when brokers leave the cluster.
-    ///
-    /// ## Leader-Only Operation:
-    /// Only the elected cluster leader processes broker registration events to
-    /// ensure consistent cluster state management and prevent coordination conflicts.
-    ///
-    /// ## Event Types:
-    ///
-    /// ### **Broker Deregistration** (Delete Events)
-    /// When a broker leaves or fails:
-    /// 1. **Parse Broker ID**: Extracts broker ID from the registration key
-    /// 2. **Update Internal State**: Removes broker from usage tracking and rankings
-    /// 3. **Trigger Failover**: Calls `delete_topic_allocation()` to reassign topics
-    ///
-    /// ### **Broker Registration** (Put Events)
-    /// New broker joins are handled implicitly through load report updates.
-    /// Registration put events are currently no-ops.
-    ///
-    /// ## Failover Process:
-    /// When a broker fails:
-    /// - Removes broker from `brokers_usage` HashMap
-    /// - Removes broker from `rankings` vector
-    /// - Calls `delete_topic_allocation()` to clean up assignments
-    /// - Creates unassigned entries for topic reassignment
     async fn handle_broker_registration(
         &mut self,
         event: &WatchEvent,
-        state: LeaderElectionState,
+        state: LeaderState,
     ) -> Result<()> {
         // Only leader handles broker registration
-        if state == LeaderElectionState::Following {
+        if state == LeaderState::Following {
             return Ok(());
         }
 
@@ -374,7 +345,7 @@ impl LoadManager {
         &mut self,
         key: &[u8],
         value: &[u8],
-        state: LeaderElectionState,
+        state: LeaderState,
         broker_id: u64,
     ) -> Result<()> {
         let key_str =
@@ -392,7 +363,7 @@ impl LoadManager {
         .await?;
 
         // Only leader proceeds with rankings calculation
-        if state == LeaderElectionState::Following {
+        if state == LeaderState::Following {
             return Ok(());
         }
 
@@ -476,12 +447,11 @@ impl LoadManager {
                             broker_id = %broker_id,
                             "the topic was successfully assigned to broker"
                         );
-                        counter!(
-                            BROKER_ASSIGNMENTS_TOTAL.name,
-                            "broker_id" => broker_id.to_string(),
-                            "action" => "assign"
-                        )
-                        .increment(1);
+                        
+                        // Call assignment callback if provided
+                        if let Some(callback) = &self.assignment_callback {
+                            callback(broker_id, "assign");
+                        }
                     }
                     Err(err) => warn!(
                         topic = %topic_name,
@@ -533,15 +503,6 @@ impl LoadManager {
     }
 
     /// Selects the next broker for topic assignment using load-based selection
-    ///
-    /// ## Purpose:
-    /// Returns the broker ID of the least loaded broker for new topic assignments.
-    /// This implements the core load balancing logic for distributing topics across brokers.
-    ///
-    /// ## Algorithm:
-    /// 1. **Access Rankings**: Locks and reads current broker rankings
-    /// 2. **Select Least Loaded**: Chooses the broker with the lowest load (index 0)
-    /// 3. **Update State**: Atomically updates the `next_broker` field for tracking
     pub async fn get_next_broker(&mut self) -> u64 {
         let rankings = self.rankings.lock().await;
         // pick first active broker from rankings
@@ -591,22 +552,6 @@ impl LoadManager {
     }
 
     /// Handles broker failover by cleaning up topic assignments and creating reassignment entries
-    ///
-    /// ## Purpose:
-    /// Called during broker failover to safely remove a failed broker's topic assignments
-    /// while preserving all topic and namespace metadata. Creates unassigned entries to
-    /// trigger topic reassignment to healthy brokers.
-    ///
-    /// ## Failover Process:
-    /// 1. **Query Assignments**: Retrieves all topics assigned to the failed broker
-    /// 2. **Delete Assignments**: Removes broker-specific assignment paths only
-    /// 3. **Preserve Metadata**: Leaves all `/topics/**` and `/namespaces/**` data intact
-    /// 4. **Create Unassigned**: Adds entries to `/cluster/unassigned/` for reassignment
-    ///
-    /// ## Path Operations:
-    /// - **Deletes**: `/cluster/brokers/{broker_id}/{namespace}/{topic}`
-    /// - **Creates**: `/cluster/unassigned/{namespace}/{topic}`
-    /// - **Preserves**: `/topics/{namespace}/{topic}` and `/namespaces/{namespace}`
     pub async fn delete_topic_allocation(&mut self, broker_id: u64) -> Result<()> {
         let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string()]);
         let childrens = self.meta_store.get_childrens(&path).await?;
@@ -614,7 +559,6 @@ impl LoadManager {
         // Only delete broker assignment keys and create unassigned entries
         // DO NOT delete /topics/** or /namespaces/** metadata
         for full_assignment_path in childrens {
-            // get_childrens now returns full paths (matching ETCD behavior)
             info!(
                 path = %full_assignment_path,
                 "attempting to delete broker assignment"
@@ -632,12 +576,11 @@ impl LoadManager {
                     path = %full_assignment_path,
                     "successfully deleted broker assignment"
                 );
-                counter!(
-                    BROKER_ASSIGNMENTS_TOTAL.name,
-                    "broker_id" => broker_id.to_string(),
-                    "action" => "unassign"
-                )
-                .increment(1);
+                
+                // Call assignment callback if provided
+                if let Some(callback) = &self.assignment_callback {
+                    callback(broker_id, "unassign");
+                }
             }
 
             // Extract namespace and topic from the full path
@@ -675,7 +618,7 @@ impl LoadManager {
     }
 
     /// Checks if a specific broker owns/manages a given topic.
-    pub(crate) async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
+    pub async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
         let brokers_usage = self.brokers_usage.lock().await;
         if let Some(load_report) = brokers_usage.get(&broker_id) {
             if load_report.topic_list.contains(&topic_name.to_owned()) {
@@ -686,30 +629,31 @@ impl LoadManager {
     }
 
     /// Calculates broker rankings using simple topic-count based algorithm
-    ///
-    /// ## Purpose:
-    /// Computes broker load rankings based solely on the number of assigned topics.
-    /// This provides a lightweight load balancing strategy suitable for most scenarios.
     async fn calculate_rankings_simple(&self) {
         let broker_loads = rankings_simple(self.brokers_usage.clone()).await;
         *self.rankings.lock().await = broker_loads;
     }
 
     /// Calculates broker rankings using composite resource utilization metrics
-    ///
-    /// ## Purpose:
-    /// Computes broker load rankings based on multiple resource factors:
-    /// topic count, CPU usage, memory usage, and other system metrics.
-    ///
-    /// ## Algorithm:
-    /// - Weights different resource metrics (CPU, memory, topics, I/O)
-    /// - Calculates composite load score for each broker
-    /// - Ranks brokers from lowest to highest composite load
     #[allow(dead_code)]
     async fn calculate_rankings_composite(&self) {
         let broker_loads = rankings_composite(self.brokers_usage.clone()).await;
         *self.rankings.lock().await = broker_loads;
     }
+}
+
+/// Trait for providing leader election state
+/// This allows the load manager to work with different leader election implementations
+#[async_trait::async_trait]
+pub trait LeaderStateProvider: Send + Sync {
+    async fn get_state(&self) -> LeaderState;
+}
+
+/// Leader election state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaderState {
+    Leading,
+    Following,
 }
 
 /// Extracts broker ID from a metadata store key path
@@ -719,11 +663,37 @@ fn extract_broker_id(key: &str) -> Option<u64> {
         .ok()
 }
 
-#[allow(dead_code)]
-fn parse_load_report(value: &[u8]) -> Option<LoadReport> {
-    let value_str = std::str::from_utf8(value).ok()?;
-    serde_json::from_str(value_str).ok()
+/// Helper function to join path components
+fn join_path(parts: &[&str]) -> String {
+    parts.join("/")
 }
 
 #[cfg(test)]
-mod load_manager_test;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_broker_id() {
+        assert_eq!(
+            extract_broker_id("/cluster/brokers/load/123"),
+            Some(123)
+        );
+        assert_eq!(
+            extract_broker_id("/cluster/brokers/load/456"),
+            Some(456)
+        );
+        assert_eq!(extract_broker_id("/cluster/other/path"), None);
+    }
+
+    #[test]
+    fn test_join_path() {
+        assert_eq!(
+            join_path(&["/cluster", "brokers", "1"]),
+            "/cluster/brokers/1"
+        );
+        assert_eq!(
+            join_path(&["/cluster", "unassigned", "default", "topic"]),
+            "/cluster/unassigned/default/topic"
+        );
+    }
+}

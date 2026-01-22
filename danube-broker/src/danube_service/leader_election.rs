@@ -1,11 +1,14 @@
+use crate::broker_metrics::LEADER_ELECTION_STATE;
 use anyhow::Result;
-use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
+use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use metrics::gauge;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Interval};
 use tracing::{debug, error, warn};
-use metrics::gauge;
-use crate::broker_metrics::LEADER_ELECTION_STATE;
+
+// Import trait from load manager for integration
+use danube_load_manager::LeaderStateProvider;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LeaderElectionState {
@@ -43,6 +46,7 @@ impl LeaderElection {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_state(&self) -> LeaderElectionState {
         let state = self.state.lock().await;
         state.clone()
@@ -151,5 +155,19 @@ impl LeaderElection {
             }
         }
         Ok(())
+    }
+}
+
+// Implement LeaderStateProvider trait for LoadManager integration
+#[async_trait::async_trait]
+impl LeaderStateProvider for LeaderElection {
+    async fn get_state(&self) -> danube_load_manager::LeaderState {
+        let state = self.state.lock().await;
+        match *state {
+            LeaderElectionState::Leading => danube_load_manager::LeaderState::Leading,
+            LeaderElectionState::Following | LeaderElectionState::NoLeader => {
+                danube_load_manager::LeaderState::Following
+            }
+        }
     }
 }

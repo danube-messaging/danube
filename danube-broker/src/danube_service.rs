@@ -1,16 +1,16 @@
 mod broker_register;
 mod broker_watcher;
 mod leader_election;
-mod load_manager;
 mod local_cache;
 mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
-pub(crate) use leader_election::{LeaderElection, LeaderElectionState};
-pub(crate) use load_manager::load_report::{generate_load_report, LoadReport};
-pub(crate) use load_manager::LoadManager;
+pub(crate) use leader_election::LeaderElection;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
+
+// Re-export from danube-load-manager crate
+pub(crate) use danube_load_manager::{generate_load_report, LoadManager, LoadReport};
 
 use anyhow::Result;
 use danube_client::DanubeClient;
