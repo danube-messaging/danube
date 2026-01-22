@@ -1,3 +1,13 @@
+<!-- v0.6.2 START -->
+## v0.6.2 - 2026-01-22
+### What's Changed
+* eliminate pending, final copy of the cloud object (#178) by @danrusei in 81d3b6f
+* [BUG] reliable topic move to another broker (#177) by @danrusei in 7b1e9cc
+* [BUG] delete partitioned topics across brokers (#176) by @danrusei in e6b65ef 
+* [BUG] allow to create either partitioned topic or normal topic against the same base. (#176) by @danrusei in e6b65ef
+* standardize tracing usage and the logging structure (#175) by @danrusei in 5d7dea2
+<!-- v0.6.2 END -->
+
 <!-- v0.6.1 START -->
 ## v0.6.1 - 2026-01-06
 
