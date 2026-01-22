@@ -404,7 +404,7 @@ impl LoadManager {
                 };
 
                 let parts: Vec<_> = key_str.split(BASE_UNASSIGNED_PATH).collect();
-                let topic_name = parts[1];
+                let topic_name = parts[1].trim_start_matches('/');
 
                 // Try to parse unload marker to exclude originating broker
                 let mut exclude_broker: Option<u64> = None;
@@ -584,14 +584,15 @@ impl LoadManager {
             }
 
             // Extract namespace and topic from the full path
-            let parts: Vec<&str> = full_assignment_path.split('/').collect();
-            if parts.len() >= 6 {
-                // parts: ["", "cluster", "brokers", "{broker_id}", "{namespace}", "{topic}"]
+            // Filter out empty parts to handle double slashes
+            let parts: Vec<&str> = full_assignment_path.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 5 {
+                // parts: ["cluster", "brokers", "{broker_id}", "{namespace}", "{topic}"]
                 // Create unassigned entry: /cluster/unassigned/{ns}/{topic}
                 let unassigned_path = join_path(&[
                     BASE_UNASSIGNED_PATH,
-                    &parts[4], // namespace
-                    &parts[5], // topic
+                    &parts[3], // namespace
+                    &parts[4], // topic
                 ]);
 
                 // Create unassigned entry with empty value to signal Load Manager for reassignment
