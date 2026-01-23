@@ -144,7 +144,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     // Stop producer before unload
     drop(producer);
 
-    // Give time for graceful shutdown
+    // Give time for graceful shutdown .
     sleep(Duration::from_millis(500)).await;
 
     // Unload topic using admin CLI
