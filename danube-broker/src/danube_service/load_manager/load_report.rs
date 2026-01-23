@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 use tokio::sync::{Mutex, OnceCell};
 
+use crate::danube_service::metrics_collector::MetricsCollector;
 use crate::danube_service::resource_monitor::{create_resource_monitor, ResourceMonitor};
 
 // LoadReport holds information that are required by Load Manager
@@ -166,7 +167,7 @@ async fn calculate_rates(
 pub(crate) async fn generate_load_report(
     broker_id: u64,
     topic_list: Vec<String>,
-    metrics_collector: Option<&Arc<super::super::metrics_collector::MetricsCollector>>,
+    metrics_collector: &Arc<MetricsCollector>,
 ) -> LoadReport {
     let monitor = get_resource_monitor().await;
     
@@ -204,40 +205,23 @@ pub(crate) async fn generate_load_report(
     }
     
     // Phase 2: Topic-level metrics collection from MetricsCollector
-    let topics: Vec<TopicLoad> = if let Some(collector) = metrics_collector {
-        let snapshots = collector.get_all_snapshots().await;
-        
-        topic_list
-            .iter()
-            .filter_map(|topic_name| {
-                snapshots.get(topic_name).map(|snapshot| TopicLoad {
-                    topic_name: topic_name.clone(),
-                    message_rate: 0,  // TODO: Calculate rate from counter deltas
-                    byte_rate: 0,     // TODO: Calculate rate from counter deltas
-                    byte_rate_mbps: 0.0,
-                    producer_count: snapshot.active_producers,
-                    consumer_count: snapshot.active_consumers,
-                    subscription_count: snapshot.active_subscriptions,
-                    backlog_messages: 0,  // Skipped for now (not needed)
-                })
-            })
-            .collect()
-    } else {
-        // No metrics collector - return empty topic data
-        topic_list
-            .iter()
-            .map(|topic_name| TopicLoad {
+    let snapshots = metrics_collector.get_all_snapshots().await;
+    
+    let topics: Vec<TopicLoad> = topic_list
+        .iter()
+        .filter_map(|topic_name| {
+            snapshots.get(topic_name).map(|snapshot| TopicLoad {
                 topic_name: topic_name.clone(),
-                message_rate: 0,
-                byte_rate: 0,
+                message_rate: 0,  // TODO: Calculate rate from counter deltas
+                byte_rate: 0,     // TODO: Calculate rate from counter deltas
                 byte_rate_mbps: 0.0,
-                producer_count: 0,
-                consumer_count: 0,
-                subscription_count: 0,
-                backlog_messages: 0,
+                producer_count: snapshot.active_producers,
+                consumer_count: snapshot.active_consumers,
+                subscription_count: snapshot.active_subscriptions,
+                backlog_messages: 0,  // Skipped for now (not needed)
             })
-            .collect()
-    };
+        })
+        .collect();
     
     // Calculate aggregates
     let total_throughput_mbps: f64 = topics.iter()

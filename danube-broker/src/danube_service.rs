@@ -401,7 +401,7 @@ async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store:
         let load_report: LoadReport = load_manager::load_report::generate_load_report(
             broker_id, 
             topics, 
-            Some(broker_service.metrics_collector())
+            broker_service.metrics_collector()
         ).await;
         if let Ok(value) = serde_json::to_value(&load_report) {
             let path = join_path(&[BASE_BROKER_LOAD_PATH, &broker_id.to_string()]);
