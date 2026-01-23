@@ -15,7 +15,7 @@ pub(crate) struct ContainerResourceMonitor {
 }
 
 #[derive(Debug, Clone)]
-enum CgroupVersion {
+pub(super) enum CgroupVersion {
     V1,
     V2,
 }
@@ -62,7 +62,7 @@ impl ResourceMonitor for ContainerResourceMonitor {
 // Detection
 // ============================================================================
 
-fn detect_cgroup_version() -> Result<CgroupVersion> {
+pub(super) fn detect_cgroup_version() -> Result<CgroupVersion> {
     // Check for cgroup v2 (unified hierarchy)
     if Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
         return Ok(CgroupVersion::V2);
@@ -280,7 +280,7 @@ async fn get_network_io_procfs() -> Result<NetworkIOStats> {
 // Helpers
 // ============================================================================
 
-fn read_file_u64(path: &str) -> Result<u64> {
+pub(super) fn read_file_u64(path: &str) -> Result<u64> {
     let content = fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
     content
         .trim()
@@ -288,7 +288,7 @@ fn read_file_u64(path: &str) -> Result<u64> {
         .with_context(|| format!("Failed to parse {} as u64", path))
 }
 
-fn read_file_i64(path: &str) -> Result<i64> {
+pub(super) fn read_file_i64(path: &str) -> Result<i64> {
     let content = fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
     content
         .trim()

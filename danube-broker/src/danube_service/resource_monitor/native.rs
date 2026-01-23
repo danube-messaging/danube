@@ -137,3 +137,38 @@ impl ResourceMonitor for NativeResourceMonitor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_all_monitoring_functions() {
+        let monitor = NativeResourceMonitor::new();
+        
+        // Test CPU monitoring
+        let cpu_result = monitor.get_cpu_usage().await;
+        assert!(cpu_result.is_ok(), "CPU monitoring should work");
+        let cpu = cpu_result.unwrap();
+        assert!(cpu >= 0.0 && cpu <= 100.0, "CPU should be valid percentage");
+        
+        // Test memory monitoring
+        let mem_result = monitor.get_memory_usage().await;
+        assert!(mem_result.is_ok(), "Memory monitoring should work");
+        let mem = mem_result.unwrap();
+        assert!(mem > 0.0 && mem <= 100.0, "Memory should be >0 on running system");
+        
+        // Test disk I/O (currently returns 0)
+        let disk_result = monitor.get_disk_io().await;
+        assert!(disk_result.is_ok(), "Disk I/O should not panic");
+        
+        // Test network I/O
+        let net_result = monitor.get_network_io().await;
+        assert!(net_result.is_ok(), "Network I/O should work");
+        
+        // Test multiple measurements work
+        tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        let cpu2 = monitor.get_cpu_usage().await.unwrap();
+        assert!(cpu2 >= 0.0 && cpu2 <= 100.0, "Second measurement should also work");
+    }
+}
