@@ -2,9 +2,14 @@
 //!
 //! Cross-platform resource monitoring for CPU, memory, disk I/O, and network I/O.
 //! Provides async interfaces for collecting real-time system metrics.
+//!
+//! Automatically detects containerized environments (Docker/K8s) and uses
+//! cgroup-aware metrics when available.
 
+mod container;
 mod native;
 
+pub(crate) use container::ContainerResourceMonitor;
 pub(crate) use native::NativeResourceMonitor;
 
 use anyhow::Result;
@@ -51,6 +56,20 @@ impl NetworkIOStats {
 }
 
 /// Factory function to create the appropriate resource monitor
+/// 
+/// Automatically detects if running in a container and uses cgroup-aware
+/// monitoring when available. Falls back to native system monitoring.
 pub(crate) fn create_resource_monitor() -> Box<dyn ResourceMonitor> {
+    // Try container-aware monitoring first
+    if container::is_containerized() {
+        if let Ok(monitor) = ContainerResourceMonitor::new() {
+            tracing::info!("Using container-aware resource monitoring (cgroups)");
+            return Box::new(monitor);
+        } else {
+            tracing::warn!("Container detected but cgroup monitoring failed, falling back to native");
+        }
+    }
+    
+    tracing::info!("Using native resource monitoring (sysinfo)");
     Box::new(NativeResourceMonitor::new())
 }
