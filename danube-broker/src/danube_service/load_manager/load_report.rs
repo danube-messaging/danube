@@ -57,8 +57,7 @@ pub(crate) struct TopicLoad {
 impl TopicLoad {
     /// Calculate an estimated load score for this topic
     /// Higher score = more loaded
-    /// TODO: Use this in weighted ranking when implemented
-    #[allow(dead_code)]
+    /// Used in rebalancing candidate selection to prioritize light topics
     pub(crate) fn estimated_load_score(&self) -> f64 {
         let throughput_score = (self.byte_rate as f64 / 1_000_000.0) * 0.5; // MB/s
         let connection_score = (self.producer_count + self.consumer_count) as f64 * 0.3;

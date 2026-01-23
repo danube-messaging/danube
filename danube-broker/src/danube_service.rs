@@ -293,6 +293,38 @@ impl DanubeService {
 
         info!("load manager service initialized and ready");
 
+        // Start the Automated Rebalancing Loop (Phase 3)
+        //==========================================================================
+        if let Some(ref load_manager_config) = self.service_config.load_manager {
+            if load_manager_config.rebalancing.enabled {
+                info!(
+                    check_interval_seconds = load_manager_config.rebalancing.check_interval_seconds,
+                    aggressiveness = ?load_manager_config.rebalancing.aggressiveness,
+                    max_moves_per_cycle = load_manager_config.rebalancing.max_moves_per_cycle,
+                    max_moves_per_hour = load_manager_config.rebalancing.max_moves_per_hour,
+                    "starting automated rebalancing loop"
+                );
+
+                let load_manager_for_rebalancing = self.load_manager.clone();
+                let rebalancing_config = load_manager_config.rebalancing.clone();
+                let leader_election_for_rebalancing = self.leader_election.clone();
+
+                tokio::spawn(async move {
+                    let _handle = load_manager_for_rebalancing.start_rebalancing_loop(
+                        rebalancing_config,
+                        leader_election_for_rebalancing,
+                    );
+                    // Loop runs forever in background
+                });
+
+                info!("automated rebalancing loop started successfully");
+            } else {
+                info!("automated rebalancing is disabled in configuration");
+            }
+        } else {
+            debug!("load manager configuration not found, rebalancing disabled by default");
+        }
+
         // Publish periodic Load Reports
         // This enable the broker to register with Load Manager
         tokio::spawn(async move {
@@ -399,10 +431,11 @@ async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store:
         topics = broker_service.get_topics();
         broker_id = broker_service.broker_id;
         let load_report: LoadReport = load_manager::load_report::generate_load_report(
-            broker_id, 
-            topics, 
-            broker_service.metrics_collector()
-        ).await;
+            broker_id,
+            topics,
+            broker_service.metrics_collector(),
+        )
+        .await;
         if let Ok(value) = serde_json::to_value(&load_report) {
             let path = join_path(&[BASE_BROKER_LOAD_PATH, &broker_id.to_string()]);
             match meta_store.put(&path, value, MetaOptions::None).await {

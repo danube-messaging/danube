@@ -1,5 +1,6 @@
 use super::load_report::{LoadReport, ResourceType};
 use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -60,9 +61,9 @@ pub(crate) async fn rankings_composite(
 }
 
 /// Configurable weights for weighted composite ranking
-/// TODO: Wire this into LoadManager when configuration system is ready
+#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Reserved for future advanced load balancing
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RankingWeights {
     pub cpu: f64,
     pub memory: f64,
@@ -85,19 +86,16 @@ impl Default for RankingWeights {
     }
 }
 
-/// Weighted composite ranking algorithm
+/// Weighted composite ranking algorithm (Phase 3 - Future enhancement)
+/// Calculates broker rankings using multiple weighted factors:
+/// - Topic count (30%)
+/// - Total throughput in MB/s (40%)
+/// - Total connections (20%)
+/// - Backlog messages (10% penalty)
 ///
-/// Ranks brokers based on multiple weighted factors:
-/// - CPU usage
-/// - Memory usage
-/// - Disk I/O
-/// - Network I/O
-/// - Throughput (message rate)
-/// - Topic count
+/// Reserved for future advanced load balancing (Phase 3.1)
 ///
 /// Returns list of (broker_id, score) sorted by score (ascending = less loaded)
-///
-/// TODO: Wire this into LoadManager when configuration system is ready
 #[allow(dead_code)]
 pub(crate) async fn rankings_weighted_composite(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
@@ -126,6 +124,8 @@ pub(crate) async fn rankings_weighted_composite(
     broker_scores
 }
 
+/// Reserved for future advanced load balancing
+#[allow(dead_code)]
 struct MaxValues {
     cpu: f64,
     memory: f64,
@@ -135,6 +135,8 @@ struct MaxValues {
     topic_count: f64,
 }
 
+/// Reserved for future advanced load balancing
+#[allow(dead_code)]
 fn calculate_max_values(brokers: &HashMap<u64, LoadReport>) -> MaxValues {
     let mut max = MaxValues {
         cpu: 1.0,
@@ -164,6 +166,7 @@ fn calculate_max_values(brokers: &HashMap<u64, LoadReport>) -> MaxValues {
     max
 }
 
+/// Reserved for future advanced load balancing
 #[allow(dead_code)]
 fn calculate_broker_score(
     report: &LoadReport,
@@ -197,6 +200,7 @@ fn calculate_broker_score(
     score
 }
 
+/// Reserved for future advanced load balancing
 #[allow(dead_code)]
 fn normalize(value: f64, max: f64) -> f64 {
     if max == 0.0 {

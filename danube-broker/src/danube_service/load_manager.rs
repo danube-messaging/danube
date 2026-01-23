@@ -1,4 +1,6 @@
+pub(crate) mod config;
 pub(crate) mod load_report;
+pub(crate) mod rebalancing;
 mod rankings;
 
 use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
@@ -9,11 +11,14 @@ use futures::stream::StreamExt;
 use load_report::LoadReport;
 use metrics::counter;
 use rankings::{rankings_composite, rankings_simple};
+use rebalancing::{ImbalanceMetrics, RebalancingHistory, RebalancingMove, RebalancingReason};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -435,32 +440,89 @@ impl LoadManager {
                 let parts: Vec<_> = key_str.split(BASE_UNASSIGNED_PATH).collect();
                 let topic_name = parts[1];
 
-                // Try to parse unload marker to exclude originating broker
+                // Parse unload/rebalance marker to determine assignment strategy
                 let mut exclude_broker: Option<u64> = None;
+                let mut target_broker_hint: Option<u64> = None;
+                
                 if !value.is_empty() {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
                         if let Some(obj) = val.as_object() {
-                            if obj.get("reason").and_then(|v| v.as_str()) == Some("unload") {
-                                if let Some(from_broker) =
-                                    obj.get("from_broker").and_then(|v| v.as_u64())
-                                {
+                            let reason = obj.get("reason").and_then(|v| v.as_str());
+                            
+                            // Handle unload (Phase D: exclude source broker)
+                            if reason == Some("unload") {
+                                if let Some(from_broker) = obj.get("from_broker").and_then(|v| v.as_u64()) {
                                     exclude_broker = Some(from_broker);
+                                    debug!(
+                                        topic = %topic_name,
+                                        from_broker = %from_broker,
+                                        "unload marker detected, will exclude source broker"
+                                    );
+                                }
+                            }
+                            
+                            // Handle rebalance (Phase 3 Step 6: prefer target broker)
+                            if reason == Some("rebalance") {
+                                if let Some(from_broker) = obj.get("from_broker").and_then(|v| v.as_u64()) {
+                                    exclude_broker = Some(from_broker);
+                                }
+                                if let Some(to_broker) = obj.get("to_broker").and_then(|v| v.as_u64()) {
+                                    target_broker_hint = Some(to_broker);
+                                    info!(
+                                        topic = %topic_name,
+                                        from_broker = ?exclude_broker,
+                                        to_broker = %to_broker,
+                                        "rebalance marker detected with target broker hint"
+                                    );
                                 }
                             }
                         }
                     }
                 }
 
-                let broker_id = if let Some(ex) = exclude_broker {
+                // Select broker based on marker type and hints
+                let broker_id = if let Some(target) = target_broker_hint {
+                    // Priority 1: Rebalancing - prefer the target broker hint
+                    if self.is_broker_active(target).await {
+                        info!(
+                            topic = %topic_name,
+                            target_broker = %target,
+                            "using rebalance target broker hint"
+                        );
+                        target
+                    } else {
+                        // Fallback: Target broker is not active, select alternative
+                        warn!(
+                            topic = %topic_name,
+                            target_broker = %target,
+                            "rebalance target broker is not active, selecting alternative"
+                        );
+                        match self.get_next_broker_excluding(exclude_broker.unwrap_or(0)).await {
+                            Ok(id) => {
+                                info!(
+                                    topic = %topic_name,
+                                    selected_broker = %id,
+                                    "selected alternative broker for rebalancing"
+                                );
+                                id
+                            }
+                            Err(e) => {
+                                error!(topic = %topic_name, error = %e, "cannot select alternative broker");
+                                return;
+                            }
+                        }
+                    }
+                } else if let Some(ex) = exclude_broker {
+                    // Priority 2: Unload - exclude source broker, use rankings
                     match self.get_next_broker_excluding(ex).await {
                         Ok(id) => id,
                         Err(e) => {
                             error!(topic = %topic_name, error = %e, "cannot reassign topic for unload");
-                            // Keep unassigned marker for future reassignment
                             return;
                         }
                     }
                 } else {
+                    // Priority 3: Normal assignment - use rankings
                     self.get_next_broker().await
                 };
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
@@ -694,6 +756,700 @@ impl LoadManager {
         false
     }
 
+    /// Calculates cluster imbalance metrics for rebalancing decisions
+    ///
+    /// ## Purpose:
+    /// Computes statistical measures of cluster load distribution to determine
+    /// if automated rebalancing is needed. Uses coefficient of variation (CV)
+    /// as the primary metric for cluster balance.
+    ///
+    /// ## Returns:
+    /// `ImbalanceMetrics` containing:
+    /// - **Coefficient of Variation (CV)**: std_dev / mean (key metric)
+    /// - **Statistical measures**: mean, std_dev, min, max loads
+    /// - **Problem brokers**: Overloaded (> mean + 1σ) and underloaded (< mean - 1σ)
+    ///
+    /// ## CV Interpretation:
+    /// - CV < 0.20: Well balanced (aggressive threshold)
+    /// - CV < 0.30: Reasonably balanced (balanced threshold)
+    /// - CV < 0.40: Acceptable (conservative threshold)
+    /// - CV ≥ threshold: Needs rebalancing
+    pub async fn calculate_imbalance(&self) -> Result<ImbalanceMetrics> {
+        let rankings = self.rankings.lock().await;
+
+        // Need at least 2 brokers for meaningful imbalance calculation
+        if rankings.len() < 2 {
+            return Ok(ImbalanceMetrics {
+                coefficient_of_variation: 0.0,
+                max_load: 0.0,
+                min_load: 0.0,
+                mean_load: 0.0,
+                std_deviation: 0.0,
+                overloaded_brokers: vec![],
+                underloaded_brokers: vec![],
+            });
+        }
+
+        // Extract load values and broker IDs
+        let loads: Vec<f64> = rankings.iter().map(|(_, load)| *load as f64).collect();
+
+        // Calculate mean
+        let mean = loads.iter().sum::<f64>() / loads.len() as f64;
+
+        // Calculate variance and standard deviation
+        let variance = loads
+            .iter()
+            .map(|load| (*load - mean).powi(2))
+            .sum::<f64>()
+            / loads.len() as f64;
+        let std_dev = variance.sqrt();
+
+        // Find max and min loads
+        let max_load = loads
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .copied()
+            .unwrap_or(0.0);
+
+        let min_load = loads
+            .iter()
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .copied()
+            .unwrap_or(0.0);
+
+        // Coefficient of variation (CV = std_dev / mean)
+        // This is the key metric - it's scale-independent unlike std_dev
+        let cv = if mean > 0.0 { std_dev / mean } else { 0.0 };
+
+        // Identify overloaded and underloaded brokers
+        let mut overloaded = vec![];
+        let mut underloaded = vec![];
+
+        for (broker_id, load) in rankings.iter() {
+            let load_f64 = *load as f64;
+            
+            // Overloaded: more than 1 standard deviation above mean
+            if load_f64 > mean + std_dev {
+                overloaded.push(*broker_id);
+            }
+            // Underloaded: more than 1 standard deviation below mean
+            // AND less than half the mean (avoid marking zero-load brokers during startup)
+            else if load_f64 < mean - std_dev && load_f64 < mean * 0.5 {
+                underloaded.push(*broker_id);
+            }
+        }
+
+        Ok(ImbalanceMetrics {
+            coefficient_of_variation: cv,
+            max_load,
+            min_load,
+            mean_load: mean,
+            std_deviation: std_dev,
+            overloaded_brokers: overloaded,
+            underloaded_brokers: underloaded,
+        })
+    }
+
+    /// Determines if cluster needs rebalancing based on configuration and metrics
+    ///
+    /// ## Purpose:
+    /// Decision logic for automated rebalancing. Checks multiple conditions:
+    /// 1. Rebalancing is enabled in config
+    /// 2. Minimum broker count is met
+    /// 3. CV exceeds the threshold for current aggressiveness level
+    ///
+    /// ## Parameters:
+    /// - `metrics`: Current cluster imbalance metrics
+    /// - `config`: Rebalancing configuration (threshold, min brokers, etc.)
+    ///
+    /// ## Returns:
+    /// `true` if automated rebalancing should proceed, `false` otherwise
+    pub fn should_rebalance(
+        &self,
+        metrics: &ImbalanceMetrics,
+        config: &config::RebalancingConfig,
+    ) -> bool {
+        // Check if rebalancing is enabled
+        if !config.enabled {
+            return false;
+        }
+
+        // Check minimum broker requirement
+        let threshold = config.aggressiveness.threshold();
+        
+        // Use coefficient of variation to determine if rebalancing is needed
+        metrics.needs_rebalancing(threshold)
+    }
+
+    /// Selects topics to move for rebalancing
+    ///
+    /// ## Purpose:
+    /// Core candidate selection logic that chooses which topics to move from
+    /// overloaded brokers to underloaded brokers. Uses intelligent selection
+    /// strategies to minimize disruption while maximizing balance improvement.
+    ///
+    /// ## Algorithm:
+    /// 1. Identify source brokers from `metrics.overloaded_brokers`
+    /// 2. For each overloaded broker:
+    ///    - Get all its topics
+    ///    - Filter blacklisted topics
+    ///    - Sort by load (lightest first - safer to move)
+    /// 3. Select target broker (least loaded, excluding source)
+    /// 4. Create RebalancingMove objects up to max_moves_per_cycle
+    ///
+    /// ## Strategy:
+    /// - **Lightest first**: Small topics are easier and safer to move
+    /// - **Blacklist respect**: Never move protected topics
+    /// - **Rate limiting**: Honor max_moves_per_cycle
+    ///
+    /// ## Parameters:
+    /// - `metrics`: Cluster imbalance metrics (identifies overloaded brokers)
+    /// - `config`: Rebalancing configuration (limits, filters, blacklist)
+    ///
+    /// ## Returns:
+    /// Vector of `RebalancingMove` objects ready for execution
+    pub async fn select_rebalancing_candidates(
+        &self,
+        metrics: &ImbalanceMetrics,
+        config: &config::RebalancingConfig,
+    ) -> Result<Vec<RebalancingMove>> {
+        let rankings = self.rankings.lock().await;
+        let brokers = self.brokers_usage.lock().await;
+
+        // Need brokers and overloaded brokers to proceed
+        if rankings.is_empty() || metrics.overloaded_brokers.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut moves = Vec::new();
+
+        // For each overloaded broker, select topics to move
+        for overloaded_id in &metrics.overloaded_brokers {
+            if moves.len() >= config.max_moves_per_cycle {
+                break;
+            }
+
+            // Get broker's load report
+            let overloaded_report = match brokers.get(overloaded_id) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // Get topics with their estimated load scores
+            let mut candidates: Vec<_> = overloaded_report
+                .topics
+                .iter()
+                .map(|t| (t.clone(), t.estimated_load_score()))
+                .collect();
+
+            // Filter blacklisted topics
+            if !config.blacklist_topics.is_empty() {
+                candidates.retain(|(topic, _)| {
+                    !self.is_topic_blacklisted(&topic.topic_name, &config.blacklist_topics)
+                });
+            }
+
+            // Sort by load (ascending - lightest first)
+            // This is safer: small topics are easier to move with less disruption
+            candidates.sort_by(|(_, load_a), (_, load_b)| {
+                load_a.partial_cmp(load_b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Select target broker (least loaded, excluding source)
+            let target_broker = match self.select_target_broker(*overloaded_id, &rankings).await
+            {
+                Ok(broker) => broker,
+                Err(e) => {
+                    warn!(
+                        source_broker = %overloaded_id,
+                        error = %e,
+                        "no suitable target broker found for rebalancing"
+                    );
+                    continue;
+                }
+            };
+
+            // Create moves for selected topics
+            let remaining_capacity = config.max_moves_per_cycle - moves.len();
+            for (topic, estimated_load) in candidates.iter().take(remaining_capacity) {
+                moves.push(RebalancingMove::new(
+                    topic.topic_name.clone(),
+                    *overloaded_id,
+                    target_broker,
+                    RebalancingReason::LoadImbalance,
+                    *estimated_load,
+                ));
+
+                info!(
+                    topic = %topic.topic_name,
+                    from_broker = %overloaded_id,
+                    to_broker = %target_broker,
+                    estimated_load = %estimated_load,
+                    "selected topic for rebalancing"
+                );
+            }
+        }
+
+        Ok(moves)
+    }
+
+    /// Selects target broker for topic move
+    ///
+    /// ## Purpose:
+    /// Finds the least loaded broker to receive a topic being moved.
+    /// Excludes the source broker and inactive/draining brokers.
+    ///
+    /// ## Algorithm:
+    /// - Rankings are already sorted (least loaded first)
+    /// - Skip source broker (can't move to self)
+    /// - Skip inactive/draining brokers
+    /// - Return first suitable broker
+    ///
+    /// ## Parameters:
+    /// - `exclude_broker`: Source broker ID (can't be target)
+    /// - `rankings`: Broker rankings (sorted least loaded first)
+    ///
+    /// ## Returns:
+    /// Target broker ID or error if no suitable broker found
+    async fn select_target_broker(
+        &self,
+        exclude_broker: u64,
+        rankings: &[(u64, usize)],
+    ) -> Result<u64> {
+        // Find least loaded broker that is not the excluded one and is active
+        for (broker_id, _) in rankings.iter() {
+            if *broker_id != exclude_broker && self.is_broker_active(*broker_id).await {
+                return Ok(*broker_id);
+            }
+        }
+
+        Err(anyhow!(
+            "No suitable target broker found for rebalancing (all brokers either inactive or excluded)"
+        ))
+    }
+
+    /// Checks if topic matches any blacklist pattern
+    ///
+    /// ## Purpose:
+    /// Determines if a topic should never be rebalanced based on blacklist patterns.
+    /// Supports exact matches and namespace wildcards.
+    ///
+    /// ## Pattern Matching:
+    /// - **Exact**: `/default/critical-topic` matches only that topic
+    /// - **Namespace wildcard**: `/default/*` matches all topics in the `/default` namespace
+    ///
+    /// ## Topic Format:
+    /// Topics are structured as: `/{namespace}/{topic_name}`
+    /// Examples: `/default/my-topic`, `/system/metrics`, `/production/orders`
+    ///
+    /// ## Parameters:
+    /// - `topic_name`: Topic to check (must start with `/`)
+    /// - `blacklist`: List of blacklist patterns
+    ///
+    /// ## Returns:
+    /// `true` if topic is blacklisted, `false` otherwise
+    fn is_topic_blacklisted(&self, topic_name: &str, blacklist: &[String]) -> bool {
+        for pattern in blacklist {
+            // Exact match
+            if pattern == topic_name {
+                return true;
+            }
+
+            // Namespace wildcard: /namespace/*
+            if pattern.ends_with("/*") {
+                // Extract namespace prefix (e.g., "/default/" from "/default/*")
+                let namespace_prefix = &pattern[..pattern.len() - 1]; // Remove the '*', keep the '/'
+                
+                // Topic must start with the namespace and have something after it
+                // e.g., "/default/*" matches "/default/anything" but not "/default" or "/defaultx/topic"
+                if topic_name.starts_with(namespace_prefix) && topic_name.len() > namespace_prefix.len() {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Executes a list of rebalancing moves
+    ///
+    /// ## Purpose:
+    /// Main rebalancing execution loop that orchestrates topic moves from overloaded
+    /// to underloaded brokers. Includes safety controls like rate limiting, cooldown
+    /// delays, history tracking, and audit logging.
+    ///
+    /// ## Safety Features:
+    /// - **Rate limiting**: Stops when `max_moves_per_hour` is reached
+    /// - **Cooldown**: Waits between moves to allow cluster stabilization
+    /// - **Error handling**: Logs failures but continues with remaining moves
+    /// - **Audit trail**: Records every move to ETCD for compliance/debugging
+    ///
+    /// ## Algorithm:
+    /// For each move:
+    /// 1. Check hourly rate limit → stop if exceeded
+    /// 2. Execute the single move (create marker + delete assignment)
+    /// 3. Record in history (for rate limiting)
+    /// 4. Log to ETCD (for audit)
+    /// 5. Sleep for cooldown period
+    ///
+    /// ## Parameters:
+    /// - `moves`: List of moves selected by `select_rebalancing_candidates()`
+    /// - `config`: Rebalancing configuration (rate limits, cooldown)
+    /// - `history`: Rebalancing history tracker (for rate limiting)
+    ///
+    /// ## Returns:
+    /// Number of successfully executed moves
+    pub async fn execute_rebalancing(
+        &self,
+        moves: Vec<RebalancingMove>,
+        config: &config::RebalancingConfig,
+        history: &mut RebalancingHistory,
+    ) -> Result<usize> {
+        let mut executed = 0;
+        let total_moves = moves.len();
+
+        for mv in moves {
+            // Check rate limit
+            if history.count_moves_in_last_hour() >= config.max_moves_per_hour {
+                warn!(
+                    current_moves = history.count_moves_in_last_hour(),
+                    limit = config.max_moves_per_hour,
+                    "rebalancing rate limit reached, stopping cycle"
+                );
+                break;
+            }
+
+            info!(
+                topic = %mv.topic_name,
+                from = %mv.from_broker,
+                to = %mv.to_broker,
+                reason = ?mv.reason,
+                estimated_load = %mv.estimated_load,
+                "executing rebalancing move"
+            );
+
+            // Execute the move
+            match self.execute_single_move(&mv).await {
+                Ok(()) => {
+                    executed += 1;
+                    history.record_move(mv.clone());
+
+                    // Log to ETCD for auditing
+                    self.log_rebalancing_event(&mv).await;
+
+                    // Cooldown between moves to allow cluster stabilization
+                    if config.cooldown_seconds > 0 {
+                        tokio::time::sleep(Duration::from_secs(config.cooldown_seconds)).await;
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        topic = %mv.topic_name,
+                        error = %e,
+                        "failed to execute rebalancing move, continuing with remaining moves"
+                    );
+                }
+            }
+        }
+
+        info!(
+            executed = executed,
+            total_moves = total_moves,
+            "rebalancing cycle complete"
+        );
+
+        Ok(executed)
+    }
+
+    /// Executes a single topic move for rebalancing
+    ///
+    /// ## Purpose:
+    /// Performs the actual topic move by creating an unassigned marker with a target
+    /// broker hint and deleting the source assignment. This triggers the existing
+    /// broker watch mechanism to gracefully unload the topic from the source broker.
+    ///
+    /// ## How It Works:
+    /// 1. **Create unassigned marker** at `/cluster/unassigned/{topic_name}`:
+    ///    - Includes `to_broker` hint for LoadManager
+    ///    - Includes `reason: "rebalance"` for tracking
+    ///    - Includes timestamp for audit trail
+    ///
+    /// 2. **Delete source assignment** at `/cluster/brokers/{from_broker}/{topic_name}`:
+    ///    - Source broker's `broker_watcher` detects deletion
+    ///    - Triggers existing `topic.unload()` from Phase D
+    ///    - Topic gracefully closes producers/consumers
+    ///
+    /// 3. **Automatic reassignment** (handled by existing watchers):
+    ///    - LoadManager sees unassigned marker
+    ///    - Step 6 logic reads `to_broker` hint
+    ///    - Assigns topic to target broker (not rankings)
+    ///    - Target broker loads topic from cloud storage
+    ///
+    /// ## Reuses Existing Infrastructure:
+    /// - ✅ Phase D unload mechanism (graceful topic migration)
+    /// - ✅ broker_watcher (detects assignment changes)
+    /// - ✅ assign_topic_to_broker (will be enhanced in Step 6)
+    ///
+    /// ## Parameters:
+    /// - `mv`: The move to execute (source, target, topic, metadata)
+    ///
+    /// ## Returns:
+    /// `Ok(())` if marker created and assignment deleted successfully
+    async fn execute_single_move(&self, mv: &RebalancingMove) -> Result<()> {
+        // Create unassigned marker with rebalance hint
+        let unassigned_path = join_path(&[BASE_UNASSIGNED_PATH, &mv.topic_name]);
+
+        let marker = serde_json::json!({
+            "reason": "rebalance",
+            "from_broker": mv.from_broker,
+            "to_broker": mv.to_broker,  // ← Target broker hint for Step 6
+            "timestamp": mv.timestamp,
+        });
+
+        // Post unassigned marker
+        self.meta_store
+            .put(&unassigned_path, marker, MetaOptions::None)
+            .await?;
+
+        // Delete assignment from source broker (triggers unload via watch)
+        let assignment_path = join_path(&[
+            BASE_BROKER_PATH,
+            &mv.from_broker.to_string(),
+            &mv.topic_name,
+        ]);
+
+        self.meta_store.delete(&assignment_path).await?;
+
+        info!(
+            topic = %mv.topic_name,
+            from = %mv.from_broker,
+            to = %mv.to_broker,
+            "rebalancing move initiated (unassigned marker created, source assignment deleted)"
+        );
+
+        Ok(())
+    }
+
+    /// Logs rebalancing event to ETCD for audit trail
+    ///
+    /// ## Purpose:
+    /// Creates a persistent audit log of all rebalancing moves in the metadata store.
+    /// This provides:
+    /// - **Compliance**: Track all automated topic moves
+    /// - **Debugging**: Understand why/when topics were moved
+    /// - **Metrics**: Analyze rebalancing patterns over time
+    /// - **CLI visibility**: Show rebalancing history to admins
+    ///
+    /// ## Storage:
+    /// Events stored at: `/cluster/rebalancing_history/{timestamp}`
+    ///
+    /// ## Event Structure:
+    /// ```json
+    /// {
+    ///   "topic": "/default/my-topic",
+    ///   "from_broker": 1,
+    ///   "to_broker": 2,
+    ///   "reason": "LoadImbalance",
+    ///   "estimated_load": 5.2,
+    ///   "timestamp": 1234567890
+    /// }
+    /// ```
+    ///
+    /// ## Parameters:
+    /// - `mv`: The move that was executed
+    async fn log_rebalancing_event(&self, mv: &RebalancingMove) {
+        let key = format!("/cluster/rebalancing_history/{}", mv.timestamp);
+
+        let event = serde_json::json!({
+            "topic": mv.topic_name,
+            "from_broker": mv.from_broker,
+            "to_broker": mv.to_broker,
+            "reason": format!("{:?}", mv.reason),
+            "estimated_load": mv.estimated_load,
+            "timestamp": mv.timestamp,
+        });
+
+        if let Err(e) = self
+            .meta_store
+            .put(&key, event, MetaOptions::None)
+            .await
+        {
+            warn!(
+                error = %e,
+                topic = %mv.topic_name,
+                "failed to log rebalancing event to ETCD (non-critical)"
+            );
+        }
+    }
+
+    /// Starts the automated rebalancing background loop
+    ///
+    /// ## Purpose:
+    /// Orchestrates the entire rebalancing process in a continuous background task.
+    /// Combines Steps 3-6 into an automated loop that periodically checks cluster
+    /// balance and initiates rebalancing when needed.
+    ///
+    /// ## Leader-Only Execution:
+    /// Only the elected leader broker runs the rebalancing logic to prevent conflicts.
+    /// Non-leader brokers skip the rebalancing cycle entirely.
+    ///
+    /// ## Loop Flow:
+    /// 1. Wait for configured check interval (default: 300s)
+    /// 2. Check if current broker is leader → skip if not
+    /// 3. Check if rebalancing is enabled → skip if not
+    /// 4. Check minimum broker count → skip if insufficient
+    /// 5. Calculate cluster imbalance metrics (Step 3)
+    /// 6. Decide if rebalancing needed (Step 3)
+    /// 7. Select topics to move (Step 4)
+    /// 8. Execute moves (Step 5 + Step 6)
+    /// 9. Loop continues forever
+    ///
+    /// ## Safety Features:
+    /// - **Leader-only**: Prevents simultaneous rebalancing by multiple brokers
+    /// - **Interval pacing**: Allows cluster to stabilize between checks
+    /// - **History tracking**: Enforces hourly rate limits
+    /// - **Error handling**: Logs errors but continues loop
+    /// - **Minimum brokers**: Requires at least 2 active brokers
+    ///
+    /// ## Parameters:
+    /// - `config`: Rebalancing configuration (intervals, thresholds, limits)
+    /// - `leader_election`: Leader election service for state checking
+    ///
+    /// ## Returns:
+    /// JoinHandle for the background task (can be used to await or abort)
+    pub fn start_rebalancing_loop(
+        self,
+        config: config::RebalancingConfig,
+        leader_election: super::leader_election::LeaderElection,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            info!(
+                check_interval_seconds = config.check_interval_seconds,
+                aggressiveness = ?config.aggressiveness,
+                max_moves_per_cycle = config.max_moves_per_cycle,
+                max_moves_per_hour = config.max_moves_per_hour,
+                "starting automated rebalancing loop"
+            );
+
+            let mut interval = tokio::time::interval(Duration::from_secs(
+                config.check_interval_seconds,
+            ));
+
+            let mut history = RebalancingHistory::new(1000);
+
+            loop {
+                interval.tick().await;
+
+                // Check 1: Only leader performs rebalancing
+                let leader_state = leader_election.get_state().await;
+                if leader_state != super::leader_election::LeaderElectionState::Leading {
+                    debug!("skipping rebalancing cycle: broker is not the leader");
+                    continue;
+                }
+
+                // Check 2: Rebalancing must be enabled
+                if !config.enabled {
+                    debug!("skipping rebalancing cycle: rebalancing is disabled");
+                    continue;
+                }
+
+                // Check 3: Cluster health - need minimum broker count
+                let rankings = self.rankings.lock().await.clone();
+                if rankings.len() < config.min_brokers_for_rebalance {
+                    debug!(
+                        broker_count = rankings.len(),
+                        min_required = config.min_brokers_for_rebalance,
+                        "skipping rebalancing cycle: not enough brokers in cluster"
+                    );
+                    continue;
+                }
+
+                debug!(
+                    broker_count = rankings.len(),
+                    "rebalancing cycle started"
+                );
+
+                // Step 3: Calculate imbalance metrics
+                let metrics = match self.calculate_imbalance().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(error = %e, "failed to calculate imbalance metrics");
+                        continue;
+                    }
+                };
+
+                // Log imbalance metrics for observability
+                debug!(
+                    cv = %metrics.coefficient_of_variation,
+                    mean_load = %metrics.mean_load,
+                    max_load = %metrics.max_load,
+                    min_load = %metrics.min_load,
+                    overloaded_count = metrics.overloaded_brokers.len(),
+                    underloaded_count = metrics.underloaded_brokers.len(),
+                    "cluster imbalance metrics calculated"
+                );
+
+                // Step 3: Decide if rebalancing is needed
+                if !self.should_rebalance(&metrics, &config) {
+                    debug!(
+                        cv = %metrics.coefficient_of_variation,
+                        threshold = config.aggressiveness.threshold(),
+                        "cluster is balanced, no rebalancing needed"
+                    );
+                    continue;
+                }
+
+                info!(
+                    cv = %metrics.coefficient_of_variation,
+                    threshold = config.aggressiveness.threshold(),
+                    overloaded_brokers = ?metrics.overloaded_brokers,
+                    underloaded_brokers = ?metrics.underloaded_brokers,
+                    "cluster imbalance detected, initiating rebalancing"
+                );
+
+                // Step 4: Select topics to move
+                let moves = match self
+                    .select_rebalancing_candidates(&metrics, &config)
+                    .await
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(error = %e, "failed to select rebalancing candidates");
+                        continue;
+                    }
+                };
+
+                if moves.is_empty() {
+                    warn!("no suitable topics found for rebalancing despite cluster imbalance");
+                    continue;
+                }
+
+                info!(
+                    move_count = moves.len(),
+                    topics = ?moves.iter().map(|m| &m.topic_name).collect::<Vec<_>>(),
+                    "selected topics for rebalancing"
+                );
+
+                // Step 5 + Step 6: Execute rebalancing
+                match self
+                    .execute_rebalancing(moves, &config, &mut history)
+                    .await
+                {
+                    Ok(executed) => {
+                        info!(
+                            executed = executed,
+                            total_moves_in_last_hour = history.count_moves_in_last_hour(),
+                            "rebalancing cycle completed successfully"
+                        );
+                    }
+                    Err(e) => {
+                        error!(error = %e, "rebalancing execution failed");
+                    }
+                }
+            }
+        })
+    }
+
     /// Calculates broker rankings using simple topic-count based algorithm
     ///
     /// ## Purpose:
@@ -734,5 +1490,7 @@ fn parse_load_report(value: &[u8]) -> Option<LoadReport> {
     serde_json::from_str(value_str).ok()
 }
 
+// Tests for LoadManager are in load_manager_test.rs
 #[cfg(test)]
-mod load_manager_test;
+#[path = "load_manager_test.rs"]
+mod tests;

@@ -1,4 +1,5 @@
 use crate::{auth::AuthConfig, policies::Policies};
+use crate::danube_service::load_manager::config::LoadManagerConfig;
 
 use anyhow::{Context, Result};
 // Legacy StorageConfig removed in Phase D
@@ -36,6 +37,9 @@ pub(crate) struct LoadConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Load Manager configuration (Phase 3)
+    #[serde(default)]
+    pub(crate) load_manager: Option<LoadManagerConfig>,
 }
 
 /// configuration settings for the Danube broker service
@@ -64,6 +68,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Load Manager configuration (Phase 3)
+    pub(crate) load_manager: Option<LoadManagerConfig>,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -108,6 +114,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             policies: config.policies,
             wal_cloud: config.wal_cloud,
             auth: config.auth,
+            load_manager: config.load_manager,
         })
     }
 }

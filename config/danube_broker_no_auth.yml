@@ -39,6 +39,60 @@ auth:
   #   issuer: "danube-auth"
   #   expiration_time: 3600 # in seconds
 
+# Load Manager Configuration (Phase 3: Automated Proactive Rebalancing)
+load_manager:
+  # Topic Assignment Strategy: How to assign NEW topics to brokers
+  # Options:
+  #   - least_loaded: Scores brokers using composite metrics (CPU, memory, topics, throughput)
+  #                   and assigns to broker with most available capacity (RECOMMENDED)
+  #   - round_robin: Rotates through brokers in order, ignoring load metrics (simple)
+  #   - weighted_random: Randomly selects broker weighted by available capacity
+  assignment_strategy: "least_loaded"
+  
+  # Automated Rebalancing: Proactive optimization of EXISTING topic placement
+  rebalancing:
+    # Enable/disable automated rebalancing (starts disabled for safety)
+    enabled: false
+    
+    # Aggressiveness level: Controls how aggressively to optimize cluster balance
+    # Options:
+    #   - conservative: Fewer moves, only when severely imbalanced (CV > 40%), more stable
+    #   - balanced: Moderate optimization (CV > 30%), good for most production clusters
+    #   - aggressive: Optimize harder (CV > 20%), more moves, responds faster to changes
+    aggressiveness: "balanced"
+    
+    # Check frequency: How often to evaluate cluster balance (seconds)
+    # Defaults by aggressiveness: conservative=600, balanced=300, aggressive=180
+    check_interval_seconds: 300
+    
+    # Move limits: Prevent rebalancing storms
+    # Max concurrent topic moves per rebalancing cycle
+    # Defaults by aggressiveness: conservative=2, balanced=3, aggressive=5
+    max_moves_per_cycle: 3
+    
+    # Max topic moves per hour (rate limiting across all cycles)
+    # Defaults by aggressiveness: conservative=5, balanced=10, aggressive=20
+    max_moves_per_hour: 10
+    
+    # Wait time between individual topic moves (seconds)
+    # Defaults by aggressiveness: conservative=120, balanced=60, aggressive=30
+    cooldown_seconds: 60
+    
+    # Cluster requirements: Minimum brokers needed to enable rebalancing
+    # Rebalancing is skipped if cluster has fewer brokers than this
+    min_brokers_for_rebalance: 2
+    
+    # Topic protection: Don't move topics younger than this (seconds)
+    # Prevents moving topics that were just created or recently moved
+    min_topic_age_seconds: 300
+    
+    # Topic blacklist: Topics matching these patterns will NEVER be rebalanced
+    # Supports:
+    #   - Exact topic names: /admin/critical-topic
+    #   - Namespace wildcards: /system/* (all topics in /system namespace)
+    # Examples: ["/system/*", "/admin/critical-topic", "/production/*"]
+    blacklist_topics: []
+
 # WAL and Cloud Storage Configuration
 wal_cloud:
   wal:
