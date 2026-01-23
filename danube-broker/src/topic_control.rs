@@ -7,6 +7,7 @@ use tonic::Status;
 use tracing::{error, info, warn};
 
 use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
+use crate::danube_service::metrics_collector::MetricsCollector;
 use crate::resources::BASE_TOPICS_PATH;
 use crate::schema::ValidationPolicy;
 use crate::utils::join_path;
@@ -33,6 +34,8 @@ pub(crate) struct TopicManager {
     pub(crate) producers: ProducerRegistry,
     /// Index of consumer_id -> (topic_name, subscription_name).
     pub(crate) consumers: ConsumerRegistry,
+    /// Metrics collector for dual-tracking
+    pub(crate) metrics_collector: Arc<MetricsCollector>,
 }
 
 impl TopicManager {
@@ -44,6 +47,7 @@ impl TopicManager {
         resources: Arc<Mutex<Resources>>,
         producers: ProducerRegistry,
         consumers: ConsumerRegistry,
+        metrics_collector: Arc<MetricsCollector>,
     ) -> Self {
         Self {
             broker_id,
@@ -52,6 +56,7 @@ impl TopicManager {
             resources,
             producers,
             consumers,
+            metrics_collector,
         }
     }
 
@@ -93,6 +98,7 @@ impl TopicManager {
                 let resources = self.resources.lock().await;
                 resources.schema.clone()
             },
+            self.metrics_collector.clone(),
         );
 
         // get policies from local_cache
@@ -414,6 +420,10 @@ impl TopicManager {
             self.producers.insert(producer_id, topic_name.to_string());
 
             gauge!(TOPIC_ACTIVE_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
+            
+            // Dual-track producer count
+            let producer_count = topic.get_producer_count().await;
+            self.metrics_collector.set_producer_count(topic_name, producer_count).await;
 
             {
                 let mut resources = self.resources.lock().await;
@@ -463,6 +473,12 @@ impl TopicManager {
             .insert(consumer_id, topic_name.clone(), sub_name_clone);
 
         gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
+        
+        // Dual-track consumer count
+        if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+            let consumer_count = topic.get_consumer_count().await;
+            self.metrics_collector.set_consumer_count(&topic_name, consumer_count).await;
+        }
 
         let sub_options = serde_json::to_value(&subscription_options)?;
         {

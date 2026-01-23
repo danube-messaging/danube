@@ -1,5 +1,5 @@
-use super::{LoadReport, ResourceType};
-
+use super::load_report::{LoadReport, ResourceType};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -12,7 +12,7 @@ pub(crate) async fn rankings_simple(
 
     let mut broker_loads: Vec<(u64, usize)> = brokers_usage
         .iter()
-        .map(|(&broker_id, load_report)| (broker_id, load_report.topics_len))
+        .map(|(&broker_id, load_report)| (broker_id, load_report.topics.len()))
         .collect();
 
     broker_loads.sort_by_key(|&(_, load)| load);
@@ -32,7 +32,7 @@ pub(crate) async fn rankings_composite(
     let mut broker_loads: Vec<(u64, usize)> = brokers_usage
         .iter()
         .map(|(&broker_id, load_report)| {
-            let topics_load = load_report.topics_len as f64 * weights.0;
+            let topics_load = load_report.topics.len() as f64 * weights.0;
             let mut cpu_load = 0.0;
             let mut memory_load = 0.0;
 
@@ -59,11 +59,159 @@ pub(crate) async fn rankings_composite(
     broker_loads
 }
 
+/// Configurable weights for weighted composite ranking
+/// TODO: Wire this into LoadManager when configuration system is ready
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RankingWeights {
+    pub cpu: f64,
+    pub memory: f64,
+    pub disk_io: f64,
+    pub network_io: f64,
+    pub throughput: f64,
+    pub topic_count: f64,
+}
+
+impl Default for RankingWeights {
+    fn default() -> Self {
+        Self {
+            cpu: 0.30,
+            memory: 0.25,
+            disk_io: 0.15,
+            network_io: 0.10,
+            throughput: 0.15,
+            topic_count: 0.05,
+        }
+    }
+}
+
+/// Weighted composite ranking algorithm
+///
+/// Ranks brokers based on multiple weighted factors:
+/// - CPU usage
+/// - Memory usage
+/// - Disk I/O
+/// - Network I/O
+/// - Throughput (message rate)
+/// - Topic count
+///
+/// Returns list of (broker_id, score) sorted by score (ascending = less loaded)
+///
+/// TODO: Wire this into LoadManager when configuration system is ready
+#[allow(dead_code)]
+pub(crate) async fn rankings_weighted_composite(
+    brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
+    weights: RankingWeights,
+) -> Vec<(u64, f64)> {
+    let brokers = brokers_usage.lock().await;
+
+    if brokers.is_empty() {
+        return vec![];
+    }
+
+    // Find max values for normalization
+    let max_values = calculate_max_values(&brokers);
+
+    let mut broker_scores: Vec<(u64, f64)> = brokers
+        .iter()
+        .map(|(&broker_id, report)| {
+            let score = calculate_broker_score(report, &weights, &max_values);
+            (broker_id, score)
+        })
+        .collect();
+
+    // Sort by score (ascending - lower is better for assignment)
+    broker_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    broker_scores
+}
+
+struct MaxValues {
+    cpu: f64,
+    memory: f64,
+    disk_io: f64,
+    network_io: f64,
+    throughput: f64,
+    topic_count: f64,
+}
+
+fn calculate_max_values(brokers: &HashMap<u64, LoadReport>) -> MaxValues {
+    let mut max = MaxValues {
+        cpu: 1.0,
+        memory: 1.0,
+        disk_io: 1.0,
+        network_io: 1.0,
+        throughput: 1.0,
+        topic_count: 1.0,
+    };
+
+    for report in brokers.values() {
+        // Extract system metrics
+        for sys_load in &report.resources_usage {
+            match sys_load.resource {
+                ResourceType::CPU => max.cpu = max.cpu.max(sys_load.usage),
+                ResourceType::Memory => max.memory = max.memory.max(sys_load.usage),
+                ResourceType::DiskIO => max.disk_io = max.disk_io.max(sys_load.usage),
+                ResourceType::NetworkIO => max.network_io = max.network_io.max(sys_load.usage),
+            }
+        }
+
+        // Aggregate metrics
+        max.throughput = max.throughput.max(report.total_throughput_mbps);
+        max.topic_count = max.topic_count.max(report.topics.len() as f64);
+    }
+
+    max
+}
+
+#[allow(dead_code)]
+fn calculate_broker_score(
+    report: &LoadReport,
+    weights: &RankingWeights,
+    max_values: &MaxValues,
+) -> f64 {
+    let mut score = 0.0;
+
+    // Normalize and weight each metric
+    for sys_load in &report.resources_usage {
+        match sys_load.resource {
+            ResourceType::CPU => {
+                score += normalize(sys_load.usage, max_values.cpu) * weights.cpu;
+            }
+            ResourceType::Memory => {
+                score += normalize(sys_load.usage, max_values.memory) * weights.memory;
+            }
+            ResourceType::DiskIO => {
+                score += normalize(sys_load.usage, max_values.disk_io) * weights.disk_io;
+            }
+            ResourceType::NetworkIO => {
+                score += normalize(sys_load.usage, max_values.network_io) * weights.network_io;
+            }
+        }
+    }
+
+    // Aggregates
+    score += normalize(report.total_throughput_mbps, max_values.throughput) * weights.throughput;
+    score += normalize(report.topics.len() as f64, max_values.topic_count) * weights.topic_count;
+
+    score
+}
+
+#[allow(dead_code)]
+fn normalize(value: f64, max: f64) -> f64 {
+    if max == 0.0 {
+        0.0
+    } else {
+        (value / max).min(1.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::danube_service::load_manager::{
-        load_report::SystemLoad, LoadManager, LoadReport, ResourceType,
+        load_report::{LoadReport, ResourceType, SystemLoad, TopicLoad},
+        LoadManager,
     };
     use danube_metadata_store::{MemoryStore, MetadataStorage};
     use std::sync::atomic::AtomicU64;
@@ -80,8 +228,23 @@ mod tests {
                     usage: memory_usage,
                 },
             ],
-            topics_len,
-            topic_list: vec!["/default/topic_name".to_string()],
+            topics: (0..topics_len)
+                .map(|i| TopicLoad {
+                    topic_name: format!("/default/topic_{}", i),
+                    message_rate: 0,
+                    byte_rate: 0,
+                    byte_rate_mbps: 0.0,
+                    producer_count: 0,
+                    consumer_count: 0,
+                    subscription_count: 0,
+                    backlog_messages: 0,
+                })
+                .collect(),
+            total_throughput_mbps: 0.0,
+            total_message_rate: 0,
+            total_lag_messages: 0,
+            timestamp: 0,
+            broker_id: 0,
         }
     }
 

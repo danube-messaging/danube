@@ -17,6 +17,7 @@ use crate::{
         TOPIC_ACTIVE_SUBSCRIPTIONS, TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL,
         TOPIC_MESSAGE_SIZE_BYTES,
     },
+    danube_service::metrics_collector::MetricsCollector,
     dispatcher::DispatchStrategy,
     message::AckMessage,
     policies::Policies,
@@ -72,8 +73,10 @@ pub(crate) struct Topic {
     topic_store: Option<TopicStore>,
     // topic state for orchestrations like unload
     state: Mutex<TopicState>,
-    // Phase 2: optional topic-level publish rate limiter (messages/sec)
+    // optional topic-level publish rate limiter (messages/sec)
     pub(crate) publish_rate_limiter: Option<Arc<RateLimiter>>,
+    // metrics collector for LoadReport
+    metrics_collector: Arc<MetricsCollector>,
 }
 
 impl Topic {
@@ -83,6 +86,7 @@ impl Topic {
         wal_storage: Option<WalStorage>,
         resources_topic: TopicResources,
         resources_schema: SchemaResources,
+        metrics_collector: Arc<MetricsCollector>,
     ) -> Self {
         let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
@@ -102,7 +106,25 @@ impl Topic {
             topic_store,
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
+            metrics_collector,
         }
+    }
+
+    /// Get current producer count for metrics
+    pub(crate) async fn get_producer_count(&self) -> usize {
+        self.producers.lock().await.len()
+    }
+
+    /// Get current consumer count for metrics (across all subscriptions)
+    pub(crate) async fn get_consumer_count(&self) -> usize {
+        let subscriptions = self.subscriptions.lock().await;
+        subscriptions.values().map(|sub| sub.consumer_count()).sum()
+    }
+
+    /// Get subscription count for metrics
+    #[allow(dead_code)]
+    pub(crate) async fn get_subscription_count(&self) -> usize {
+        self.subscriptions.lock().await.len()
     }
 
     #[allow(unused_assignments)]
@@ -151,6 +173,9 @@ impl Topic {
                 let producer_id = producer.disconnect();
                 disconnected_producers.push(producer_id);
             }
+
+            // Update metrics collector after disconnect
+            self.metrics_collector.set_producer_count(&self.topic_name, 0).await;
         }
 
         // Disconnect all the topic subscriptions
@@ -159,6 +184,11 @@ impl Topic {
             let mut consumers = subscription.disconnect().await?;
             disconnected_consumers.append(&mut consumers);
         }
+
+        // Update metrics collector after disconnect
+        self.metrics_collector.set_consumer_count(&self.topic_name, 0).await;
+        self.metrics_collector.set_subscription_count(&self.topic_name, 0).await;
+
         // Decrement subscriptions gauge for all existing
         let subs_len = subs_guard.len();
         if subs_len > 0 {
@@ -229,6 +259,11 @@ impl Topic {
             "topic"=> self.topic_name.clone()
         )
         .increment(stream_message.payload.len() as u64);
+
+        // Dual-track metrics for LoadReport
+        self.metrics_collector
+            .record_message_in(&self.topic_name, stream_message.payload.len() as u64)
+            .await;
 
         // Process message based on dispatch strategy
         match &self.dispatch_strategy {
@@ -391,6 +426,11 @@ impl Topic {
             // Gauge: topic active subscriptions ++
             gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
                 .increment(1.0);
+
+            // Dual-track subscription count
+            self.metrics_collector
+                .set_subscription_count(&self.topic_name, subs.len())
+                .await;
         }
 
         // Policy: consumer limits (per-subscription and per-topic)
@@ -416,11 +456,18 @@ impl Topic {
     // Unsubscribes the specified subscription from the topic
     // should be called if all consumers are disconnected
     pub(crate) async fn unsubscribe(&self, subscription_name: &str) {
-        let removed = self.subscriptions.lock().await.remove(subscription_name);
-        if removed.is_some() {
-            gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
-                .decrement(1.0);
-        }
+        let subs_count = {
+            let mut subs = self.subscriptions.lock().await;
+            subs.remove(subscription_name);
+            subs.len()
+        };
+
+        gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone()).decrement(1.0);
+
+        // Dual-track subscription count
+        self.metrics_collector
+            .set_subscription_count(&self.topic_name, subs_count)
+            .await;
     }
 
     pub(crate) async fn validate_consumer(

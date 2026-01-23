@@ -1,14 +1,15 @@
 mod broker_register;
 mod broker_watcher;
 mod leader_election;
-mod load_manager;
+pub(crate) mod load_manager;
 mod local_cache;
+pub(crate) mod metrics_collector;
 mod resource_monitor;
 mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
-pub(crate) use load_manager::load_report::{generate_load_report, LoadReport};
+pub(crate) use load_manager::load_report::LoadReport;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
@@ -397,8 +398,11 @@ async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store:
         interval.tick().await;
         topics = broker_service.get_topics();
         broker_id = broker_service.broker_id;
-        let topics_len = topics.len();
-        let load_report: LoadReport = generate_load_report(topics_len, topics).await;
+        let load_report: LoadReport = load_manager::load_report::generate_load_report(
+            broker_id, 
+            topics, 
+            broker_service.metrics_collector()
+        ).await;
         if let Ok(value) = serde_json::to_value(&load_report) {
             let path = join_path(&[BASE_BROKER_LOAD_PATH, &broker_id.to_string()]);
             match meta_store.put(&path, value, MetaOptions::None).await {
