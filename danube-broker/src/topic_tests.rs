@@ -62,12 +62,16 @@ async fn mk_topic(name: &str) -> Topic {
     let local_cache = LocalCache::new(store.clone());
     let topic_resources = TopicResources::new(local_cache.clone(), store.clone());
     let schema_resources = SchemaResources::new(local_cache, store);
+    use crate::danube_service::metrics_collector::MetricsCollector;
+    use std::sync::Arc;
+    
     Topic::new(
         name,
         ConfigDispatchStrategy::NonReliable,
         None,
         topic_resources,
         schema_resources,
+        Arc::new(MetricsCollector::new()),
     )
 }
 

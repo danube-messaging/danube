@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
-use load_report::{LoadReport, ResourceType};
+use load_report::LoadReport;
 use metrics::counter;
 use rankings::{rankings_composite, rankings_simple};
 use serde_json::Value;
@@ -504,8 +504,17 @@ impl LoadManager {
                 // Update internal state
                 let mut brokers_usage = self.brokers_usage.lock().await;
                 if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
-                    load_report.topics_len += 1;
-                    load_report.topic_list.push(topic_name.to_string());
+                    // Add a placeholder TopicLoad entry
+                    load_report.topics.push(load_report::TopicLoad {
+                        topic_name: topic_name.to_string(),
+                        message_rate: 0,
+                        byte_rate: 0,
+                        byte_rate_mbps: 0.0,
+                        producer_count: 0,
+                        consumer_count: 0,
+                        subscription_count: 0,
+                        backlog_messages: 0,
+                    });
                 }
             }
             WatchEvent::Delete { .. } => (), // Ignore delete events
@@ -678,7 +687,7 @@ impl LoadManager {
     pub(crate) async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
         let brokers_usage = self.brokers_usage.lock().await;
         if let Some(load_report) = brokers_usage.get(&broker_id) {
-            if load_report.topic_list.contains(&topic_name.to_owned()) {
+            if load_report.topics.iter().any(|t| t.topic_name == topic_name) {
                 return true;
             }
         }

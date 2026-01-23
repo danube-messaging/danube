@@ -1,4 +1,5 @@
 use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
+use crate::danube_service::metrics_collector::MetricsCollector;
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
 use danube_persistent_storage::WalStorageFactory;
@@ -45,6 +46,9 @@ pub(crate) struct BrokerService {
     pub(crate) resources: Arc<Mutex<Resources>>,
     /// Whether producers are allowed to auto-create topics when missing.
     pub(crate) auto_create_topics: bool,
+
+    /// Internal metrics collector for LoadReport generation
+    pub(crate) metrics_collector: Arc<MetricsCollector>,
 }
 
 impl BrokerService {
@@ -60,6 +64,7 @@ impl BrokerService {
         let consumers = ConsumerRegistry::new();
         let topic_worker_pool = Arc::new(TopicWorkerPool::new(None));
         let resources_arc = Arc::new(Mutex::new(resources));
+        let metrics_collector = Arc::new(MetricsCollector::new());
 
         let topic_manager = TopicManager::new(
             broker_id,
@@ -68,6 +73,7 @@ impl BrokerService {
             resources_arc.clone(),
             producers.clone(),
             consumers.clone(),
+            metrics_collector.clone(),
         );
 
         let topic_cluster = TopicCluster::new(resources_arc.clone());
@@ -79,7 +85,13 @@ impl BrokerService {
             topic_cluster,
             resources: resources_arc,
             auto_create_topics,
+            metrics_collector,
         }
+    }
+
+    /// Get a reference to the metrics collector for dual-tracking
+    pub(crate) fn metrics_collector(&self) -> &Arc<MetricsCollector> {
+        &self.metrics_collector
     }
 
     // =====================================================================
