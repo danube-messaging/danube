@@ -23,7 +23,7 @@ use crate::{
     utils::join_path,
 };
 
-use super::{LeaderElection, LeaderElectionState};
+use super::leader_election::{LeaderElection, LeaderElectionState};
 
 /// LoadManager - Distributed Broker Load Balancing and Failover Management
 ///

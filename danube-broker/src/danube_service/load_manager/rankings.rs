@@ -38,8 +38,14 @@ pub(crate) async fn rankings_composite(
 
             for system_load in &load_report.resources_usage {
                 match system_load.resource {
-                    ResourceType::CPU => cpu_load += system_load.usage as f64 * weights.1,
-                    ResourceType::Memory => memory_load += system_load.usage as f64 * weights.2,
+                    ResourceType::CPU => cpu_load += system_load.usage * weights.1,
+                    ResourceType::Memory => memory_load += system_load.usage * weights.2,
+                    ResourceType::DiskIO => {
+                        // DiskIO can contribute to load score in future phases
+                    }
+                    ResourceType::NetworkIO => {
+                        // NetworkIO can contribute to load score in future phases
+                    }
                 }
             }
 
@@ -62,7 +68,7 @@ mod tests {
     use danube_metadata_store::{MemoryStore, MetadataStorage};
     use std::sync::atomic::AtomicU64;
 
-    fn create_load_report(cpu_usage: usize, memory_usage: usize, topics_len: usize) -> LoadReport {
+    fn create_load_report(cpu_usage: f64, memory_usage: f64, topics_len: usize) -> LoadReport {
         LoadReport {
             resources_usage: vec![
                 SystemLoad {
@@ -94,7 +100,7 @@ mod tests {
             .brokers_usage
             .lock()
             .await
-            .insert(1, create_load_report(50, 30, 10));
+            .insert(1, create_load_report(50.0, 30.0, 10));
 
         load_manager.calculate_rankings_composite().await;
 
@@ -118,17 +124,17 @@ mod tests {
             .brokers_usage
             .lock()
             .await
-            .insert(1, create_load_report(50, 30, 10));
+            .insert(1, create_load_report(50.0, 30.0, 10));
         load_manager
             .brokers_usage
             .lock()
             .await
-            .insert(2, create_load_report(20, 20, 5));
+            .insert(2, create_load_report(20.0, 20.0, 5));
         load_manager
             .brokers_usage
             .lock()
             .await
-            .insert(3, create_load_report(10, 10, 2));
+            .insert(3, create_load_report(10.0, 10.0, 2));
 
         load_manager.calculate_rankings_composite().await;
 
@@ -171,17 +177,17 @@ mod tests {
             .brokers_usage
             .lock()
             .await
-            .insert(1, create_load_report(10, 10, 5)); // Load: 5 * 1.0 + 10 * 0.5 + 10 * 0.5 = 15
+            .insert(1, create_load_report(10.0, 10.0, 5)); // Load: 5 * 1.0 + 10 * 0.5 + 10 * 0.5 = 15
         load_manager
             .brokers_usage
             .lock()
             .await
-            .insert(2, create_load_report(10, 10, 5)); // Load: 15
+            .insert(2, create_load_report(10.0, 10.0, 5)); // Load: 15
         load_manager
             .brokers_usage
             .lock()
             .await
-            .insert(3, create_load_report(10, 10, 5)); // Load: 15
+            .insert(3, create_load_report(10.0, 10.0, 5)); // Load: 15
 
         load_manager.calculate_rankings_composite().await;
 
