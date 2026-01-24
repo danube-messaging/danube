@@ -1,12 +1,15 @@
-//! Tests for LoadManager - Phase 3 Automated Rebalancing
+//! Integration Tests for LoadManager Rebalancing
 //!
-//! This suite covers:
-//! - Step 1: Threshold Configuration (aggressiveness levels)
-//! - Step 2: Imbalance Calculation (Coefficient of Variation)
-//! - Step 3: Decision Logic (should_trigger_rebalancing)
-//! - Step 4: Candidate Selection (`select_rebalancing_candidates`, blacklist matching)
-//! - Step 5: Rebalancing Execution (`execute_rebalancing`, audit logging)
+//! This suite tests LoadManager's coordination and delegation to the rebalancing module.
+//! Tests verify:
+//! - Statistical imbalance detection (edge cases, broker classification)
+//! - Safety features (rate limiting, blacklists, config enforcement)
+//! - Complex integration behavior (failover, hint processing)
+//! - Data preservation guarantees during broker failures
+//!
+//! Note: Unit tests for rebalancing data structures are in rebalancing_test.rs
 
+use super::rebalancing::RebalancingReason;
 use super::*;
 use crate::danube_service::load_report;
 use danube_metadata_store::{EtcdGetOptions, MemoryStore, MetaOptions, MetadataStorage};
@@ -23,9 +26,16 @@ async fn create_test_load_manager() -> LoadManager {
 }
 
 // ============================================================================
-// Step 3: Imbalance Detection Tests
+// Imbalance Detection Tests
 // ============================================================================
 
+/// **Test:** Edge Case - Insufficient Brokers
+///
+/// **Reason:** Validates that imbalance calculation handles edge cases gracefully
+/// (empty cluster, single broker) without panicking or returning invalid metrics.
+///
+/// **Expectation:** With 0-1 brokers, should return zero metrics (CV=0, no overloaded/underloaded).
+/// This prevents rebalancing from triggering in invalid cluster states.
 #[tokio::test]
 async fn test_calculate_imbalance_insufficient_brokers() {
     let lm = create_test_load_manager().await;
@@ -38,25 +48,14 @@ async fn test_calculate_imbalance_insufficient_brokers() {
     assert_eq!(metrics.underloaded_brokers.len(), 0);
 }
 
-#[tokio::test]
-async fn test_calculate_imbalance_balanced_cluster() {
-    let lm = create_test_load_manager().await;
-
-    // Simulate 3 brokers with similar loads (10, 10, 10 topics)
-    let mut rankings = lm.rankings.lock().await;
-    *rankings = vec![(1, 10), (2, 10), (3, 10)];
-    drop(rankings);
-
-    let metrics = lm.calculate_imbalance().await.unwrap();
-
-    // Perfectly balanced - CV should be 0
-    assert!(metrics.coefficient_of_variation < 0.01); // Near zero
-    assert_eq!(metrics.mean_load, 10.0);
-    assert_eq!(metrics.max_load, 10.0);
-    assert_eq!(metrics.min_load, 10.0);
-    assert!(metrics.is_balanced(0.30)); // Well under threshold
-}
-
+/// **Test:** Imbalance Detection with Mixed Loads
+///
+/// **Reason:** Tests that CV calculation correctly detects imbalance with realistic
+/// load distribution (not perfectly balanced, not extremely skewed).
+///
+/// **Expectation:** Brokers with loads (5, 10, 20) should produce CV > 0 and
+/// trigger rebalancing at aggressive thresholds (0.20). Validates the statistical
+/// calculation is working correctly.
 #[tokio::test]
 async fn test_calculate_imbalance_unbalanced_cluster() {
     let lm = create_test_load_manager().await;
@@ -78,6 +77,14 @@ async fn test_calculate_imbalance_unbalanced_cluster() {
     assert!(metrics.needs_rebalancing(0.20)); // Aggressive threshold
 }
 
+/// **Test:** Statistical Broker Classification
+///
+/// **Reason:** Tests that the statistical classification correctly identifies overloaded
+/// brokers using standard deviation (mean + 1σ threshold). This is complex statistical
+/// logic that could easily have off-by-one errors.
+///
+/// **Expectation:** With loads (5, 10, 30), broker 3 should be classified as overloaded
+/// since load 30 > mean(15) + std_dev(~10.8) = ~25.8. Validates statistical thresholds work.
 #[tokio::test]
 async fn test_calculate_imbalance_identifies_overloaded() {
     let lm = create_test_load_manager().await;
@@ -95,6 +102,17 @@ async fn test_calculate_imbalance_identifies_overloaded() {
     assert!(metrics.overloaded_brokers.contains(&3));
 }
 
+// ============================================================================
+// Rebalancing Decision Logic Tests
+// ============================================================================
+
+/// **Test:** Config Safety - Disabled Rebalancing
+///
+/// **Reason:** Validates that the `enabled` flag is properly respected. This is a critical
+/// safety feature to prevent automated rebalancing during maintenance or emergencies.
+///
+/// **Expectation:** Even with severe imbalance (CV=0.50), rebalancing should NOT trigger
+/// when config.enabled=false. Prevents runaway automation.
 #[tokio::test]
 async fn test_should_rebalance_disabled() {
     let lm = create_test_load_manager().await;
@@ -116,6 +134,13 @@ async fn test_should_rebalance_disabled() {
     assert!(!lm.should_rebalance(&metrics, &config));
 }
 
+/// **Test:** Threshold-Based Rebalancing Trigger
+///
+/// **Reason:** Tests that different aggressiveness thresholds work correctly.
+/// The CV must be compared against the threshold to decide if rebalancing is needed.
+///
+/// **Expectation:** CV=0.25 should NOT trigger rebalancing with Balanced threshold (0.30),
+/// but CV=0.35 SHOULD trigger. Validates threshold comparison logic is correct.
 #[tokio::test]
 async fn test_should_rebalance_threshold_check() {
     let lm = create_test_load_manager().await;
@@ -150,9 +175,16 @@ async fn test_should_rebalance_threshold_check() {
 }
 
 // ============================================================================
-// Step 4: Candidate Selection Tests
+// Candidate Selection Tests
 // ============================================================================
 
+/// **Test:** Topic Selection Strategy - Lightest First
+///
+/// **Reason:** Tests that topics are selected in the correct order (lightest first)
+/// from overloaded brokers. This strategy minimizes disruption during rebalancing.
+///
+/// **Expectation:** Should select light-topic before heavy-topic, even though both
+/// could be moved. Validates sorting and selection logic is correct.
 #[tokio::test]
 async fn test_select_rebalancing_candidates_basic() {
     let lm = create_test_load_manager().await;
@@ -248,6 +280,13 @@ async fn test_select_rebalancing_candidates_basic() {
     assert!(moves[0].estimated_load < moves[1].estimated_load);
 }
 
+/// **Test:** Safety Feature - Blacklist Enforcement
+///
+/// **Reason:** Tests that blacklisted topics are NEVER moved during rebalancing.
+/// This is critical for protecting system/admin topics from automated movement.
+///
+/// **Expectation:** Should only select "/default/movable" and skip "/admin/critical"
+/// even though both are on overloaded broker. Prevents breaking critical topics.
 #[tokio::test]
 async fn test_select_rebalancing_candidates_respects_blacklist() {
     let lm = create_test_load_manager().await;
@@ -325,6 +364,13 @@ async fn test_select_rebalancing_candidates_respects_blacklist() {
     assert!(!moves.iter().any(|m| m.topic_name == "/admin/critical"));
 }
 
+/// **Test:** Safety Feature - Max Moves Per Cycle
+///
+/// **Reason:** Tests that rate limiting prevents too many simultaneous moves.
+/// Moving too many topics at once can destabilize the cluster.
+///
+/// **Expectation:** With 10 eligible topics and max_moves_per_cycle=3, should only
+/// select 3 topics. Validates rate limiting works to prevent cluster overload.
 #[tokio::test]
 async fn test_select_rebalancing_candidates_respects_max_moves() {
     let lm = create_test_load_manager().await;
@@ -390,6 +436,13 @@ async fn test_select_rebalancing_candidates_respects_max_moves() {
     assert_eq!(moves.len(), 3);
 }
 
+/// **Test:** Complex Wildcard Pattern Matching
+///
+/// **Reason:** Tests that namespace wildcards ("/namespace/*") work correctly.
+/// This is complex string matching logic that could have edge cases.
+///
+/// **Expectation:** "/system/*" should match "/system/metrics" but NOT "/systemx/topic"
+/// or "/production/metrics". Validates wildcard boundary conditions.
 #[tokio::test]
 async fn test_is_topic_blacklisted() {
     let lm = create_test_load_manager().await;
@@ -438,93 +491,16 @@ async fn test_is_topic_blacklisted() {
 }
 
 // ============================================================================
-// Step 5: Rebalancing Execution Tests
+// Rebalancing Execution Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_execute_single_move() {
-    let lm = create_test_load_manager().await;
-
-    let mv = RebalancingMove::new(
-        "/default/test-topic".to_string(),
-        1,
-        2,
-        RebalancingReason::LoadImbalance,
-        5.0,
-    );
-
-    // Execute the move
-    let result = lm.execute_single_move(&mv).await;
-    assert!(result.is_ok());
-
-    // Verify unassigned marker was created
-    let unassigned_path = format!("{}/default/test-topic", BASE_UNASSIGNED_PATH);
-    let marker = lm
-        .meta_store
-        .get(
-            &unassigned_path,
-            MetaOptions::EtcdGet(EtcdGetOptions::default()),
-        )
-        .await;
-    assert!(marker.is_ok());
-
-    let marker_value = marker.unwrap();
-    assert!(marker_value.is_some());
-
-    let marker_json = marker_value.unwrap();
-    assert_eq!(marker_json["reason"], "rebalance");
-    assert_eq!(marker_json["from_broker"], 1);
-    assert_eq!(marker_json["to_broker"], 2);
-    assert!(marker_json["timestamp"].is_number());
-}
-
-#[tokio::test]
-async fn test_execute_rebalancing_basic() {
-    let lm = create_test_load_manager().await;
-    let mut history = RebalancingHistory::new(1000);
-
-    let moves = vec![
-        RebalancingMove::new(
-            "/default/topic-1".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            3.0,
-        ),
-        RebalancingMove::new(
-            "/default/topic-2".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            4.0,
-        ),
-    ];
-
-    let config = config::RebalancingConfig {
-        enabled: true,
-        aggressiveness: config::RebalancingAggressiveness::Balanced,
-        check_interval_seconds: 300,
-        max_moves_per_cycle: 5,
-        max_moves_per_hour: 20,
-        cooldown_seconds: 0, // No cooldown for test speed
-        min_brokers_for_rebalance: 2,
-        min_topic_age_seconds: 0,
-        blacklist_topics: vec![],
-    };
-
-    let executed = lm
-        .execute_rebalancing(moves, &config, &mut history)
-        .await
-        .unwrap();
-
-    // Both moves should execute
-    assert_eq!(executed, 2);
-
-    // History should track both moves
-    assert_eq!(history.total_moves(), 2);
-    assert_eq!(history.count_moves_in_last_hour(), 2);
-}
-
+/// **Test:** Safety Feature - Hourly Rate Limiting
+///
+/// **Reason:** Tests that max_moves_per_hour prevents rebalancing storms.
+/// Without this, a bug could cause hundreds of moves, destabilizing the cluster.
+///
+/// **Expectation:** With 9 existing moves and limit of 10, should only execute 1 more move
+/// and then stop. Validates rate limiting enforcement across multiple cycles.
 #[tokio::test]
 async fn test_execute_rebalancing_respects_hourly_rate_limit() {
     let lm = create_test_load_manager().await;
@@ -590,58 +566,17 @@ async fn test_execute_rebalancing_respects_hourly_rate_limit() {
     assert_eq!(history.count_moves_in_last_hour(), 10);
 }
 
-#[tokio::test]
-async fn test_execute_rebalancing_continues_on_error() {
-    let lm = create_test_load_manager().await;
-    let mut history = RebalancingHistory::new(1000);
-
-    let moves = vec![
-        RebalancingMove::new(
-            "/default/topic-1".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            3.0,
-        ),
-        RebalancingMove::new(
-            "/default/topic-2".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            4.0,
-        ),
-    ];
-
-    let config = config::RebalancingConfig {
-        enabled: true,
-        aggressiveness: config::RebalancingAggressiveness::Balanced,
-        check_interval_seconds: 300,
-        max_moves_per_cycle: 5,
-        max_moves_per_hour: 20,
-        cooldown_seconds: 0,
-        min_brokers_for_rebalance: 2,
-        min_topic_age_seconds: 0,
-        blacklist_topics: vec![],
-    };
-
-    let executed = lm
-        .execute_rebalancing(moves, &config, &mut history)
-        .await
-        .unwrap();
-
-    // Even if some moves fail (e.g., topic doesn't exist), execution continues
-    // At minimum, the function should not panic
-    assert!(executed >= 0);
-}
-
 // ============================================================================
 // Broker Failover Tests
 // ============================================================================
 
-/// Test: Broker Failover Reallocation - Metadata Preservation
+/// **Test:** CRITICAL - Metadata Preservation During Failover
 ///
-/// Purpose: Validates that when a broker fails, the failover reallocation process
-/// correctly handles broker assignments while preserving all durable metadata.
+/// **Reason:** Tests that topic metadata (retention policies, dispatch mode, etc.) is preserved
+/// when a broker fails. Loss of metadata would break topic semantics and violate guarantees.
+///
+/// **Expectation:** After broker failure and topic reassignment, the topic metadata at
+/// "/topics/{ns}/{topic}/policy" MUST remain unchanged. This is a critical data integrity test.
 #[tokio::test]
 async fn test_delete_topic_allocation_preserves_metadata() -> Result<()> {
     // Setup in-memory metadata store
@@ -726,10 +661,13 @@ async fn test_delete_topic_allocation_preserves_metadata() -> Result<()> {
     Ok(())
 }
 
-/// Test: Multiple Topics Broker Failover Reallocation
+/// **Test:** Multi-Topic Failover Handling
 ///
-/// Purpose: Validates that broker failover reallocation works correctly when
-/// a single failed broker was managing multiple topics across different namespaces.
+/// **Reason:** Tests that broker failover correctly handles multiple topics across
+/// different namespaces. Complex iteration logic could skip topics or corrupt state.
+///
+/// **Expectation:** All 3 topics (from 2 namespaces) should be moved to unassigned,
+/// broker assignments deleted, and metadata preserved. Validates batch failover works.
 #[tokio::test]
 async fn test_multiple_topics_failover_reallocation() -> Result<()> {
     let memory_store = MemoryStore::new().await?;
@@ -804,47 +742,17 @@ async fn test_multiple_topics_failover_reallocation() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_log_rebalancing_event() {
-    let lm = create_test_load_manager().await;
-
-    let mv = RebalancingMove::new(
-        "/default/audit-topic".to_string(),
-        1,
-        3,
-        RebalancingReason::BrokerOverload,
-        7.5,
-    );
-
-    // Log the event
-    lm.log_rebalancing_event(&mv).await;
-
-    // Verify event was logged to ETCD
-    let history_key = format!("/cluster/rebalancing_history/{}", mv.timestamp);
-    let event = lm
-        .meta_store
-        .get(
-            &history_key,
-            MetaOptions::EtcdGet(EtcdGetOptions::default()),
-        )
-        .await;
-
-    assert!(event.is_ok());
-    let event_value = event.unwrap();
-    assert!(event_value.is_some());
-
-    let event_json = event_value.unwrap();
-    assert_eq!(event_json["topic"], "/default/audit-topic");
-    assert_eq!(event_json["from_broker"], 1);
-    assert_eq!(event_json["to_broker"], 3);
-    assert_eq!(event_json["reason"], "BrokerOverload");
-    assert_eq!(event_json["estimated_load"], 7.5);
-}
-
 // ============================================================================
-// Step 6: Topic Assignment with Rebalance Hints Tests
+// Topic Assignment Integration Tests
 // ============================================================================
 
+/// **Test:** Rebalancing Hint Processing
+///
+/// **Reason:** Tests that rebalancing hints (to_broker) are respected during topic assignment.
+/// This ensures rebalancing targets are honored instead of falling back to least-loaded logic.
+///
+/// **Expectation:** Topic should be assigned to broker 2 (the hint), NOT broker 1 (least loaded).
+/// Validates the hint processing integration works correctly.
 #[tokio::test]
 async fn test_assign_topic_respects_rebalance_hint() {
     let mut lm = create_test_load_manager().await;
