@@ -18,6 +18,9 @@ service BrokerAdmin {
   rpc UnloadBroker(UnloadBrokerRequest) returns (UnloadBrokerResponse);
   rpc ActivateBroker(ActivateBrokerRequest) returns (ActivateBrokerResponse);
   
+  // Load Balancing & Rebalancing RPCs (Phase 3)
+  rpc GetClusterBalance(ClusterBalanceRequest) returns (ClusterBalanceResponse);
+  rpc TriggerRebalance(RebalanceRequest) returns (RebalanceResponse);
 }
 
 service NamespaceAdmin {
@@ -185,4 +188,65 @@ message ActivateBrokerRequest {
 
 message ActivateBrokerResponse {
   bool success = 1;
+}
+
+// Load Balancing & Rebalancing (Phase 3)
+
+// Request to get current cluster balance metrics
+message ClusterBalanceRequest {}
+
+// Response containing cluster balance metrics
+message ClusterBalanceResponse {
+  // Coefficient of variation (0.0 = perfectly balanced, higher = more imbalanced)
+  double coefficient_of_variation = 1;
+  // Mean load across all brokers (typically topic count)
+  double mean_load = 2;
+  // Maximum load in the cluster
+  double max_load = 3;
+  // Minimum load in the cluster
+  double min_load = 4;
+  // Standard deviation of load
+  double std_deviation = 5;
+  // Number of active brokers
+  uint32 broker_count = 6;
+  // Detailed broker load information
+  repeated BrokerLoadInfo brokers = 7;
+}
+
+// Load information for a single broker
+message BrokerLoadInfo {
+  uint64 broker_id = 1;
+  double load = 2;
+  uint32 topic_count = 3;
+  bool is_overloaded = 4;
+  bool is_underloaded = 5;
+}
+
+// Request to trigger manual rebalancing
+message RebalanceRequest {
+  // If true, only calculate and return proposed moves without executing
+  bool dry_run = 1;
+  // Maximum number of topic moves to execute (default: from config)
+  optional uint32 max_moves = 2;
+}
+
+// Response from rebalancing operation
+message RebalanceResponse {
+  // True if rebalancing was successful or dry-run completed
+  bool success = 1;
+  // Number of moves actually executed (0 for dry-run)
+  uint32 moves_executed = 2;
+  // Proposed or executed moves
+  repeated ProposedMove proposed_moves = 3;
+  // Error message if success = false
+  string error_message = 4;
+}
+
+// A proposed or executed topic move
+message ProposedMove {
+  string topic_name = 1;
+  uint64 from_broker = 2;
+  uint64 to_broker = 3;
+  double estimated_load = 4;
+  string reason = 5;
 }

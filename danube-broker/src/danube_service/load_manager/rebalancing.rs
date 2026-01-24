@@ -128,11 +128,10 @@ pub struct ImbalanceMetrics {
     pub mean_load: f64,
     /// Maximum load score in the cluster
     pub max_load: f64,
-    /// Minimum load score in the cluster
+    /// Minimum load in the cluster
     pub min_load: f64,
     /// Standard deviation of load scores
-    /// Reserved for Step 8 (Prometheus metrics export)
-    #[allow(dead_code)]
+    /// Used in Prometheus metrics and Admin CLI
     pub std_deviation: f64,
     /// Broker IDs with load > mean + 1 std_dev (overloaded)
     pub overloaded_brokers: Vec<u64>,

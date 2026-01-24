@@ -46,6 +46,18 @@ pub(crate) enum BrokersCommands {
         #[arg(long, default_value = "admin_activate", help = "Reason for auditability")]
         reason: String,
     },
+    #[command(about = "Show cluster balance metrics and broker loads")]
+    Balance {
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
+        output: Option<String>,
+    },
+    #[command(about = "Trigger manual cluster rebalancing")]
+    Rebalance {
+        #[arg(long, default_value_t = false, help = "Dry run: show proposed moves without executing")]
+        dry_run: bool,
+        #[arg(long, help = "Maximum number of topic moves to execute")]
+        max_moves: Option<u32>,
+    },
 }
 
 pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::Error>> {
@@ -149,6 +161,161 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
             let req = ActivateBrokerRequest { broker_id, reason };
             let resp = client.activate_broker(req).await?.into_inner();
             println!("ActivateBroker success={}", resp.success);
+        }
+        BrokersCommands::Balance { output } => {
+            use danube_core::admin_proto::ClusterBalanceRequest;
+            let response = client.get_cluster_balance(ClusterBalanceRequest {}).await?;
+            let balance = response.into_inner();
+
+            if matches!(output.as_deref(), Some("json")) {
+                let serializable = serde_json::json!({
+                    "coefficient_of_variation": balance.coefficient_of_variation,
+                    "mean_load": balance.mean_load,
+                    "max_load": balance.max_load,
+                    "min_load": balance.min_load,
+                    "std_deviation": balance.std_deviation,
+                    "broker_count": balance.broker_count,
+                    "brokers": balance.brokers.iter().map(|b| serde_json::json!({
+                        "broker_id": b.broker_id,
+                        "load": b.load,
+                        "topic_count": b.topic_count,
+                        "is_overloaded": b.is_overloaded,
+                        "is_underloaded": b.is_underloaded,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&serializable)?);
+            } else {
+                // Determine cluster status
+                let cv_percent = balance.coefficient_of_variation * 100.0;
+                let threshold = 30.0; // Balanced threshold
+                let status = if cv_percent < 20.0 {
+                    "✅ Well Balanced"
+                } else if cv_percent < threshold {
+                    "✅ Balanced"
+                } else if cv_percent < 40.0 {
+                    "⚠️  Imbalanced"
+                } else {
+                    "❌ Severely Imbalanced"
+                };
+
+                println!("\n╔══════════════════════════════════════════════════════════╗");
+                println!("║           Cluster Balance Report                       ║");
+                println!("╚══════════════════════════════════════════════════════════╝");
+                println!();
+                println!("Status:                    {}", status);
+                println!("Coefficient of Variation:  {:.2}%", cv_percent);
+                println!("Threshold (Balanced):      {:.2}%", threshold);
+                println!();
+                println!("Load Statistics:");
+                println!("  Mean Load:       {:.2} topics", balance.mean_load);
+                println!("  Max Load:        {:.2} topics", balance.max_load);
+                println!("  Min Load:        {:.2} topics", balance.min_load);
+                println!("  Std Deviation:   {:.2}", balance.std_deviation);
+                println!("  Broker Count:    {}", balance.broker_count);
+                println!();
+
+                if !balance.brokers.is_empty() {
+                    println!("Broker Details:");
+                    let mut table = Table::new();
+                    table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
+                    table.add_row(Row::new(vec![
+                        Cell::new("BROKER ID"),
+                        Cell::new("LOAD"),
+                        Cell::new("TOPICS"),
+                        Cell::new("STATUS"),
+                    ]));
+
+                    for broker in &balance.brokers {
+                        let status = if broker.is_overloaded {
+                            "Overloaded"
+                        } else if broker.is_underloaded {
+                            "Underloaded"
+                        } else {
+                            "Normal"
+                        };
+
+                        table.add_row(Row::new(vec![
+                            Cell::new(&broker.broker_id.to_string()),
+                            Cell::new(&format!("{:.1}", broker.load)),
+                            Cell::new(&broker.topic_count.to_string()),
+                            Cell::new(status),
+                        ]));
+                    }
+                    table.printstd();
+                }
+
+                if cv_percent >= threshold {
+                    println!();
+                    println!("💡 Recommendation: Run 'danube-admin-cli brokers rebalance' to balance the cluster");
+                }
+            }
+        }
+        BrokersCommands::Rebalance { dry_run, max_moves } => {
+            use danube_core::admin_proto::RebalanceRequest;
+            let request = RebalanceRequest { dry_run, max_moves };
+            let response = client.trigger_rebalance(request).await?;
+            let result = response.into_inner();
+
+            if !result.success {
+                eprintln!("❌ Rebalancing failed: {}", result.error_message);
+                return Ok(());
+            }
+
+            if dry_run {
+                println!("\n╔══════════════════════════════════════════════════════════╗");
+                println!("║         Dry Run - Proposed Rebalancing Moves            ║");
+                println!("╚══════════════════════════════════════════════════════════╝");
+                println!();
+
+                if result.proposed_moves.is_empty() {
+                    if result.error_message.is_empty() {
+                        println!("✅ Cluster is balanced - no moves needed");
+                    } else {
+                        println!("ℹ️  {}", result.error_message);
+                    }
+                } else {
+                    println!("Would move {} topic(s):", result.proposed_moves.len());
+                    println!();
+
+                    for (i, mv) in result.proposed_moves.iter().enumerate() {
+                        println!("  {}. {}", i + 1, mv.topic_name);
+                        println!("     From: Broker {} → To: Broker {}", mv.from_broker, mv.to_broker);
+                        println!("     Estimated load: {:.2}", mv.estimated_load);
+                        println!("     Reason: {}", mv.reason);
+                        println!();
+                    }
+
+                    println!("💡 Run without --dry-run to execute these moves");
+                }
+            } else {
+                println!("\n╔══════════════════════════════════════════════════════════╗");
+                println!("║         Cluster Rebalancing Triggered                   ║");
+                println!("╚══════════════════════════════════════════════════════════╝");
+                println!();
+
+                if result.moves_executed == 0 {
+                    if result.error_message.is_empty() {
+                        println!("✅ Cluster is already balanced - no action needed");
+                    } else {
+                        println!("ℹ️  {}", result.error_message);
+                    }
+                } else {
+                    println!("✅ Rebalancing Complete!");
+                    println!();
+                    println!("  Moves executed: {}", result.moves_executed);
+                    println!();
+
+                    if !result.proposed_moves.is_empty() {
+                        println!("Executed moves:");
+                        for (i, mv) in result.proposed_moves.iter().take(result.moves_executed as usize).enumerate() {
+                            println!("  ✓ {} (Broker {} → Broker {})", mv.topic_name, mv.from_broker, mv.to_broker);
+                        }
+                    }
+
+                    println!();
+                    println!("💡 Run 'danube-admin-cli brokers balance' to verify cluster state");
+                }
+            }
         }
     }
 

@@ -821,6 +821,9 @@ impl LoadManager {
         // This is the key metric - it's scale-independent unlike std_dev
         let cv = if mean > 0.0 { std_dev / mean } else { 0.0 };
 
+        // Export metric for monitoring
+        metrics::gauge!(crate::broker_metrics::CLUSTER_IMBALANCE_CV.name).set(cv);
+
         // Identify overloaded and underloaded brokers
         let mut overloaded = vec![];
         let mut underloaded = vec![];
@@ -1134,6 +1137,13 @@ impl LoadManager {
                     executed += 1;
                     history.record_move(mv.clone());
 
+                    // Record success metric
+                    metrics::counter!(
+                        crate::broker_metrics::REBALANCING_MOVES_TOTAL.name,
+                        "reason" => format!("{:?}", mv.reason)
+                    )
+                    .increment(1);
+
                     // Log to ETCD for auditing
                     self.log_rebalancing_event(&mv).await;
 
@@ -1143,6 +1153,10 @@ impl LoadManager {
                     }
                 }
                 Err(e) => {
+                    // Record failure metric
+                    metrics::counter!(crate::broker_metrics::REBALANCING_FAILURES_TOTAL.name)
+                        .increment(1);
+
                     error!(
                         topic = %mv.topic_name,
                         error = %e,
@@ -1407,6 +1421,9 @@ impl LoadManager {
                     "cluster imbalance detected, initiating rebalancing"
                 );
 
+                // Start timing the rebalancing cycle
+                let cycle_start = std::time::Instant::now();
+
                 // Step 4: Select topics to move
                 let moves = match self
                     .select_rebalancing_candidates(&metrics, &config)
@@ -1436,9 +1453,17 @@ impl LoadManager {
                     .await
                 {
                     Ok(executed) => {
+                        // Record cycle duration
+                        let cycle_duration = cycle_start.elapsed().as_secs_f64();
+                        metrics::histogram!(
+                            crate::broker_metrics::REBALANCING_CYCLE_DURATION_SECONDS.name
+                        )
+                        .record(cycle_duration);
+
                         info!(
                             executed = executed,
                             total_moves_in_last_hour = history.count_moves_in_last_hour(),
+                            cycle_duration_secs = %cycle_duration,
                             "rebalancing cycle completed successfully"
                         );
                     }
@@ -1458,6 +1483,22 @@ impl LoadManager {
     async fn calculate_rankings_simple(&self) {
         let broker_loads = rankings_simple(self.brokers_usage.clone()).await;
         *self.rankings.lock().await = broker_loads;
+    }
+
+    /// Gets current broker rankings (for admin CLI)
+    ///
+    /// Returns a copy of the current broker load rankings as (broker_id, load) pairs.
+    pub async fn get_rankings(&self) -> Vec<(u64, usize)> {
+        self.rankings.lock().await.clone()
+    }
+
+    /// Gets rebalancing configuration (for admin CLI)
+    ///
+    /// Returns the current rebalancing config if available from service configuration.
+    pub async fn get_rebalancing_config(&self) -> Option<config::RebalancingConfig> {
+        // TODO: Store config reference in LoadManager during initialization
+        // For now, return None - caller should handle this gracefully
+        None
     }
 
     /// Calculates broker rankings using composite resource utilization metrics

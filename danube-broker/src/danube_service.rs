@@ -352,6 +352,7 @@ impl DanubeService {
             self.resources.clone(),
             self.service_config.auth.clone(),
             schema_registry,
+            self.load_manager.clone(),
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;

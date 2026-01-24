@@ -6,7 +6,7 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 12] = [
+pub(crate) const COUNTERS: [Metric; 14] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
@@ -19,8 +19,10 @@ pub(crate) const COUNTERS: [Metric; 12] = [
     DISPATCHER_NOTIFIER_POLLS_TOTAL,
     SCHEMA_VALIDATION_TOTAL,
     SCHEMA_VALIDATION_FAILURES_TOTAL,
+    REBALANCING_MOVES_TOTAL,
+    REBALANCING_FAILURES_TOTAL,
 ];
-pub(crate) const GAUGES: [Metric; 7] = [
+pub(crate) const GAUGES: [Metric; 8] = [
     BROKER_TOPICS_OWNED,
     TOPIC_ACTIVE_PRODUCERS,
     TOPIC_ACTIVE_CONSUMERS,
@@ -28,8 +30,13 @@ pub(crate) const GAUGES: [Metric; 7] = [
     TOPIC_ACTIVE_SUBSCRIPTIONS,
     SUBSCRIPTION_ACTIVE_CONSUMERS,
     SUBSCRIPTION_LAG_MESSAGES,
+    CLUSTER_IMBALANCE_CV,
 ];
-pub(crate) const HISTOGRAMS: [Metric; 2] = [PRODUCER_SEND_LATENCY_MS, TOPIC_MESSAGE_SIZE_BYTES];
+pub(crate) const HISTOGRAMS: [Metric; 3] = [
+    PRODUCER_SEND_LATENCY_MS,
+    TOPIC_MESSAGE_SIZE_BYTES,
+    REBALANCING_CYCLE_DURATION_SECONDS,
+];
 
 // BROKER Metrics --------------------------
 
@@ -147,6 +154,28 @@ pub(crate) const CONSUMER_MESSAGES_OUT_TOTAL: Metric = Metric {
 pub(crate) const CONSUMER_BYTES_OUT_TOTAL: Metric = Metric {
     name: "danube_consumer_bytes_out_total",
     description: "Total bytes delivered to consumer (bytes)",
+};
+
+// REBALANCING Metrics (Phase 3) --------------------------
+
+pub(crate) const REBALANCING_MOVES_TOTAL: Metric = Metric {
+    name: "danube_rebalancing_moves_total",
+    description: "Total number of topic rebalancing moves executed",
+};
+
+pub(crate) const REBALANCING_FAILURES_TOTAL: Metric = Metric {
+    name: "danube_rebalancing_failures_total",
+    description: "Total number of failed rebalancing move attempts",
+};
+
+pub(crate) const CLUSTER_IMBALANCE_CV: Metric = Metric {
+    name: "danube_cluster_imbalance_cv",
+    description: "Current cluster load imbalance coefficient of variation (CV). Lower is better, 0 is perfectly balanced.",
+};
+
+pub(crate) const REBALANCING_CYCLE_DURATION_SECONDS: Metric = Metric {
+    name: "danube_rebalancing_cycle_duration_seconds",
+    description: "Duration of rebalancing cycle execution in seconds",
 };
 
 pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u64) {

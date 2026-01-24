@@ -1,12 +1,13 @@
 use crate::admin::DanubeAdminImpl;
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
-    BrokerListResponse, BrokerResponse, Empty, NamespaceListResponse, UnloadBrokerRequest,
-    UnloadBrokerResponse,
+    BrokerListResponse, BrokerResponse, ClusterBalanceRequest, ClusterBalanceResponse,
+    BrokerLoadInfo, Empty, NamespaceListResponse, ProposedMove, RebalanceRequest,
+    RebalanceResponse, UnloadBrokerRequest, UnloadBrokerResponse,
 };
 
 use tonic::{Request, Response};
-use tracing::{trace, Level};
+use tracing::{info, trace, warn, Level};
 
 #[tonic::async_trait]
 impl BrokerAdmin for DanubeAdminImpl {
@@ -244,5 +245,166 @@ impl BrokerAdmin for DanubeAdminImpl {
             failed_topics,
         };
         Ok(Response::new(response))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn get_cluster_balance(
+        &self,
+        _request: Request<ClusterBalanceRequest>,
+    ) -> std::result::Result<Response<ClusterBalanceResponse>, tonic::Status> {
+        trace!("get cluster balance command");
+
+        // Calculate current imbalance metrics
+        let metrics = self
+            .load_manager
+            .calculate_imbalance()
+            .await
+            .map_err(|e| {
+                tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
+            })?;
+
+        // Get broker rankings for detailed information
+        let rankings = self.load_manager.get_rankings().await;
+
+        // Build broker load info list
+        let mut broker_infos = Vec::new();
+        for (broker_id, load) in rankings.iter() {
+            let is_overloaded = metrics.overloaded_brokers.contains(broker_id);
+            let is_underloaded = metrics.underloaded_brokers.contains(broker_id);
+
+            broker_infos.push(BrokerLoadInfo {
+                broker_id: *broker_id,
+                load: *load as f64,
+                topic_count: *load as u32,
+                is_overloaded,
+                is_underloaded,
+            });
+        }
+
+        let response = ClusterBalanceResponse {
+            coefficient_of_variation: metrics.coefficient_of_variation,
+            mean_load: metrics.mean_load,
+            max_load: metrics.max_load,
+            min_load: metrics.min_load,
+            std_deviation: metrics.std_deviation,
+            broker_count: rankings.len() as u32,
+            brokers: broker_infos,
+        };
+
+        Ok(Response::new(response))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn trigger_rebalance(
+        &self,
+        request: Request<RebalanceRequest>,
+    ) -> std::result::Result<Response<RebalanceResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        info!(
+            dry_run = req.dry_run,
+            max_moves = ?req.max_moves,
+            "trigger rebalance command received"
+        );
+
+        // Get load manager config
+        let config = self
+            .load_manager
+            .get_rebalancing_config()
+            .await
+            .ok_or_else(|| {
+                tonic::Status::failed_precondition("Rebalancing is not configured on this broker")
+            })?;
+
+        // Override max_moves if provided
+        let mut config = config;
+        if let Some(max_moves) = req.max_moves {
+            config.max_moves_per_cycle = max_moves as usize;
+        }
+
+        // Calculate imbalance
+        let metrics = self
+            .load_manager
+            .calculate_imbalance()
+            .await
+            .map_err(|e| {
+                tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
+            })?;
+
+        // Check if rebalancing is needed
+        if !self.load_manager.should_rebalance(&metrics, &config) {
+            return Ok(Response::new(RebalanceResponse {
+                success: true,
+                moves_executed: 0,
+                proposed_moves: vec![],
+                error_message: format!(
+                    "Cluster is balanced (CV: {:.3}, threshold: {:.3})",
+                    metrics.coefficient_of_variation,
+                    config.aggressiveness.threshold()
+                ),
+            }));
+        }
+
+        // Select rebalancing candidates
+        let moves = self
+            .load_manager
+            .select_rebalancing_candidates(&metrics, &config)
+            .await
+            .map_err(|e| {
+                tonic::Status::internal(format!("Failed to select candidates: {}", e))
+            })?;
+
+        if moves.is_empty() {
+            return Ok(Response::new(RebalanceResponse {
+                success: true,
+                moves_executed: 0,
+                proposed_moves: vec![],
+                error_message: "No suitable topics found for rebalancing".to_string(),
+            }));
+        }
+
+        // Convert to ProposedMove format
+        let proposed_moves: Vec<ProposedMove> = moves
+            .iter()
+            .map(|m| ProposedMove {
+                topic_name: m.topic_name.clone(),
+                from_broker: m.from_broker,
+                to_broker: m.to_broker,
+                estimated_load: m.estimated_load,
+                reason: format!("{:?}", m.reason),
+            })
+            .collect();
+
+        // If dry-run, just return the proposed moves
+        if req.dry_run {
+            info!(move_count = proposed_moves.len(), "dry-run completed");
+            return Ok(Response::new(RebalanceResponse {
+                success: true,
+                moves_executed: 0,
+                proposed_moves,
+                error_message: String::new(),
+            }));
+        }
+
+        // Execute rebalancing
+        let mut history = crate::danube_service::load_manager::rebalancing::RebalancingHistory::new(1000);
+
+        let executed = self
+            .load_manager
+            .execute_rebalancing(moves, &config, &mut history)
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "rebalancing execution failed");
+                tonic::Status::internal(format!("Rebalancing failed: {}", e))
+            })?;
+
+        info!(executed = executed, "manual rebalancing completed");
+
+        Ok(Response::new(RebalanceResponse {
+            success: true,
+            moves_executed: executed as u32,
+            proposed_moves,
+            error_message: String::new(),
+        }))
     }
 }
