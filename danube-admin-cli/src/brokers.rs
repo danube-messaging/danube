@@ -307,7 +307,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
 
                     if !result.proposed_moves.is_empty() {
                         println!("Executed moves:");
-                        for (i, mv) in result.proposed_moves.iter().take(result.moves_executed as usize).enumerate() {
+                        for (_i, mv) in result.proposed_moves.iter().take(result.moves_executed as usize).enumerate() {
                             println!("  ✓ {} (Broker {} → Broker {})", mv.topic_name, mv.from_broker, mv.to_broker);
                         }
                     }

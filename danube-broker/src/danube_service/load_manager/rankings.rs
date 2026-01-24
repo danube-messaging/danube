@@ -1,10 +1,10 @@
-use super::load_report::{LoadReport, ResourceType, TopicLoad};
+use crate::danube_service::load_report::{LoadReport, ResourceType, TopicLoad};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Simple Load Calculation: the load is just based on the number of topics.
-pub(crate) async fn rankings_simple(
+pub(super) async fn rankings_simple(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
 ) -> Vec<(u64, usize)> {
     let brokers_usage = brokers_usage.lock().await;
@@ -28,22 +28,25 @@ fn calculate_weighted_topic_load(topics: &[TopicLoad]) -> f64 {
 
     // Topic count baseline
     let count_score = topics.len() as f64 * 0.2;
-    
+
     // Throughput score (MB/s)
-    let throughput_score: f64 = topics.iter()
-        .map(|t| t.byte_rate_mbps)
-        .sum::<f64>() * 0.3;
-    
+    let throughput_score: f64 = topics.iter().map(|t| t.byte_rate_mbps).sum::<f64>() * 0.3;
+
     // Connection score (producers + consumers)
-    let connection_score: f64 = topics.iter()
+    let connection_score: f64 = topics
+        .iter()
         .map(|t| (t.producer_count + t.consumer_count) as f64)
-        .sum::<f64>() * 0.3;
-    
+        .sum::<f64>()
+        * 0.3;
+
     // Backlog penalty
-    let backlog_score: f64 = topics.iter()
+    let backlog_score: f64 = topics
+        .iter()
         .map(|t| t.backlog_messages as f64)
-        .sum::<f64>() / 10_000.0 * 0.2;
-    
+        .sum::<f64>()
+        / 10_000.0
+        * 0.2;
+
     count_score + throughput_score + connection_score + backlog_score
 }
 
@@ -51,7 +54,7 @@ fn calculate_weighted_topic_load(topics: &[TopicLoad]) -> f64 {
 /// Combines weighted topic load (30%) with system resources (70%)
 /// - Topic load: count + throughput + connections + backlog
 /// - System: CPU (35%) + Memory (35%)
-pub(crate) async fn rankings_composite(
+pub(super) async fn rankings_composite(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
 ) -> Vec<(u64, usize)> {
     let brokers_usage = brokers_usage.lock().await;
@@ -61,7 +64,7 @@ pub(crate) async fn rankings_composite(
         .map(|(&broker_id, load_report)| {
             // Weighted topic load (not just count!)
             let topic_load = calculate_weighted_topic_load(&load_report.topics) * 0.3;
-            
+
             let mut cpu_load = 0.0;
             let mut memory_load = 0.0;
 
@@ -87,19 +90,19 @@ pub(crate) async fn rankings_composite(
 
 /// Adaptive weighted load ranking (smart strategy)
 /// Automatically detects which resources are under pressure and prioritizes them
-/// 
+///
 /// Algorithm:
 /// 1. Normalize all metrics against cluster max values
 /// 2. For each broker, find the highest utilization metric (bottleneck)
 /// 3. Prioritize that bottleneck in scoring
-/// 
+///
 /// This adapts to workload patterns:
 /// - CPU-bound workloads → prioritize CPU in scoring
 /// - Throughput-heavy → prioritize bandwidth
 /// - Connection-heavy → prioritize connection count
 ///
 /// Returns list of (broker_id, score) sorted by score (ascending = less loaded)
-pub(crate) async fn rankings_weighted_load(
+pub(super) async fn rankings_weighted_load(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
 ) -> Vec<(u64, usize)> {
     let brokers = brokers_usage.lock().await;
@@ -178,30 +181,17 @@ pub(crate) async fn rankings_weighted_load(
 
             // Adaptive scoring: Prioritize bottleneck resource
             // If a resource is >70% utilized, give it extra weight
-            let mut score = 0.0;
-
-            if max_util > 0.7 {
-                // Under pressure - prioritize bottleneck
-                if cpu_util == max_util {
-                    // CPU bottleneck
-                    score = cpu_util * 0.5 + mem_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15;
-                } else if mem_util == max_util {
-                    // Memory bottleneck
-                    score = mem_util * 0.5 + cpu_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15;
-                } else if throughput_util == max_util {
-                    // Throughput bottleneck
-                    score = throughput_util * 0.5 + net_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15;
-                } else if net_util == max_util {
-                    // Network I/O bottleneck
-                    score = net_util * 0.5 + throughput_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15;
-                } else {
-                    // Topic load bottleneck
-                    score = topic_util * 0.5 + cpu_util * 0.2 + mem_util * 0.2 + throughput_util * 0.1;
+            let score = if max_util > 0.7 {
+                match max_util {
+                    util if util == cpu_util => cpu_util * 0.5 + mem_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15,
+                    util if util == mem_util => mem_util * 0.5 + cpu_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15,
+                    util if util == throughput_util => throughput_util * 0.5 + net_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15,
+                    util if util == net_util => net_util * 0.5 + throughput_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15,
+                    _ => topic_util * 0.5 + cpu_util * 0.2 + mem_util * 0.2 + throughput_util * 0.1,
                 }
             } else {
-                // Normal load - balanced scoring
-                score = topic_util * 0.25 + cpu_util * 0.25 + mem_util * 0.25 + throughput_util * 0.15 + net_util * 0.1;
-            }
+                topic_util * 0.25 + cpu_util * 0.25 + mem_util * 0.25 + throughput_util * 0.15 + net_util * 0.1
+            };
 
             (broker_id, (score * 100.0) as usize)
         })
@@ -220,7 +210,7 @@ struct MaxValues {
     disk_io: f64,
     network_io: f64,
     throughput: f64,
-    topic_load: f64,  // Weighted topic load (not just count)
+    topic_load: f64, // Weighted topic load (not just count)
 }
 
 /// Calculate maximum values across all brokers for normalization
@@ -247,7 +237,7 @@ fn calculate_max_values(brokers: &HashMap<u64, LoadReport>) -> MaxValues {
 
         // Aggregate metrics
         max.throughput = max.throughput.max(report.total_throughput_mbps);
-        
+
         // Weighted topic load
         let topic_load = calculate_weighted_topic_load(&report.topics);
         max.topic_load = max.topic_load.max(topic_load);
@@ -259,12 +249,11 @@ fn calculate_max_values(brokers: &HashMap<u64, LoadReport>) -> MaxValues {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::danube_service::load_manager::{
+    use crate::danube_service::{
+        load_manager::LoadManager,
         load_report::{LoadReport, ResourceType, SystemLoad, TopicLoad},
-        LoadManager,
     };
     use danube_metadata_store::{MemoryStore, MetadataStorage};
-    use std::sync::atomic::AtomicU64;
 
     fn create_load_report(cpu_usage: f64, memory_usage: f64, topics_len: usize) -> LoadReport {
         LoadReport {
@@ -300,7 +289,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_broker() {
-        let meta_store = MetadataStorage::InMemory(MemoryStore::new().await.expect("Failed to create memory store"));
+        let meta_store = MetadataStorage::InMemory(
+            MemoryStore::new()
+                .await
+                .expect("Failed to create memory store"),
+        );
         let load_manager = LoadManager::new(1, meta_store);
 
         load_manager
@@ -323,7 +316,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_brokers() {
-        let meta_store = MetadataStorage::InMemory(MemoryStore::new().await.expect("Failed to create memory store"));
+        let meta_store = MetadataStorage::InMemory(
+            MemoryStore::new()
+                .await
+                .expect("Failed to create memory store"),
+        );
         let load_manager = LoadManager::new(1, meta_store);
 
         load_manager
@@ -359,7 +356,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_brokers() {
-        let meta_store = MetadataStorage::InMemory(MemoryStore::new().await.expect("Failed to create memory store"));
+        let meta_store = MetadataStorage::InMemory(
+            MemoryStore::new()
+                .await
+                .expect("Failed to create memory store"),
+        );
         let load_manager = LoadManager::new(1, meta_store);
 
         // Call ranking function directly to test it
@@ -373,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_same_load_brokers() {
         let meta_store = MetadataStorage::InMemory(MemoryStore::new().await.expect("Failed to create memory store"));
-        let mut load_manager = LoadManager::new(1, meta_store);
+        let load_manager = LoadManager::new(1, meta_store);
 
         load_manager
             .brokers_usage

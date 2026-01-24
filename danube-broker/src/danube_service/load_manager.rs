@@ -1,16 +1,14 @@
 pub(crate) mod config;
-pub(crate) mod load_report;
-pub(crate) mod rebalancing;
 mod rankings;
+pub(crate) mod rebalancing;
 
 use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
+use crate::danube_service::load_report::{LoadReport, TopicLoad};
 use anyhow::{anyhow, Result};
 use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
-use load_report::LoadReport;
 use metrics::counter;
-use rankings::{rankings_composite, rankings_simple};
 use rebalancing::{ImbalanceMetrics, RebalancingHistory, RebalancingMove, RebalancingReason};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -56,7 +54,6 @@ pub(crate) struct LoadManager {
     pub(crate) rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     next_broker: Arc<Mutex<Option<u64>>>,
     assignment_strategy: config::AssignmentStrategy,
-    round_robin_index: Arc<Mutex<usize>>,
 }
 
 impl LoadManager {
@@ -78,7 +75,6 @@ impl LoadManager {
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(Mutex::new(Some(broker_id))),
             assignment_strategy,
-            round_robin_index: Arc::new(Mutex::new(0)),
         }
     }
     /// Initializes the LoadManager and starts watching for cluster events
@@ -447,15 +443,17 @@ impl LoadManager {
                 // Parse unload/rebalance marker to determine assignment strategy
                 let mut exclude_broker: Option<u64> = None;
                 let mut target_broker_hint: Option<u64> = None;
-                
+
                 if !value.is_empty() {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
                         if let Some(obj) = val.as_object() {
                             let reason = obj.get("reason").and_then(|v| v.as_str());
-                            
+
                             // Handle unload (Phase D: exclude source broker)
                             if reason == Some("unload") {
-                                if let Some(from_broker) = obj.get("from_broker").and_then(|v| v.as_u64()) {
+                                if let Some(from_broker) =
+                                    obj.get("from_broker").and_then(|v| v.as_u64())
+                                {
                                     exclude_broker = Some(from_broker);
                                     debug!(
                                         topic = %topic_name,
@@ -464,13 +462,17 @@ impl LoadManager {
                                     );
                                 }
                             }
-                            
+
                             // Handle rebalance (Phase 3 Step 6: prefer target broker)
                             if reason == Some("rebalance") {
-                                if let Some(from_broker) = obj.get("from_broker").and_then(|v| v.as_u64()) {
+                                if let Some(from_broker) =
+                                    obj.get("from_broker").and_then(|v| v.as_u64())
+                                {
                                     exclude_broker = Some(from_broker);
                                 }
-                                if let Some(to_broker) = obj.get("to_broker").and_then(|v| v.as_u64()) {
+                                if let Some(to_broker) =
+                                    obj.get("to_broker").and_then(|v| v.as_u64())
+                                {
                                     target_broker_hint = Some(to_broker);
                                     info!(
                                         topic = %topic_name,
@@ -501,7 +503,10 @@ impl LoadManager {
                             target_broker = %target,
                             "rebalance target broker is not active, selecting alternative"
                         );
-                        match self.get_next_broker_excluding(exclude_broker.unwrap_or(0)).await {
+                        match self
+                            .get_next_broker_excluding(exclude_broker.unwrap_or(0))
+                            .await
+                        {
                             Ok(id) => {
                                 info!(
                                     topic = %topic_name,
@@ -571,7 +576,7 @@ impl LoadManager {
                 let mut brokers_usage = self.brokers_usage.lock().await;
                 if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
                     // Add a placeholder TopicLoad entry
-                    load_report.topics.push(load_report::TopicLoad {
+                    load_report.topics.push(TopicLoad {
                         topic_name: topic_name.to_string(),
                         message_rate: 0,
                         byte_rate: 0,
@@ -627,7 +632,7 @@ impl LoadManager {
                 break;
             }
         }
-        
+
         let next_broker = if let Some(id) = chosen {
             *self.next_broker.lock().await = Some(id);
             id
@@ -753,7 +758,11 @@ impl LoadManager {
     pub(crate) async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
         let brokers_usage = self.brokers_usage.lock().await;
         if let Some(load_report) = brokers_usage.get(&broker_id) {
-            if load_report.topics.iter().any(|t| t.topic_name == topic_name) {
+            if load_report
+                .topics
+                .iter()
+                .any(|t| t.topic_name == topic_name)
+            {
                 return true;
             }
         }
@@ -801,11 +810,8 @@ impl LoadManager {
         let mean = loads.iter().sum::<f64>() / loads.len() as f64;
 
         // Calculate variance and standard deviation
-        let variance = loads
-            .iter()
-            .map(|load| (*load - mean).powi(2))
-            .sum::<f64>()
-            / loads.len() as f64;
+        let variance =
+            loads.iter().map(|load| (*load - mean).powi(2)).sum::<f64>() / loads.len() as f64;
         let std_dev = variance.sqrt();
 
         // Find max and min loads
@@ -834,7 +840,7 @@ impl LoadManager {
 
         for (broker_id, load) in rankings.iter() {
             let load_f64 = *load as f64;
-            
+
             // Overloaded: more than 1 standard deviation above mean
             if load_f64 > mean + std_dev {
                 overloaded.push(*broker_id);
@@ -883,7 +889,7 @@ impl LoadManager {
 
         // Check minimum broker requirement
         let threshold = config.aggressiveness.threshold();
-        
+
         // Use coefficient of variation to determine if rebalancing is needed
         metrics.needs_rebalancing(threshold)
     }
@@ -959,12 +965,13 @@ impl LoadManager {
             // Sort by load (ascending - lightest first)
             // This is safer: small topics are easier to move with less disruption
             candidates.sort_by(|(_, load_a), (_, load_b)| {
-                load_a.partial_cmp(load_b).unwrap_or(std::cmp::Ordering::Equal)
+                load_a
+                    .partial_cmp(load_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
 
             // Select target broker (least loaded, excluding source)
-            let target_broker = match self.select_target_broker(*overloaded_id, &rankings).await
-            {
+            let target_broker = match self.select_target_broker(*overloaded_id, &rankings).await {
                 Ok(broker) => broker,
                 Err(e) => {
                     warn!(
@@ -1066,10 +1073,12 @@ impl LoadManager {
             if pattern.ends_with("/*") {
                 // Extract namespace prefix (e.g., "/default/" from "/default/*")
                 let namespace_prefix = &pattern[..pattern.len() - 1]; // Remove the '*', keep the '/'
-                
+
                 // Topic must start with the namespace and have something after it
                 // e.g., "/default/*" matches "/default/anything" but not "/default" or "/defaultx/topic"
-                if topic_name.starts_with(namespace_prefix) && topic_name.len() > namespace_prefix.len() {
+                if topic_name.starts_with(namespace_prefix)
+                    && topic_name.len() > namespace_prefix.len()
+                {
                     return true;
                 }
             }
@@ -1287,11 +1296,7 @@ impl LoadManager {
             "timestamp": mv.timestamp,
         });
 
-        if let Err(e) = self
-            .meta_store
-            .put(&key, event, MetaOptions::None)
-            .await
-        {
+        if let Err(e) = self.meta_store.put(&key, event, MetaOptions::None).await {
             warn!(
                 error = %e,
                 topic = %mv.topic_name,
@@ -1349,9 +1354,8 @@ impl LoadManager {
                 "starting automated rebalancing loop"
             );
 
-            let mut interval = tokio::time::interval(Duration::from_secs(
-                config.check_interval_seconds,
-            ));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(config.check_interval_seconds));
 
             let mut history = RebalancingHistory::new(1000);
 
@@ -1382,10 +1386,7 @@ impl LoadManager {
                     continue;
                 }
 
-                debug!(
-                    broker_count = rankings.len(),
-                    "rebalancing cycle started"
-                );
+                debug!(broker_count = rankings.len(), "rebalancing cycle started");
 
                 // Step 3: Calculate imbalance metrics
                 let metrics = match self.calculate_imbalance().await {
@@ -1429,10 +1430,7 @@ impl LoadManager {
                 let cycle_start = std::time::Instant::now();
 
                 // Step 4: Select topics to move
-                let moves = match self
-                    .select_rebalancing_candidates(&metrics, &config)
-                    .await
-                {
+                let moves = match self.select_rebalancing_candidates(&metrics, &config).await {
                     Ok(m) => m,
                     Err(e) => {
                         error!(error = %e, "failed to select rebalancing candidates");
@@ -1452,10 +1450,7 @@ impl LoadManager {
                 );
 
                 // Step 5 + Step 6: Execute rebalancing
-                match self
-                    .execute_rebalancing(moves, &config, &mut history)
-                    .await
-                {
+                match self.execute_rebalancing(moves, &config, &mut history).await {
                     Ok(executed) => {
                         // Record cycle duration
                         let cycle_duration = cycle_start.elapsed().as_secs_f64();
@@ -1504,7 +1499,6 @@ impl LoadManager {
         *self.rankings.lock().await = broker_loads;
     }
 
-
     /// Gets current broker rankings (for admin CLI)
     ///
     /// Returns a copy of the current broker load rankings as (broker_id, load) pairs.
@@ -1519,22 +1513,6 @@ impl LoadManager {
         // TODO: Store config reference in LoadManager during initialization
         // For now, return None - caller should handle this gracefully
         None
-    }
-
-    /// Calculates broker rankings using composite resource utilization metrics
-    ///
-    /// ## Purpose:
-    /// Computes broker load rankings based on multiple resource factors:
-    /// topic count, CPU usage, memory usage, and other system metrics.
-    ///
-    /// ## Algorithm:
-    /// - Weights different resource metrics (CPU, memory, topics, I/O)
-    /// - Calculates composite load score for each broker
-    /// - Ranks brokers from lowest to highest composite load
-    #[allow(dead_code)]
-    async fn calculate_rankings_composite(&self) {
-        let broker_loads = rankings_composite(self.brokers_usage.clone()).await;
-        *self.rankings.lock().await = broker_loads;
     }
 }
 

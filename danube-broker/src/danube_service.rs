@@ -2,6 +2,7 @@ mod broker_register;
 mod broker_watcher;
 mod leader_election;
 pub(crate) mod load_manager;
+pub(crate) mod load_report;
 mod local_cache;
 pub(crate) mod metrics_collector;
 mod resource_monitor;
@@ -9,7 +10,7 @@ mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
-pub(crate) use load_manager::load_report::LoadReport;
+pub(crate) use load_report::LoadReport;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
@@ -431,7 +432,7 @@ async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store:
         interval.tick().await;
         topics = broker_service.get_topics();
         broker_id = broker_service.broker_id;
-        let load_report: LoadReport = load_manager::load_report::generate_load_report(
+        let load_report: LoadReport = load_report::generate_load_report(
             broker_id,
             topics,
             broker_service.metrics_collector(),
