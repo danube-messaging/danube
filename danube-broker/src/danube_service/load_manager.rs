@@ -14,7 +14,6 @@ use rankings::{rankings_composite, rankings_simple};
 use rebalancing::{ImbalanceMetrics, RebalancingHistory, RebalancingMove, RebalancingReason};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -51,28 +50,35 @@ use super::leader_election::{LeaderElection, LeaderElectionState};
 /// All internal state is protected by Arc<Mutex> or atomic operations for safe concurrent access.
 #[derive(Debug, Clone)]
 pub(crate) struct LoadManager {
-    /// Maps broker IDs to their current load reports (CPU, memory, topic count, etc.)
-    brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
-
-    /// Broker rankings ordered by load (lowest to highest) - used for topic assignment
-    /// Format: Vec<(broker_id, load_score)>
-    rankings: Arc<Mutex<Vec<(u64, usize)>>>,
-
-    /// Next broker ID to assign topics to (round-robin within lowest load tier)
-    next_broker: Arc<AtomicU64>,
-
-    /// Metadata store interface for persisting broker assignments and watching events
-    meta_store: MetadataStorage,
+    pub(crate) broker_id: u64,
+    pub(crate) meta_store: MetadataStorage,
+    pub(crate) brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
+    pub(crate) rankings: Arc<Mutex<Vec<(u64, usize)>>>,
+    next_broker: Arc<Mutex<Option<u64>>>,
+    assignment_strategy: config::AssignmentStrategy,
+    round_robin_index: Arc<Mutex<usize>>,
 }
 
 impl LoadManager {
-    /// Creates a new LoadManager instance
+    /// Creates a new LoadManager instance with default configuration
     pub fn new(broker_id: u64, meta_store: MetadataStorage) -> Self {
+        Self::with_strategy(broker_id, meta_store, config::AssignmentStrategy::default())
+    }
+
+    /// Creates a new LoadManager instance with specific assignment strategy
+    pub fn with_strategy(
+        broker_id: u64,
+        meta_store: MetadataStorage,
+        assignment_strategy: config::AssignmentStrategy,
+    ) -> Self {
         LoadManager {
+            broker_id,
+            meta_store,
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
-            next_broker: Arc::new(AtomicU64::new(broker_id)),
-            meta_store,
+            next_broker: Arc::new(Mutex::new(Some(broker_id))),
+            assignment_strategy,
+            round_robin_index: Arc::new(Mutex::new(0)),
         }
     }
     /// Initializes the LoadManager and starts watching for cluster events
@@ -101,8 +107,8 @@ impl LoadManager {
         // Initialize broker state from metadata store
         self.fetch_initial_load().await?;
 
-        // Calculate initial broker rankings for load balancing
-        self.calculate_rankings_simple().await;
+        // Calculate initial broker rankings using configured strategy
+        self.calculate_rankings().await;
 
         // Setup event watchers for dynamic cluster management
         let mut streams = Vec::new();
@@ -401,8 +407,8 @@ impl LoadManager {
             return Ok(());
         }
 
-        // Leader calculates new rankings
-        self.calculate_rankings_simple().await;
+        // Leader calculates new rankings using configured strategy
+        self.calculate_rankings().await;
 
         // Update next_broker based on rankings
         let next_broker = self
@@ -413,9 +419,7 @@ impl LoadManager {
             .get_or_insert(&(broker_id, 0))
             .0;
 
-        let _ = self
-            .next_broker
-            .swap(next_broker, std::sync::atomic::Ordering::SeqCst);
+        *self.next_broker.lock().await = Some(next_broker);
 
         Ok(())
     }
@@ -426,7 +430,7 @@ impl LoadManager {
         match event {
             WatchEvent::Put { key, value, .. } => {
                 // recalculate the rankings after the topic was assigned
-                self.calculate_rankings_simple().await;
+                self.calculate_rankings().await;
 
                 // Convert key from bytes to string
                 let key_str = match std::str::from_utf8(&key) {
@@ -623,14 +627,14 @@ impl LoadManager {
                 break;
             }
         }
-        let next_broker = chosen.unwrap_or_else(|| {
-            // fallback to current atomic value if none active found (should be rare)
-            self.next_broker.load(std::sync::atomic::Ordering::SeqCst)
-        });
-
-        let _ = self
-            .next_broker
-            .swap(next_broker, std::sync::atomic::Ordering::SeqCst);
+        
+        let next_broker = if let Some(id) = chosen {
+            *self.next_broker.lock().await = Some(id);
+            id
+        } else {
+            // fallback to current value if none active found (should be rare)
+            self.next_broker.lock().await.unwrap_or(self.broker_id)
+        };
 
         next_broker
     }
@@ -1475,15 +1479,31 @@ impl LoadManager {
         })
     }
 
-    /// Calculates broker rankings using simple topic-count based algorithm
+    /// Calculates broker rankings using the configured assignment strategy
     ///
     /// ## Purpose:
-    /// Computes broker load rankings based solely on the number of assigned topics.
-    /// This provides a lightweight load balancing strategy suitable for most scenarios.
-    async fn calculate_rankings_simple(&self) {
-        let broker_loads = rankings_simple(self.brokers_usage.clone()).await;
+    /// Computes broker load rankings based on the assignment strategy:
+    /// - Fair: Simple topic count only (predictable, testing-friendly)
+    /// - Balanced: Multi-factor scoring with weighted topic load + CPU + Memory
+    /// - WeightedLoad: Adaptive algorithm that detects and prioritizes bottlenecks
+    async fn calculate_rankings(&self) {
+        let broker_loads = match &self.assignment_strategy {
+            config::AssignmentStrategy::Fair => {
+                // Simple topic count for fair round-robin distribution
+                rankings::rankings_simple(self.brokers_usage.clone()).await
+            }
+            config::AssignmentStrategy::Balanced => {
+                // Balanced multi-factor: weighted topics + CPU + memory
+                rankings::rankings_composite(self.brokers_usage.clone()).await
+            }
+            config::AssignmentStrategy::WeightedLoad => {
+                // Smart adaptive: detects bottlenecks and prioritizes them
+                rankings::rankings_weighted_load(self.brokers_usage.clone()).await
+            }
+        };
         *self.rankings.lock().await = broker_loads;
     }
+
 
     /// Gets current broker rankings (for admin CLI)
     ///

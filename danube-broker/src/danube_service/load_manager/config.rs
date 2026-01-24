@@ -4,18 +4,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentStrategy {
-    /// Score brokers using composite metrics (CPU, memory, topics, throughput)
-    /// and assigns to broker with most available capacity (RECOMMENDED)
-    LeastLoaded,
-    /// Simple round-robin rotation, ignoring load metrics
-    RoundRobin,
-    /// Random selection weighted by available capacity
-    WeightedRandom,
+    /// Fair distribution - simple topic count only (simplest, most predictable)
+    /// Best for: Development, testing, predictable placement
+    Fair,
+    
+    /// Balanced multi-factor scoring (RECOMMENDED, default)
+    /// Formula: (weighted_topic_load × 0.3) + (CPU × 0.35) + (Memory × 0.35)
+    /// Best for: General purpose, mixed workloads, production clusters
+    Balanced,
+    
+    /// Adaptive weighted load - smart bottleneck detection
+    /// Automatically prioritizes the resource under most pressure
+    /// Best for: Variable workloads, auto-optimization, advanced users
+    WeightedLoad,
 }
 
 impl Default for AssignmentStrategy {
     fn default() -> Self {
-        Self::LeastLoaded
+        Self::Balanced
     }
 }
 
@@ -160,7 +166,7 @@ mod tests {
     #[test]
     fn test_default_assignment_strategy() {
         let strategy = AssignmentStrategy::default();
-        assert_eq!(strategy, AssignmentStrategy::LeastLoaded);
+        assert_eq!(strategy, AssignmentStrategy::Balanced);
     }
 
     #[test]
@@ -185,14 +191,14 @@ mod tests {
         assert_eq!(conservative.default_cooldown_seconds(), 120);
 
         let balanced = RebalancingAggressiveness::Balanced;
-        assert_eq!(balanced.default_check_interval(), 300);
-        assert_eq!(balanced.default_max_moves_per_cycle(), 3);
+        assert_eq!(balanced.default_check_interval(), 240);
+        assert_eq!(balanced.default_max_moves_per_cycle(), 4);
         assert_eq!(balanced.default_max_moves_per_hour(), 10);
         assert_eq!(balanced.default_cooldown_seconds(), 60);
 
         let aggressive = RebalancingAggressiveness::Aggressive;
-        assert_eq!(aggressive.default_check_interval(), 180);
-        assert_eq!(aggressive.default_max_moves_per_cycle(), 5);
+        assert_eq!(aggressive.default_check_interval(), 120);
+        assert_eq!(aggressive.default_max_moves_per_cycle(), 6);
         assert_eq!(aggressive.default_max_moves_per_hour(), 20);
         assert_eq!(aggressive.default_cooldown_seconds(), 30);
     }
@@ -214,7 +220,7 @@ mod tests {
     #[test]
     fn test_load_manager_config_defaults() {
         let config = LoadManagerConfig::default();
-        assert_eq!(config.assignment_strategy, AssignmentStrategy::LeastLoaded);
+        assert_eq!(config.assignment_strategy, AssignmentStrategy::Balanced);
         assert!(!config.rebalancing.enabled);
     }
 }

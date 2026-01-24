@@ -43,11 +43,23 @@ auth:
 load_manager:
   # Topic Assignment Strategy: How to assign NEW topics to brokers
   # Options:
-  #   - least_loaded: Scores brokers using composite metrics (CPU, memory, topics, throughput)
-  #                   and assigns to broker with most available capacity (RECOMMENDED)
-  #   - round_robin: Rotates through brokers in order, ignoring load metrics (simple)
-  #   - weighted_random: Randomly selects broker weighted by available capacity
-  assignment_strategy: "least_loaded"
+  #   - fair: Simple topic count only (predictable, testing-friendly)
+  #           Formula: topic_count only
+  #           Aliases: round_robin
+  #   
+  #   - balanced: Multi-factor scoring (RECOMMENDED for production)
+  #               Formula: (weighted_topic_load × 0.3) + (CPU × 0.35) + (Memory × 0.35)
+  #               Weighted topic load = count×0.2 + throughput×0.3 + connections×0.3 + backlog×0.2
+  #               Uses per-topic metrics: message_rate, byte_rate, producer/consumer counts
+  #               Aliases: least_loaded
+  #   
+  #   - weighted_load: Adaptive smart algorithm (advanced)
+  #                    Automatically detects bottleneck resources and prioritizes them
+  #                    If CPU >70% utilized → prioritize CPU in scoring
+  #                    If throughput >70% → prioritize bandwidth
+  #                    Adapts to workload patterns dynamically
+  #                    Aliases: weighted_random
+  assignment_strategy: "balanced"
   
   # Automated Rebalancing: Proactive optimization of EXISTING topic placement
   rebalancing:
