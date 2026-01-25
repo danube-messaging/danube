@@ -222,22 +222,22 @@ pub(crate) async fn generate_load_report(
 
     let topics: Vec<TopicLoad> = topic_list
         .iter()
-        .filter_map(|topic_name| {
-            snapshots.get(topic_name).map(|snapshot| {
-                let (message_rate, byte_rate) = rates.get(topic_name).copied().unwrap_or((0, 0));
-                let byte_rate_mbps = (byte_rate as f64) / 1_000_000.0;
+        .map(|topic_name| {
+            // Get snapshot if available, otherwise use zeros for newly created topics
+            let snapshot = snapshots.get(topic_name);
+            let (message_rate, byte_rate) = rates.get(topic_name).copied().unwrap_or((0, 0));
+            let byte_rate_mbps = (byte_rate as f64) / 1_000_000.0;
 
-                TopicLoad {
-                    topic_name: topic_name.clone(),
-                    message_rate,
-                    byte_rate,
-                    byte_rate_mbps,
-                    producer_count: snapshot.active_producers,
-                    consumer_count: snapshot.active_consumers,
-                    subscription_count: snapshot.active_subscriptions,
-                    backlog_messages: 0, // Skipped for now (not needed for ranking)
-                }
-            })
+            TopicLoad {
+                topic_name: topic_name.clone(),
+                message_rate,
+                byte_rate,
+                byte_rate_mbps,
+                producer_count: snapshot.map(|s| s.active_producers).unwrap_or(0),
+                consumer_count: snapshot.map(|s| s.active_consumers).unwrap_or(0),
+                subscription_count: snapshot.map(|s| s.active_subscriptions).unwrap_or(0),
+                backlog_messages: 0, // Skipped for now (not needed for ranking)
+            }
         })
         .collect();
 

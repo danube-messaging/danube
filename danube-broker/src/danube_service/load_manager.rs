@@ -438,9 +438,6 @@ impl LoadManager {
     async fn assign_topic_to_broker(&mut self, event: WatchEvent) {
         match event {
             WatchEvent::Put { key, value, .. } => {
-                // recalculate the rankings after the topic was assigned
-                self.calculate_rankings().await;
-
                 // Convert key from bytes to string
                 let key_str = match std::str::from_utf8(&key) {
                     Ok(s) => s,
@@ -585,21 +582,27 @@ impl LoadManager {
                     );
                 }
 
-                // Update internal state
-                let mut brokers_usage = self.brokers_usage.lock().await;
-                if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
-                    // Add a placeholder TopicLoad entry
-                    load_report.topics.push(TopicLoad {
-                        topic_name: topic_name.to_string(),
-                        message_rate: 0,
-                        byte_rate: 0,
-                        byte_rate_mbps: 0.0,
-                        producer_count: 0,
-                        consumer_count: 0,
-                        subscription_count: 0,
-                        backlog_messages: 0,
-                    });
+                // Update internal state with placeholder topic load
+                {
+                    let mut brokers_usage = self.brokers_usage.lock().await;
+                    if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
+                        // Add a placeholder TopicLoad entry
+                        load_report.topics.push(TopicLoad {
+                            topic_name: topic_name.to_string(),
+                            message_rate: 0,
+                            byte_rate: 0,
+                            byte_rate_mbps: 0.0,
+                            producer_count: 0,
+                            consumer_count: 0,
+                            subscription_count: 0,
+                            backlog_messages: 0,
+                        });
+                    }
                 }
+
+                // Recalculate rankings AFTER updating internal state
+                // This ensures the next topic assignment sees the updated load
+                self.calculate_rankings().await;
             }
             WatchEvent::Delete { .. } => (), // Ignore delete events
         }
@@ -625,36 +628,64 @@ impl LoadManager {
         Ok(())
     }
 
-    /// Selects the next broker for topic assignment using load-based selection
+    /// Selects the next broker for topic assignment using load-based selection with round-robin
     ///
     /// ## Purpose:
     /// Returns the broker ID of the least loaded broker for new topic assignments.
     /// This implements the core load balancing logic for distributing topics across brokers.
     ///
     /// ## Algorithm:
-    /// 1. **Access Rankings**: Locks and reads current broker rankings
-    /// 2. **Select Least Loaded**: Chooses the broker with the lowest load (index 0)
-    /// 3. **Update State**: Atomically updates the `next_broker` field for tracking
+    /// 1. **Access Rankings**: Locks and reads current broker rankings (sorted by load, ascending)
+    /// 2. **Group Similar Loads**: Find all brokers within 10% load of the least loaded broker
+    /// 3. **Round-Robin Selection**: Rotate through similarly-loaded brokers for even distribution
+    /// 4. **Update State**: Atomically updates the `next_broker` field for tracking
+    ///
+    /// This prevents all topics from going to the same broker when multiple brokers
+    /// have similar loads (e.g., all idle with scores 20-22).
     pub async fn get_next_broker(&mut self) -> u64 {
         let rankings = self.rankings.lock().await;
-        // pick first active broker from rankings
-        let mut chosen: Option<u64> = None;
-        for (bid, _) in rankings.iter() {
-            if self.is_broker_active(*bid).await {
-                chosen = Some(*bid);
-                break;
+        
+        if rankings.is_empty() {
+            return self.broker_id; // Fallback to self if no rankings
+        }
+
+        // Get the minimum load score
+        let min_load = rankings.first().map(|(_, load)| *load).unwrap_or(0);
+        
+        // Collect all active brokers within 10% of minimum load (consider them "similarly loaded")
+        let threshold = min_load + (min_load / 10).max(1); // At least +1 to avoid zero threshold
+        let mut candidates: Vec<u64> = Vec::new();
+        
+        for (broker_id, load) in rankings.iter() {
+            if *load <= threshold && self.is_broker_active(*broker_id).await {
+                candidates.push(*broker_id);
             }
         }
 
-        let next_broker = if let Some(id) = chosen {
-            *self.next_broker.lock().await = Some(id);
-            id
+        if candidates.is_empty() {
+            // Fallback: pick first active broker from full rankings
+            for (bid, _) in rankings.iter() {
+                if self.is_broker_active(*bid).await {
+                    *self.next_broker.lock().await = Some(*bid);
+                    return *bid;
+                }
+            }
+            return self.broker_id;
+        }
+
+        // Round-robin through candidates using the last selected broker
+        let last_broker = self.next_broker.lock().await.unwrap_or(0);
+        let next_idx = if let Some(pos) = candidates.iter().position(|&id| id == last_broker) {
+            // Pick the next broker after the last one, wrapping around
+            (pos + 1) % candidates.len()
         } else {
-            // fallback to current value if none active found (should be rare)
-            self.next_broker.lock().await.unwrap_or(self.broker_id)
+            // Last broker not in candidates, start from beginning
+            0
         };
 
-        next_broker
+        let chosen_broker = candidates[next_idx];
+        *self.next_broker.lock().await = Some(chosen_broker);
+        chosen_broker
     }
 
     /// Select next broker excluding a specific broker id, and skipping non-active brokers.
