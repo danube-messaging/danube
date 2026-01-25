@@ -34,8 +34,8 @@ auth:
 
 # Load Manager Configuration - AGGRESSIVE REBALANCING FOR TESTING
 load_manager:
-  # Simple fair strategy for predictable testing
-  assignment_strategy: "balanced"
+  # Simple fair strategy for predictable testing (uses topic count only, not CPU/Memory)
+  assignment_strategy: "fair"
   
   # Fast LoadReport updates for testing (matches aggressive rebalancing check interval)
   load_report_interval_seconds: 5
