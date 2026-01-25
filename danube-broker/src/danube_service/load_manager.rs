@@ -57,19 +57,28 @@ pub(crate) struct LoadManager {
     pub(crate) rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     next_broker: Arc<Mutex<Option<u64>>>,
     assignment_strategy: config::AssignmentStrategy,
+    rebalancing_config: Option<config::RebalancingConfig>,
 }
 
 impl LoadManager {
     /// Creates a new LoadManager instance with default configuration
+    /// (Used in tests only - production code should use `with_config`)
+    #[cfg(test)]
     pub fn new(broker_id: u64, meta_store: MetadataStorage) -> Self {
-        Self::with_strategy(broker_id, meta_store, config::AssignmentStrategy::default())
+        Self::with_config(
+            broker_id,
+            meta_store,
+            config::AssignmentStrategy::default(),
+            None,
+        )
     }
 
-    /// Creates a new LoadManager instance with specific assignment strategy
-    pub fn with_strategy(
+    /// Creates a new LoadManager instance with full configuration
+    pub fn with_config(
         broker_id: u64,
         meta_store: MetadataStorage,
         assignment_strategy: config::AssignmentStrategy,
+        rebalancing_config: Option<config::RebalancingConfig>,
     ) -> Self {
         LoadManager {
             broker_id,
@@ -78,6 +87,7 @@ impl LoadManager {
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(Mutex::new(Some(broker_id))),
             assignment_strategy,
+            rebalancing_config,
         }
     }
     /// Initializes the LoadManager and starts watching for cluster events
@@ -899,9 +909,7 @@ impl LoadManager {
     ///
     /// Returns the current rebalancing config if available from service configuration.
     pub async fn get_rebalancing_config(&self) -> Option<config::RebalancingConfig> {
-        // TODO: Store config reference in LoadManager during initialization
-        // For now, return None - caller should handle this gracefully
-        None
+        self.rebalancing_config.clone()
     }
 }
 

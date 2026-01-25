@@ -197,7 +197,23 @@ async fn main() -> Result<()> {
     );
 
     // Load Manager, monitor and distribute load across brokers.
-    let load_manager = LoadManager::new(broker_service.broker_id, metadata_store.clone());
+    let (assignment_strategy, rebalancing_config) = if let Some(ref lm_config) =
+        service_config.load_manager
+    {
+        (
+            lm_config.assignment_strategy.clone(),
+            Some(lm_config.rebalancing.clone()),
+        )
+    } else {
+        (Default::default(), None)
+    };
+
+    let load_manager = LoadManager::with_config(
+        broker_service.broker_id,
+        metadata_store.clone(),
+        assignment_strategy,
+        rebalancing_config,
+    );
 
     let broker: Arc<BrokerService> = Arc::new(broker_service);
 

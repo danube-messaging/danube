@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+use crate::danube_service::leader_election::LeaderElection;
 use crate::danube_service::load_report::LoadReport;
 use crate::resources::{BASE_BROKER_PATH, BASE_UNASSIGNED_PATH};
 use crate::utils::join_path;
@@ -219,7 +220,7 @@ pub(super) fn start_rebalancing_loop<F>(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
     meta_store: MetadataStorage,
     config: config::RebalancingConfig,
-    leader_election: crate::danube_service::leader_election::LeaderElection,
+    leader_election: LeaderElection,
     is_broker_active: F,
 ) -> JoinHandle<()>
 where
