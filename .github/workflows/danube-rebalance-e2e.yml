@@ -352,6 +352,16 @@ jobs:
           echo "=== Activating Broker 2 ==="
           ./target/release/danube-admin-cli brokers activate --broker-id $BROKER_2
 
+          # Check balance immediately after activation (should show imbalance)
+          echo ""
+          echo "Balance immediately after activation:"
+          ./target/release/danube-admin-cli brokers balance
+          
+          CV_AFTER_ACTIVATE=$(./target/release/danube-admin-cli brokers balance --output json | jq -r '.coefficient_of_variation')
+          echo ""
+          echo "CV immediately after activation: $CV_AFTER_ACTIVATE"
+          echo "Expected: CV > 0.20 (imbalanced, triggering automatic rebalancing)"
+
           # Poll for automatic rebalancing to redistribute topics and LoadReports to update
           # (check_interval: 5s for rebalancing, but LoadReports publish on their own schedule)
           echo ""

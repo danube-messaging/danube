@@ -187,10 +187,9 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
             } else {
                 // Determine cluster status
                 let cv_percent = balance.coefficient_of_variation * 100.0;
-                let threshold = 30.0; // Balanced threshold
                 let status = if cv_percent < 20.0 {
                     "✅ Well Balanced"
-                } else if cv_percent < threshold {
+                } else if cv_percent < 30.0 {
                     "✅ Balanced"
                 } else if cv_percent < 40.0 {
                     "⚠️  Imbalanced"
@@ -204,7 +203,12 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                 println!();
                 println!("Status:                    {}", status);
                 println!("Coefficient of Variation:  {:.2}%", cv_percent);
-                println!("Threshold (Balanced):      {:.2}%", threshold);
+                println!();
+                println!("Interpretation Guide:");
+                println!("  < 20%  = ✅ Well Balanced");
+                println!("  20-30% = ✅ Balanced");
+                println!("  30-40% = ⚠️  Imbalanced");
+                println!("  > 40%  = ❌ Severely Imbalanced");
                 println!();
                 println!("Load Statistics:");
                 println!("  Mean Load:       {:.2} topics", balance.mean_load);
@@ -244,7 +248,7 @@ pub async fn handle_command(brokers: Brokers) -> Result<(), Box<dyn std::error::
                     table.printstd();
                 }
 
-                if cv_percent >= threshold {
+                if cv_percent >= 30.0 {
                     println!();
                     println!("💡 Recommendation: Run 'danube-admin-cli brokers rebalance' to balance the cluster");
                 }
