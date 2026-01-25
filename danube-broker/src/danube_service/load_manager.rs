@@ -542,8 +542,19 @@ impl LoadManager {
                     }
                 } else {
                     // Priority 3: Normal assignment - use rankings
+                    info!(
+                        topic = %topic_name,
+                        "assigning topic using get_next_broker() with fair strategy"
+                    );
                     self.get_next_broker().await
                 };
+                
+                info!(
+                    topic = %topic_name,
+                    selected_broker = %broker_id,
+                    "topic assigned to broker"
+                );
+                
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
 
                 match self
@@ -585,7 +596,7 @@ impl LoadManager {
                 // Update internal state with placeholder topic load
                 {
                     let mut brokers_usage = self.brokers_usage.lock().await;
-                    
+
                     // First, remove this topic from ALL brokers to prevent duplicates
                     // (handles reassignment case where topic is moving between brokers)
                     for (other_broker_id, load_report) in brokers_usage.iter_mut() {
@@ -593,10 +604,14 @@ impl LoadManager {
                             load_report.topics.retain(|t| t.topic_name != topic_name);
                         }
                     }
-                    
+
                     // Then add placeholder to the target broker if not already present
                     if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
-                        if !load_report.topics.iter().any(|t| t.topic_name == topic_name) {
+                        if !load_report
+                            .topics
+                            .iter()
+                            .any(|t| t.topic_name == topic_name)
+                        {
                             load_report.topics.push(TopicLoad {
                                 topic_name: topic_name.to_string(),
                                 message_rate: 0,
@@ -614,6 +629,15 @@ impl LoadManager {
                 // Recalculate rankings AFTER updating internal state
                 // This ensures the next topic assignment sees the updated load
                 self.calculate_rankings().await;
+                
+                // Log updated rankings for debugging
+                let updated_rankings = self.rankings.lock().await;
+                info!(
+                    topic = %topic_name,
+                    assigned_to = %broker_id,
+                    updated_rankings = ?updated_rankings.iter().take(5).collect::<Vec<_>>(),
+                    "rankings recalculated after topic assignment"
+                );
             }
             WatchEvent::Delete { .. } => (), // Ignore delete events
         }
@@ -631,7 +655,7 @@ impl LoadManager {
                 // Extract broker ID from key path
                 if let Some(broker_id) = extract_broker_id(key_str) {
                     let mut brokers_usage = self.brokers_usage.lock().await;
-                    
+
                     // Remove topics that have been assigned to other brokers (deduplication)
                     // This prevents stale LoadReports from showing topics on wrong brokers
                     let mut topics_assigned_elsewhere = Vec::new();
@@ -642,10 +666,12 @@ impl LoadManager {
                             }
                         }
                     }
-                    
+
                     // Filter out topics that are assigned to other brokers
-                    load_report.topics.retain(|t| !topics_assigned_elsewhere.contains(&t.topic_name));
-                    
+                    load_report
+                        .topics
+                        .retain(|t| !topics_assigned_elsewhere.contains(&t.topic_name));
+
                     brokers_usage.insert(broker_id, load_report);
                 }
             }
@@ -670,29 +696,37 @@ impl LoadManager {
     /// have similar loads (e.g., all idle with scores 20-22).
     pub async fn get_next_broker(&mut self) -> u64 {
         let rankings = self.rankings.lock().await;
-        
+
         if rankings.is_empty() {
             return self.broker_id; // Fallback to self if no rankings
         }
 
         // Get the minimum load score
         let min_load = rankings.first().map(|(_, load)| *load).unwrap_or(0);
-        
+
         // Collect all active brokers within acceptable threshold of minimum load
-        // For small loads (< 10), use fixed +1 threshold for stricter round-robin
+        // For small loads (< 10), only select brokers at min_load (strict round-robin)
         // For larger loads, use 10% threshold to allow some flexibility
         let threshold = if min_load < 10 {
-            min_load + 1
+            min_load // Only pick brokers with exactly the minimum load
         } else {
             min_load + (min_load / 10).max(1)
         };
         let mut candidates: Vec<u64> = Vec::new();
-        
+
         for (broker_id, load) in rankings.iter() {
             if *load <= threshold && self.is_broker_active(*broker_id).await {
                 candidates.push(*broker_id);
             }
         }
+
+        info!(
+            min_load = min_load,
+            threshold = threshold,
+            candidates_count = candidates.len(),
+            rankings = ?rankings.iter().take(5).collect::<Vec<_>>(),
+            "selecting broker for topic assignment"
+        );
 
         if candidates.is_empty() {
             // Fallback: pick first active broker from full rankings
