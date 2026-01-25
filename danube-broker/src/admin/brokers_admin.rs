@@ -325,12 +325,6 @@ impl BrokerAdmin for DanubeAdminImpl {
                 tonic::Status::failed_precondition("Rebalancing is not configured on this broker")
             })?;
 
-        // Override max_moves if provided
-        let mut config = config;
-        if let Some(max_moves) = req.max_moves {
-            config.max_moves_per_cycle = max_moves as usize;
-        }
-
         // Calculate imbalance
         let metrics = self
             .load_manager
@@ -354,14 +348,26 @@ impl BrokerAdmin for DanubeAdminImpl {
             }));
         }
 
-        // Select rebalancing candidates
-        let moves = self
-            .load_manager
-            .select_rebalancing_candidates(&metrics, &config)
-            .await
-            .map_err(|e| {
-                tonic::Status::internal(format!("Failed to select candidates: {}", e))
-            })?;
+        // Select rebalancing candidates (1 at a time, respecting max_moves if provided)
+        let max_moves = req.max_moves.unwrap_or(1) as usize;
+        let mut moves = Vec::new();
+        
+        for _ in 0..max_moves {
+            let candidate = self
+                .load_manager
+                .select_rebalancing_candidate(&metrics, &config)
+                .await
+                .map_err(|e| {
+                    tonic::Status::internal(format!("Failed to select candidate: {}", e))
+                })?;
+            
+            if let Some(mv) = candidate {
+                moves.push(mv);
+            } else {
+                // No more suitable topics found
+                break;
+            }
+        }
 
         if moves.is_empty() {
             return Ok(Response::new(RebalanceResponse {
@@ -396,11 +402,9 @@ impl BrokerAdmin for DanubeAdminImpl {
         }
 
         // Execute rebalancing
-        let mut history = crate::danube_service::load_manager::rebalancing::RebalancingHistory::new(1000);
-
         let executed = self
             .load_manager
-            .execute_rebalancing(moves, &config, &mut history)
+            .execute_rebalancing(moves, &config)
             .await
             .map_err(|e| {
                 warn!(error = %e, "rebalancing execution failed");

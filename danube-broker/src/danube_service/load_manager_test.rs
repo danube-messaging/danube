@@ -9,7 +9,6 @@
 //!
 //! Note: Unit tests for rebalancing data structures are in rebalancing_test.rs
 
-use super::rebalancing::RebalancingReason;
 use super::*;
 use crate::danube_service::load_report;
 use danube_metadata_store::{EtcdGetOptions, MemoryStore, MetaOptions, MetadataStorage};
@@ -180,13 +179,13 @@ async fn test_should_rebalance_threshold_check() {
 
 /// **Test:** Topic Selection Strategy - Lightest First
 ///
-/// **Reason:** Tests that topics are selected in the correct order (lightest first)
-/// from overloaded brokers. This strategy minimizes disruption during rebalancing.
+/// **Reason:** Tests that exactly one topic is selected (lightest) from overloaded broker.
+/// This strategy minimizes disruption during rebalancing.
 ///
-/// **Expectation:** Should select light-topic before heavy-topic, even though both
-/// could be moved. Validates sorting and selection logic is correct.
+/// **Expectation:** Should select light-topic (lightest), not heavy-topic.
+/// Validates that only 1 topic is selected per call.
 #[tokio::test]
-async fn test_select_rebalancing_candidates_basic() {
+async fn test_select_rebalancing_candidate_basic() {
     let lm = create_test_load_manager().await;
 
     // Setup: Broker 1 overloaded (20 topics), Broker 2 normal (10 topics)
@@ -256,7 +255,6 @@ async fn test_select_rebalancing_candidates_basic() {
         enabled: true,
         aggressiveness: config::RebalancingAggressiveness::Balanced,
         check_interval_seconds: 300,
-        max_moves_per_cycle: 3,
         max_moves_per_hour: 10,
         cooldown_seconds: 60,
         min_brokers_for_rebalance: 2,
@@ -264,20 +262,20 @@ async fn test_select_rebalancing_candidates_basic() {
         blacklist_topics: vec![],
     };
 
-    let moves = lm
-        .select_rebalancing_candidates(&metrics, &config)
+    let candidate = lm
+        .select_rebalancing_candidate(&metrics, &config)
         .await
         .unwrap();
 
-    // Should select both topics, lightest first (better strategy)
-    assert_eq!(moves.len(), 2); // Both topics selected
-    assert_eq!(moves[0].topic_name, "/default/light-topic"); // Light topic first
-    assert_eq!(moves[1].topic_name, "/default/heavy-topic"); // Heavy topic second
-    assert_eq!(moves[0].from_broker, 1);
-    assert_eq!(moves[0].to_broker, 2);
+    // Should select exactly one topic (lightest)
+    assert!(candidate.is_some());
+    let mv = candidate.unwrap();
+    assert_eq!(mv.topic_name, "/default/light-topic"); // Light topic selected (not heavy)
+    assert_eq!(mv.from_broker, 1);
+    assert_eq!(mv.to_broker, 2);
 
-    // Verify lightest topic has lower estimated load
-    assert!(moves[0].estimated_load < moves[1].estimated_load);
+    // Verify the move has an estimated load
+    assert!(mv.estimated_load > 0.0);
 }
 
 /// **Test:** Safety Feature - Blacklist Enforcement
@@ -288,7 +286,7 @@ async fn test_select_rebalancing_candidates_basic() {
 /// **Expectation:** Should only select "/default/movable" and skip "/admin/critical"
 /// even though both are on overloaded broker. Prevents breaking critical topics.
 #[tokio::test]
-async fn test_select_rebalancing_candidates_respects_blacklist() {
+async fn test_select_rebalancing_candidate_respects_blacklist() {
     let lm = create_test_load_manager().await;
 
     let mut rankings = lm.rankings.lock().await;
@@ -345,7 +343,6 @@ async fn test_select_rebalancing_candidates_respects_blacklist() {
         enabled: true,
         aggressiveness: config::RebalancingAggressiveness::Balanced,
         check_interval_seconds: 300,
-        max_moves_per_cycle: 5,
         max_moves_per_hour: 10,
         cooldown_seconds: 60,
         min_brokers_for_rebalance: 2,
@@ -353,26 +350,27 @@ async fn test_select_rebalancing_candidates_respects_blacklist() {
         blacklist_topics: vec!["/admin/critical".to_string()],
     };
 
-    let moves = lm
-        .select_rebalancing_candidates(&metrics, &config)
+    let candidate = lm
+        .select_rebalancing_candidate(&metrics, &config)
         .await
         .unwrap();
 
     // Should only select non-blacklisted topic
-    assert_eq!(moves.len(), 1);
-    assert_eq!(moves[0].topic_name, "/default/movable");
-    assert!(!moves.iter().any(|m| m.topic_name == "/admin/critical"));
+    assert!(candidate.is_some());
+    let mv = candidate.unwrap();
+    assert_eq!(mv.topic_name, "/default/movable");
+    assert_ne!(mv.topic_name, "/admin/critical");
 }
 
-/// **Test:** Safety Feature - Max Moves Per Cycle
+/// **Test:** Safety Feature - Single Move Per Cycle
 ///
-/// **Reason:** Tests that rate limiting prevents too many simultaneous moves.
-/// Moving too many topics at once can destabilize the cluster.
+/// **Reason:** Tests that only one topic is selected per call.
+/// This prevents overshooting and ensures imbalance recalculation between moves.
 ///
-/// **Expectation:** With 10 eligible topics and max_moves_per_cycle=3, should only
-/// select 3 topics. Validates rate limiting works to prevent cluster overload.
+/// **Expectation:** Even with 10 eligible topics, should only select 1.
+/// Validates that function returns exactly one move.
 #[tokio::test]
-async fn test_select_rebalancing_candidates_respects_max_moves() {
+async fn test_select_rebalancing_candidate_single_move() {
     let lm = create_test_load_manager().await;
 
     let mut rankings = lm.rankings.lock().await;
@@ -419,7 +417,6 @@ async fn test_select_rebalancing_candidates_respects_max_moves() {
         enabled: true,
         aggressiveness: config::RebalancingAggressiveness::Balanced,
         check_interval_seconds: 300,
-        max_moves_per_cycle: 3, // Limit to 3 moves
         max_moves_per_hour: 10,
         cooldown_seconds: 60,
         min_brokers_for_rebalance: 2,
@@ -427,13 +424,18 @@ async fn test_select_rebalancing_candidates_respects_max_moves() {
         blacklist_topics: vec![],
     };
 
-    let moves = lm
-        .select_rebalancing_candidates(&metrics, &config)
+    let candidate = lm
+        .select_rebalancing_candidate(&metrics, &config)
         .await
         .unwrap();
 
-    // Should respect max_moves_per_cycle limit
-    assert_eq!(moves.len(), 3);
+    // Should return exactly one move (not multiple)
+    assert!(candidate.is_some());
+    let mv = candidate.unwrap();
+    // Should be one of the 10 topics
+    assert!(mv.topic_name.starts_with("/default/topic"));
+    assert_eq!(mv.from_broker, 1);
+    assert_eq!(mv.to_broker, 2);
 }
 
 /// **Test:** Complex Wildcard Pattern Matching
@@ -488,82 +490,6 @@ async fn test_is_topic_blacklisted() {
     assert!(lm.is_topic_blacklisted("/admin/critical", &blacklist));
     assert!(lm.is_topic_blacklisted("/production/orders", &blacklist));
     assert!(!lm.is_topic_blacklisted("/default/safe-topic", &blacklist));
-}
-
-// ============================================================================
-// Rebalancing Execution Tests
-// ============================================================================
-
-/// **Test:** Safety Feature - Hourly Rate Limiting
-///
-/// **Reason:** Tests that max_moves_per_hour prevents rebalancing storms.
-/// Without this, a bug could cause hundreds of moves, destabilizing the cluster.
-///
-/// **Expectation:** With 9 existing moves and limit of 10, should only execute 1 more move
-/// and then stop. Validates rate limiting enforcement across multiple cycles.
-#[tokio::test]
-async fn test_execute_rebalancing_respects_hourly_rate_limit() {
-    let lm = create_test_load_manager().await;
-    let mut history = RebalancingHistory::new(1000);
-
-    // Pre-fill history with 9 moves (close to limit of 10)
-    for i in 0..9 {
-        history.record_move(RebalancingMove::new(
-            format!("/default/old-topic-{}", i),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            1.0,
-        ));
-    }
-
-    assert_eq!(history.count_moves_in_last_hour(), 9);
-
-    // Try to execute 5 new moves
-    let moves = vec![
-        RebalancingMove::new(
-            "/default/new-topic-1".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            3.0,
-        ),
-        RebalancingMove::new(
-            "/default/new-topic-2".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            4.0,
-        ),
-        RebalancingMove::new(
-            "/default/new-topic-3".to_string(),
-            1,
-            2,
-            RebalancingReason::LoadImbalance,
-            5.0,
-        ),
-    ];
-
-    let config = config::RebalancingConfig {
-        enabled: true,
-        aggressiveness: config::RebalancingAggressiveness::Balanced,
-        check_interval_seconds: 300,
-        max_moves_per_cycle: 10,
-        max_moves_per_hour: 10, // Strict hourly limit
-        cooldown_seconds: 0,
-        min_brokers_for_rebalance: 2,
-        min_topic_age_seconds: 0,
-        blacklist_topics: vec![],
-    };
-
-    let executed = lm
-        .execute_rebalancing(moves, &config, &mut history)
-        .await
-        .unwrap();
-
-    // Should only execute 1 move (to reach limit of 10)
-    assert_eq!(executed, 1);
-    assert_eq!(history.count_moves_in_last_hour(), 10);
 }
 
 // ============================================================================
@@ -964,7 +890,6 @@ async fn test_start_rebalancing_loop_basic() {
         enabled: true,
         aggressiveness: config::RebalancingAggressiveness::Balanced,
         check_interval_seconds: 1, // Short interval for testing
-        max_moves_per_cycle: 3,
         max_moves_per_hour: 10,
         cooldown_seconds: 0,
         min_brokers_for_rebalance: 2,

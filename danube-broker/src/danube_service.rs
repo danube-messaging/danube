@@ -301,9 +301,8 @@ impl DanubeService {
                 info!(
                     check_interval_seconds = load_manager_config.rebalancing.check_interval_seconds,
                     aggressiveness = ?load_manager_config.rebalancing.aggressiveness,
-                    max_moves_per_cycle = load_manager_config.rebalancing.max_moves_per_cycle,
                     max_moves_per_hour = load_manager_config.rebalancing.max_moves_per_hour,
-                    "starting automated rebalancing loop"
+                    "starting automated rebalancing loop (moves 1 topic per cycle)"
                 );
 
                 let load_manager_for_rebalancing = self.load_manager.clone();

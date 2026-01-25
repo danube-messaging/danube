@@ -36,20 +36,19 @@ auth:
 load_manager:
   # Simple fair strategy for predictable testing (uses topic count only, not CPU/Memory)
   assignment_strategy: "fair"
-  
+
   # Fast LoadReport updates for testing (matches aggressive rebalancing check interval)
   load_report_interval_seconds: 5
-  
+
   # Automated Rebalancing - ENABLED with aggressive settings
   rebalancing:
     enabled: true
-    aggressiveness: "aggressive"  # CV threshold 0.20
-    check_interval_seconds: 5     # Check every 5 seconds for fast testing
-    max_moves_per_cycle: 5
-    max_moves_per_hour: 20
-    cooldown_seconds: 2           # Short cooldown for tests
+    aggressiveness: "aggressive" # CV threshold 0.20
+    check_interval_seconds: 5 # Check every 5 seconds for fast testing
+    max_moves_per_hour: 30 # High limit for E2E testing
+    cooldown_seconds: 2 # Short cooldown for tests
     min_brokers_for_rebalance: 2
-    min_topic_age_seconds: 0      # No age filter - allow immediate moves
+    min_topic_age_seconds: 30 # Wait 30s after topic creation before rebalancing
     blacklist_topics: []
 
 # WAL and Cloud Storage Configuration
@@ -67,17 +66,17 @@ wal_cloud:
       time_minutes: 2880
       size_mb: 20480
       check_interval_minutes: 5
-  
+
   uploader:
     enabled: true
     interval_seconds: 30
     root_prefix: "/danube-data"
     max_object_mb: 256
-  
+
   cloud:
     backend: "fs"
     root: "./danube-data/cloud-storage"
-  
+
   metadata:
     etcd_endpoint: "127.0.0.1:2379"
     in_memory: false

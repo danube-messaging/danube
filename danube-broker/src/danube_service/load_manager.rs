@@ -13,7 +13,7 @@ use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
 use metrics::counter;
-use rebalancing::{ImbalanceMetrics, RebalancingHistory, RebalancingMove};
+use rebalancing::{ImbalanceMetrics, RebalancingMove};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -882,7 +882,8 @@ impl LoadManager {
     /// Calculates cluster imbalance metrics for rebalancing decisions
     /// (Delegates to rebalancing module)
     pub async fn calculate_imbalance(&self) -> Result<ImbalanceMetrics> {
-        rebalancing::calculate_imbalance(self.rankings.clone()).await
+        let is_broker_active = |broker_id| self.is_broker_active(broker_id);
+        rebalancing::calculate_imbalance(self.rankings.clone(), is_broker_active).await
     }
 
     /// Test helper: Checks if topic matches any blacklist pattern
@@ -901,33 +902,39 @@ impl LoadManager {
         rebalancing::should_rebalance(metrics, config)
     }
 
-    /// Selects topics to move for rebalancing
+    /// Selects one topic to move for rebalancing
     /// (Delegates to rebalancing module)
-    pub async fn select_rebalancing_candidates(
+    /// Note: For manual/admin rebalancing - automated rebalancing has its own internal loop
+    pub async fn select_rebalancing_candidate(
         &self,
         metrics: &ImbalanceMetrics,
         config: &config::RebalancingConfig,
-    ) -> Result<Vec<RebalancingMove>> {
+    ) -> Result<Option<RebalancingMove>> {
         let is_broker_active = |broker_id| self.is_broker_active(broker_id);
-        rebalancing::select_rebalancing_candidates(
+        // Empty history for manual rebalancing (no cooldown needed for manual operations)
+        let history = rebalancing::RebalancingHistory::new(1000);
+        rebalancing::select_rebalancing_candidate(
             self.rankings.clone(),
             self.brokers_usage.clone(),
             metrics,
             config,
             is_broker_active,
+            &history,
         )
         .await
     }
 
     /// Executes a list of rebalancing moves
     /// (Delegates to rebalancing module)
+    /// Note: For manual/admin rebalancing - creates internal history for rate limiting
     pub async fn execute_rebalancing(
         &self,
         moves: Vec<RebalancingMove>,
         config: &config::RebalancingConfig,
-        history: &mut RebalancingHistory,
     ) -> Result<usize> {
-        rebalancing::execute_rebalancing(&self.meta_store, moves, config, history).await
+        // Create history for rate limiting (manual rebalancing doesn't need persistent history)
+        let mut history = rebalancing::RebalancingHistory::new(1000);
+        rebalancing::execute_rebalancing(&self.meta_store, moves, config, &mut history).await
     }
 
     /// Starts the automated rebalancing background loop

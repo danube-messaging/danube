@@ -65,17 +65,6 @@ impl RebalancingAggressiveness {
         }
     }
 
-    /// Get default max moves per cycle based on aggressiveness
-    /// Reserved for future CLI/API use (Step 9)
-    #[allow(dead_code)]
-    pub fn default_max_moves_per_cycle(&self) -> usize {
-        match self {
-            Self::Conservative => 2,
-            Self::Balanced => 4,
-            Self::Aggressive => 6,
-        }
-    }
-
     /// Get default max moves per hour based on aggressiveness
     /// Reserved for future CLI/API use (Step 9)
     #[allow(dead_code)]
@@ -108,8 +97,6 @@ pub struct RebalancingConfig {
     pub aggressiveness: RebalancingAggressiveness,
     /// How often to check cluster balance (seconds)
     pub check_interval_seconds: u64,
-    /// Max concurrent topic moves per rebalancing cycle
-    pub max_moves_per_cycle: usize,
     /// Max topic moves per hour (rate limiting)
     pub max_moves_per_hour: usize,
     /// Wait time between individual topic moves (seconds)
@@ -128,7 +115,6 @@ impl Default for RebalancingConfig {
             enabled: false,
             aggressiveness: RebalancingAggressiveness::Balanced,
             check_interval_seconds: 300,
-            max_moves_per_cycle: 3,
             max_moves_per_hour: 10,
             cooldown_seconds: 60,
             min_brokers_for_rebalance: 2,
@@ -198,19 +184,16 @@ mod tests {
     fn test_aggressiveness_defaults() {
         let conservative = RebalancingAggressiveness::Conservative;
         assert_eq!(conservative.default_check_interval(), 600);
-        assert_eq!(conservative.default_max_moves_per_cycle(), 2);
         assert_eq!(conservative.default_max_moves_per_hour(), 5);
         assert_eq!(conservative.default_cooldown_seconds(), 120);
 
         let balanced = RebalancingAggressiveness::Balanced;
         assert_eq!(balanced.default_check_interval(), 240);
-        assert_eq!(balanced.default_max_moves_per_cycle(), 4);
         assert_eq!(balanced.default_max_moves_per_hour(), 10);
         assert_eq!(balanced.default_cooldown_seconds(), 60);
 
         let aggressive = RebalancingAggressiveness::Aggressive;
         assert_eq!(aggressive.default_check_interval(), 120);
-        assert_eq!(aggressive.default_max_moves_per_cycle(), 6);
         assert_eq!(aggressive.default_max_moves_per_hour(), 20);
         assert_eq!(aggressive.default_cooldown_seconds(), 30);
     }
@@ -221,7 +204,6 @@ mod tests {
         assert!(!config.enabled); // Should start disabled
         assert_eq!(config.aggressiveness, RebalancingAggressiveness::Balanced);
         assert_eq!(config.check_interval_seconds, 300);
-        assert_eq!(config.max_moves_per_cycle, 3);
         assert_eq!(config.max_moves_per_hour, 10);
         assert_eq!(config.cooldown_seconds, 60);
         assert_eq!(config.min_brokers_for_rebalance, 2);

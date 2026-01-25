@@ -176,7 +176,7 @@ jobs:
           TOPIC_COUNT=$(./target/release/danube-admin-cli topics list --namespace default | grep -c "Topic:" || true)
           echo "Total topics created: $TOPIC_COUNT"
           ./target/release/danube-admin-cli topics list --namespace default
-          
+
           if [ "$TOPIC_COUNT" -ne 12 ]; then
             echo "✗ Expected 12 topics but found $TOPIC_COUNT"
             exit 1
@@ -212,7 +212,7 @@ jobs:
             echo "  Broker $broker_id: $count topics"
             TOTAL_FROM_BALANCE=$((TOTAL_FROM_BALANCE + count))
           done
-          
+
           echo ""
           echo "Total topics from balance report: $TOTAL_FROM_BALANCE"
           if [ "$TOTAL_FROM_BALANCE" -ne 12 ]; then

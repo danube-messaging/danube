@@ -84,10 +84,7 @@ load_manager:
     check_interval_seconds: 300
     
     # Move limits: Prevent rebalancing storms
-    # Max concurrent topic moves per rebalancing cycle
-    # Defaults by aggressiveness: conservative=2, balanced=3, aggressive=5
-    max_moves_per_cycle: 3
-    
+    # Rebalancing moves 1 topic per cycle (hardcoded for safety)
     # Max topic moves per hour (rate limiting across all cycles)
     # Defaults by aggressiveness: conservative=5, balanced=10, aggressive=20
     max_moves_per_hour: 10

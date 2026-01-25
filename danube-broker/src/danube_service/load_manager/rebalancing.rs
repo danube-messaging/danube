@@ -72,7 +72,7 @@ pub enum RebalancingReason {
 }
 
 /// Tracks rebalancing history for rate limiting and audit trail
-pub struct RebalancingHistory {
+pub(super) struct RebalancingHistory {
     /// Ring buffer of recent moves
     moves: VecDeque<RebalancingMove>,
     /// Maximum number of moves to keep in history
@@ -115,6 +115,20 @@ impl RebalancingHistory {
     #[allow(dead_code)]
     pub fn get_recent_moves(&self, limit: usize) -> Vec<&RebalancingMove> {
         self.moves.iter().rev().take(limit).collect()
+    }
+
+    /// Checks if a topic was moved recently (within cooldown period)
+    /// This prevents oscillations by filtering out recently moved topics
+    pub fn was_topic_recently_moved(&self, topic_name: &str, cooldown_seconds: u64) -> bool {
+        let cooldown_threshold = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(cooldown_seconds);
+
+        self.moves
+            .iter()
+            .any(|m| m.topic_name == topic_name && m.timestamp >= cooldown_threshold)
     }
 
     /// Returns total number of moves in history
@@ -233,9 +247,8 @@ where
         info!(
             check_interval_seconds = config.check_interval_seconds,
             aggressiveness = ?config.aggressiveness,
-            max_moves_per_cycle = config.max_moves_per_cycle,
             max_moves_per_hour = config.max_moves_per_hour,
-            "starting automated rebalancing loop"
+            "starting automated rebalancing loop (moves 1 topic per cycle)"
         );
 
         let mut interval =
@@ -277,7 +290,7 @@ where
             );
 
             // Step 3: Calculate imbalance metrics
-            let metrics = match calculate_imbalance(rankings.clone()).await {
+            let metrics = match calculate_imbalance(rankings.clone(), &is_broker_active).await {
                 Ok(m) => m,
                 Err(e) => {
                     error!(error = %e, "failed to calculate imbalance metrics");
@@ -286,13 +299,16 @@ where
             };
 
             // Log imbalance metrics for observability
-            debug!(
+            info!(
                 cv = %metrics.coefficient_of_variation,
                 mean_load = %metrics.mean_load,
                 max_load = %metrics.max_load,
                 min_load = %metrics.min_load,
+                std_dev = %metrics.std_deviation,
                 overloaded_count = metrics.overloaded_brokers.len(),
                 underloaded_count = metrics.underloaded_brokers.len(),
+                overloaded_brokers = ?metrics.overloaded_brokers,
+                underloaded_brokers = ?metrics.underloaded_brokers,
                 "cluster imbalance metrics calculated"
             );
 
@@ -317,36 +333,47 @@ where
             // Start timing the rebalancing cycle
             let cycle_start = std::time::Instant::now();
 
-            // Step 4: Select topics to move
-            let moves = match select_rebalancing_candidates(
+            // Step 4: Select one topic to move
+            let rebalancing_move = match select_rebalancing_candidate(
                 rankings.clone(),
                 brokers_usage.clone(),
                 &metrics,
                 &config,
                 &is_broker_active,
+                &history,
             )
             .await
             {
                 Ok(m) => m,
                 Err(e) => {
-                    error!(error = %e, "failed to select rebalancing candidates");
+                    error!(error = %e, "failed to select rebalancing candidate");
                     continue;
                 }
             };
 
-            if moves.is_empty() {
-                warn!("no suitable topics found for rebalancing despite cluster imbalance");
-                continue;
-            }
+            // If no suitable topic found, skip this cycle
+            let rebalancing_move = match rebalancing_move {
+                Some(mv) => mv,
+                None => {
+                    warn!(
+                        overloaded_count = metrics.overloaded_brokers.len(),
+                        overloaded_brokers = ?metrics.overloaded_brokers,
+                        "no suitable topic found for rebalancing despite cluster imbalance"
+                    );
+                    continue;
+                }
+            };
 
             info!(
-                move_count = moves.len(),
-                topics = ?moves.iter().map(|m| &m.topic_name).collect::<Vec<_>>(),
-                "selected topics for rebalancing"
+                topic = %rebalancing_move.topic_name,
+                from_broker = %rebalancing_move.from_broker,
+                to_broker = %rebalancing_move.to_broker,
+                "selected topic for rebalancing"
             );
 
-            // Step 5 + Step 6: Execute rebalancing
-            match execute_rebalancing(&meta_store, moves, &config, &mut history).await {
+            // Step 5 + Step 6: Execute the single rebalancing move
+            // execute_rebalancing expects Vec, so wrap in a vec with 1 element
+            match execute_rebalancing(&meta_store, vec![rebalancing_move], &config, &mut history).await {
                 Ok(executed) => {
                     // Record cycle duration
                     let cycle_duration = cycle_start.elapsed().as_secs_f64();
@@ -392,10 +419,37 @@ where
 /// - CV < 0.30: Reasonably balanced (balanced threshold)
 /// - CV < 0.40: Acceptable (conservative threshold)
 /// - CV ≥ threshold: Needs rebalancing
-pub(super) async fn calculate_imbalance(
+pub(super) async fn calculate_imbalance<F, Fut>(
     rankings: Arc<Mutex<Vec<(u64, usize)>>>,
-) -> Result<ImbalanceMetrics> {
+    is_broker_active: F,
+) -> Result<ImbalanceMetrics>
+where
+    F: Fn(u64) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
     let rankings = rankings.lock().await;
+
+    // Filter to only active brokers for rebalancing calculations
+    // Non-active brokers (draining/drained) should not affect metrics
+    let mut active_rankings = Vec::new();
+    let mut inactive_brokers = Vec::new();
+    for (broker_id, load) in rankings.iter() {
+        if is_broker_active(*broker_id).await {
+            active_rankings.push((*broker_id, *load));
+        } else {
+            inactive_brokers.push(*broker_id);
+        }
+    }
+
+    if !inactive_brokers.is_empty() {
+        debug!(
+            inactive_count = inactive_brokers.len(),
+            inactive_brokers = ?inactive_brokers,
+            "filtered out non-active brokers from imbalance calculation"
+        );
+    }
+
+    let rankings = &active_rankings;
 
     // Need at least 2 brokers for meaningful imbalance calculation
     if rankings.len() < 2 {
@@ -504,40 +558,42 @@ pub(super) fn should_rebalance(
     metrics.needs_rebalancing(threshold)
 }
 
-/// Selects topics to move for rebalancing
+/// Selects one topic to move for rebalancing
 ///
 /// ## Purpose:
-/// Core candidate selection logic that chooses which topics to move from
-/// overloaded brokers to underloaded brokers. Uses intelligent selection
+/// Core candidate selection logic that chooses exactly one topic to move from
+/// an overloaded broker to a less loaded broker. Uses intelligent selection
 /// strategies to minimize disruption while maximizing balance improvement.
 ///
 /// ## Algorithm:
 /// 1. Identify source brokers from `metrics.overloaded_brokers`
 /// 2. For each overloaded broker:
 ///    - Get all its topics
-///    - Filter blacklisted topics
+///    - Filter blacklisted and recently moved topics
 ///    - Sort by load (lightest first - safer to move)
 /// 3. Select target broker (least loaded, excluding source)
-/// 4. Create RebalancingMove objects up to max_moves_per_cycle
+/// 4. Move exactly 1 topic (recalculate imbalance on next cycle)
 ///
 /// ## Strategy:
+/// - **One at a time**: Move 1 topic per cycle for maximum safety
 /// - **Lightest first**: Small topics are easier and safer to move
 /// - **Blacklist respect**: Never move protected topics
-/// - **Rate limiting**: Honor max_moves_per_cycle
+/// - **Cooldown respect**: Don't move recently moved topics
 ///
 /// ## Parameters:
 /// - `metrics`: Cluster imbalance metrics (identifies overloaded brokers)
 /// - `config`: Rebalancing configuration (limits, filters, blacklist)
 ///
 /// ## Returns:
-/// Vector of `RebalancingMove` objects ready for execution
-pub(super) async fn select_rebalancing_candidates<F, Fut>(
+/// `Option<RebalancingMove>` - Exactly one move, or None if no suitable candidate found
+pub(super) async fn select_rebalancing_candidate<F, Fut>(
     rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
     metrics: &ImbalanceMetrics,
     config: &config::RebalancingConfig,
     is_broker_active: F,
-) -> Result<Vec<RebalancingMove>>
+    history: &RebalancingHistory,
+) -> Result<Option<RebalancingMove>>
 where
     F: Fn(u64) -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -547,17 +603,12 @@ where
 
     // Need brokers and overloaded brokers to proceed
     if rankings.is_empty() || metrics.overloaded_brokers.is_empty() {
-        return Ok(vec![]);
+        return Ok(None);
     }
 
-    let mut moves = Vec::new();
-
-    // For each overloaded broker, select topics to move
+    // For each overloaded broker, select ONE topic to move
+    // We only move 1 topic per cycle to avoid overshooting
     for overloaded_id in &metrics.overloaded_brokers {
-        if moves.len() >= config.max_moves_per_cycle {
-            break;
-        }
-
         // Get broker's load report
         let overloaded_report = match brokers.get(overloaded_id) {
             Some(r) => r,
@@ -578,6 +629,23 @@ where
             });
         }
 
+        // Filter recently moved topics to prevent oscillations
+        // Use min_topic_age_seconds as cooldown duration
+        let initial_count = candidates.len();
+        candidates.retain(|(topic, _)| {
+            !history.was_topic_recently_moved(&topic.topic_name, config.min_topic_age_seconds)
+        });
+        
+        if candidates.len() < initial_count {
+            debug!(
+                broker = %overloaded_id,
+                filtered_count = initial_count - candidates.len(),
+                remaining_count = candidates.len(),
+                cooldown_seconds = config.min_topic_age_seconds,
+                "filtered out recently moved topics from candidate selection"
+            );
+        }
+
         // Sort by load (ascending - lightest first)
         // This is safer: small topics are easier to move with less disruption
         candidates.sort_by(|(_, load_a), (_, load_b)| {
@@ -587,9 +655,22 @@ where
         });
 
         // Select target broker (least loaded, excluding source)
+        info!(
+            overloaded_broker = %overloaded_id,
+            topic_count = candidates.len(),
+            "attempting to select target broker for overloaded broker"
+        );
+        
         let target_broker =
             match select_target_broker(*overloaded_id, &rankings, &is_broker_active).await {
-                Ok(broker) => broker,
+                Ok(broker) => {
+                    info!(
+                        source_broker = %overloaded_id,
+                        target_broker = %broker,
+                        "selected target broker for rebalancing"
+                    );
+                    broker
+                },
                 Err(e) => {
                     warn!(
                         source_broker = %overloaded_id,
@@ -600,28 +681,32 @@ where
                 }
             };
 
-        // Create moves for selected topics
-        let remaining_capacity = config.max_moves_per_cycle - moves.len();
-        for (topic, estimated_load) in candidates.iter().take(remaining_capacity) {
-            moves.push(RebalancingMove::new(
+        // Move only the first (lightest) topic
+        // This ensures we recalculate imbalance before moving another topic
+        if let Some((topic, estimated_load)) = candidates.first() {
+            let rebalancing_move = RebalancingMove::new(
                 topic.topic_name.clone(),
                 *overloaded_id,
                 target_broker,
                 RebalancingReason::LoadImbalance,
                 *estimated_load,
-            ));
+            );
 
             info!(
                 topic = %topic.topic_name,
                 from_broker = %overloaded_id,
                 to_broker = %target_broker,
                 estimated_load = %estimated_load,
-                "selected topic for rebalancing"
+                "selected topic for rebalancing (1 per cycle)"
             );
+
+            // Return exactly 1 topic move, then recalculate imbalance on next cycle
+            return Ok(Some(rebalancing_move));
         }
     }
 
-    Ok(moves)
+    // No suitable topics found across all overloaded brokers
+    Ok(None)
 }
 
 /// Selects target broker for topic move
@@ -633,12 +718,13 @@ where
 /// ## Algorithm:
 /// - Rankings are already sorted (least loaded first)
 /// - Skip source broker (can't move to self)
-/// - Skip inactive/draining brokers
+/// - Skip inactive/draining brokers (only active brokers can receive topics)
 /// - Return first suitable broker
 ///
 /// ## Parameters:
 /// - `exclude_broker`: Source broker ID (can't be target)
 /// - `rankings`: Broker rankings (sorted least loaded first)
+/// - `is_broker_active`: Function to check if broker is in active state
 ///
 /// ## Returns:
 /// Target broker ID or error if no suitable broker found
