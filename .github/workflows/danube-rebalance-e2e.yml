@@ -293,17 +293,32 @@ jobs:
           echo "=== Creating new imbalance by unloading Broker 2 ==="
           ./target/release/danube-admin-cli brokers unload --broker-id $BROKER_2
           
-          sleep 10  # Wait for unload
-          
-          # Verify Broker 2 is empty using balance report
+          # Poll balance report until Broker 2 shows 0 topics (or timeout)
           echo ""
-          echo "Checking cluster balance after unload..."
-          ./target/release/danube-admin-cli brokers balance
+          echo "Waiting for balance report to update..."
+          TIMEOUT=30
+          ELAPSED=0
+          COUNT_B2=-1
           
-          # Extract topic count for Broker 2 from balance JSON
-          COUNT_B2=$(./target/release/danube-admin-cli brokers balance --output json | \
-            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
-          COUNT_B2=${COUNT_B2:-0}
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            COUNT_B2=$(./target/release/danube-admin-cli brokers balance --output json | \
+              jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+            COUNT_B2=${COUNT_B2:-0}
+            
+            if [ "$COUNT_B2" -eq 0 ]; then
+              echo "✓ Balance report updated: Broker 2 now has 0 topics (after ${ELAPSED}s)"
+              break
+            fi
+            
+            echo "  Polling... Broker 2 still shows $COUNT_B2 topics (${ELAPSED}s/${TIMEOUT}s)"
+            sleep 2
+            ELAPSED=$((ELAPSED + 2))
+          done
+          
+          # Verify Broker 2 is empty
+          echo ""
+          echo "Checking final cluster balance after unload..."
+          ./target/release/danube-admin-cli brokers balance
           
           echo ""
           echo "Topics on Broker 2 after unload: $COUNT_B2"
@@ -311,7 +326,8 @@ jobs:
           if [ "$COUNT_B2" -eq 0 ]; then
             echo "✓ Broker 2 unloaded successfully"
           else
-            echo "✗ Broker 2 should have 0 topics, has $COUNT_B2"
+            echo "✗ Broker 2 should have 0 topics, has $COUNT_B2 (balance report may be stale)"
+            echo "Checking actual topic assignments:"
             ./target/release/danube-admin-cli topics list --namespace default
             exit 1
           fi
@@ -321,33 +337,45 @@ jobs:
           echo "=== Activating Broker 2 ==="
           ./target/release/danube-admin-cli brokers activate --broker-id $BROKER_2
           
-          # Wait for automatic rebalancing (check_interval_seconds: 5, max_moves_per_cycle: 5)
+          # Poll for automatic rebalancing to redistribute topics (check_interval: 5s, so poll for up to 30s)
           echo ""
-          echo "Waiting 15 seconds for automatic rebalancing..."
-          sleep 15
+          echo "Waiting for automatic rebalancing to redistribute topics..."
+          TIMEOUT=30
+          ELAPSED=0
+          COUNT_B2_AFTER=0
+          CV_AUTO=1.0
           
-          # Verify automatic rebalancing redistributed topics
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            BALANCE_JSON=$(./target/release/danube-admin-cli brokers balance --output json)
+            CV_AUTO=$(echo "$BALANCE_JSON" | jq -r '.coefficient_of_variation')
+            COUNT_B2_AFTER=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+            COUNT_B2_AFTER=${COUNT_B2_AFTER:-0}
+            
+            # Check if rebalancing happened (CV improved and Broker 2 has topics)
+            if [ "$COUNT_B2_AFTER" -gt 0 ] && (( $(echo "$CV_AUTO < 0.25" | bc -l) )); then
+              echo "✓ Automatic rebalancing completed: Broker 2 has $COUNT_B2_AFTER topics, CV=$CV_AUTO (after ${ELAPSED}s)"
+              break
+            fi
+            
+            echo "  Polling... Broker 2: $COUNT_B2_AFTER topics, CV: $CV_AUTO (${ELAPSED}s/${TIMEOUT}s)"
+            sleep 3
+            ELAPSED=$((ELAPSED + 3))
+          done
+          
+          # Verify automatic rebalancing worked
           echo ""
-          echo "Checking cluster balance after automatic rebalancing..."
+          echo "Checking final cluster balance after automatic rebalancing..."
           ./target/release/danube-admin-cli brokers balance
           
-          CV_AUTO=$(./target/release/danube-admin-cli brokers balance --output json | jq -r '.coefficient_of_variation')
           echo ""
           echo "CV after automatic rebalancing: $CV_AUTO"
+          echo "Topics on Broker 2 after automatic rebalancing: $COUNT_B2_AFTER"
           
           if (( $(echo "$CV_AUTO < 0.25" | bc -l) )); then
-            echo "✓ Automatic rebalancing worked (CV=$CV_AUTO)"
+            echo "✓ Cluster rebalanced (CV=$CV_AUTO)"
           else
-            echo "⚠ Automatic rebalancing may need more time (CV=$CV_AUTO)"
+            echo "⚠ Cluster still imbalanced (CV=$CV_AUTO), may need more time"
           fi
-          
-          # Verify Broker 2 now has topics again (from balance report)
-          COUNT_B2_AFTER=$(./target/release/danube-admin-cli brokers balance --output json | \
-            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
-          COUNT_B2_AFTER=${COUNT_B2_AFTER:-0}
-          
-          echo ""
-          echo "Topics on Broker 2 after automatic rebalancing: $COUNT_B2_AFTER"
           
           if [ "$COUNT_B2_AFTER" -gt 0 ]; then
             echo "✓ Broker 2 has $COUNT_B2_AFTER topics after automatic rebalancing"
