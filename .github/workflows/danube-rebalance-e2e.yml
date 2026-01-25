@@ -170,6 +170,19 @@ jobs:
 
           sleep 5
 
+          # Verify exactly 12 topics were created
+          echo ""
+          echo "Listing all topics..."
+          TOPIC_COUNT=$(./target/release/danube-admin-cli topics list --namespace default | grep -c "Topic:" || true)
+          echo "Total topics created: $TOPIC_COUNT"
+          ./target/release/danube-admin-cli topics list --namespace default
+          
+          if [ "$TOPIC_COUNT" -ne 12 ]; then
+            echo "✗ Expected 12 topics but found $TOPIC_COUNT"
+            exit 1
+          fi
+          echo "✓ Verified 12 topics exist"
+
           # Verify cluster is balanced (LoadManager distributed topics evenly)
           echo ""
           echo "Checking cluster balance..."
@@ -192,11 +205,22 @@ jobs:
           echo ""
           echo "Topic distribution (from balance report):"
           BALANCE_JSON=$(./target/release/danube-admin-cli brokers balance --output json)
+          TOTAL_FROM_BALANCE=0
           for broker_id in $BROKER_1 $BROKER_2 $BROKER_3; do
             count=$(echo "$BALANCE_JSON" | jq -r --arg broker "$broker_id" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
             count=${count:-0}
             echo "  Broker $broker_id: $count topics"
+            TOTAL_FROM_BALANCE=$((TOTAL_FROM_BALANCE + count))
           done
+          
+          echo ""
+          echo "Total topics from balance report: $TOTAL_FROM_BALANCE"
+          if [ "$TOTAL_FROM_BALANCE" -ne 12 ]; then
+            echo "✗ Balance report shows $TOTAL_FROM_BALANCE topics but expected 12"
+            echo "This indicates duplicate counting or missing topics in LoadReports"
+            exit 1
+          fi
+          echo "✓ Balance report topic count matches actual topics (12)"
 
       - name: "Phase 2: Manual Rebalancing Commands"
         env:

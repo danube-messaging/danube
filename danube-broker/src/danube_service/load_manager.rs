@@ -585,18 +585,29 @@ impl LoadManager {
                 // Update internal state with placeholder topic load
                 {
                     let mut brokers_usage = self.brokers_usage.lock().await;
+                    
+                    // First, remove this topic from ALL brokers to prevent duplicates
+                    // (handles reassignment case where topic is moving between brokers)
+                    for (other_broker_id, load_report) in brokers_usage.iter_mut() {
+                        if *other_broker_id != broker_id {
+                            load_report.topics.retain(|t| t.topic_name != topic_name);
+                        }
+                    }
+                    
+                    // Then add placeholder to the target broker if not already present
                     if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
-                        // Add a placeholder TopicLoad entry
-                        load_report.topics.push(TopicLoad {
-                            topic_name: topic_name.to_string(),
-                            message_rate: 0,
-                            byte_rate: 0,
-                            byte_rate_mbps: 0.0,
-                            producer_count: 0,
-                            consumer_count: 0,
-                            subscription_count: 0,
-                            backlog_messages: 0,
-                        });
+                        if !load_report.topics.iter().any(|t| t.topic_name == topic_name) {
+                            load_report.topics.push(TopicLoad {
+                                topic_name: topic_name.to_string(),
+                                message_rate: 0,
+                                byte_rate: 0,
+                                byte_rate_mbps: 0.0,
+                                producer_count: 0,
+                                consumer_count: 0,
+                                subscription_count: 0,
+                                backlog_messages: 0,
+                            });
+                        }
                     }
                 }
 
