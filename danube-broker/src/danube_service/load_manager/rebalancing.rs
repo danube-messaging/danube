@@ -442,19 +442,23 @@ pub(super) async fn calculate_imbalance(
     metrics::gauge!(crate::broker_metrics::CLUSTER_IMBALANCE_CV.name).set(cv);
 
     // Identify overloaded and underloaded brokers
+    // Use a more permissive threshold when CV is high to ensure rebalancing happens
     let mut overloaded = vec![];
     let mut underloaded = vec![];
+
+    // For high imbalance (CV > 0.3), use 0.5 std_dev threshold for faster convergence
+    // For moderate imbalance, use 1.0 std_dev threshold (original behavior)
+    let threshold_multiplier = if cv > 0.3 { 0.5 } else { 1.0 };
 
     for (broker_id, load) in rankings.iter() {
         let load_f64 = *load as f64;
 
-        // Overloaded: more than 1 standard deviation above mean
-        if load_f64 > mean + std_dev {
+        // Overloaded: more than threshold above mean
+        if load_f64 > mean + (std_dev * threshold_multiplier) {
             overloaded.push(*broker_id);
         }
-        // Underloaded: more than 1 standard deviation below mean
-        // AND less than half the mean (avoid marking zero-load brokers during startup)
-        else if load_f64 < mean - std_dev && load_f64 < mean * 0.5 {
+        // Underloaded: more than threshold below mean
+        else if load_f64 < mean - (std_dev * threshold_multiplier) {
             underloaded.push(*broker_id);
         }
     }
