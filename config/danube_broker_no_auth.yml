@@ -61,6 +61,12 @@ load_manager:
   #                    Aliases: weighted_random
   assignment_strategy: "balanced"
   
+  # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
+  # - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+  # - Higher values (30-60s): Less overhead, suitable for stable production clusters
+  # Default: 30 seconds
+  load_report_interval_seconds: 30
+  
   # Automated Rebalancing: Proactive optimization of EXISTING topic placement
   rebalancing:
     # Enable/disable automated rebalancing (starts disabled for safety)

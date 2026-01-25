@@ -328,8 +328,14 @@ impl DanubeService {
 
         // Publish periodic Load Reports
         // This enable the broker to register with Load Manager
+        let load_report_interval = if let Some(ref lm_config) = self.service_config.load_manager {
+            lm_config.load_report_interval_seconds
+        } else {
+            30 // Default to 30 seconds if no config
+        };
+        
         tokio::spawn(async move {
-            post_broker_load_report(broker_service_cloned, meta_store_cloned).await
+            post_broker_load_report(broker_service_cloned, meta_store_cloned, load_report_interval).await
         });
 
         // Watch for events of Broker's interest
@@ -415,7 +421,7 @@ pub(crate) async fn create_namespace_if_absent(
 /// to enable LoadManager load balancing decisions across the cluster.
 ///
 /// ## Reporting Cycle:
-/// - **Interval**: Every 30 seconds
+/// - **Interval**: Configurable via `load_report_interval_seconds` (default: 30 seconds)
 /// - **Data Collection**: Current topic count and assignments
 /// - **Publication**: Stores report at `/cluster/load/{broker_id}`
 ///
@@ -424,10 +430,14 @@ pub(crate) async fn create_namespace_if_absent(
 /// - Number of assigned topics
 /// - List of topic names
 /// - Resource utilization metrics
-async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store: MetadataStorage) {
+async fn post_broker_load_report(
+    broker_service: Arc<BrokerService>,
+    meta_store: MetadataStorage,
+    interval_seconds: u64,
+) {
     let mut topics: Vec<String>;
     let mut broker_id;
-    let mut interval = time::interval(Duration::from_secs(30));
+    let mut interval = time::interval(Duration::from_secs(interval_seconds));
     loop {
         interval.tick().await;
         topics = broker_service.get_topics();

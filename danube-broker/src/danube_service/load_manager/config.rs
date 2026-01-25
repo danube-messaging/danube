@@ -145,15 +145,27 @@ pub struct LoadManagerConfig {
     #[serde(default)]
     pub assignment_strategy: AssignmentStrategy,
 
+    /// How often brokers publish load reports to the metadata store (seconds)
+    /// Default: 30 seconds
+    /// - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+    /// - Higher values (30-60s): Less overhead, suitable for stable production clusters
+    #[serde(default = "default_load_report_interval")]
+    pub load_report_interval_seconds: u64,
+
     /// Automated rebalancing configuration
     #[serde(default)]
     pub rebalancing: RebalancingConfig,
+}
+
+fn default_load_report_interval() -> u64 {
+    30
 }
 
 impl Default for LoadManagerConfig {
     fn default() -> Self {
         Self {
             assignment_strategy: AssignmentStrategy::default(),
+            load_report_interval_seconds: default_load_report_interval(),
             rebalancing: RebalancingConfig::default(),
         }
     }
