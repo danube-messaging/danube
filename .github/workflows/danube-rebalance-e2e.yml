@@ -192,8 +192,7 @@ jobs:
           echo ""
           echo "Topic distribution:"
           for broker_id in $BROKER_1 $BROKER_2 $BROKER_3; do
-            count=$(./target/release/danube-admin-cli topics list --output json | \
-              jq -r --arg broker "$broker_id" '[.[] | select(.broker_id == $broker)] | length')
+            count=$(./target/release/danube-admin-cli topics list --broker "$broker_id" --output json | jq '. | length')
             echo "  Broker $broker_id: $count topics"
           done
 
@@ -211,12 +210,9 @@ jobs:
           BROKER_3=$(cat broker-3-id.txt)
           
           # Get initial topic counts
-          COUNT_B1_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_1" '[.[] | select(.broker_id == $broker)] | length')
-          COUNT_B2_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_2" '[.[] | select(.broker_id == $broker)] | length')
-          COUNT_B3_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_3" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B1_BEFORE=$(./target/release/danube-admin-cli topics list --broker "$BROKER_1" --output json | jq '. | length')
+          COUNT_B2_BEFORE=$(./target/release/danube-admin-cli topics list --broker "$BROKER_2" --output json | jq '. | length')
+          COUNT_B3_BEFORE=$(./target/release/danube-admin-cli topics list --broker "$BROKER_3" --output json | jq '. | length')
           
           echo ""
           echo "Initial topic distribution:"
@@ -230,8 +226,7 @@ jobs:
           ./target/release/danube-admin-cli brokers rebalance --dry-run
           
           # Verify dry-run didn't move anything
-          COUNT_B1_AFTER_DRYRUN=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_1" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B1_AFTER_DRYRUN=$(./target/release/danube-admin-cli topics list --broker "$BROKER_1" --output json | jq '. | length')
           
           if [ "$COUNT_B1_BEFORE" -eq "$COUNT_B1_AFTER_DRYRUN" ]; then
             echo "✓ Dry-run did not move topics"
@@ -282,8 +277,7 @@ jobs:
           sleep 10  # Wait for unload
           
           # Verify Broker 2 is empty
-          COUNT_B2=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_2" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B2=$(./target/release/danube-admin-cli topics list --broker "$BROKER_2" --output json | jq '. | length')
           
           echo ""
           echo "Topics on Broker 2 after unload: $COUNT_B2"
@@ -292,7 +286,7 @@ jobs:
             echo "✓ Broker 2 unloaded successfully"
           else
             echo "✗ Broker 2 should have 0 topics, has $COUNT_B2"
-            ./target/release/danube-admin-cli topics list
+            ./target/release/danube-admin-cli topics list --namespace default
             exit 1
           fi
           
@@ -322,8 +316,7 @@ jobs:
           fi
           
           # Verify Broker 2 now has topics again
-          COUNT_B2_AFTER=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_2" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B2_AFTER=$(./target/release/danube-admin-cli topics list --broker "$BROKER_2" --output json | jq '. | length')
           
           echo ""
           echo "Topics on Broker 2 after automatic rebalancing: $COUNT_B2_AFTER"
@@ -351,7 +344,7 @@ jobs:
           # List all topics
           echo ""
           echo "=== All Topics ==="
-          ./target/release/danube-admin-cli topics list || true
+          ./target/release/danube-admin-cli topics list --namespace default || true
           
           echo ""
           echo "✓ Rebalancing E2E test completed"
