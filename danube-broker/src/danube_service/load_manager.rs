@@ -622,7 +622,7 @@ impl LoadManager {
     async fn process_event(&mut self, event: WatchEvent) -> Result<()> {
         match event {
             WatchEvent::Put { key, value, .. } => {
-                let load_report: LoadReport = serde_json::from_slice(&value)
+                let mut load_report: LoadReport = serde_json::from_slice(&value)
                     .map_err(|e| anyhow!("Failed to parse LoadReport: {}", e))?;
 
                 let key_str = std::str::from_utf8(&key)
@@ -631,6 +631,21 @@ impl LoadManager {
                 // Extract broker ID from key path
                 if let Some(broker_id) = extract_broker_id(key_str) {
                     let mut brokers_usage = self.brokers_usage.lock().await;
+                    
+                    // Remove topics that have been assigned to other brokers (deduplication)
+                    // This prevents stale LoadReports from showing topics on wrong brokers
+                    let mut topics_assigned_elsewhere = Vec::new();
+                    for (other_broker_id, other_report) in brokers_usage.iter() {
+                        if *other_broker_id != broker_id {
+                            for topic in &other_report.topics {
+                                topics_assigned_elsewhere.push(topic.topic_name.clone());
+                            }
+                        }
+                    }
+                    
+                    // Filter out topics that are assigned to other brokers
+                    load_report.topics.retain(|t| !topics_assigned_elsewhere.contains(&t.topic_name));
+                    
                     brokers_usage.insert(broker_id, load_report);
                 }
             }
@@ -663,8 +678,14 @@ impl LoadManager {
         // Get the minimum load score
         let min_load = rankings.first().map(|(_, load)| *load).unwrap_or(0);
         
-        // Collect all active brokers within 10% of minimum load (consider them "similarly loaded")
-        let threshold = min_load + (min_load / 10).max(1); // At least +1 to avoid zero threshold
+        // Collect all active brokers within acceptable threshold of minimum load
+        // For small loads (< 10), use fixed +1 threshold for stricter round-robin
+        // For larger loads, use 10% threshold to allow some flexibility
+        let threshold = if min_load < 10 {
+            min_load + 1
+        } else {
+            min_load + (min_load / 10).max(1)
+        };
         let mut candidates: Vec<u64> = Vec::new();
         
         for (broker_id, load) in rankings.iter() {
