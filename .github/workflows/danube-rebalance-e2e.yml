@@ -212,16 +212,7 @@ jobs:
           BROKER_3=$(cat broker-3-id.txt)
           
           # Get initial topic counts from balance report
-          echo ""
-          echo "DEBUG: Getting balance report..."
           BALANCE_JSON=$(./target/release/danube-admin-cli brokers balance --output json)
-          echo "DEBUG: Balance JSON structure:"
-          echo "$BALANCE_JSON" | jq '.'
-          
-          echo ""
-          echo "DEBUG: Looking for broker IDs in balance report..."
-          echo "$BALANCE_JSON" | jq -r '.brokers[] | .broker_id'
-          
           COUNT_B1_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
           COUNT_B2_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
           COUNT_B3_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_3" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
@@ -337,10 +328,11 @@ jobs:
           echo "=== Activating Broker 2 ==="
           ./target/release/danube-admin-cli brokers activate --broker-id $BROKER_2
           
-          # Poll for automatic rebalancing to redistribute topics (check_interval: 5s, so poll for up to 30s)
+          # Poll for automatic rebalancing to redistribute topics and LoadReports to update
+          # (check_interval: 5s for rebalancing, but LoadReports publish on their own schedule)
           echo ""
-          echo "Waiting for automatic rebalancing to redistribute topics..."
-          TIMEOUT=30
+          echo "Waiting for automatic rebalancing and LoadReport updates..."
+          TIMEOUT=60
           ELAPSED=0
           COUNT_B2_AFTER=0
           CV_AUTO=1.0
@@ -358,8 +350,8 @@ jobs:
             fi
             
             echo "  Polling... Broker 2: $COUNT_B2_AFTER topics, CV: $CV_AUTO (${ELAPSED}s/${TIMEOUT}s)"
-            sleep 3
-            ELAPSED=$((ELAPSED + 3))
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
           done
           
           # Verify automatic rebalancing worked
