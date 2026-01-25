@@ -193,7 +193,8 @@ jobs:
           echo "Topic distribution (from balance report):"
           BALANCE_JSON=$(./target/release/danube-admin-cli brokers balance --output json)
           for broker_id in $BROKER_1 $BROKER_2 $BROKER_3; do
-            count=$(echo "$BALANCE_JSON" | jq -r --arg broker "$broker_id" '.brokers[] | select(.broker_id == $broker) | .topic_count')
+            count=$(echo "$BALANCE_JSON" | jq -r --arg broker "$broker_id" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+            count=${count:-0}
             echo "  Broker $broker_id: $count topics"
           done
 
@@ -211,10 +212,24 @@ jobs:
           BROKER_3=$(cat broker-3-id.txt)
           
           # Get initial topic counts from balance report
+          echo ""
+          echo "DEBUG: Getting balance report..."
           BALANCE_JSON=$(./target/release/danube-admin-cli brokers balance --output json)
-          COUNT_B1_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == $broker) | .topic_count')
-          COUNT_B2_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == $broker) | .topic_count')
-          COUNT_B3_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_3" '.brokers[] | select(.broker_id == $broker) | .topic_count')
+          echo "DEBUG: Balance JSON structure:"
+          echo "$BALANCE_JSON" | jq '.'
+          
+          echo ""
+          echo "DEBUG: Looking for broker IDs in balance report..."
+          echo "$BALANCE_JSON" | jq -r '.brokers[] | .broker_id'
+          
+          COUNT_B1_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          COUNT_B2_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          COUNT_B3_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_3" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          
+          # Default to 0 if empty
+          COUNT_B1_BEFORE=${COUNT_B1_BEFORE:-0}
+          COUNT_B2_BEFORE=${COUNT_B2_BEFORE:-0}
+          COUNT_B3_BEFORE=${COUNT_B3_BEFORE:-0}
           
           echo ""
           echo "Initial topic distribution:"
@@ -229,12 +244,13 @@ jobs:
           
           # Verify dry-run didn't move anything
           COUNT_B1_AFTER_DRYRUN=$(./target/release/danube-admin-cli brokers balance --output json | \
-            jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == $broker) | .topic_count')
+            jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          COUNT_B1_AFTER_DRYRUN=${COUNT_B1_AFTER_DRYRUN:-0}
           
           if [ "$COUNT_B1_BEFORE" -eq "$COUNT_B1_AFTER_DRYRUN" ]; then
             echo "✓ Dry-run did not move topics"
           else
-            echo "✗ Dry-run should not move topics"
+            echo "✗ Dry-run should not move topics (before: $COUNT_B1_BEFORE, after: $COUNT_B1_AFTER_DRYRUN)"
             exit 1
           fi
           
@@ -286,7 +302,8 @@ jobs:
           
           # Extract topic count for Broker 2 from balance JSON
           COUNT_B2=$(./target/release/danube-admin-cli brokers balance --output json | \
-            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == $broker) | .topic_count')
+            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          COUNT_B2=${COUNT_B2:-0}
           
           echo ""
           echo "Topics on Broker 2 after unload: $COUNT_B2"
@@ -326,7 +343,8 @@ jobs:
           
           # Verify Broker 2 now has topics again (from balance report)
           COUNT_B2_AFTER=$(./target/release/danube-admin-cli brokers balance --output json | \
-            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == $broker) | .topic_count')
+            jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
+          COUNT_B2_AFTER=${COUNT_B2_AFTER:-0}
           
           echo ""
           echo "Topics on Broker 2 after automatic rebalancing: $COUNT_B2_AFTER"
