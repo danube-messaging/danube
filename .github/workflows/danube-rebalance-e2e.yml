@@ -137,12 +137,12 @@ jobs:
           echo "Waiting for cluster discovery..."
           sleep 10
 
-      - name: "Phase 1: Cluster Setup & Imbalance Detection"
+      - name: "Phase 1: Cluster Setup & Validate Balanced State"
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
-          echo "Phase 1: Cluster Setup & Imbalance Detection"
+          echo "Phase 1: Cluster Setup & Validate Balanced State"
           echo "========================================="
           
           # Get broker IDs dynamically
@@ -161,7 +161,7 @@ jobs:
           echo "$BROKER_2" > broker-2-id.txt
           echo "$BROKER_3" > broker-3-id.txt
           
-          # Create 12 topics (will be assigned to first available broker)
+          # Create 12 topics (LoadManager distributes evenly)
           echo ""
           echo "Creating 12 test topics..."
           for i in {1..12}; do
@@ -170,7 +170,7 @@ jobs:
           
           sleep 5
           
-          # Verify imbalance
+          # Verify cluster is balanced (LoadManager distributed topics evenly)
           echo ""
           echo "Checking cluster balance..."
           ./target/release/danube-admin-cli brokers balance
@@ -179,78 +179,12 @@ jobs:
           echo ""
           echo "Coefficient of Variation: $CV"
           
-          # Expect CV > 0.30 (imbalanced)
-          if (( $(echo "$CV > 0.30" | bc -l) )); then
-            echo "✓ Cluster is imbalanced (CV=$CV)"
+          # Expect CV < 0.30 (balanced)
+          if (( $(echo "$CV < 0.30" | bc -l) )); then
+            echo "✓ Cluster is balanced (CV=$CV)"
           else
-            echo "✗ Expected imbalance but CV=$CV"
-            echo "Topic distribution:"
-            ./target/release/danube-admin-cli topics list
-            exit 1
-          fi
-
-      - name: "Phase 2: Manual Rebalancing"
-        env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
-        run: |
-          echo "========================================="
-          echo "Phase 2: Manual Rebalancing"
-          echo "========================================="
-          
-          # Load broker IDs
-          BROKER_1=$(cat broker-1-id.txt)
-          BROKER_2=$(cat broker-2-id.txt)
-          BROKER_3=$(cat broker-3-id.txt)
-          
-          # Dry-run first
-          echo ""
-          echo "=== Dry-run Rebalancing ==="
-          ./target/release/danube-admin-cli brokers rebalance --dry-run | tee dryrun.log
-          
-          # Verify dry-run proposed moves
-          if grep -q "Would move" dryrun.log; then
-            echo "✓ Dry-run proposed topic moves"
-          else
-            echo "✗ Dry-run should propose moves"
-            cat dryrun.log
-            exit 1
-          fi
-          
-          # Verify no actual movement happened
-          TOPICS_ON_B1=$(./target/release/danube-admin-cli topics list --output json | \
-            jq -r --arg broker "$BROKER_1" '[.[] | select(.broker_id == $broker)] | length')
-          echo ""
-          echo "Topics still on Broker 1: $TOPICS_ON_B1"
-          
-          if [ "$TOPICS_ON_B1" -eq 12 ]; then
-            echo "✓ No topics moved (dry-run worked correctly)"
-          else
-            echo "✗ Dry-run should not move topics"
-            ./target/release/danube-admin-cli topics list
-            exit 1
-          fi
-          
-          # Execute actual rebalancing
-          echo ""
-          echo "=== Executing Rebalancing (max 4 moves) ==="
-          ./target/release/danube-admin-cli brokers rebalance --max-moves 4
-          
-          sleep 15  # Wait for moves to complete
-          
-          # Verify cluster is now balanced
-          echo ""
-          echo "Checking cluster balance after rebalancing..."
-          ./target/release/danube-admin-cli brokers balance
-          
-          CV_AFTER=$(./target/release/danube-admin-cli brokers balance --output json | jq -r '.coefficient_of_variation')
-          echo ""
-          echo "CV after rebalancing: $CV_AFTER"
-          
-          if (( $(echo "$CV_AFTER < 0.30" | bc -l) )); then
-            echo "✓ Cluster is now balanced (CV=$CV_AFTER)"
-          else
-            echo "✗ Cluster should be balanced but CV=$CV_AFTER"
-            ./target/release/danube-admin-cli topics list
+            echo "✗ Expected balanced cluster but CV=$CV"
+            ./target/release/danube-admin-cli brokers balance
             exit 1
           fi
           
@@ -262,6 +196,70 @@ jobs:
               jq -r --arg broker "$broker_id" '[.[] | select(.broker_id == $broker)] | length')
             echo "  Broker $broker_id: $count topics"
           done
+
+      - name: "Phase 2: Manual Rebalancing Commands"
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          echo "========================================="
+          echo "Phase 2: Manual Rebalancing Commands"
+          echo "========================================="
+          
+          # Load broker IDs
+          BROKER_1=$(cat broker-1-id.txt)
+          BROKER_2=$(cat broker-2-id.txt)
+          BROKER_3=$(cat broker-3-id.txt)
+          
+          # Get initial topic counts
+          COUNT_B1_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
+            jq -r --arg broker "$BROKER_1" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B2_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
+            jq -r --arg broker "$BROKER_2" '[.[] | select(.broker_id == $broker)] | length')
+          COUNT_B3_BEFORE=$(./target/release/danube-admin-cli topics list --output json | \
+            jq -r --arg broker "$BROKER_3" '[.[] | select(.broker_id == $broker)] | length')
+          
+          echo ""
+          echo "Initial topic distribution:"
+          echo "  Broker 1: $COUNT_B1_BEFORE topics"
+          echo "  Broker 2: $COUNT_B2_BEFORE topics"
+          echo "  Broker 3: $COUNT_B3_BEFORE topics"
+          
+          # Dry-run rebalancing (cluster already balanced, should report this)
+          echo ""
+          echo "=== Dry-run Rebalancing ==="
+          ./target/release/danube-admin-cli brokers rebalance --dry-run
+          
+          # Verify dry-run didn't move anything
+          COUNT_B1_AFTER_DRYRUN=$(./target/release/danube-admin-cli topics list --output json | \
+            jq -r --arg broker "$BROKER_1" '[.[] | select(.broker_id == $broker)] | length')
+          
+          if [ "$COUNT_B1_BEFORE" -eq "$COUNT_B1_AFTER_DRYRUN" ]; then
+            echo "✓ Dry-run did not move topics"
+          else
+            echo "✗ Dry-run should not move topics"
+            exit 1
+          fi
+          
+          # Execute manual rebalancing (should report cluster is balanced, 0 moves)
+          echo ""
+          echo "=== Executing Manual Rebalancing ==="
+          ./target/release/danube-admin-cli brokers rebalance --max-moves 4
+          
+          # Verify cluster remains balanced
+          echo ""
+          echo "Checking cluster balance after manual rebalancing..."
+          ./target/release/danube-admin-cli brokers balance
+          
+          CV_AFTER=$(./target/release/danube-admin-cli brokers balance --output json | jq -r '.coefficient_of_variation')
+          echo ""
+          echo "CV after manual rebalancing: $CV_AFTER"
+          
+          if (( $(echo "$CV_AFTER < 0.30" | bc -l) )); then
+            echo "✓ Cluster remains balanced (CV=$CV_AFTER)"
+          else
+            echo "✗ Cluster should remain balanced but CV=$CV_AFTER"
+            exit 1
+          fi
 
       - name: "Phase 3: Automatic Rebalancing"
         env:
@@ -303,10 +301,10 @@ jobs:
           echo "=== Activating Broker 2 ==="
           ./target/release/danube-admin-cli brokers activate --broker-id $BROKER_2
           
-          # Wait for automatic rebalancing (check_interval_seconds: 5, allow 30s total)
+          # Wait for automatic rebalancing (check_interval_seconds: 5, max_moves_per_cycle: 5)
           echo ""
-          echo "Waiting 30 seconds for automatic rebalancing..."
-          sleep 30
+          echo "Waiting 15 seconds for automatic rebalancing..."
+          sleep 15
           
           # Verify automatic rebalancing redistributed topics
           echo ""
@@ -336,13 +334,13 @@ jobs:
             echo "⚠ Broker 2 still has no topics, automatic rebalancing may need more time"
           fi
 
-      - name: "Phase 4: Final Verification & Cleanup"
+      - name: "Final Verification"
         if: always()
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
-          echo "Phase 4: Final Verification & Cleanup"
+          echo "Final Verification"
           echo "========================================="
           
           # Final balance check
@@ -355,15 +353,9 @@ jobs:
           echo "=== All Topics ==="
           ./target/release/danube-admin-cli topics list || true
           
-          # Cleanup - delete all test topics
           echo ""
-          echo "=== Cleanup ==="
-          for i in {1..12}; do
-            ./target/release/danube-admin-cli topics delete /default/test-topic-$i || true
-          done
-          
-          echo ""
-          echo "✓ Test completed successfully"
+          echo "✓ Rebalancing E2E test completed"
+          echo "Note: Topics and brokers will be cleaned up automatically when workflow ends"
 
       - name: Collect etcd state on failure
         if: failure()
