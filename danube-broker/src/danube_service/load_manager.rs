@@ -905,6 +905,13 @@ impl LoadManager {
         self.rankings.lock().await.clone()
     }
 
+    /// Gets current broker usage reports (for admin CLI)
+    ///
+    /// Returns a copy of the broker usage HashMap containing LoadReport for each broker.
+    pub async fn get_brokers_usage(&self) -> HashMap<u64, LoadReport> {
+        self.brokers_usage.lock().await.clone()
+    }
+
     /// Gets rebalancing configuration (for admin CLI)
     ///
     /// Returns the current rebalancing config if available from service configuration.

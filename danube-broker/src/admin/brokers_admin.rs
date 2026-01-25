@@ -265,17 +265,26 @@ impl BrokerAdmin for DanubeAdminImpl {
 
         // Get broker rankings for detailed information
         let rankings = self.load_manager.get_rankings().await;
+        
+        // Get actual topic counts from broker usage reports
+        let brokers_usage = self.load_manager.get_brokers_usage().await;
 
         // Build broker load info list
         let mut broker_infos = Vec::new();
         for (broker_id, load) in rankings.iter() {
             let is_overloaded = metrics.overloaded_brokers.contains(broker_id);
             let is_underloaded = metrics.underloaded_brokers.contains(broker_id);
+            
+            // Get actual topic count from load report (not the ranking score!)
+            let actual_topic_count = brokers_usage
+                .get(broker_id)
+                .map(|report| report.topics.len() as u32)
+                .unwrap_or(0);
 
             broker_infos.push(BrokerLoadInfo {
                 broker_id: *broker_id,
                 load: *load as f64,
-                topic_count: *load as u32,
+                topic_count: actual_topic_count,
                 is_overloaded,
                 is_underloaded,
             });
