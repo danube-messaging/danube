@@ -1,11 +1,11 @@
-use crate::{auth::AuthConfig, policies::Policies};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
+use crate::{auth::AuthConfig, policies::Policies};
 
 use anyhow::{Context, Result};
 // Legacy StorageConfig removed in Phase D
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 // For converting CloudConfig -> BackendConfig
 use danube_persistent_storage::{BackendConfig, CloudBackend, LocalBackend};
@@ -15,18 +15,10 @@ use danube_persistent_storage::{BackendConfig, CloudBackend, LocalBackend};
 pub(crate) struct LoadConfiguration {
     /// Danube cluster name
     pub(crate) cluster_name: String,
-    /// Hostname or IP address shared by Broker, Admin API, and Prometheus exporter
-    pub(crate) broker_host: String,
-    /// Port for gRPC communication with the broker
-    pub(crate) broker_port: usize,
-    /// Port for the Admin API
-    pub(crate) admin_port: usize,
-    /// Port for Prometheus exporter
-    pub(crate) prom_port: Option<usize>,
-    /// Hostname or IP of Metadata Persistent Store (etcd)
-    pub(crate) meta_store_host: String,
-    /// Port for etcd or metadata store
-    pub(crate) meta_store_port: usize,
+    /// Broker services configuration
+    pub(crate) broker: BrokerConfig,
+    /// Metadata store configuration
+    pub(crate) meta_store: MetaStoreConfig,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Allow producers to auto-create topics when missing (if None, defaults to true)
@@ -37,7 +29,7 @@ pub(crate) struct LoadConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
-    /// Load Manager configuration (Phase 3)
+    /// Load Manager configuration
     #[serde(default)]
     pub(crate) load_manager: Option<LoadManagerConfig>,
 }
@@ -68,8 +60,37 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
-    /// Load Manager configuration (Phase 3)
+    /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
+}
+
+/// Broker services configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct BrokerConfig {
+    /// Hostname or IP address for all broker services
+    pub(crate) host: String,
+    /// Port configuration for broker services
+    pub(crate) ports: BrokerPorts,
+}
+
+/// Broker port configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct BrokerPorts {
+    /// Client connections port (producers/consumers)
+    pub(crate) client: usize,
+    /// Admin API port
+    pub(crate) admin: usize,
+    /// Prometheus metrics exporter port (optional)
+    pub(crate) prometheus: Option<usize>,
+}
+
+/// Metadata store configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct MetaStoreConfig {
+    /// Hostname or IP address of metadata store (etcd)
+    pub(crate) host: String,
+    /// Port for metadata store
+    pub(crate) port: usize,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -77,20 +98,20 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
     type Error = anyhow::Error;
 
     fn try_from(config: LoadConfiguration) -> Result<Self> {
-        // Construct broker_addr from broker_host and broker_port
-        let broker_addr: SocketAddr = format!("{}:{}", config.broker_host, config.broker_port)
+        // Construct broker_addr from broker.host and broker.ports.client
+        let broker_addr: SocketAddr = format!("{}:{}", config.broker.host, config.broker.ports.client)
             .parse()
             .context("Failed to create broker_addr")?;
 
-        // Construct admin_addr from broker_host and admin_port
-        let admin_addr: SocketAddr = format!("{}:{}", config.broker_host, config.admin_port)
+        // Construct admin_addr from broker.host and broker.ports.admin
+        let admin_addr: SocketAddr = format!("{}:{}", config.broker.host, config.broker.ports.admin)
             .parse()
             .context("Failed to create admin_addr")?;
 
-        // Construct prom_exporter from broker_host and prom_port if provided
-        let prom_exporter: Option<SocketAddr> = if let Some(prom_port) = config.prom_port {
+        // Construct prom_exporter from broker.host and broker.ports.prometheus if provided
+        let prom_exporter: Option<SocketAddr> = if let Some(prom_port) = config.broker.ports.prometheus {
             Some(
-                format!("{}:{}", config.broker_host, prom_port)
+                format!("{}:{}", config.broker.host, prom_port)
                     .parse()
                     .context("Failed to create prom_exporter")?,
             )
@@ -98,8 +119,8 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             None
         };
 
-        // Construct meta_store_addr from meta_store_host and meta_store_port
-        let meta_store_addr = format!("{}:{}", config.meta_store_host, config.meta_store_port);
+        // Construct meta_store_addr from meta_store.host and meta_store.port
+        let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);
 
         // Return the successfully created ServiceConfiguration
         Ok(ServiceConfiguration {

@@ -175,7 +175,9 @@ impl Topic {
             }
 
             // Update metrics collector after disconnect
-            self.metrics_collector.set_producer_count(&self.topic_name, 0).await;
+            self.metrics_collector
+                .set_producer_count(&self.topic_name, 0)
+                .await;
         }
 
         // Disconnect all the topic subscriptions
@@ -186,8 +188,12 @@ impl Topic {
         }
 
         // Update metrics collector after disconnect
-        self.metrics_collector.set_consumer_count(&self.topic_name, 0).await;
-        self.metrics_collector.set_subscription_count(&self.topic_name, 0).await;
+        self.metrics_collector
+            .set_consumer_count(&self.topic_name, 0)
+            .await;
+        self.metrics_collector
+            .set_subscription_count(&self.topic_name, 0)
+            .await;
 
         // Decrement subscriptions gauge for all existing
         let subs_len = subs_guard.len();
@@ -211,7 +217,7 @@ impl Topic {
                 ));
             }
         }
-        // Phase 3: publish rate limiting (if configured)
+        //Publish rate limiting (if configured)
         if let Some(lim) = &self.publish_rate_limiter {
             if !lim.try_acquire(1).await {
                 warn!(
@@ -386,7 +392,7 @@ impl Topic {
             // Build the subscription and dispatcher without holding the lock
             let mut new_subscription =
                 Subscription::new(options.clone(), &self.topic_name, sub_metadata);
-            // Phase 2: install per-subscription dispatch limiter if configured
+            // install per-subscription dispatch limiter if configured
             if let Some(pol) = &self.topic_policies {
                 let sub_rate = pol.get_max_subscription_dispatch_rate();
                 if sub_rate > 0 {

@@ -74,7 +74,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         consumer.ack(&msg).await?;
     }
 
-    // Phase 2: Receive message #3 (index 3) but DON'T ack it, then disconnect
+    // Receive message #3 (index 3) but DON'T ack it, then disconnect
     let pending_msg = timeout(Duration::from_secs(5), stream.recv())
         .await?
         .expect("Expected pending message");
@@ -91,7 +91,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
     // Give broker time to detect disconnect (short delay is sufficient with close())
     sleep(Duration::from_millis(300)).await;
 
-    // Phase 3: Reconnect the same consumer
+    // Reconnect the same consumer
     let mut consumer_reconnected = client
         .new_consumer()
         .with_topic(topic.clone())
@@ -215,7 +215,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         }
     }
 
-    // Phase 2: c1 receives next message but doesn't ack, then disconnects
+    // c1 receives next message but doesn't ack, then disconnects
     let pending_msg = timeout(Duration::from_secs(5), async {
         tokio::select! {
             Some(msg) = s1.recv() => Some(("c1", msg)),
@@ -239,7 +239,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         // Give broker time to detect disconnect and trigger failover
         sleep(Duration::from_millis(300)).await;
 
-        // Phase 3: c2 should receive the same message (failover)
+        // c2 should receive the same message (failover)
         let failover_msg = timeout(Duration::from_secs(5), s2.recv())
             .await?
             .expect("Expected failover message for c2");
@@ -265,7 +265,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         // Give broker time to detect disconnect and trigger failover to c1
         sleep(Duration::from_millis(300)).await;
 
-        // Phase 3: c1 should receive the same message (failover)
+        // c1 should receive the same message (failover)
         let failover_msg = timeout(Duration::from_secs(5), s1.recv())
             .await?
             .expect("Expected failover message for c1");

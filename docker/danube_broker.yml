@@ -4,23 +4,23 @@
 # Danube cluster name
 cluster_name: "DANUBE_DOCKER_CLUSTER"
 
-# Danube Broker hostname
-# Using 0.0.0.0 to bind to all interfaces within container
-broker_host: "0.0.0.0"
+# Broker Services Configuration
+broker:
+  # Using 0.0.0.0 to bind to all interfaces within container
+  host: "0.0.0.0"
+  ports:
+    # Client connections (producers/consumers)
+    client: 6650
+    # Admin API
+    admin: 50051
+    # Prometheus metrics exporter
+    prometheus: 9040
 
-# Ports for the Danube broker services
-# Port for gRPC communication with the broker
-broker_port: 6650
-# Port for the Admin API
-admin_port: 50051
-# Port for Prometheus exporter
-prom_port: 9040
-
-# Metadata Persistent Store address (ETCD)
+# Metadata Store Configuration (etcd)
 # Using container hostname for service discovery
-meta_store_host: "etcd"
-# Port for etcd
-meta_store_port: 2379
+meta_store:
+  host: "etcd"
+  port: 2379
 
 # Namespaces to be created on boot
 bootstrap_namespaces:

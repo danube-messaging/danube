@@ -454,7 +454,7 @@ impl LoadManager {
                         if let Some(obj) = val.as_object() {
                             let reason = obj.get("reason").and_then(|v| v.as_str());
 
-                            // Handle unload (Phase D: exclude source broker)
+                            // Handle unload (exclude source broker)
                             if reason == Some("unload") {
                                 if let Some(from_broker) =
                                     obj.get("from_broker").and_then(|v| v.as_u64())
@@ -463,7 +463,7 @@ impl LoadManager {
                                 }
                             }
 
-                            // Handle rebalance (Phase 3 Step 6: prefer target broker)
+                            // Handle rebalance (prefer target broker)
                             if reason == Some("rebalance") {
                                 if let Some(from_broker) =
                                     obj.get("from_broker").and_then(|v| v.as_u64())
@@ -516,7 +516,7 @@ impl LoadManager {
                     // Priority 3: Normal assignment - use rankings
                     self.get_next_broker().await
                 };
-                
+
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
 
                 match self

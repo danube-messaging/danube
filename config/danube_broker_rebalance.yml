@@ -4,17 +4,18 @@
 # Danube cluster name
 cluster_name: "MY_CLUSTER"
 
-# Danube Broker hostname
-broker_host: "0.0.0.0"
+# Broker Services Configuration
+broker:
+  host: "0.0.0.0"
+  ports:
+    client: 6650
+    admin: 50051
+    prometheus: 9040
 
-# Ports for the Danube broker services
-broker_port: 6650
-admin_port: 50051
-prom_port: 9040
-
-# Metadata Persistent Store address (e.g., etcd)
-meta_store_host: "127.0.0.1"
-meta_store_port: 2379
+# Metadata Store Configuration (etcd)
+meta_store:
+  host: "127.0.0.1"
+  port: 2379
 
 # Namespaces to be created on boot
 bootstrap_namespaces:

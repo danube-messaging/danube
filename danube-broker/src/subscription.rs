@@ -29,7 +29,7 @@ pub(crate) struct Subscription {
     pub(crate) topic_name: String,
     pub(crate) dispatcher: Option<Dispatcher>,
     pub(crate) consumers: HashMap<u64, Consumer>,
-    // Phase 2/3: optional per-subscription dispatch limiter (messages/sec)
+    // optional per-subscription dispatch limiter (messages/sec)
     pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
 }
 
@@ -59,7 +59,7 @@ impl Subscription {
             dispatch_rate_limiter: None,
         }
     }
-    // Phase 2: setter to install a limiter created by Topic based on policies
+    // setter to install a limiter created by Topic based on policies
     pub(crate) fn set_dispatch_rate_limiter(&mut self, limiter: Option<Arc<RateLimiter>>) {
         self.dispatch_rate_limiter = limiter;
     }

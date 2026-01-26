@@ -105,7 +105,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     sleep(Duration::from_millis(500)).await;
 
     // ========================================================================
-    // Phase 2: Produce messages and consumer reads first 5
+    // Produce messages and consumer reads first 5
     // ========================================================================
     // Produce 10 messages (offsets 0-9)
     let blob_data = fs::read("./tests/test.blob")?;

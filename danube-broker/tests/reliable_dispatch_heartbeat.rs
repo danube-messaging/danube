@@ -278,7 +278,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         consumer.ack(&msg).await?;
     }
 
-    // Phase 2: Send message #3 and receive it but DON'T ack, then disconnect
+    // Send message #3 and receive it but DON'T ack, then disconnect
     producer
         .send("disconnect_msg_3".to_string().into_bytes(), None)
         .await?;
@@ -297,7 +297,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
     // Give broker time to detect disconnect
     sleep(Duration::from_millis(300)).await;
 
-    // Phase 3: Reconnect with SAME consumer name for Exclusive subscription
+    // Reconnect with SAME consumer name for Exclusive subscription
     let mut consumer2 = client
         .new_consumer()
         .with_topic(topic.clone())

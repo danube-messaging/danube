@@ -18,11 +18,11 @@ pub(crate) struct LoadReport {
     // System resource usage metrics (Phase 1)
     pub(crate) resources_usage: Vec<SystemLoad>,
 
-    // Topic-level metrics (Phase 2)
+    // Topic-level metrics
     #[serde(default)]
     pub(crate) topics: Vec<TopicLoad>,
 
-    // Aggregate metrics (Phase 2)
+    // Aggregate metrics
     #[serde(default)]
     pub(crate) total_throughput_mbps: f64,
     #[serde(default)]
@@ -203,7 +203,7 @@ pub(crate) async fn generate_load_report(
         });
     }
 
-    // Phase 2: Topic-level metrics collection from MetricsCollector
+    // Topic-level metrics collection from MetricsCollector
     let snapshots = metrics_collector.get_all_snapshots().await;
 
     // Extract current counter values for rate calculation
