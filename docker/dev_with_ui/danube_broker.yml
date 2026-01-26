@@ -35,6 +35,20 @@ auto_create_topics: true
 auth:
   mode: none # Options: none, tls, tlswithjwt
 
+# Load Manager Configuration
+load_manager:
+  assignment_strategy: "balanced"
+  load_report_interval_seconds: 30
+  rebalancing:
+    enabled: false
+    aggressiveness: "balanced"
+    check_interval_seconds: 300
+    max_moves_per_hour: 10
+    cooldown_seconds: 60
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 300
+    blacklist_topics: []
+
 # WAL and Cloud Storage Configuration
 # Configured for MinIO S3-compatible storage
 wal_cloud:

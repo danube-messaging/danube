@@ -5,7 +5,7 @@ on:
     paths:
       - "danube-broker/src/danube_service/load_manager/**"
       - "danube-broker/src/danube_service/load_manager.rs"
-      - "config/danube_broker_rebalance.yml"
+      - "config/for_tests/danube_broker_rebalance.yml"
       - ".github/workflows/danube-rebalance-e2e.yml"
   workflow_dispatch: # Allow manual trigger
 
@@ -66,7 +66,7 @@ jobs:
           RUST_LOG: info
         run: |
           nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker_rebalance.yml \
+            --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --prom-exporter 0.0.0.0:9040 \
@@ -90,7 +90,7 @@ jobs:
           RUST_LOG: info
         run: |
           nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker_rebalance.yml \
+            --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
             --prom-exporter 0.0.0.0:9041 \
@@ -114,7 +114,7 @@ jobs:
           RUST_LOG: info
         run: |
           nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker_rebalance.yml \
+            --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6652 \
             --admin-addr 0.0.0.0:50053 \
             --prom-exporter 0.0.0.0:9042 \
@@ -356,7 +356,7 @@ jobs:
           echo ""
           echo "Balance immediately after activation:"
           ./target/release/danube-admin-cli brokers balance
-          
+
           CV_AFTER_ACTIVATE=$(./target/release/danube-admin-cli brokers balance --output json | jq -r '.coefficient_of_variation')
           echo ""
           echo "CV immediately after activation: $CV_AFTER_ACTIVATE"
