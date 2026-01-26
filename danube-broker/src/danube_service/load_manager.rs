@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     resources::{
@@ -397,11 +397,6 @@ impl LoadManager {
         state: LeaderElectionState,
         broker_id: u64,
     ) -> Result<()> {
-        let key_str =
-            std::str::from_utf8(key).map_err(|e| anyhow!("Invalid UTF-8 in key: {}", e))?;
-
-        debug!(broker_key = %key_str, "a new load report has been received");
-
         // Process the event locally
         self.process_event(WatchEvent::Put {
             key: key.to_vec(),
@@ -465,11 +460,6 @@ impl LoadManager {
                                     obj.get("from_broker").and_then(|v| v.as_u64())
                                 {
                                     exclude_broker = Some(from_broker);
-                                    debug!(
-                                        topic = %topic_name,
-                                        from_broker = %from_broker,
-                                        "unload marker detected, will exclude source broker"
-                                    );
                                 }
                             }
 
@@ -484,12 +474,6 @@ impl LoadManager {
                                     obj.get("to_broker").and_then(|v| v.as_u64())
                                 {
                                     target_broker_hint = Some(to_broker);
-                                    info!(
-                                        topic = %topic_name,
-                                        from_broker = ?exclude_broker,
-                                        to_broker = %to_broker,
-                                        "rebalance marker detected with target broker hint"
-                                    );
                                 }
                             }
                         }
@@ -500,11 +484,6 @@ impl LoadManager {
                 let broker_id = if let Some(target) = target_broker_hint {
                     // Priority 1: Rebalancing - prefer the target broker hint
                     if self.is_broker_active(target).await {
-                        info!(
-                            topic = %topic_name,
-                            target_broker = %target,
-                            "using rebalance target broker hint"
-                        );
                         target
                     } else {
                         // Fallback: Target broker is not active, select alternative
@@ -517,14 +496,7 @@ impl LoadManager {
                             .get_next_broker_excluding(exclude_broker.unwrap_or(0))
                             .await
                         {
-                            Ok(id) => {
-                                info!(
-                                    topic = %topic_name,
-                                    selected_broker = %id,
-                                    "selected alternative broker for rebalancing"
-                                );
-                                id
-                            }
+                            Ok(id) => id,
                             Err(e) => {
                                 error!(topic = %topic_name, error = %e, "cannot select alternative broker");
                                 return;
@@ -542,18 +514,8 @@ impl LoadManager {
                     }
                 } else {
                     // Priority 3: Normal assignment - use rankings
-                    info!(
-                        topic = %topic_name,
-                        "assigning topic using get_next_broker() with fair strategy"
-                    );
                     self.get_next_broker().await
                 };
-                
-                info!(
-                    topic = %topic_name,
-                    selected_broker = %broker_id,
-                    "topic assigned to broker"
-                );
                 
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
 
@@ -629,15 +591,6 @@ impl LoadManager {
                 // Recalculate rankings AFTER updating internal state
                 // This ensures the next topic assignment sees the updated load
                 self.calculate_rankings().await;
-                
-                // Log updated rankings for debugging
-                let updated_rankings = self.rankings.lock().await;
-                info!(
-                    topic = %topic_name,
-                    assigned_to = %broker_id,
-                    updated_rankings = ?updated_rankings.iter().take(5).collect::<Vec<_>>(),
-                    "rankings recalculated after topic assignment"
-                );
             }
             WatchEvent::Delete { .. } => (), // Ignore delete events
         }
@@ -720,14 +673,6 @@ impl LoadManager {
             }
         }
 
-        info!(
-            min_load = min_load,
-            threshold = threshold,
-            candidates_count = candidates.len(),
-            rankings = ?rankings.iter().take(5).collect::<Vec<_>>(),
-            "selecting broker for topic assignment"
-        );
-
         if candidates.is_empty() {
             // Fallback: pick first active broker from full rankings
             for (bid, _) in rankings.iter() {
@@ -805,11 +750,6 @@ impl LoadManager {
         // DO NOT delete /topics/** or /namespaces/** metadata
         for full_assignment_path in childrens {
             // get_childrens now returns full paths (matching ETCD behavior)
-            info!(
-                path = %full_assignment_path,
-                "attempting to delete broker assignment"
-            );
-
             // Delete only the broker assignment: /cluster/brokers/{dead-broker}/{ns}/{topic}
             if let Err(e) = self.meta_store.delete(&full_assignment_path).await {
                 error!(
@@ -818,10 +758,6 @@ impl LoadManager {
                     "failed to delete broker assignment"
                 );
             } else {
-                info!(
-                    path = %full_assignment_path,
-                    "successfully deleted broker assignment"
-                );
                 counter!(
                     BROKER_ASSIGNMENTS_TOTAL.name,
                     "broker_id" => broker_id.to_string(),
@@ -851,11 +787,6 @@ impl LoadManager {
                         path = %unassigned_path,
                         error = %e,
                         "failed to create unassigned entry"
-                    );
-                } else {
-                    info!(
-                        path = %unassigned_path,
-                        "created unassigned entry for topic reassignment"
                     );
                 }
             }

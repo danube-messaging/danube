@@ -263,31 +263,19 @@ where
             let leader_state = leader_election.get_state().await;
             if leader_state != crate::danube_service::leader_election::LeaderElectionState::Leading
             {
-                debug!("skipping rebalancing cycle: broker is not the leader");
                 continue;
             }
 
             // Check 2: Rebalancing must be enabled
             if !config.enabled {
-                debug!("skipping rebalancing cycle: rebalancing is disabled");
                 continue;
             }
 
             // Check 3: Cluster health - need minimum broker count
             let rankings_clone = rankings.lock().await.clone();
             if rankings_clone.len() < config.min_brokers_for_rebalance {
-                debug!(
-                    broker_count = rankings_clone.len(),
-                    min_required = config.min_brokers_for_rebalance,
-                    "skipping rebalancing cycle: not enough brokers in cluster"
-                );
                 continue;
             }
-
-            debug!(
-                broker_count = rankings_clone.len(),
-                "rebalancing cycle started"
-            );
 
             // Step 3: Calculate imbalance metrics
             let metrics = match calculate_imbalance(rankings.clone(), &is_broker_active).await {
@@ -298,27 +286,8 @@ where
                 }
             };
 
-            // Log imbalance metrics for observability
-            info!(
-                cv = %metrics.coefficient_of_variation,
-                mean_load = %metrics.mean_load,
-                max_load = %metrics.max_load,
-                min_load = %metrics.min_load,
-                std_dev = %metrics.std_deviation,
-                overloaded_count = metrics.overloaded_brokers.len(),
-                underloaded_count = metrics.underloaded_brokers.len(),
-                overloaded_brokers = ?metrics.overloaded_brokers,
-                underloaded_brokers = ?metrics.underloaded_brokers,
-                "cluster imbalance metrics calculated"
-            );
-
             // Step 3: Decide if rebalancing is needed
             if !should_rebalance(&metrics, &config) {
-                debug!(
-                    cv = %metrics.coefficient_of_variation,
-                    threshold = config.aggressiveness.threshold(),
-                    "cluster is balanced, no rebalancing needed"
-                );
                 continue;
             }
 
@@ -631,20 +600,9 @@ where
 
         // Filter recently moved topics to prevent oscillations
         // Use min_topic_age_seconds as cooldown duration
-        let initial_count = candidates.len();
         candidates.retain(|(topic, _)| {
             !history.was_topic_recently_moved(&topic.topic_name, config.min_topic_age_seconds)
         });
-        
-        if candidates.len() < initial_count {
-            debug!(
-                broker = %overloaded_id,
-                filtered_count = initial_count - candidates.len(),
-                remaining_count = candidates.len(),
-                cooldown_seconds = config.min_topic_age_seconds,
-                "filtered out recently moved topics from candidate selection"
-            );
-        }
 
         // Sort by load (ascending - lightest first)
         // This is safer: small topics are easier to move with less disruption
@@ -655,22 +613,9 @@ where
         });
 
         // Select target broker (least loaded, excluding source)
-        info!(
-            overloaded_broker = %overloaded_id,
-            topic_count = candidates.len(),
-            "attempting to select target broker for overloaded broker"
-        );
-        
         let target_broker =
             match select_target_broker(*overloaded_id, &rankings, &is_broker_active).await {
-                Ok(broker) => {
-                    info!(
-                        source_broker = %overloaded_id,
-                        target_broker = %broker,
-                        "selected target broker for rebalancing"
-                    );
-                    broker
-                },
+                Ok(broker) => broker,
                 Err(e) => {
                     warn!(
                         source_broker = %overloaded_id,
@@ -690,14 +635,6 @@ where
                 target_broker,
                 RebalancingReason::LoadImbalance,
                 *estimated_load,
-            );
-
-            info!(
-                topic = %topic.topic_name,
-                from_broker = %overloaded_id,
-                to_broker = %target_broker,
-                estimated_load = %estimated_load,
-                "selected topic for rebalancing (1 per cycle)"
             );
 
             // Return exactly 1 topic move, then recalculate imbalance on next cycle
@@ -955,13 +892,6 @@ pub(super) async fn execute_single_move(
     ]);
 
     meta_store.delete(&assignment_path).await?;
-
-    info!(
-        topic = %mv.topic_name,
-        from = %mv.from_broker,
-        to = %mv.to_broker,
-        "rebalancing move initiated (unassigned marker created, source assignment deleted)"
-    );
 
     Ok(())
 }
