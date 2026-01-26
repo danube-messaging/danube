@@ -17,11 +17,11 @@ use crate::danube_service::resource_monitor::{create_resource_monitor, ResourceM
 pub(crate) struct LoadReport {
     // System resource usage metrics (Phase 1)
     pub(crate) resources_usage: Vec<SystemLoad>,
-    
+
     // Topic-level metrics (Phase 2)
     #[serde(default)]
     pub(crate) topics: Vec<TopicLoad>,
-    
+
     // Aggregate metrics (Phase 2)
     #[serde(default)]
     pub(crate) total_throughput_mbps: f64,
@@ -29,7 +29,7 @@ pub(crate) struct LoadReport {
     pub(crate) total_message_rate: u64,
     #[serde(default)]
     pub(crate) total_lag_messages: u64,
-    
+
     // Metadata
     pub(crate) timestamp: u64,
     pub(crate) broker_id: u64,
@@ -39,17 +39,17 @@ pub(crate) struct LoadReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TopicLoad {
     pub(crate) topic_name: String,
-    
+
     // Throughput metrics (derived from counters)
-    pub(crate) message_rate: u64,       // messages/second
-    pub(crate) byte_rate: u64,          // bytes/second
-    pub(crate) byte_rate_mbps: f64,     // Mbps
-    
+    pub(crate) message_rate: u64,   // messages/second
+    pub(crate) byte_rate: u64,      // bytes/second
+    pub(crate) byte_rate_mbps: f64, // Mbps
+
     // Connection metrics (from gauges)
     pub(crate) producer_count: usize,
     pub(crate) consumer_count: usize,
     pub(crate) subscription_count: usize,
-    
+
     // Lag metrics (from subscription gauges)
     pub(crate) backlog_messages: u64,
 }
@@ -57,13 +57,12 @@ pub(crate) struct TopicLoad {
 impl TopicLoad {
     /// Calculate an estimated load score for this topic
     /// Higher score = more loaded
-    /// TODO: Use this in weighted ranking when implemented
-    #[allow(dead_code)]
+    /// Used in rebalancing candidate selection to prioritize light topics
     pub(crate) fn estimated_load_score(&self) -> f64 {
         let throughput_score = (self.byte_rate as f64 / 1_000_000.0) * 0.5; // MB/s
         let connection_score = (self.producer_count + self.consumer_count) as f64 * 0.3;
         let backlog_penalty = (self.backlog_messages as f64 / 10_000.0) * 0.2;
-        
+
         throughput_score + connection_score + backlog_penalty
     }
 }
@@ -71,7 +70,7 @@ impl TopicLoad {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SystemLoad {
     pub(crate) resource: ResourceType,
-    pub(crate) usage: f64,  // Changed from usize to f64 for better precision
+    pub(crate) usage: f64, // Changed from usize to f64 for better precision
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,42 +123,42 @@ async fn get_metrics_snapshot() -> Arc<Mutex<MetricsSnapshot>> {
 }
 
 /// Calculate per-second rates from counter deltas
-/// TODO: Call this from generate_load_report to populate message_rate and byte_rate
-#[allow(dead_code)]
 async fn calculate_rates(
     topic_metrics: &HashMap<String, (u64, u64)>, // topic_name -> (messages, bytes)
 ) -> HashMap<String, (u64, u64)> {
     let mut rates = HashMap::new();
     let snapshot = get_metrics_snapshot().await;
     let mut snap = snapshot.lock().await;
-    
+
     let now = Instant::now();
     let elapsed_secs = now.duration_since(snap.timestamp).as_secs_f64();
-    
+
     // Avoid division by zero on first call or very quick successive calls
     if elapsed_secs < 0.1 {
         return rates;
     }
-    
+
     for (topic_name, &(current_msgs, current_bytes)) in topic_metrics {
-        let (prev_msgs, prev_bytes) = snap.topic_counters
+        let (prev_msgs, prev_bytes) = snap
+            .topic_counters
             .get(topic_name)
             .copied()
             .unwrap_or((0, 0));
-        
+
         // Calculate rates (messages/sec, bytes/sec)
         let msg_rate = ((current_msgs.saturating_sub(prev_msgs)) as f64 / elapsed_secs) as u64;
         let byte_rate = ((current_bytes.saturating_sub(prev_bytes)) as f64 / elapsed_secs) as u64;
-        
+
         rates.insert(topic_name.clone(), (msg_rate, byte_rate));
-        
+
         // Update snapshot with current values
-        snap.topic_counters.insert(topic_name.clone(), (current_msgs, current_bytes));
+        snap.topic_counters
+            .insert(topic_name.clone(), (current_msgs, current_bytes));
     }
-    
+
     // Update timestamp
     snap.timestamp = now;
-    
+
     rates
 }
 
@@ -170,13 +169,13 @@ pub(crate) async fn generate_load_report(
     metrics_collector: &Arc<MetricsCollector>,
 ) -> LoadReport {
     let monitor = get_resource_monitor().await;
-    
+
     // Collect real system metrics (Phase 1)
     let cpu_usage = monitor.get_cpu_usage().await.unwrap_or(0.0);
     let mem_usage = monitor.get_memory_usage().await.unwrap_or(0.0);
     let disk_io = monitor.get_disk_io().await.ok();
     let net_io = monitor.get_network_io().await.ok();
-    
+
     let mut resources = vec![
         SystemLoad {
             resource: ResourceType::CPU,
@@ -187,7 +186,7 @@ pub(crate) async fn generate_load_report(
             usage: mem_usage,
         },
     ];
-    
+
     // Add disk I/O if available
     if let Some(disk) = disk_io {
         resources.push(SystemLoad {
@@ -195,7 +194,7 @@ pub(crate) async fn generate_load_report(
             usage: disk.total_bytes_per_sec() as f64,
         });
     }
-    
+
     // Add network I/O if available
     if let Some(net) = net_io {
         resources.push(SystemLoad {
@@ -203,39 +202,52 @@ pub(crate) async fn generate_load_report(
             usage: net.total_bytes_per_sec() as f64,
         });
     }
-    
+
     // Phase 2: Topic-level metrics collection from MetricsCollector
     let snapshots = metrics_collector.get_all_snapshots().await;
-    
+
+    // Extract current counter values for rate calculation
+    let mut topic_metrics: HashMap<String, (u64, u64)> = HashMap::new();
+    for topic_name in &topic_list {
+        if let Some(snapshot) = snapshots.get(topic_name) {
+            topic_metrics.insert(
+                topic_name.clone(),
+                (snapshot.messages_in_total, snapshot.bytes_in_total),
+            );
+        }
+    }
+
+    // Calculate per-second rates from counter deltas
+    let rates = calculate_rates(&topic_metrics).await;
+
     let topics: Vec<TopicLoad> = topic_list
         .iter()
-        .filter_map(|topic_name| {
-            snapshots.get(topic_name).map(|snapshot| TopicLoad {
+        .map(|topic_name| {
+            // Get snapshot if available, otherwise use zeros for newly created topics
+            let snapshot = snapshots.get(topic_name);
+            let (message_rate, byte_rate) = rates.get(topic_name).copied().unwrap_or((0, 0));
+            let byte_rate_mbps = (byte_rate as f64) / 1_000_000.0;
+
+            TopicLoad {
                 topic_name: topic_name.clone(),
-                message_rate: 0,  // TODO: Calculate rate from counter deltas
-                byte_rate: 0,     // TODO: Calculate rate from counter deltas
-                byte_rate_mbps: 0.0,
-                producer_count: snapshot.active_producers,
-                consumer_count: snapshot.active_consumers,
-                subscription_count: snapshot.active_subscriptions,
-                backlog_messages: 0,  // Skipped for now (not needed)
-            })
+                message_rate,
+                byte_rate,
+                byte_rate_mbps,
+                producer_count: snapshot.map(|s| s.active_producers).unwrap_or(0),
+                consumer_count: snapshot.map(|s| s.active_consumers).unwrap_or(0),
+                subscription_count: snapshot.map(|s| s.active_subscriptions).unwrap_or(0),
+                backlog_messages: 0, // Skipped for now (not needed for ranking)
+            }
         })
         .collect();
-    
+
     // Calculate aggregates
-    let total_throughput_mbps: f64 = topics.iter()
-        .map(|t| t.byte_rate_mbps)
-        .sum();
-    
-    let total_message_rate: u64 = topics.iter()
-        .map(|t| t.message_rate)
-        .sum();
-    
-    let total_lag_messages: u64 = topics.iter()
-        .map(|t| t.backlog_messages)
-        .sum();
-    
+    let total_throughput_mbps: f64 = topics.iter().map(|t| t.byte_rate_mbps).sum();
+
+    let total_message_rate: u64 = topics.iter().map(|t| t.message_rate).sum();
+
+    let total_lag_messages: u64 = topics.iter().map(|t| t.backlog_messages).sum();
+
     LoadReport {
         resources_usage: resources,
         topics,

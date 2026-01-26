@@ -39,6 +39,75 @@ auth:
     issuer: "danube-auth"
     expiration_time: 3600 # in seconds
 
+# Load Manager Configuration (Phase 3: Automated Proactive Rebalancing)
+load_manager:
+  # Topic Assignment Strategy: How to assign NEW topics to brokers
+  # Options:
+  #   - fair: Simple topic count only (predictable, testing-friendly)
+  #           Formula: topic_count only
+  #           Aliases: round_robin
+  #   
+  #   - balanced: Multi-factor scoring (RECOMMENDED for production)
+  #               Formula: (weighted_topic_load × 0.3) + (CPU × 0.35) + (Memory × 0.35)
+  #               Weighted topic load = count×0.2 + throughput×0.3 + connections×0.3 + backlog×0.2
+  #               Uses per-topic metrics: message_rate, byte_rate, producer/consumer counts
+  #               Aliases: least_loaded
+  #   
+  #   - weighted_load: Adaptive smart algorithm (advanced)
+  #                    Automatically detects bottleneck resources and prioritizes them
+  #                    If CPU >70% utilized → prioritize CPU in scoring
+  #                    If throughput >70% → prioritize bandwidth
+  #                    Adapts to workload patterns dynamically
+  #                    Aliases: weighted_random
+  assignment_strategy: "balanced"
+  
+  # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
+  # - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+  # - Higher values (30-60s): Less overhead, suitable for stable production clusters
+  # Default: 30 seconds
+  load_report_interval_seconds: 30
+  
+  # Automated Rebalancing: Proactive optimization of EXISTING topic placement
+  rebalancing:
+    # Enable/disable automated rebalancing (starts disabled for safety)
+    enabled: false
+    
+    # Aggressiveness level: Controls how aggressively to optimize cluster balance
+    # Options:
+    #   - conservative: Fewer moves, only when severely imbalanced (CV > 40%), more stable
+    #   - balanced: Moderate optimization (CV > 30%), good for most production clusters
+    #   - aggressive: Optimize harder (CV > 20%), more moves, responds faster to changes
+    aggressiveness: "balanced"
+    
+    # Check frequency: How often to evaluate cluster balance (seconds)
+    # Defaults by aggressiveness: conservative=600, balanced=300, aggressive=180
+    check_interval_seconds: 300
+    
+    # Move limits: Prevent rebalancing storms
+    # Rebalancing moves 1 topic per cycle (hardcoded for safety)
+    # Max topic moves per hour (rate limiting across all cycles)
+    # Defaults by aggressiveness: conservative=5, balanced=10, aggressive=20
+    max_moves_per_hour: 10
+    
+    # Wait time between individual topic moves (seconds)
+    # Defaults by aggressiveness: conservative=120, balanced=60, aggressive=30
+    cooldown_seconds: 60
+    
+    # Cluster requirements: Minimum brokers needed to enable rebalancing
+    # Rebalancing is skipped if cluster has fewer brokers than this
+    min_brokers_for_rebalance: 2
+    
+    # Topic protection: Don't move topics younger than this (seconds)
+    # Prevents moving topics that were just created or recently moved
+    min_topic_age_seconds: 300
+    
+    # Topic blacklist: Topics matching these patterns will NEVER be rebalanced
+    # Supports:
+    #   - Exact topic names: /admin/critical-topic
+    #   - Namespace wildcards: /system/* (all topics in /system namespace)
+    # Examples: ["/system/*", "/admin/critical-topic", "/production/*"]
+    blacklist_topics: []
+
 # WAL and Cloud Storage Configuration
 wal_cloud:
   wal:

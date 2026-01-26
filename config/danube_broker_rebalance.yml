@@ -1,0 +1,92 @@
+# Rebalancing E2E Test Configuration
+# Aggressive settings for fast testing
+
+# Danube cluster name
+cluster_name: "MY_CLUSTER"
+
+# Danube Broker hostname
+broker_host: "0.0.0.0"
+
+# Ports for the Danube broker services
+broker_port: 6650
+admin_port: 50051
+prom_port: 9040
+
+# Metadata Persistent Store address (e.g., etcd)
+meta_store_host: "127.0.0.1"
+meta_store_port: 2379
+
+# Namespaces to be created on boot
+bootstrap_namespaces:
+  - "default"
+
+# Allow producers to auto-create topics when missing
+auto_create_topics: true
+
+# Security Configuration
+auth:
+  mode: tls
+  tls:
+    cert_file: "./cert/server-cert.pem"
+    key_file: "./cert/server-key.pem"
+    ca_file: "./cert/ca-cert.pem"
+    verify_client: false
+
+# Load Manager Configuration - AGGRESSIVE REBALANCING FOR TESTING
+load_manager:
+  # Simple fair strategy for predictable testing (uses topic count only, not CPU/Memory)
+  assignment_strategy: "fair"
+
+  # Fast LoadReport updates for testing (matches aggressive rebalancing check interval)
+  load_report_interval_seconds: 5
+
+  # Automated Rebalancing - ENABLED with aggressive settings
+  rebalancing:
+    enabled: true
+    aggressiveness: "aggressive" # CV threshold 0.20
+    check_interval_seconds: 5 # Check every 5 seconds for fast testing
+    max_moves_per_hour: 30 # High limit for E2E testing
+    cooldown_seconds: 2 # Short cooldown for tests
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 30 # Wait 30s after topic creation before rebalancing
+    blacklist_topics: []
+
+# WAL and Cloud Storage Configuration
+wal_cloud:
+  wal:
+    dir: "./danube-data/wal"
+    file_name: "wal.log"
+    cache_capacity: 1024
+    file_sync:
+      interval_ms: 5000
+      max_batch_bytes: 10485760
+    rotation:
+      max_bytes: 536870912
+    retention:
+      time_minutes: 2880
+      size_mb: 20480
+      check_interval_minutes: 5
+
+  uploader:
+    enabled: true
+    interval_seconds: 30
+    root_prefix: "/danube-data"
+    max_object_mb: 256
+
+  cloud:
+    backend: "fs"
+    root: "./danube-data/cloud-storage"
+
+  metadata:
+    etcd_endpoint: "127.0.0.1:2379"
+    in_memory: false
+
+# Broker policies
+policies:
+  max_producers_per_topic: 0
+  max_subscriptions_per_topic: 0
+  max_consumers_per_topic: 0
+  max_consumers_per_subscription: 0
+  max_publish_rate: 0
+  max_subscription_dispatch_rate: 0
+  max_message_size: 10485760

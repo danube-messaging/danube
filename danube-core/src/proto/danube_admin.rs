@@ -216,6 +216,88 @@ pub struct ActivateBrokerResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+/// Request to get current cluster balance metrics
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterBalanceRequest {}
+/// Response containing cluster balance metrics
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClusterBalanceResponse {
+    /// Coefficient of variation (0.0 = perfectly balanced, higher = more imbalanced)
+    #[prost(double, tag = "1")]
+    pub coefficient_of_variation: f64,
+    /// Mean load across all brokers (typically topic count)
+    #[prost(double, tag = "2")]
+    pub mean_load: f64,
+    /// Maximum load in the cluster
+    #[prost(double, tag = "3")]
+    pub max_load: f64,
+    /// Minimum load in the cluster
+    #[prost(double, tag = "4")]
+    pub min_load: f64,
+    /// Standard deviation of load
+    #[prost(double, tag = "5")]
+    pub std_deviation: f64,
+    /// Number of active brokers
+    #[prost(uint32, tag = "6")]
+    pub broker_count: u32,
+    /// Detailed broker load information
+    #[prost(message, repeated, tag = "7")]
+    pub brokers: ::prost::alloc::vec::Vec<BrokerLoadInfo>,
+}
+/// Load information for a single broker
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BrokerLoadInfo {
+    #[prost(uint64, tag = "1")]
+    pub broker_id: u64,
+    #[prost(double, tag = "2")]
+    pub load: f64,
+    #[prost(uint32, tag = "3")]
+    pub topic_count: u32,
+    #[prost(bool, tag = "4")]
+    pub is_overloaded: bool,
+    #[prost(bool, tag = "5")]
+    pub is_underloaded: bool,
+}
+/// Request to trigger manual rebalancing
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RebalanceRequest {
+    /// If true, only calculate and return proposed moves without executing
+    #[prost(bool, tag = "1")]
+    pub dry_run: bool,
+    /// Maximum number of topic moves to execute (default: from config)
+    #[prost(uint32, optional, tag = "2")]
+    pub max_moves: ::core::option::Option<u32>,
+}
+/// Response from rebalancing operation
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RebalanceResponse {
+    /// True if rebalancing was successful or dry-run completed
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    /// Number of moves actually executed (0 for dry-run)
+    #[prost(uint32, tag = "2")]
+    pub moves_executed: u32,
+    /// Proposed or executed moves
+    #[prost(message, repeated, tag = "3")]
+    pub proposed_moves: ::prost::alloc::vec::Vec<ProposedMove>,
+    /// Error message if success = false
+    #[prost(string, tag = "4")]
+    pub error_message: ::prost::alloc::string::String,
+}
+/// A proposed or executed topic move
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProposedMove {
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub from_broker: u64,
+    #[prost(uint64, tag = "3")]
+    pub to_broker: u64,
+    #[prost(double, tag = "4")]
+    pub estimated_load: f64,
+    #[prost(string, tag = "5")]
+    pub reason: ::prost::alloc::string::String,
+}
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -452,6 +534,57 @@ pub mod broker_admin_client {
                 .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "ActivateBroker"));
             self.inner.unary(req, path, codec).await
         }
+        /// Load Balancing & Rebalancing RPCs (Phase 3)
+        pub async fn get_cluster_balance(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ClusterBalanceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterBalanceResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/GetClusterBalance",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.BrokerAdmin", "GetClusterBalance"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn trigger_rebalance(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RebalanceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RebalanceResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/TriggerRebalance",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "TriggerRebalance"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -498,6 +631,21 @@ pub mod broker_admin_server {
             request: tonic::Request<super::ActivateBrokerRequest>,
         ) -> std::result::Result<
             tonic::Response<super::ActivateBrokerResponse>,
+            tonic::Status,
+        >;
+        /// Load Balancing & Rebalancing RPCs (Phase 3)
+        async fn get_cluster_balance(
+            &self,
+            request: tonic::Request<super::ClusterBalanceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterBalanceResponse>,
+            tonic::Status,
+        >;
+        async fn trigger_rebalance(
+            &self,
+            request: tonic::Request<super::RebalanceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RebalanceResponse>,
             tonic::Status,
         >;
     }
@@ -781,6 +929,97 @@ pub mod broker_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ActivateBrokerSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.BrokerAdmin/GetClusterBalance" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetClusterBalanceSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::ClusterBalanceRequest>
+                    for GetClusterBalanceSvc<T> {
+                        type Response = super::ClusterBalanceResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ClusterBalanceRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::get_cluster_balance(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetClusterBalanceSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.BrokerAdmin/TriggerRebalance" => {
+                    #[allow(non_camel_case_types)]
+                    struct TriggerRebalanceSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::RebalanceRequest>
+                    for TriggerRebalanceSvc<T> {
+                        type Response = super::RebalanceResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RebalanceRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::trigger_rebalance(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TriggerRebalanceSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

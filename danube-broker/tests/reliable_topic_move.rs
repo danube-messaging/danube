@@ -163,7 +163,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     }
 
     // Wait for topic to be reassigned to another broker
-    sleep(Duration::from_secs(3)).await;
+    sleep(Duration::from_secs(4)).await;
 
     // Verify topic moved using describe command
     // let describe_output = admin_cli()

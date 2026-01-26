@@ -6,6 +6,7 @@ use crate::{
     auth::{AuthConfig, AuthMode},
     broker_server::SchemaRegistryService,
     broker_service::BrokerService,
+    danube_service::LoadManager,
     resources::Resources,
 };
 use danube_core::admin_proto::{
@@ -25,6 +26,7 @@ pub(crate) struct DanubeAdminImpl {
     resources: Resources,
     auth: AuthConfig,
     schema_registry: Arc<SchemaRegistryService>,
+    load_manager: LoadManager,
 }
 
 impl DanubeAdminImpl {
@@ -34,6 +36,7 @@ impl DanubeAdminImpl {
         resources: Resources,
         auth: AuthConfig,
         schema_registry: Arc<SchemaRegistryService>,
+        load_manager: LoadManager,
     ) -> Self {
         DanubeAdminImpl {
             admin_addr,
@@ -41,6 +44,7 @@ impl DanubeAdminImpl {
             resources,
             auth,
             schema_registry,
+            load_manager,
         }
     }
     pub(crate) async fn start(self) -> JoinHandle<()> {

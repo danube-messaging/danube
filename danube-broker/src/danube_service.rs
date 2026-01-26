@@ -2,6 +2,7 @@ mod broker_register;
 mod broker_watcher;
 mod leader_election;
 pub(crate) mod load_manager;
+pub(crate) mod load_report;
 mod local_cache;
 pub(crate) mod metrics_collector;
 mod resource_monitor;
@@ -9,7 +10,7 @@ mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
-pub(crate) use load_manager::load_report::LoadReport;
+pub(crate) use load_report::LoadReport;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
@@ -293,10 +294,47 @@ impl DanubeService {
 
         info!("load manager service initialized and ready");
 
+        // Start the Automated Rebalancing Loop (Phase 3)
+        //==========================================================================
+        if let Some(ref load_manager_config) = self.service_config.load_manager {
+            if load_manager_config.rebalancing.enabled {
+                info!(
+                    check_interval_seconds = load_manager_config.rebalancing.check_interval_seconds,
+                    aggressiveness = ?load_manager_config.rebalancing.aggressiveness,
+                    max_moves_per_hour = load_manager_config.rebalancing.max_moves_per_hour,
+                    "starting automated rebalancing loop (moves 1 topic per cycle)"
+                );
+
+                let load_manager_for_rebalancing = self.load_manager.clone();
+                let rebalancing_config = load_manager_config.rebalancing.clone();
+                let leader_election_for_rebalancing = self.leader_election.clone();
+
+                tokio::spawn(async move {
+                    let _handle = load_manager_for_rebalancing.start_rebalancing_loop(
+                        rebalancing_config,
+                        leader_election_for_rebalancing,
+                    );
+                    // Loop runs forever in background
+                });
+
+                info!("automated rebalancing loop started successfully");
+            } else {
+                info!("automated rebalancing is disabled in configuration");
+            }
+        } else {
+            debug!("load manager configuration not found, rebalancing disabled by default");
+        }
+
         // Publish periodic Load Reports
         // This enable the broker to register with Load Manager
+        let load_report_interval = if let Some(ref lm_config) = self.service_config.load_manager {
+            lm_config.load_report_interval_seconds
+        } else {
+            30 // Default to 30 seconds if no config
+        };
+        
         tokio::spawn(async move {
-            post_broker_load_report(broker_service_cloned, meta_store_cloned).await
+            post_broker_load_report(broker_service_cloned, meta_store_cloned, load_report_interval).await
         });
 
         // Watch for events of Broker's interest
@@ -320,6 +358,7 @@ impl DanubeService {
             self.resources.clone(),
             self.service_config.auth.clone(),
             schema_registry,
+            self.load_manager.clone(),
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
@@ -381,7 +420,7 @@ pub(crate) async fn create_namespace_if_absent(
 /// to enable LoadManager load balancing decisions across the cluster.
 ///
 /// ## Reporting Cycle:
-/// - **Interval**: Every 30 seconds
+/// - **Interval**: Configurable via `load_report_interval_seconds` (default: 30 seconds)
 /// - **Data Collection**: Current topic count and assignments
 /// - **Publication**: Stores report at `/cluster/load/{broker_id}`
 ///
@@ -390,19 +429,24 @@ pub(crate) async fn create_namespace_if_absent(
 /// - Number of assigned topics
 /// - List of topic names
 /// - Resource utilization metrics
-async fn post_broker_load_report(broker_service: Arc<BrokerService>, meta_store: MetadataStorage) {
+async fn post_broker_load_report(
+    broker_service: Arc<BrokerService>,
+    meta_store: MetadataStorage,
+    interval_seconds: u64,
+) {
     let mut topics: Vec<String>;
     let mut broker_id;
-    let mut interval = time::interval(Duration::from_secs(30));
+    let mut interval = time::interval(Duration::from_secs(interval_seconds));
     loop {
         interval.tick().await;
         topics = broker_service.get_topics();
         broker_id = broker_service.broker_id;
-        let load_report: LoadReport = load_manager::load_report::generate_load_report(
-            broker_id, 
-            topics, 
-            broker_service.metrics_collector()
-        ).await;
+        let load_report: LoadReport = load_report::generate_load_report(
+            broker_id,
+            topics,
+            broker_service.metrics_collector(),
+        )
+        .await;
         if let Ok(value) = serde_json::to_value(&load_report) {
             let path = join_path(&[BASE_BROKER_LOAD_PATH, &broker_id.to_string()]);
             match meta_store.put(&path, value, MetaOptions::None).await {

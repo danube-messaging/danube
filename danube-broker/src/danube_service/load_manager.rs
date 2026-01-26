@@ -1,19 +1,24 @@
-pub(crate) mod load_report;
+pub(crate) mod config;
 mod rankings;
+pub(crate) mod rebalancing;
+
+#[cfg(test)]
+#[path = "load_manager/rebalancing_test.rs"]
+mod rebalancing_test;
 
 use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
+use crate::danube_service::load_report::{LoadReport, TopicLoad};
 use anyhow::{anyhow, Result};
 use danube_metadata_store::EtcdGetOptions;
 use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
-use load_report::LoadReport;
 use metrics::counter;
-use rankings::{rankings_composite, rankings_simple};
+use rebalancing::{ImbalanceMetrics, RebalancingMove};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -46,28 +51,43 @@ use super::leader_election::{LeaderElection, LeaderElectionState};
 /// All internal state is protected by Arc<Mutex> or atomic operations for safe concurrent access.
 #[derive(Debug, Clone)]
 pub(crate) struct LoadManager {
-    /// Maps broker IDs to their current load reports (CPU, memory, topic count, etc.)
-    brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
-
-    /// Broker rankings ordered by load (lowest to highest) - used for topic assignment
-    /// Format: Vec<(broker_id, load_score)>
-    rankings: Arc<Mutex<Vec<(u64, usize)>>>,
-
-    /// Next broker ID to assign topics to (round-robin within lowest load tier)
-    next_broker: Arc<AtomicU64>,
-
-    /// Metadata store interface for persisting broker assignments and watching events
-    meta_store: MetadataStorage,
+    pub(crate) broker_id: u64,
+    pub(crate) meta_store: MetadataStorage,
+    pub(crate) brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
+    pub(crate) rankings: Arc<Mutex<Vec<(u64, usize)>>>,
+    next_broker: Arc<Mutex<Option<u64>>>,
+    assignment_strategy: config::AssignmentStrategy,
+    rebalancing_config: Option<config::RebalancingConfig>,
 }
 
 impl LoadManager {
-    /// Creates a new LoadManager instance
+    /// Creates a new LoadManager instance with default configuration
+    /// (Used in tests only - production code should use `with_config`)
+    #[cfg(test)]
     pub fn new(broker_id: u64, meta_store: MetadataStorage) -> Self {
+        Self::with_config(
+            broker_id,
+            meta_store,
+            config::AssignmentStrategy::default(),
+            None,
+        )
+    }
+
+    /// Creates a new LoadManager instance with full configuration
+    pub fn with_config(
+        broker_id: u64,
+        meta_store: MetadataStorage,
+        assignment_strategy: config::AssignmentStrategy,
+        rebalancing_config: Option<config::RebalancingConfig>,
+    ) -> Self {
         LoadManager {
+            broker_id,
+            meta_store,
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
-            next_broker: Arc::new(AtomicU64::new(broker_id)),
-            meta_store,
+            next_broker: Arc::new(Mutex::new(Some(broker_id))),
+            assignment_strategy,
+            rebalancing_config,
         }
     }
     /// Initializes the LoadManager and starts watching for cluster events
@@ -96,8 +116,8 @@ impl LoadManager {
         // Initialize broker state from metadata store
         self.fetch_initial_load().await?;
 
-        // Calculate initial broker rankings for load balancing
-        self.calculate_rankings_simple().await;
+        // Calculate initial broker rankings using configured strategy
+        self.calculate_rankings().await;
 
         // Setup event watchers for dynamic cluster management
         let mut streams = Vec::new();
@@ -396,8 +416,8 @@ impl LoadManager {
             return Ok(());
         }
 
-        // Leader calculates new rankings
-        self.calculate_rankings_simple().await;
+        // Leader calculates new rankings using configured strategy
+        self.calculate_rankings().await;
 
         // Update next_broker based on rankings
         let next_broker = self
@@ -408,9 +428,7 @@ impl LoadManager {
             .get_or_insert(&(broker_id, 0))
             .0;
 
-        let _ = self
-            .next_broker
-            .swap(next_broker, std::sync::atomic::Ordering::SeqCst);
+        *self.next_broker.lock().await = Some(next_broker);
 
         Ok(())
     }
@@ -420,9 +438,6 @@ impl LoadManager {
     async fn assign_topic_to_broker(&mut self, event: WatchEvent) {
         match event {
             WatchEvent::Put { key, value, .. } => {
-                // recalculate the rankings after the topic was assigned
-                self.calculate_rankings_simple().await;
-
                 // Convert key from bytes to string
                 let key_str = match std::str::from_utf8(&key) {
                     Ok(s) => s,
@@ -435,34 +450,111 @@ impl LoadManager {
                 let parts: Vec<_> = key_str.split(BASE_UNASSIGNED_PATH).collect();
                 let topic_name = parts[1];
 
-                // Try to parse unload marker to exclude originating broker
+                // Parse unload/rebalance marker to determine assignment strategy
                 let mut exclude_broker: Option<u64> = None;
+                let mut target_broker_hint: Option<u64> = None;
+
                 if !value.is_empty() {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
                         if let Some(obj) = val.as_object() {
-                            if obj.get("reason").and_then(|v| v.as_str()) == Some("unload") {
+                            let reason = obj.get("reason").and_then(|v| v.as_str());
+
+                            // Handle unload (Phase D: exclude source broker)
+                            if reason == Some("unload") {
                                 if let Some(from_broker) =
                                     obj.get("from_broker").and_then(|v| v.as_u64())
                                 {
                                     exclude_broker = Some(from_broker);
+                                    debug!(
+                                        topic = %topic_name,
+                                        from_broker = %from_broker,
+                                        "unload marker detected, will exclude source broker"
+                                    );
+                                }
+                            }
+
+                            // Handle rebalance (Phase 3 Step 6: prefer target broker)
+                            if reason == Some("rebalance") {
+                                if let Some(from_broker) =
+                                    obj.get("from_broker").and_then(|v| v.as_u64())
+                                {
+                                    exclude_broker = Some(from_broker);
+                                }
+                                if let Some(to_broker) =
+                                    obj.get("to_broker").and_then(|v| v.as_u64())
+                                {
+                                    target_broker_hint = Some(to_broker);
+                                    info!(
+                                        topic = %topic_name,
+                                        from_broker = ?exclude_broker,
+                                        to_broker = %to_broker,
+                                        "rebalance marker detected with target broker hint"
+                                    );
                                 }
                             }
                         }
                     }
                 }
 
-                let broker_id = if let Some(ex) = exclude_broker {
+                // Select broker based on marker type and hints
+                let broker_id = if let Some(target) = target_broker_hint {
+                    // Priority 1: Rebalancing - prefer the target broker hint
+                    if self.is_broker_active(target).await {
+                        info!(
+                            topic = %topic_name,
+                            target_broker = %target,
+                            "using rebalance target broker hint"
+                        );
+                        target
+                    } else {
+                        // Fallback: Target broker is not active, select alternative
+                        warn!(
+                            topic = %topic_name,
+                            target_broker = %target,
+                            "rebalance target broker is not active, selecting alternative"
+                        );
+                        match self
+                            .get_next_broker_excluding(exclude_broker.unwrap_or(0))
+                            .await
+                        {
+                            Ok(id) => {
+                                info!(
+                                    topic = %topic_name,
+                                    selected_broker = %id,
+                                    "selected alternative broker for rebalancing"
+                                );
+                                id
+                            }
+                            Err(e) => {
+                                error!(topic = %topic_name, error = %e, "cannot select alternative broker");
+                                return;
+                            }
+                        }
+                    }
+                } else if let Some(ex) = exclude_broker {
+                    // Priority 2: Unload - exclude source broker, use rankings
                     match self.get_next_broker_excluding(ex).await {
                         Ok(id) => id,
                         Err(e) => {
                             error!(topic = %topic_name, error = %e, "cannot reassign topic for unload");
-                            // Keep unassigned marker for future reassignment
                             return;
                         }
                     }
                 } else {
+                    // Priority 3: Normal assignment - use rankings
+                    info!(
+                        topic = %topic_name,
+                        "assigning topic using get_next_broker() with fair strategy"
+                    );
                     self.get_next_broker().await
                 };
+                
+                info!(
+                    topic = %topic_name,
+                    selected_broker = %broker_id,
+                    "topic assigned to broker"
+                );
+                
                 let path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), topic_name]);
 
                 match self
@@ -501,21 +593,51 @@ impl LoadManager {
                     );
                 }
 
-                // Update internal state
-                let mut brokers_usage = self.brokers_usage.lock().await;
-                if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
-                    // Add a placeholder TopicLoad entry
-                    load_report.topics.push(load_report::TopicLoad {
-                        topic_name: topic_name.to_string(),
-                        message_rate: 0,
-                        byte_rate: 0,
-                        byte_rate_mbps: 0.0,
-                        producer_count: 0,
-                        consumer_count: 0,
-                        subscription_count: 0,
-                        backlog_messages: 0,
-                    });
+                // Update internal state with placeholder topic load
+                {
+                    let mut brokers_usage = self.brokers_usage.lock().await;
+
+                    // First, remove this topic from ALL brokers to prevent duplicates
+                    // (handles reassignment case where topic is moving between brokers)
+                    for (other_broker_id, load_report) in brokers_usage.iter_mut() {
+                        if *other_broker_id != broker_id {
+                            load_report.topics.retain(|t| t.topic_name != topic_name);
+                        }
+                    }
+
+                    // Then add placeholder to the target broker if not already present
+                    if let Some(load_report) = brokers_usage.get_mut(&broker_id) {
+                        if !load_report
+                            .topics
+                            .iter()
+                            .any(|t| t.topic_name == topic_name)
+                        {
+                            load_report.topics.push(TopicLoad {
+                                topic_name: topic_name.to_string(),
+                                message_rate: 0,
+                                byte_rate: 0,
+                                byte_rate_mbps: 0.0,
+                                producer_count: 0,
+                                consumer_count: 0,
+                                subscription_count: 0,
+                                backlog_messages: 0,
+                            });
+                        }
+                    }
                 }
+
+                // Recalculate rankings AFTER updating internal state
+                // This ensures the next topic assignment sees the updated load
+                self.calculate_rankings().await;
+                
+                // Log updated rankings for debugging
+                let updated_rankings = self.rankings.lock().await;
+                info!(
+                    topic = %topic_name,
+                    assigned_to = %broker_id,
+                    updated_rankings = ?updated_rankings.iter().take(5).collect::<Vec<_>>(),
+                    "rankings recalculated after topic assignment"
+                );
             }
             WatchEvent::Delete { .. } => (), // Ignore delete events
         }
@@ -524,7 +646,7 @@ impl LoadManager {
     async fn process_event(&mut self, event: WatchEvent) -> Result<()> {
         match event {
             WatchEvent::Put { key, value, .. } => {
-                let load_report: LoadReport = serde_json::from_slice(&value)
+                let mut load_report: LoadReport = serde_json::from_slice(&value)
                     .map_err(|e| anyhow!("Failed to parse LoadReport: {}", e))?;
 
                 let key_str = std::str::from_utf8(&key)
@@ -533,6 +655,23 @@ impl LoadManager {
                 // Extract broker ID from key path
                 if let Some(broker_id) = extract_broker_id(key_str) {
                     let mut brokers_usage = self.brokers_usage.lock().await;
+
+                    // Remove topics that have been assigned to other brokers (deduplication)
+                    // This prevents stale LoadReports from showing topics on wrong brokers
+                    let mut topics_assigned_elsewhere = Vec::new();
+                    for (other_broker_id, other_report) in brokers_usage.iter() {
+                        if *other_broker_id != broker_id {
+                            for topic in &other_report.topics {
+                                topics_assigned_elsewhere.push(topic.topic_name.clone());
+                            }
+                        }
+                    }
+
+                    // Filter out topics that are assigned to other brokers
+                    load_report
+                        .topics
+                        .retain(|t| !topics_assigned_elsewhere.contains(&t.topic_name));
+
                     brokers_usage.insert(broker_id, load_report);
                 }
             }
@@ -541,36 +680,78 @@ impl LoadManager {
         Ok(())
     }
 
-    /// Selects the next broker for topic assignment using load-based selection
+    /// Selects the next broker for topic assignment using load-based selection with round-robin
     ///
     /// ## Purpose:
     /// Returns the broker ID of the least loaded broker for new topic assignments.
     /// This implements the core load balancing logic for distributing topics across brokers.
     ///
     /// ## Algorithm:
-    /// 1. **Access Rankings**: Locks and reads current broker rankings
-    /// 2. **Select Least Loaded**: Chooses the broker with the lowest load (index 0)
-    /// 3. **Update State**: Atomically updates the `next_broker` field for tracking
+    /// 1. **Access Rankings**: Locks and reads current broker rankings (sorted by load, ascending)
+    /// 2. **Group Similar Loads**: Find all brokers within 10% load of the least loaded broker
+    /// 3. **Round-Robin Selection**: Rotate through similarly-loaded brokers for even distribution
+    /// 4. **Update State**: Atomically updates the `next_broker` field for tracking
+    ///
+    /// This prevents all topics from going to the same broker when multiple brokers
+    /// have similar loads (e.g., all idle with scores 20-22).
     pub async fn get_next_broker(&mut self) -> u64 {
         let rankings = self.rankings.lock().await;
-        // pick first active broker from rankings
-        let mut chosen: Option<u64> = None;
-        for (bid, _) in rankings.iter() {
-            if self.is_broker_active(*bid).await {
-                chosen = Some(*bid);
-                break;
+
+        if rankings.is_empty() {
+            return self.broker_id; // Fallback to self if no rankings
+        }
+
+        // Get the minimum load score
+        let min_load = rankings.first().map(|(_, load)| *load).unwrap_or(0);
+
+        // Collect all active brokers within acceptable threshold of minimum load
+        // For small loads (< 10), only select brokers at min_load (strict round-robin)
+        // For larger loads, use 10% threshold to allow some flexibility
+        let threshold = if min_load < 10 {
+            min_load // Only pick brokers with exactly the minimum load
+        } else {
+            min_load + (min_load / 10).max(1)
+        };
+        let mut candidates: Vec<u64> = Vec::new();
+
+        for (broker_id, load) in rankings.iter() {
+            if *load <= threshold && self.is_broker_active(*broker_id).await {
+                candidates.push(*broker_id);
             }
         }
-        let next_broker = chosen.unwrap_or_else(|| {
-            // fallback to current atomic value if none active found (should be rare)
-            self.next_broker.load(std::sync::atomic::Ordering::SeqCst)
-        });
 
-        let _ = self
-            .next_broker
-            .swap(next_broker, std::sync::atomic::Ordering::SeqCst);
+        info!(
+            min_load = min_load,
+            threshold = threshold,
+            candidates_count = candidates.len(),
+            rankings = ?rankings.iter().take(5).collect::<Vec<_>>(),
+            "selecting broker for topic assignment"
+        );
 
-        next_broker
+        if candidates.is_empty() {
+            // Fallback: pick first active broker from full rankings
+            for (bid, _) in rankings.iter() {
+                if self.is_broker_active(*bid).await {
+                    *self.next_broker.lock().await = Some(*bid);
+                    return *bid;
+                }
+            }
+            return self.broker_id;
+        }
+
+        // Round-robin through candidates using the last selected broker
+        let last_broker = self.next_broker.lock().await.unwrap_or(0);
+        let next_idx = if let Some(pos) = candidates.iter().position(|&id| id == last_broker) {
+            // Pick the next broker after the last one, wrapping around
+            (pos + 1) % candidates.len()
+        } else {
+            // Last broker not in candidates, start from beginning
+            0
+        };
+
+        let chosen_broker = candidates[next_idx];
+        *self.next_broker.lock().await = Some(chosen_broker);
+        chosen_broker
     }
 
     /// Select next broker excluding a specific broker id, and skipping non-active brokers.
@@ -687,37 +868,159 @@ impl LoadManager {
     pub(crate) async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
         let brokers_usage = self.brokers_usage.lock().await;
         if let Some(load_report) = brokers_usage.get(&broker_id) {
-            if load_report.topics.iter().any(|t| t.topic_name == topic_name) {
+            if load_report
+                .topics
+                .iter()
+                .any(|t| t.topic_name == topic_name)
+            {
                 return true;
             }
         }
         false
     }
 
-    /// Calculates broker rankings using simple topic-count based algorithm
+    /// Calculates cluster imbalance metrics for rebalancing decisions
+    /// (Delegates to rebalancing module)
+    pub async fn calculate_imbalance(&self) -> Result<ImbalanceMetrics> {
+        let is_broker_active = |broker_id| self.is_broker_active(broker_id);
+        rebalancing::calculate_imbalance(self.rankings.clone(), is_broker_active).await
+    }
+
+    /// Test helper: Checks if topic matches any blacklist pattern
+    #[cfg(test)]
+    pub(crate) fn is_topic_blacklisted(&self, topic_name: &str, blacklist: &[String]) -> bool {
+        rebalancing::is_topic_blacklisted(topic_name, blacklist)
+    }
+
+    /// Determines if cluster needs rebalancing based on configuration and metrics
+    /// (Delegates to rebalancing module)
+    pub fn should_rebalance(
+        &self,
+        metrics: &ImbalanceMetrics,
+        config: &config::RebalancingConfig,
+    ) -> bool {
+        rebalancing::should_rebalance(metrics, config)
+    }
+
+    /// Selects one topic to move for rebalancing
+    /// (Delegates to rebalancing module)
+    /// Note: For manual/admin rebalancing - automated rebalancing has its own internal loop
+    pub async fn select_rebalancing_candidate(
+        &self,
+        metrics: &ImbalanceMetrics,
+        config: &config::RebalancingConfig,
+    ) -> Result<Option<RebalancingMove>> {
+        let is_broker_active = |broker_id| self.is_broker_active(broker_id);
+        // Empty history for manual rebalancing (no cooldown needed for manual operations)
+        let history = rebalancing::RebalancingHistory::new(1000);
+        rebalancing::select_rebalancing_candidate(
+            self.rankings.clone(),
+            self.brokers_usage.clone(),
+            metrics,
+            config,
+            is_broker_active,
+            &history,
+        )
+        .await
+    }
+
+    /// Executes a list of rebalancing moves
+    /// (Delegates to rebalancing module)
+    /// Note: For manual/admin rebalancing - creates internal history for rate limiting
+    pub async fn execute_rebalancing(
+        &self,
+        moves: Vec<RebalancingMove>,
+        config: &config::RebalancingConfig,
+    ) -> Result<usize> {
+        // Create history for rate limiting (manual rebalancing doesn't need persistent history)
+        let mut history = rebalancing::RebalancingHistory::new(1000);
+        rebalancing::execute_rebalancing(&self.meta_store, moves, config, &mut history).await
+    }
+
+    /// Starts the automated rebalancing background loop
+    /// (Delegates to rebalancing module)
+    pub fn start_rebalancing_loop(
+        self,
+        config: config::RebalancingConfig,
+        leader_election: super::leader_election::LeaderElection,
+    ) -> JoinHandle<()> {
+        let rankings = self.rankings.clone();
+        let brokers_usage = self.brokers_usage.clone();
+        let meta_store = self.meta_store.clone();
+        let meta_store_for_closure = meta_store.clone();
+
+        // Create a boxed closure for is_broker_active
+        let is_broker_active = move |broker_id: u64| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = bool> + Send>,
+        > {
+            let meta_store = meta_store_for_closure.clone();
+            Box::pin(async move {
+                let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
+                match meta_store.get(&state_path, MetaOptions::None).await {
+                    Ok(Some(val)) => val
+                        .get("mode")
+                        .and_then(|m| m.as_str())
+                        .map(|m| m == "active")
+                        .unwrap_or(true),
+                    _ => true,
+                }
+            })
+        };
+
+        rebalancing::start_rebalancing_loop(
+            rankings,
+            brokers_usage,
+            meta_store,
+            config,
+            leader_election,
+            is_broker_active,
+        )
+    }
+
+    /// Calculates broker rankings using the configured assignment strategy
     ///
     /// ## Purpose:
-    /// Computes broker load rankings based solely on the number of assigned topics.
-    /// This provides a lightweight load balancing strategy suitable for most scenarios.
-    async fn calculate_rankings_simple(&self) {
-        let broker_loads = rankings_simple(self.brokers_usage.clone()).await;
+    /// Computes broker load rankings based on the assignment strategy:
+    /// - Fair: Simple topic count only (predictable, testing-friendly)
+    /// - Balanced: Multi-factor scoring with weighted topic load + CPU + Memory
+    /// - WeightedLoad: Adaptive algorithm that detects and prioritizes bottlenecks
+    async fn calculate_rankings(&self) {
+        let broker_loads = match &self.assignment_strategy {
+            config::AssignmentStrategy::Fair => {
+                // Simple topic count for fair round-robin distribution
+                rankings::rankings_simple(self.brokers_usage.clone()).await
+            }
+            config::AssignmentStrategy::Balanced => {
+                // Balanced multi-factor: weighted topics + CPU + memory
+                rankings::rankings_composite(self.brokers_usage.clone()).await
+            }
+            config::AssignmentStrategy::WeightedLoad => {
+                // Smart adaptive: detects bottlenecks and prioritizes them
+                rankings::rankings_weighted_load(self.brokers_usage.clone()).await
+            }
+        };
         *self.rankings.lock().await = broker_loads;
     }
 
-    /// Calculates broker rankings using composite resource utilization metrics
+    /// Gets current broker rankings (for admin CLI)
     ///
-    /// ## Purpose:
-    /// Computes broker load rankings based on multiple resource factors:
-    /// topic count, CPU usage, memory usage, and other system metrics.
+    /// Returns a copy of the current broker load rankings as (broker_id, load) pairs.
+    pub async fn get_rankings(&self) -> Vec<(u64, usize)> {
+        self.rankings.lock().await.clone()
+    }
+
+    /// Gets current broker usage reports (for admin CLI)
     ///
-    /// ## Algorithm:
-    /// - Weights different resource metrics (CPU, memory, topics, I/O)
-    /// - Calculates composite load score for each broker
-    /// - Ranks brokers from lowest to highest composite load
-    #[allow(dead_code)]
-    async fn calculate_rankings_composite(&self) {
-        let broker_loads = rankings_composite(self.brokers_usage.clone()).await;
-        *self.rankings.lock().await = broker_loads;
+    /// Returns a copy of the broker usage HashMap containing LoadReport for each broker.
+    pub async fn get_brokers_usage(&self) -> HashMap<u64, LoadReport> {
+        self.brokers_usage.lock().await.clone()
+    }
+
+    /// Gets rebalancing configuration (for admin CLI)
+    ///
+    /// Returns the current rebalancing config if available from service configuration.
+    pub async fn get_rebalancing_config(&self) -> Option<config::RebalancingConfig> {
+        self.rebalancing_config.clone()
     }
 }
 
@@ -734,5 +1037,7 @@ fn parse_load_report(value: &[u8]) -> Option<LoadReport> {
     serde_json::from_str(value_str).ok()
 }
 
+// Tests for LoadManager are in load_manager_test.rs
 #[cfg(test)]
-mod load_manager_test;
+#[path = "load_manager_test.rs"]
+mod tests;
