@@ -6,9 +6,11 @@
 //! Automatically detects containerized environments (Docker/K8s) and uses
 //! cgroup-aware metrics when available.
 
+#[cfg(target_os = "linux")]
 mod container;
 mod native;
 
+#[cfg(target_os = "linux")]
 pub(crate) use container::ContainerResourceMonitor;
 pub(crate) use native::NativeResourceMonitor;
 
@@ -59,6 +61,7 @@ impl NetworkIOStats {
 /// 
 /// Automatically detects if running in a container and uses cgroup-aware
 /// monitoring when available. Falls back to native system monitoring.
+#[cfg(target_os = "linux")]
 pub(crate) fn create_resource_monitor() -> Box<dyn ResourceMonitor> {
     // Try container-aware monitoring first
     if container::is_containerized() {
@@ -70,6 +73,14 @@ pub(crate) fn create_resource_monitor() -> Box<dyn ResourceMonitor> {
         }
     }
     
+    tracing::info!("Using native resource monitoring (sysinfo)");
+    Box::new(NativeResourceMonitor::new())
+}
+
+/// Factory function for non-Linux platforms (macOS, Windows, etc.)
+/// Always uses native system monitoring via sysinfo
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn create_resource_monitor() -> Box<dyn ResourceMonitor> {
     tracing::info!("Using native resource monitoring (sysinfo)");
     Box::new(NativeResourceMonitor::new())
 }
