@@ -1,3 +1,15 @@
+<!-- v0.7.0 START -->
+## v0.7.0 - 2026-01-27
+
+### 🎯 Major Features
+
+* **Automated Cluster Rebalancing** (#182) - Proactive rebalancing using Coefficient of Variation (CV) metrics with configurable aggressiveness levels (Conservative/Balanced/Aggressive), rate limiting, cooldown periods, and topic blacklist support. Automatically moves topics between brokers to maintain optimal cluster balance. by @danrusei in b9bafbd
+
+* **Intelligent Ranking Algorithms** (#181, #183) - Three topic assignment strategies: Fair (topic count), Balanced (multi-factor scoring with topic load + CPU + memory), and WeightedLoad (adaptive bottleneck detection). Topic load now considers message rate, throughput, connections, and backlog for smarter broker selection. by @danrusei in 85b896c, ae1a0b3
+
+* **Cross-Platform Resource Monitoring** (#180) - System resource monitoring with automatic container detection (Docker/K8s) and cgroup-aware metrics. Tracks CPU, memory, disk I/O, and network I/O in real-time for accurate load calculations. by @danrusei in 7eeda83
+<!-- v0.7.0 END -->
+
 <!-- v0.6.2 START -->
 ## v0.6.2 - 2026-01-22
 ### What's Changed

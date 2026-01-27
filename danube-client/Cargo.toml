@@ -1,6 +1,6 @@
 [package]
 name = "danube-client"
-version = "0.6.2"
+version = "0.7.0"
 description = "The async client for Danube Messaging Broker platform"
 keywords = ["danube", "pub-sub", "messaging_system", "message_broker", "event_streaming"]
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
@@ -13,7 +13,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-danube-core = {path = "../danube-core", version = "0.6.2"}
+danube-core = {path = "../danube-core", version = "0.7.0"}
 
 prost = { workspace = true }
 serde = { workspace = true }
