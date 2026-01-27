@@ -36,14 +36,14 @@ flume = "0.11.1"
 num_cpus = "1.17.0"
 sysinfo = "0.37.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-procfs = "0.18"
-
 # Schema registry dependencies
 apache-avro = "0.21"
 jsonschema = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.18"
 
 [build-dependencies]
 
