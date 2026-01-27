@@ -10,8 +10,8 @@ mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
-pub(crate) use load_report::LoadReport;
 pub(crate) use load_manager::LoadManager;
+pub(crate) use load_report::LoadReport;
 pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
 
@@ -294,7 +294,7 @@ impl DanubeService {
 
         info!("load manager service initialized and ready");
 
-        // Start the Automated Rebalancing Loop (Phase 3)
+        // Start the Automated Rebalancing Loop
         //==========================================================================
         if let Some(ref load_manager_config) = self.service_config.load_manager {
             if load_manager_config.rebalancing.enabled {
@@ -332,9 +332,14 @@ impl DanubeService {
         } else {
             30 // Default to 30 seconds if no config
         };
-        
+
         tokio::spawn(async move {
-            post_broker_load_report(broker_service_cloned, meta_store_cloned, load_report_interval).await
+            post_broker_load_report(
+                broker_service_cloned,
+                meta_store_cloned,
+                load_report_interval,
+            )
+            .await
         });
 
         // Watch for events of Broker's interest
