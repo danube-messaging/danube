@@ -27,7 +27,7 @@ members = [
     "danube-admin-cli", 
     
     # -- Danube admin gateway (BFF for HTTP UI)
-    "danube-admin-gateway",
+    "danube-admin-gateway", "danube-admin",
 ]
 
 [workspace.dependencies]
