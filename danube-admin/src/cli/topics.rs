@@ -53,6 +53,7 @@ enum TopicsCommands {
     #[command(
         about = "Create a topic (use --partitions for partitioned)",
         long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema-subject user-events",
+        after_help = "Examples:\n  danube-admin topics create /default/mytopic\n  danube-admin topics create /default/mytopic --dispatch-strategy reliable\n  danube-admin topics create /default/mytopic --partitions 3\n  danube-admin topics create mytopic --namespace default --schema-subject user-events\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
         arg_required_else_help = true
     )]
     Create {
@@ -75,6 +76,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Delete an existing topic",
+        after_help = "Example:\n  danube-admin topics delete /default/mytopic\n  danube-admin topics delete mytopic --namespace default",
         arg_required_else_help = true
     )]
     Delete {
@@ -85,6 +87,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "List the subscriptions of the specified topic",
+        after_help = "Example:\n  danube-admin topics subscriptions /default/mytopic --output json",
         arg_required_else_help = true
     )]
     Subscriptions {
@@ -97,6 +100,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Describe a topic (schema and subscriptions)",
+        after_help = "Example:\n  danube-admin topics describe /default/mytopic --output json",
         arg_required_else_help = true
     )]
     Describe {
@@ -109,6 +113,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Delete a subscription from a topic",
+        after_help = "Example:\n  danube-admin topics unsubscribe --subscription sub1 /default/mytopic",
         arg_required_else_help = true
     )]
     Unsubscribe {
@@ -121,6 +126,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Unload a topic from its current broker to be reassigned to a different broker",
+        after_help = "Example:\n  danube-admin topics unload /default/mytopic\n  danube-admin topics unload mytopic --namespace default",
         arg_required_else_help = true
     )]
     Unload {
@@ -132,6 +138,7 @@ enum TopicsCommands {
     #[command(
         about = "Configure schema for a topic (admin-only)",
         long_about = "Configure schema settings for a topic. Assigns schema subject and sets validation policies.",
+        after_help = "Examples:\n  danube-admin topics configure-schema /default/user-events --subject user-events-value --validation-policy enforce --enable-payload-validation\n  danube-admin topics configure-schema mytopic --namespace default --subject events --validation-policy warn",
         arg_required_else_help = true
     )]
     ConfigureSchema {
@@ -153,6 +160,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Update validation policy for a topic (admin-only)",
+        after_help = "Examples:\n  danube-admin topics set-validation-policy /default/user-events --policy enforce --enable-payload-validation\n  danube-admin topics set-validation-policy mytopic --namespace default --policy warn",
         arg_required_else_help = true
     )]
     SetValidationPolicy {
@@ -171,6 +179,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Get schema configuration for a topic",
+        after_help = "Examples:\n  danube-admin topics get-schema-config /default/user-events\n  danube-admin topics get-schema-config mytopic --namespace default --output json",
         arg_required_else_help = true
     )]
     GetSchemaConfig {

@@ -5,22 +5,29 @@ use std::{
 };
 
 use anyhow::Result;
-use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
-use super::{ServerArgs, metrics::{MetricsClient, MetricsConfig}};
 use super::ui::{
     broker::{broker_page, BrokerPage},
     cluster::{cluster_page, ClusterPage},
     cluster_actions::cluster_actions,
     namespaces::{list_namespaces_with_policies, NamespacesResponse},
     topic::{topic_page, TopicPage},
+    topic_actions::topic_actions,
     topic_series::topic_series,
     topics::{cluster_topics, TopicsResponse},
-    topic_actions::topic_actions,
 };
+use super::{
+    metrics::{MetricsClient, MetricsConfig},
+    ServerArgs,
+};
+use crate::core::{AdminGrpcClient, GrpcClientConfig};
 
 #[derive(Clone)]
 pub struct CacheEntry<T> {
@@ -47,7 +54,7 @@ struct HealthDto {
 
 pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
     tracing::info!("Connecting to broker at {}", args.broker_endpoint);
-    
+
     let grpc_config = GrpcClientConfig {
         endpoint: args.broker_endpoint.clone(),
         request_timeout_ms: args.request_timeout_ms,
@@ -81,6 +88,41 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
     }))
 }
 
+// API endpoints
+// - GET  /ui/v1/health
+//   Health check for the gateway. Returns overall status and whether the broker cluster leader is reachable.
+//
+// - GET  /ui/v1/cluster
+//   Cluster overview. Aggregates broker identities (id, role, status, addr) and selected metrics
+//   such as rpc_total and topics_owned. Uses short-lived caching to reduce load.
+//
+// - POST /ui/v1/cluster/actions
+//   Execute broker actions via Admin gRPC (e.g., unload, activate). Accepts a JSON payload with
+//   action parameters and returns a status message.
+//
+// - GET  /ui/v1/topics
+//   Cluster-wide topics summary. Uses authoritative topic lists via gRPC and enriches with Prometheus
+//   metrics (producers/consumers/subscriptions). Returns brokers with their topics.
+//
+// - GET  /ui/v1/namespaces
+//   List namespaces, their topics, and current policies as reported by the Admin gRPC service.
+//
+// - GET  /ui/v1/brokers/{broker_id}
+//   Detailed broker page. Returns broker identity, aggregated metrics, and the list of topics assigned
+//   to that broker (including producers/consumers/subscriptions and delivery strategy).
+//
+// - GET  /ui/v1/topics/{topic}
+//   Topic details page. Returns schema, subscriptions, and aggregated metrics. The topic path must be
+//   URL-encoded (e.g., /default/my-topic => %2Fdefault%2Fmy-topic).
+//
+// - GET  /ui/v1/topics/{topic}/series
+//   Time series for the topic using Prometheus range queries. Query params:
+//   from (unix seconds), to (unix seconds), step (e.g., 15s, 30s, 1m).
+//
+// - POST /ui/v1/topics/actions
+//   Execute topic actions via Admin gRPC (create, delete, unload). Accepts a JSON payload; the service
+//   normalizes topic names and applies sensible defaults where applicable.
+//
 pub fn build_router(app_state: Arc<AppState>) -> Router {
     let cors = CorsLayer::permissive();
 

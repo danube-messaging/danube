@@ -20,11 +20,22 @@ pub struct TopicPage {
     pub errors: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Topic {
     pub name: String,
-    pub type_schema: i32,
-    pub schema_data: String,
+    
+    // TODO: Remove once UI is updated to use schema registry fields
+    // Old UI expects type_schema (0=none, 1=schema) and encoded schema_data
+    pub type_schema: i32,        // DEPRECATED: 0 = no schema, 1 = has schema
+    pub schema_data: String,     // DEPRECATED: base64-encoded JSON with schema info
+    
+    // TODO: Add once UI is updated:
+    // pub schema_subject: Option<String>,
+    // pub schema_id: Option<i32>,
+    // pub schema_version: Option<i32>,
+    // pub schema_type: Option<String>,
+    // pub compatibility_mode: Option<String>,
+    
     pub subscriptions: Vec<String>,
 }
 
@@ -125,6 +136,7 @@ pub async fn topic_page(
         });
     errors.append(&mut q_errors);
 
+    // TODO: Remove this adaptation block once UI is updated
     // Map new schema registry fields to old format for backward compatibility
     // Web UI will be updated later to display schema registry information
     let (type_schema, schema_data) = if let Some(subject) = desc.schema_subject {
@@ -144,8 +156,14 @@ pub async fn topic_page(
 
     let topic_dto = Topic {
         name: desc.name,
-        type_schema,
-        schema_data,
+        type_schema,       // TODO: Remove once UI updated
+        schema_data,       // TODO: Remove once UI updated
+        // TODO: Add once UI updated:
+        // schema_subject: desc.schema_subject,
+        // schema_id: desc.schema_id,
+        // schema_version: desc.schema_version,
+        // schema_type: desc.schema_type,
+        // compatibility_mode: desc.compatibility_mode,
         subscriptions: subs.subscriptions,
     };
     let dto = TopicPage {

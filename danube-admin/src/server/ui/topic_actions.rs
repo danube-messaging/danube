@@ -12,8 +12,15 @@ pub struct TopicActionRequest {
     pub topic: String,             // "/ns/topic" or "topic" with namespace
     pub namespace: Option<String>, // optional when topic includes namespace
     pub partitions: Option<u32>,   // for create
-    pub schema_type: Option<String>,
-    pub schema_data: Option<String>,
+    
+    // TODO: Remove once UI is updated to use schema_subject
+    // These fields exist for backward compatibility with old UI
+    pub schema_type: Option<String>,  // DEPRECATED: mapped to schema_subject
+    pub schema_data: Option<String>,  // DEPRECATED: used to detect if schema exists
+    
+    // TODO: Add once UI is updated:
+    // pub schema_subject: Option<String>,
+    
     pub dispatch_strategy: Option<String>, // non_reliable | reliable
 }
 
@@ -95,8 +102,12 @@ pub async fn topic_actions(
 
     let res = match action.as_str() {
         "create" => {
+            // TODO: Remove this adaptation block once UI is updated
+            // Old UI sends schema_type + schema_data, map to schema_subject
             let schema_type = req.schema_type.unwrap_or_else(|| "String".to_string());
             let schema_data = req.schema_data.unwrap_or_else(|| "{}".to_string());
+            // TODO: Once UI updated, use: let schema_subject = req.schema_subject;
+            
             let ds = parse_dispatch_strategy(req.dispatch_strategy.as_deref());
             let ds_label = if ds == danube_core::admin_proto::DispatchStrategy::Reliable as i32 {
                 "Reliable"
@@ -108,6 +119,8 @@ pub async fn topic_actions(
                 let request = danube_core::admin_proto::PartitionedTopicRequest {
                     base_name: name.clone(),
                     partitions: parts,
+                    // TODO: Replace with direct passthrough once UI updated:
+                    // schema_subject: req.schema_subject,
                     schema_subject: if schema_data.is_empty() { None } else { Some(schema_type.clone()) },
                     dispatch_strategy: ds,
                 };
@@ -116,6 +129,8 @@ pub async fn topic_actions(
                 info!(target = "gateway", "topic_actions create request: name={}, schema_type={}, schema_data_len={}, dispatch_strategy={}", name, schema_type, schema_data.len(), ds_label);
                 let request = danube_core::admin_proto::NewTopicRequest {
                     name: name.clone(),
+                    // TODO: Replace with direct passthrough once UI updated:
+                    // schema_subject: req.schema_subject,
                     schema_subject: if schema_data.is_empty() { None } else { Some(schema_type.clone()) },
                     dispatch_strategy: ds,
                 };
