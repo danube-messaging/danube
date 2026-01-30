@@ -11,6 +11,15 @@ use clap::{Parser, Subcommand};
 #[command(about = "Danube Admin - Unified CLI and server for managing Danube clusters", long_about = None)]
 #[command(version)]
 struct Cli {
+    /// Broker gRPC endpoint
+    #[arg(
+        long,
+        global = true,
+        env = "DANUBE_ADMIN_ENDPOINT",
+        default_value = "http://127.0.0.1:50051"
+    )]
+    endpoint: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -41,11 +50,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing/logging
+    // Initialize tracing/logging - use stderr to avoid polluting stdout (required for MCP)
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
@@ -56,17 +66,9 @@ async fn main() -> Result<()> {
             tracing::info!("Starting danube-admin server");
             server::run(args).await
         }
-        Commands::Brokers(cmd) => {
-            cli::brokers::handle(cmd).await
-        }
-        Commands::Namespaces(cmd) => {
-            cli::namespaces::handle(cmd).await
-        }
-        Commands::Topics(cmd) => {
-            cli::topics::handle(cmd).await
-        }
-        Commands::Schemas(cmd) => {
-            cli::schemas::handle(cmd).await
-        }
+        Commands::Brokers(cmd) => cli::brokers::handle(cmd, &cli.endpoint).await,
+        Commands::Namespaces(cmd) => cli::namespaces::handle(cmd, &cli.endpoint).await,
+        Commands::Topics(cmd) => cli::topics::handle(cmd, &cli.endpoint).await,
+        Commands::Schemas(cmd) => cli::schemas::handle(cmd, &cli.endpoint).await,
     }
 }

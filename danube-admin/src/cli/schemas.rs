@@ -201,8 +201,11 @@ Env:
     },
 }
 
-pub async fn handle(schemas: Schemas) -> Result<()> {
-    let config = GrpcClientConfig::default();
+pub async fn handle(schemas: Schemas, endpoint: &str) -> Result<()> {
+    let config = GrpcClientConfig {
+        endpoint: endpoint.to_string(),
+        ..Default::default()
+    };
     let client = AdminGrpcClient::connect(config).await?;
 
     match schemas.command {

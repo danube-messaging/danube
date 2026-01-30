@@ -1,19 +1,18 @@
 //! MCP (Model Context Protocol) server implementation
-//! 
+//!
 //! Enables AI assistants (Claude, Cursor, Windsurf) to manage Danube clusters
 //! through natural language using the Model Context Protocol.
 
 pub mod tools;
 pub mod types;
 
+use crate::core::AdminGrpcClient;
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::*,
-    tool, tool_handler, tool_router, ServerHandler, ServiceExt,
-    ErrorData as McpError,
+    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use std::sync::Arc;
-use crate::core::AdminGrpcClient;
 #[derive(Clone)]
 pub struct DanubeMcpServer {
     client: Arc<AdminGrpcClient>,
@@ -30,8 +29,10 @@ impl DanubeMcpServer {
     }
 
     // ===== CLUSTER MANAGEMENT TOOLS =====
-    
-    #[tool(description = "List all brokers in the Danube cluster with their status, role, and addresses")]
+
+    #[tool(
+        description = "List all brokers in the Danube cluster with their status, role, and addresses"
+    )]
     async fn list_brokers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::list_brokers(&self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -43,13 +44,17 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Get cluster load balance metrics including coefficient of variation and per-broker loads")]
+    #[tool(
+        description = "Get cluster load balance metrics including coefficient of variation and per-broker loads"
+    )]
     async fn get_cluster_balance(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::get_cluster_balance(&self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Trigger cluster rebalancing to distribute topics evenly across brokers. Use dry_run=true to preview changes.")]
+    #[tool(
+        description = "Trigger cluster rebalancing to distribute topics evenly across brokers. Use dry_run=true to preview changes."
+    )]
     async fn trigger_rebalance(
         &self,
         Parameters(params): Parameters<tools::cluster::RebalanceParams>,
@@ -75,7 +80,9 @@ impl DanubeMcpServer {
 
     // ===== TOPIC MANAGEMENT TOOLS =====
 
-    #[tool(description = "List topics in a specific namespace with details including broker assignment and delivery strategy")]
+    #[tool(
+        description = "List topics in a specific namespace with details including broker assignment and delivery strategy"
+    )]
     async fn list_topics(
         &self,
         Parameters(params): Parameters<tools::topics::ListTopicsParams>,
@@ -84,7 +91,9 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Get detailed information about a specific topic including subscriptions, schema, and metrics")]
+    #[tool(
+        description = "Get detailed information about a specific topic including subscriptions, schema, and metrics"
+    )]
     async fn describe_topic(
         &self,
         Parameters(params): Parameters<tools::topics::DescribeTopicParams>,
@@ -93,7 +102,9 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Create a new topic with specified configuration (partitions, schema, dispatch strategy)")]
+    #[tool(
+        description = "Create a new topic with specified configuration (partitions, schema, dispatch strategy)"
+    )]
     async fn create_topic(
         &self,
         Parameters(params): Parameters<tools::topics::CreateTopicParams>,
@@ -122,7 +133,9 @@ impl DanubeMcpServer {
 
     // ===== SCHEMA REGISTRY TOOLS =====
 
-    #[tool(description = "Register a new schema in the schema registry with compatibility checking")]
+    #[tool(
+        description = "Register a new schema in the schema registry with compatibility checking"
+    )]
     async fn register_schema(
         &self,
         Parameters(params): Parameters<tools::schemas::RegisterSchemaParams>,
@@ -182,20 +195,20 @@ impl DanubeMcpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for DanubeMcpServer {}
 
 pub async fn run_mcp_server(client: Arc<AdminGrpcClient>) -> anyhow::Result<()> {
     use tokio::io::{stdin, stdout};
-    
+
     tracing::info!("Starting Danube MCP server with stdio transport");
-    
+
     let server = DanubeMcpServer::new(client);
     let transport = (stdin(), stdout());
     let service = server.serve(transport).await?;
-    
+
     tracing::info!("MCP server running, waiting for requests...");
     service.waiting().await?;
-    
+
     Ok(())
 }

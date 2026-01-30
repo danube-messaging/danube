@@ -166,8 +166,11 @@ Env:
     },
 }
 
-pub async fn handle(brokers: Brokers) -> Result<()> {
-    let config = GrpcClientConfig::default();
+pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
+    let config = GrpcClientConfig {
+        endpoint: endpoint.to_string(),
+        ..Default::default()
+    };
     let client = AdminGrpcClient::connect(config).await?;
 
     match brokers.command {
