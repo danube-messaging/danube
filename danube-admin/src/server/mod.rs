@@ -38,11 +38,16 @@ pub struct ServerArgs {
     /// Server mode: ui, mcp, or all (required)
     #[arg(long, env = "DANUBE_ADMIN_MODE")]
     pub mode: ServerMode,
+
+    /// MCP configuration file (optional, enables log access and resources)
+    #[arg(long, env = "DANUBE_MCP_CONFIG")]
+    pub config: Option<std::path::PathBuf>,
+
     /// HTTP server listen address
     #[arg(long, default_value = "0.0.0.0:8080", env = "DANUBE_ADMIN_LISTEN_ADDR")]
     pub listen_addr: String,
 
-    /// Broker gRPC endpoint
+    /// Broker gRPC endpoint (can be overridden by config file)
     #[arg(
         long,
         env = "DANUBE_ADMIN_ENDPOINT",
@@ -95,19 +100,19 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         }
         ServerMode::All => {
             info!("Starting both UI and MCP servers");
-            
+
             // Clone args for UI server (MCP takes ownership)
             let ui_args = args.clone();
-            
+
             // Spawn both servers concurrently
             let ui_handle = tokio::spawn(async move { run_http_server(ui_args).await });
             let mcp_handle = tokio::spawn(async move { run_mcp_server(args).await });
-            
+
             // Wait for both - if either fails, propagate error
             let (ui_result, mcp_result) = tokio::join!(ui_handle, mcp_handle);
             ui_result??;
             mcp_result??;
-            
+
             Ok(())
         }
     }
@@ -130,11 +135,24 @@ async fn run_http_server(args: ServerArgs) -> Result<()> {
 
 async fn run_mcp_server(args: ServerArgs) -> Result<()> {
     use crate::core::{AdminGrpcClient, GrpcClientConfig};
+    use crate::mcp::config::McpConfig;
 
     info!("Initializing MCP server");
 
-    let config = GrpcClientConfig {
-        endpoint: args.broker_endpoint.clone(),
+    // Load MCP config: from file if provided, otherwise minimal config
+    let mcp_config = if let Some(config_path) = &args.config {
+        info!("Loading MCP config from {:?}", config_path);
+        McpConfig::from_file(config_path)?
+    } else {
+        info!("No MCP config file provided - using minimal config (no log access)");
+        McpConfig::minimal(args.broker_endpoint.clone())
+    };
+
+    // Use broker endpoint from config file if available, otherwise from CLI args
+    let broker_endpoint = mcp_config.broker_endpoint.clone();
+
+    let grpc_config = GrpcClientConfig {
+        endpoint: broker_endpoint,
         request_timeout_ms: args.request_timeout_ms,
         enable_tls: args.grpc_enable_tls,
         domain: args.grpc_domain.clone(),
@@ -143,6 +161,6 @@ async fn run_mcp_server(args: ServerArgs) -> Result<()> {
         key_path: args.grpc_key.clone(),
     };
 
-    let client = Arc::new(AdminGrpcClient::connect(config).await?);
-    crate::mcp::run_mcp_server(client).await
+    let client = Arc::new(AdminGrpcClient::connect(grpc_config).await?);
+    crate::mcp::run_mcp_server(client, mcp_config).await
 }

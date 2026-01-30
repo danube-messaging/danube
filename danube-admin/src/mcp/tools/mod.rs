@@ -4,6 +4,7 @@
 //! and return human-readable output for AI assistants.
 
 pub mod cluster;
-pub mod topics;
-pub mod schemas;
 pub mod diagnostics;
+pub mod logs;
+pub mod schemas;
+pub mod topics;

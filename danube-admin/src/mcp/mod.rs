@@ -3,27 +3,32 @@
 //! Enables AI assistants (Claude, Cursor, Windsurf) to manage Danube clusters
 //! through natural language using the Model Context Protocol.
 
+pub mod config;
 pub mod tools;
 pub mod types;
 
 use crate::core::AdminGrpcClient;
+use config::McpConfig;
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use std::sync::Arc;
+
 #[derive(Clone)]
 pub struct DanubeMcpServer {
     client: Arc<AdminGrpcClient>,
+    config: Arc<McpConfig>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl DanubeMcpServer {
-    pub fn new(client: Arc<AdminGrpcClient>) -> Self {
+    pub fn new(client: Arc<AdminGrpcClient>, config: McpConfig) -> Self {
         Self {
             client,
+            config: Arc::new(config),
             tool_router: Self::tool_router(),
         }
     }
@@ -193,6 +198,68 @@ impl DanubeMcpServer {
         let output = tools::diagnostics::get_recommendations(&self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
+
+    // ===== LOG ACCESS TOOLS =====
+
+    #[tool(
+        description = "Get logs from a specific broker by its ID (e.g., 'broker1'). Use list_configured_brokers first to see available broker IDs. Returns recent log output for debugging issues."
+    )]
+    async fn get_broker_logs(
+        &self,
+        Parameters(params): Parameters<tools::logs::BrokerLogsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::get_broker_logs(&self.config, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "List all brokers and containers configured in the MCP config file that can be queried for logs. Call this first before get_broker_logs to see available broker IDs."
+    )]
+    async fn list_configured_brokers(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::list_configured_brokers(&self.config);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "List all running Docker containers with their names, status, and ports. Useful to discover container names for fetch_container_logs."
+    )]
+    async fn list_docker_containers(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::list_docker_containers();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "List all Kubernetes pods in a specific namespace with their status. Useful to discover pod names for fetch_pod_logs."
+    )]
+    async fn list_k8s_pods(
+        &self,
+        Parameters(params): Parameters<tools::logs::ListPodsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::list_k8s_pods(&params.namespace);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Fetch logs directly from any Docker container by its exact container name. Use list_docker_containers to find container names. Returns the last N lines (default 500)."
+    )]
+    async fn fetch_container_logs(
+        &self,
+        Parameters(params): Parameters<tools::logs::ContainerLogsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::fetch_docker_logs(&params.container_name, params.lines);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Fetch logs directly from a Kubernetes pod by namespace and pod name. Use list_k8s_pods to find pod names. Returns the last N lines (default 500)."
+    )]
+    async fn fetch_pod_logs(
+        &self,
+        Parameters(params): Parameters<tools::logs::PodLogsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::logs::fetch_k8s_logs(&params.namespace, &params.pod_name, params.lines);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -205,12 +272,21 @@ impl ServerHandler for DanubeMcpServer {
     }
 }
 
-pub async fn run_mcp_server(client: Arc<AdminGrpcClient>) -> anyhow::Result<()> {
+pub async fn run_mcp_server(client: Arc<AdminGrpcClient>, config: McpConfig) -> anyhow::Result<()> {
     use tokio::io::{stdin, stdout};
 
     tracing::info!("Starting Danube MCP server with stdio transport");
 
-    let server = DanubeMcpServer::new(client);
+    if config.has_log_access() {
+        tracing::info!(
+            "Log access enabled via {:?}",
+            config.deployment.as_ref().map(|d| &d.deployment_type)
+        );
+    } else {
+        tracing::info!("Log access not configured - log fetching tools will be unavailable");
+    }
+
+    let server = DanubeMcpServer::new(client, config);
     let transport = (stdin(), stdout());
     let service = server.serve(transport).await?;
 

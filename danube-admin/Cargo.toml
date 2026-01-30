@@ -41,6 +41,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 # MCP support
 rmcp = { version = "0.14", features = ["server", "macros", "transport-io"] }
 schemars = { version = "1.0" }
+serde_yaml = "0.9"
 
 [dev-dependencies]
 assert_cmd = "2.0"

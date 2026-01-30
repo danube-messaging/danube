@@ -1,0 +1,24 @@
+# MCP Configuration for Danube Admin
+# This config enables log access and resource exposure for AI assistants
+
+broker_endpoint: http://127.0.0.1:50051
+
+deployment:
+  type: docker
+  docker:
+    brokers:
+      - id: broker1
+        container: danube-broker1
+    other:
+      - id: etcd
+        container: danube-etcd
+      - id: minio
+        container: danube-minio
+
+resources:
+  docs_dir: ./info
+  files:
+    - path: ./docker/docker-compose.yml
+      name: docker-compose
+    - path: ./config/danube_broker.yml
+      name: broker-config
