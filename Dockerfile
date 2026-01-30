@@ -51,8 +51,8 @@ RUN apt-get update && apt-get install -y protobuf-compiler curl
 # Copy the compiled CLI binary from the builder stage
 COPY --from=builder /app/target/release/danube-cli /usr/local/bin/danube-cli
 
-# No default entrypoint - users can call the binary directly
-ENTRYPOINT []
+# Define entrypoint
+ENTRYPOINT ["/usr/local/bin/danube-cli"]
 
 # Admin stage: consolidated admin binary with CLI and server modes
 FROM base AS admin
