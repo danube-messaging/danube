@@ -1,5 +1,6 @@
 mod cli;
 mod core;
+mod mcp;
 mod server;
 
 use anyhow::Result;

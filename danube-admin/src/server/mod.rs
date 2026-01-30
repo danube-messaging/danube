@@ -6,17 +6,48 @@ pub mod ui;
 use anyhow::Result;
 use clap::Args;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::info;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerMode {
+    /// Admin UI server (HTTP REST API)
+    Ui,
+    /// MCP server only
+    Mcp,
+    /// Both UI and MCP
+    All,
+}
+
+impl std::str::FromStr for ServerMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "ui" => Ok(Self::Ui),
+            "mcp" => Ok(Self::Mcp),
+            "all" => Ok(Self::All),
+            _ => Err(format!("Invalid mode: {}. Use: ui, mcp, or all", s)),
+        }
+    }
+}
+
 #[derive(Debug, Args, Clone)]
 pub struct ServerArgs {
+    /// Server mode: ui, mcp, or all (required)
+    #[arg(long, env = "DANUBE_ADMIN_MODE")]
+    pub mode: ServerMode,
     /// HTTP server listen address
     #[arg(long, default_value = "0.0.0.0:8080", env = "DANUBE_ADMIN_LISTEN_ADDR")]
     pub listen_addr: String,
 
     /// Broker gRPC endpoint
-    #[arg(long, env = "DANUBE_ADMIN_ENDPOINT", default_value = "http://127.0.0.1:50051")]
+    #[arg(
+        long,
+        env = "DANUBE_ADMIN_ENDPOINT",
+        default_value = "http://127.0.0.1:50051"
+    )]
     pub broker_endpoint: String,
 
     /// Request timeout in milliseconds
@@ -53,16 +84,65 @@ pub struct ServerArgs {
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
-    info!("Initializing danube-admin server");
+    match args.mode {
+        ServerMode::Ui => {
+            info!("Starting Admin UI server");
+            run_http_server(args).await
+        }
+        ServerMode::Mcp => {
+            info!("Starting MCP server");
+            run_mcp_server(args).await
+        }
+        ServerMode::All => {
+            info!("Starting both UI and MCP servers");
+            
+            // Clone args for UI server (MCP takes ownership)
+            let ui_args = args.clone();
+            
+            // Spawn both servers concurrently
+            let ui_handle = tokio::spawn(async move { run_http_server(ui_args).await });
+            let mcp_handle = tokio::spawn(async move { run_mcp_server(args).await });
+            
+            // Wait for both - if either fails, propagate error
+            let (ui_result, mcp_result) = tokio::join!(ui_handle, mcp_handle);
+            ui_result??;
+            mcp_result??;
+            
+            Ok(())
+        }
+    }
+}
+
+async fn run_http_server(args: ServerArgs) -> Result<()> {
+    info!("Initializing HTTP server");
 
     let state = app::create_app_state(args.clone()).await?;
     let router = app::build_router(state);
 
     let addr: SocketAddr = args.listen_addr.parse()?;
-    info!("Starting HTTP server on {}", addr);
+    info!("HTTP server listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, router.into_make_service()).await?;
 
     Ok(())
+}
+
+async fn run_mcp_server(args: ServerArgs) -> Result<()> {
+    use crate::core::{AdminGrpcClient, GrpcClientConfig};
+
+    info!("Initializing MCP server");
+
+    let config = GrpcClientConfig {
+        endpoint: args.broker_endpoint.clone(),
+        request_timeout_ms: args.request_timeout_ms,
+        enable_tls: args.grpc_enable_tls,
+        domain: args.grpc_domain.clone(),
+        ca_path: args.grpc_ca.clone(),
+        cert_path: args.grpc_cert.clone(),
+        key_path: args.grpc_key.clone(),
+    };
+
+    let client = Arc::new(AdminGrpcClient::connect(config).await?);
+    crate::mcp::run_mcp_server(client).await
 }

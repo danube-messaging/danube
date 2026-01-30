@@ -38,17 +38,9 @@ axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
-# Cache
-moka = { version = "0.12", features = ["future"] }
-
-# MCP support (optional)
-rmcp = { version = "0.3", features = ["server", "macros", "transport-io"], optional = true }
-
-[features]
-default = ["cli", "server"]
-cli = []
-server = []
-mcp = ["rmcp"]
+# MCP support
+rmcp = { version = "0.14", features = ["server", "macros", "transport-io"] }
+schemars = { version = "1.0" }
 
 [dev-dependencies]
 assert_cmd = "2.0"
