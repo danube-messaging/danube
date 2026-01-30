@@ -89,10 +89,10 @@ jobs:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
           # Create failover test topic
-          ./target/release/danube-admin-cli topics create /default/failover-test
+          ./target/release/danube-admin topics create /default/failover-test
           
           # Verify topic was created successfully
-          ./target/release/danube-admin-cli topics describe /default/failover-test || {
+          ./target/release/danube-admin topics describe /default/failover-test || {
             echo "ERROR: Topic creation failed"
             exit 1
           }
@@ -175,14 +175,14 @@ jobs:
           echo "Verifying Broker B is operational after failover..."
           
           # Verify broker B is responding to admin commands
-          ./target/release/danube-admin-cli brokers list || {
+          ./target/release/danube-admin brokers list || {
             echo "ERROR: Broker B not responding to admin commands"
             cat broker-b.log
             exit 1
           }
           
           # Verify topic is accessible on Broker B
-          ./target/release/danube-admin-cli topics describe /default/failover-test || {
+          ./target/release/danube-admin topics describe /default/failover-test || {
             echo "ERROR: Topic not accessible on Broker B"
             cat broker-b.log
             exit 1

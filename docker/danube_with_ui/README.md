@@ -10,7 +10,7 @@ The setup includes:
 - **MinIO**: S3-compatible object storage for persistent message storage
 - **MinIO Client (MC)**: Automatic bucket creation and configuration
 - **Prometheus**: Metrics collection and monitoring server
-- **Admin Gateway**: HTTP/JSON BFF for the Admin UI
+- **Danube Admin Server**: HTTP/JSON API server for the Admin UI
 - **Admin UI**: Web UI for cluster management (served via Nginx)
 
 ## Prerequisites
@@ -79,7 +79,7 @@ Expected output:
 docker-compose ps
 NAME                 IMAGE                                               SERVICE          STATUS                             PORTS
 danube-admin-ui     ghcr.io/danube-messaging/danube-admin-ui:latest     admin-ui         Up                                0.0.0.0:8081->80/tcp
-danube-admin-gateway ghcr.io/danube-messaging/danube-admin-gateway:latest admin-gateway  Up                                0.0.0.0:8080->8080/tcp
+danube-admin        ghcr.io/danube-messaging/danube-admin:latest        danube-admin     Up                                0.0.0.0:8080->8080/tcp
 danube-prometheus   prom/prometheus:latest                               prometheus       Up                                0.0.0.0:9090->9090/tcp
 danube-cli          ghcr.io/danube-messaging/danube-cli:latest           danube-cli       Up
 danube-broker1      ghcr.io/danube-messaging/danube-broker:latest        broker1          Up (health: starting)            0.0.0.0:6650->6650/tcp, 0.0.0.0:9040->9040/tcp, 0.0.0.0:50051->50051/tcp
@@ -100,7 +100,7 @@ Open the Admin UI at: http://localhost:8081
    # View specific service logs
    docker-compose logs -f broker1
    docker-compose logs -f broker2
-   docker-compose logs -f admin-gateway
+   docker-compose logs -f danube-admin
    docker-compose logs -f prometheus
    docker-compose logs -f admin-ui
    ```
@@ -110,7 +110,7 @@ Open the Admin UI at: http://localhost:8081
 | Service | Endpoint | Purpose |
 |---------|----------|---------|
 | Admin UI | `http://localhost:8081` | Web UI for cluster management |
-| Admin Gateway | `http://localhost:8080` | HTTP/JSON API consumed by Admin UI |
+| Danube Admin | `http://localhost:8080` | HTTP/JSON API consumed by Admin UI |
 | Prometheus Server | `http://localhost:9090` | Metrics and monitoring UI |
 | Broker 1 (gRPC) | `localhost:6650` | Messaging service |
 | Broker 2 (gRPC) | `localhost:6651` | Messaging service |
@@ -120,10 +120,10 @@ Open the Admin UI at: http://localhost:8081
 | MinIO Console | `http://localhost:9001` | Web UI (minioadmin/minioadmin123) |
 | ETCD | `http://localhost:2379` | Metadata store |
 
-## Admin UI and Gateway
+## Admin UI and Server
 
 - Open the Admin UI at: `http://localhost:8081`
-- Admin Gateway runs at: `http://localhost:8080`
+- Danube Admin server runs at: `http://localhost:8080`
 - CORS is configured in the compose to allow `http://localhost:8081`
 - Prometheus is available at: `http://localhost:9090`
 
@@ -132,7 +132,7 @@ If the UI shows errors like `Operation is not implemented or not supported` when
 
 ```yaml
 image: ghcr.io/danube-messaging/danube-broker:v0.5.2
-image: ghcr.io/danube-messaging/danube-admin-gateway:v0.5.2
+image: ghcr.io/danube-messaging/danube-admin:v0.5.2
 ```
 
 Then recreate:
@@ -144,11 +144,11 @@ docker compose up -d --force-recreate
 
 ## Testing with Danube CLI
 
-### Using the CLI Container
+### Using the CLI Containers
 
-The Docker Compose setup includes a `danube-cli` container with both `danube-cli` and `danube-admin-cli` tools pre-installed. This eliminates the need to build or install Rust locally.
+The Docker Compose setup includes `danube-cli` and `danube-admin` containers with the respective tools. This eliminates the need to build or install Rust locally.
 
-**No local installation required** - use the containerized CLI tools directly.
+**No local installation required** - use the containerized tools directly.
 
 ### Reliable Messaging with S3 Storage
 
@@ -157,7 +157,7 @@ Test the cloud-ready persistent storage capabilities:
 **Produce with reliable delivery and S3 persistence:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --count 1000 \
@@ -168,7 +168,7 @@ docker exec -it danube-cli danube-cli produce \
 **Consume persistent messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --subscription "persistent-sub" \
@@ -182,7 +182,7 @@ docker exec -it danube-cli danube-cli consume \
 **Produce basic string messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
   --count 100 \
@@ -192,7 +192,7 @@ docker exec -it danube-cli danube-cli produce \
 **Consume from shared subscription:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
   --subscription "shared-sub" \
@@ -204,7 +204,7 @@ docker exec -it danube-cli danube-cli consume \
 **Produce JSON messages with schema:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
   --count 100 \
@@ -216,29 +216,32 @@ docker exec -it danube-cli danube-cli produce \
 **Consume JSON messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker2:6650 \
   --topic "/default/json-topic" \
   --subscription "json-sub" \
   --consumer "json-consumer"
 ```
 
-### Admin CLI Operations
+### Admin Operations
 
-**Use danube-admin-cli for cluster management:**
+**Use the danube-admin container for cluster management:**
 
 ```bash
 # List active brokers
-docker exec -it danube-cli danube-admin-cli brokers list
+docker exec danube-admin brokers list
 
 # List namespaces in cluster
-docker exec -it danube-cli danube-admin-cli brokers namespaces
+docker exec danube-admin brokers namespaces
 
 # List topics in a namespace
-docker exec -it danube-cli danube-admin-cli topics list default
+docker exec danube-admin topics list --namespace default
 
 # List subscriptions on a topic
-docker exec -it danube-cli danube-admin-cli topics subscriptions /default/test-topic
+docker exec danube-admin topics subscriptions /default/test-topic
+
+# Check cluster balance
+docker exec danube-admin brokers balance
 ```
 
 ## Monitoring and Observability

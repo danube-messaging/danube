@@ -60,7 +60,7 @@ jobs:
         env:
           RUST_BACKTRACE: 1
         run: |
-          cargo build --release -p danube-broker -p danube-admin-cli
+          cargo build --release -p danube-broker -p danube-admin
 
       - name: Start 3 Brokers in background
         env:

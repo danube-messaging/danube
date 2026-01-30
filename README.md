@@ -91,19 +91,6 @@ docker exec -it danube-cli danube-cli consume \
 - **Stream per subscription**: WAL + cloud storage from selected offset 
 - **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
-│  Producers  │───▶│ Danube WAL   │───▶│ Object Storage  │
-└─────────────┘    │ (Sub-ms ACK) │    │ (S3/GCS/Azure)  │
-                   └──────────────┘    └─────────────────┘
-                          │                      ▲
-                          ▼                      │
-┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
-│  Consumers  │◀───│ Stream Reader│◀───│ Background      │
-└─────────────┘    │ (WAL + Cloud)│    │ Uploader        │
-                   └──────────────┘    └─────────────────┘
-```
-
 ## Core Capabilities
 
 ### 📨 **Message Delivery**
@@ -122,7 +109,7 @@ docker exec -it danube-cli danube-cli consume \
 ### 🛠️ **Developer Experience**
 - **Multi-language clients**: [Rust](https://crates.io/crates/danube-client), [Go](https://pkg.go.dev/github.com/danrusei/danube-go)
 - **[CLI Tools](danube-cli/)**: Message publishing and consumption
-- **[Admin CLI](danube-admin-cli/)**: Cluster, namespace, and topic management
+- **[Admin Tools](danube-admin/)**: Cluster management (CLI + HTTP server)
 
 ## Community & Clients
 
@@ -144,7 +131,6 @@ Contributions in **Python**, **Java**, **JavaScript**, and other languages are w
 - **[danube-persistent-storage](danube-persistent-storage/)** - WAL and cloud storage integration
 - **[danube-client](danube-client/)** - Async Rust client library  
 - **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
-- **[danube-admin-cli](danube-admin-cli/)** - Cluster management utilities
-- **[danube-admin-gateway](danube-admin-gateway/)** - HTTP/JSON BFF for the Admin UI
+- **[danube-admin](danube-admin/)** - Unified admin CLI and HTTP server
 
 ---

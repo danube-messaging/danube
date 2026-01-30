@@ -23,11 +23,8 @@ members = [
     # -- Danube client cli 
     "danube-cli", 
 
-    # -- Danube admin cli 
-    "danube-admin-cli", 
-    
-    # -- Danube admin gateway (BFF for HTTP UI)
-    "danube-admin-gateway",
+    # -- Danube admin (consolidated CLI + Server)
+    "danube-admin",
 ]
 
 [workspace.dependencies]

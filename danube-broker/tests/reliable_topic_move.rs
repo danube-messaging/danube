@@ -24,9 +24,9 @@ fn admin_cli() -> Command {
     cmd.args([
         "run",
         "-p",
-        "danube-admin-cli",
+        "danube-admin",
         "--bin",
-        "danube-admin-cli",
+        "danube-admin",
         "--",
     ]);
     cmd.env(

@@ -111,9 +111,9 @@ danube-minio     minio/minio:RELEASE.2025-07-23T15-54-02Z   "/usr/bin/docker-ent
 
 ### Using the CLI Container
 
-The Docker Compose setup includes a `danube-cli` container with both `danube-cli` and `danube-admin-cli` tools pre-installed. This eliminates the need to build or install Rust locally.
+The Docker Compose setup includes a `danube-cli` container with the Danube CLI tools. This eliminates the need to build or install Rust locally.
 
-**No local installation required** - use the containerized CLI tools directly.
+**No local installation required** - use the containerized tools directly.
 
 ### Reliable Messaging with S3 Storage
 
@@ -122,7 +122,7 @@ Test the cloud-ready persistent storage capabilities:
 **Produce with reliable delivery and S3 persistence:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --count 1000 \
@@ -133,7 +133,7 @@ docker exec -it danube-cli danube-cli produce \
 **Consume persistent messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --subscription "persistent-sub" \
@@ -147,7 +147,7 @@ docker exec -it danube-cli danube-cli consume \
 **Produce basic string messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
   --count 100 \
@@ -157,7 +157,7 @@ docker exec -it danube-cli danube-cli produce \
 **Consume from shared subscription:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/test-topic" \
   --subscription "shared-sub" \
@@ -169,7 +169,7 @@ docker exec -it danube-cli danube-cli consume \
 **Produce JSON messages with schema:**
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
   --count 100 \
@@ -181,29 +181,32 @@ docker exec -it danube-cli danube-cli produce \
 **Consume JSON messages:**
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker exec -it danube-cli consume \
   --service-addr http://broker2:6650 \
   --topic "/default/json-topic" \
   --subscription "json-sub" \
   --consumer "json-consumer"
 ```
 
-### Admin CLI Operations
+### Admin Operations
 
-**Use danube-admin-cli for cluster management:**
+**Use the danube-admin container for cluster management:**
 
 ```bash
 # List active brokers
-docker exec -it danube-cli danube-admin-cli brokers list
+docker exec danube-admin brokers list
 
 # List namespaces in cluster
-docker exec -it danube-cli danube-admin-cli brokers namespaces
+docker exec danube-admin brokers namespaces
 
 # List topics in a namespace
-docker exec -it danube-cli danube-admin-cli topics list default
+docker exec danube-admin topics list --namespace default
 
 # List subscriptions on a topic
-docker exec -it danube-cli danube-admin-cli topics subscriptions /default/test-topic
+docker exec danube-admin topics subscriptions /default/test-topic
+
+# Check cluster balance
+docker exec danube-admin brokers balance
 ```
 
 ## Monitoring and Observability

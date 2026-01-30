@@ -3,7 +3,7 @@ name: CLI E2E Tests
 on:
   pull_request:
     paths:
-      - "danube-admin-cli/**"
+      - "danube-admin/**"
       - "danube-cli/**"
       - "danube-broker/**"
       - "danube-core/proto/DanubeAdmin.proto"
@@ -113,7 +113,7 @@ jobs:
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
-        run: cargo test -p danube-admin-cli --tests -- --nocapture
+        run: cargo test -p danube-admin --tests -- --nocapture
 
       - name: Run CLI E2E tests
         env:

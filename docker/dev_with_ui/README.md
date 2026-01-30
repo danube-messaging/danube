@@ -2,24 +2,24 @@
 
 This compose setup is tailored for local development.
 
-- Builds broker, CLI, and admin-gateway from your local workspace via the root Dockerfile targets (`broker`, `cli`, `admin-gateway`).
+- Builds broker, CLI, and danube-admin from your local workspace via the root Dockerfile targets (`broker`, `cli`, `admin`).
 - Uses Prometheus for metrics and the published Admin UI image from GHCR.
-- Best for iterating on Rust backend code (broker/gateway) while testing the UI and metrics in one stack.
+- Best for iterating on Rust backend code (broker/admin server) while testing the UI and metrics in one stack.
 
 ## What runs
 
 - etcd (metadata)
 - minio + mc (S3-compatible storage and bucket bootstrap)
 - broker1, broker2 (built from local code)
-- danube-cli (built from local code; includes danube-cli and danube-admin-cli)
+- danube-cli (built from local code; includes danube-cli for client operations)
 - prometheus (scrapes broker metrics)
-- admin-gateway (built from local code; HTTP/JSON BFF)
+- danube-admin (built from local code; HTTP API server for the UI)
 - admin-ui (external image: ghcr.io/danube-messaging/danube-admin-ui:latest)
 
 ## Ports
 
 - Admin UI: http://localhost:8081
-- Admin Gateway: http://localhost:8080
+- Admin Server (danube-admin): http://localhost:8080
 - Prometheus: http://localhost:9090
 - Broker1 gRPC: localhost:6650, Admin API: localhost:50051, Metrics: http://localhost:9040/metrics
 - Broker2 gRPC: localhost:6651, Admin API: localhost:50052, Metrics: http://localhost:9041/metrics
@@ -57,8 +57,8 @@ Because this stack builds images from the local workspace, rebuild to pick up ch
 docker compose -f docker/dev_with_ui/docker-compose.yml up -d --build
 
 # Or rebuild specific services and recreate them
-docker compose -f docker/dev_with_ui/docker-compose.yml build broker1 broker2 admin-gateway danube-cli
-docker compose -f docker/dev_with_ui/docker-compose.yml up -d --no-deps broker1 broker2 admin-gateway danube-cli
+docker compose -f docker/dev_with_ui/docker-compose.yml build broker1 broker2 danube-admin danube-cli
+docker compose -f docker/dev_with_ui/docker-compose.yml up -d --no-deps broker1 broker2 danube-admin danube-cli
 ```
 
 ## Logs
@@ -68,7 +68,7 @@ docker compose -f docker/dev_with_ui/docker-compose.yml up -d --no-deps broker1 
 docker compose -f docker/dev_with_ui/docker-compose.yml logs -f
 
 # Specific services
-docker compose -f docker/dev_with_ui/docker-compose.yml logs -f admin-gateway
+docker compose -f docker/dev_with_ui/docker-compose.yml logs -f danube-admin
 docker compose -f docker/dev_with_ui/docker-compose.yml logs -f broker1
 ```
 
@@ -81,9 +81,9 @@ volumes:
   - ../../scripts/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 ```
 
-It scrapes the brokers and powers Admin Gateway metrics queries.
+It scrapes the brokers and powers danube-admin metrics queries.
 
 ## Notes
 
-- Admin Gateway CORS is configured in the compose to allow `http://localhost:8081` (the Admin UI).
-- If you prefer running the UI in pure dev mode (Vite on port 5173), we can add a `admin-ui-dev` service based on the UI's Dockerfile.dev; ask and we can wire it.
+- Danube Admin Server CORS is configured in the compose to allow `http://localhost:8081` (the Admin UI).
+- The `danube-admin serve` command runs the HTTP server mode of the consolidated danube-admin binary.

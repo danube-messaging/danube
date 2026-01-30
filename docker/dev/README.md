@@ -11,7 +11,8 @@ This compose setup is tailored for local development.
 - etcd (metadata)
 - minio + mc (S3-compatible storage and bucket bootstrap)
 - broker1, broker2 (built from local code)
-- danube-cli (built from local code; includes danube-cli and danube-admin-cli)
+- danube-cli (built from local code)
+- danube-admin (built from local code; unified CLI and server)
 
 ## Ports
 
