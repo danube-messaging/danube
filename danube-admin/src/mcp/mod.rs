@@ -196,7 +196,14 @@ impl DanubeMcpServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for DanubeMcpServer {}
+impl ServerHandler for DanubeMcpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            ..Default::default()
+        }
+    }
+}
 
 pub async fn run_mcp_server(client: Arc<AdminGrpcClient>) -> anyhow::Result<()> {
     use tokio::io::{stdin, stdout};
