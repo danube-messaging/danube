@@ -31,9 +31,8 @@ jobs:
           name: danube-binaries-linux
           path: |
             target/x86_64-unknown-linux-gnu/release/danube-broker
-            target/x86_64-unknown-linux-gnu/release/danube-admin-cli
             target/x86_64-unknown-linux-gnu/release/danube-cli
-            target/x86_64-unknown-linux-gnu/release/danube-admin-gateway
+            target/x86_64-unknown-linux-gnu/release/danube-admin
 
   build-macos:
     runs-on: macos-latest
@@ -58,9 +57,8 @@ jobs:
           name: danube-binaries-macos
           path: |
             target/aarch64-apple-darwin/release/danube-broker
-            target/aarch64-apple-darwin/release/danube-admin-cli
             target/aarch64-apple-darwin/release/danube-cli
-            target/aarch64-apple-darwin/release/danube-admin-gateway
+            target/aarch64-apple-darwin/release/danube-admin
 
   build-windows:
     runs-on: windows-latest
@@ -86,9 +84,8 @@ jobs:
           name: danube-binaries-windows
           path: |
             target/x86_64-pc-windows-msvc/release/danube-broker.exe
-            target/x86_64-pc-windows-msvc/release/danube-admin-cli.exe
             target/x86_64-pc-windows-msvc/release/danube-cli.exe
-            target/x86_64-pc-windows-msvc/release/danube-admin-gateway.exe
+            target/x86_64-pc-windows-msvc/release/danube-admin.exe
 
   docker-build:
     strategy:
@@ -167,28 +164,28 @@ jobs:
           cache-from: type=gha,scope=cli-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=cli-${{ matrix.arch }}
 
-      - name: Extract metadata for Admin Gateway
-        id: meta-admin-gateway
+      - name: Extract metadata for Danube Admin
+        id: meta-admin
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/danube-admin-gateway
+          images: ghcr.io/${{ github.repository_owner }}/danube-admin
           tags: |
             type=ref,event=tag
             type=raw,value=latest,enable=true
 
-      - name: Build and push Danube Admin Gateway image (${{ matrix.arch }})
+      - name: Build and push Danube Admin image (${{ matrix.arch }})
         uses: docker/build-push-action@v5
         with:
           context: .
-          target: admin-gateway
+          target: admin
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/danube-admin-gateway:${{ github.ref_name }}-${{ matrix.arch }}
-            ghcr.io/${{ github.repository_owner }}/danube-admin-gateway:latest-${{ matrix.arch }}
-          labels: ${{ steps.meta-admin-gateway.outputs.labels }}
-          cache-from: type=gha,scope=admin-gateway-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=admin-gateway-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/danube-admin:latest-${{ matrix.arch }}
+          labels: ${{ steps.meta-admin.outputs.labels }}
+          cache-from: type=gha,scope=admin-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=admin-${{ matrix.arch }}
 
   docker-manifest:
     needs: docker-build
@@ -214,7 +211,7 @@ jobs:
           TAG="${{ github.ref_name }}"
           BROKER="ghcr.io/${{ github.repository_owner }}/danube-broker"
           CLI="ghcr.io/${{ github.repository_owner }}/danube-cli"
-          GATEWAY="ghcr.io/${{ github.repository_owner }}/danube-admin-gateway"
+          ADMIN="ghcr.io/${{ github.repository_owner }}/danube-admin"
 
           docker buildx imagetools create \
             -t ${BROKER}:${TAG} \
@@ -229,10 +226,10 @@ jobs:
             ${CLI}:${TAG}-arm64
 
           docker buildx imagetools create \
-            -t ${GATEWAY}:${TAG} \
-            -t ${GATEWAY}:latest \
-            ${GATEWAY}:${TAG}-amd64 \
-            ${GATEWAY}:${TAG}-arm64
+            -t ${ADMIN}:${TAG} \
+            -t ${ADMIN}:latest \
+            ${ADMIN}:${TAG}-amd64 \
+            ${ADMIN}:${TAG}-arm64
 
   release:
     needs: [build-linux, build-macos, build-windows, docker-manifest]
@@ -272,20 +269,17 @@ jobs:
           # Copy and rename Linux binaries
           cp artifacts/linux/danube-broker release/danube-broker-linux
           cp artifacts/linux/danube-cli release/danube-cli-linux
-          cp artifacts/linux/danube-admin-cli release/danube-admin-cli-linux
-          cp artifacts/linux/danube-admin-gateway release/danube-admin-gateway-linux
+          cp artifacts/linux/danube-admin release/danube-admin-linux
           
           # Copy and rename MacOS binaries
           cp artifacts/macos/danube-broker release/danube-broker-macos
           cp artifacts/macos/danube-cli release/danube-cli-macos
-          cp artifacts/macos/danube-admin-cli release/danube-admin-cli-macos
-          cp artifacts/macos/danube-admin-gateway release/danube-admin-gateway-macos
+          cp artifacts/macos/danube-admin release/danube-admin-macos
           
           # Copy and rename Windows binaries
           cp artifacts/windows/danube-broker.exe release/danube-broker-windows.exe
           cp artifacts/windows/danube-cli.exe release/danube-cli-windows.exe
-          cp artifacts/windows/danube-admin-cli.exe release/danube-admin-cli-windows.exe
-          cp artifacts/windows/danube-admin-gateway.exe release/danube-admin-gateway-windows.exe
+          cp artifacts/windows/danube-admin.exe release/danube-admin-windows.exe
           
           # Generate checksums
           cd release
@@ -322,15 +316,10 @@ jobs:
           - **MacOS (Apple Silicon)**: [danube-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos)
           - **Windows**: [danube-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-windows.exe)
 
-          ## Admin CLI:
-          - **Linux**: [danube-admin-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-linux)
-          - **MacOS (Apple Silicon)**: [danube-admin-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-macos)
-          - **Windows**: [danube-admin-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-cli-windows.exe)
-
-          ## Admin Gateway:
-          - **Linux**: [danube-admin-gateway-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-gateway-linux)
-          - **MacOS (Apple Silicon)**: [danube-admin-gateway-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-gateway-macos)
-          - **Windows**: [danube-admin-gateway-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-gateway-windows.exe)
+          ## Admin (CLI + Server):
+          - **Linux**: [danube-admin-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-linux)
+          - **MacOS (Apple Silicon)**: [danube-admin-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-macos)
+          - **Windows**: [danube-admin-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-windows.exe)
  
           ## Checksums:
           - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt)
@@ -338,23 +327,23 @@ jobs:
           ## Docker Images:
           - **Danube Broker**: `ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}`
           - **Danube CLI**: `ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }}`
-          - **Danube Admin Gateway**: `ghcr.io/${{ github.repository_owner }}/danube-admin-gateway:${{ github.ref_name }}`
+          - **Danube Admin**: `ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }}`
           
           ### Quick Start with Docker:
           ```bash
           # Run Danube Broker
           docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}
           
-          # Use Danube CLI
+          # Use Danube CLI (client operations)
           docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-cli produce --help
           
-          # Use Danube Admin CLI
-          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-admin-cli --help
+          # Use Danube Admin CLI (admin commands)
+          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }} brokers list
           
-          # Run Admin Gateway (adjust endpoints as needed)
-          docker run -p 8080:8080 ghcr.io/${{ github.repository_owner }}/danube-admin-gateway:${{ github.ref_name }} \
+          # Run Danube Admin Server (HTTP API for UI)
+          docker run -p 8080:8080 ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }} serve \
             --broker-endpoint host.docker.internal:50051 \
-            --prometheus-base-url http://host.docker.internal:9090
+            --prometheus-url http://host.docker.internal:9090
           
           # Use with Docker Compose
           curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
@@ -382,15 +371,12 @@ jobs:
           files: |
             release/danube-broker-linux
             release/danube-cli-linux
-            release/danube-admin-cli-linux
-            release/danube-admin-gateway-linux
+            release/danube-admin-linux
             release/danube-broker-macos
             release/danube-cli-macos
-            release/danube-admin-cli-macos
-            release/danube-admin-gateway-macos
+            release/danube-admin-macos
             release/danube-broker-windows.exe
             release/danube-cli-windows.exe
-            release/danube-admin-cli-windows.exe
-            release/danube-admin-gateway-windows.exe
+            release/danube-admin-windows.exe
             release/checksums.txt
           body_path: RELEASE_BODY.md

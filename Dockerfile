@@ -1,8 +1,8 @@
 # Use debian:bullseye-slim as the base image for both build and final stages
-FROM debian:bullseye-slim as base
+FROM debian:bullseye-slim AS base
 
 # Install Rust in the build stage
-FROM base as builder
+FROM base AS builder
 
 # Install necessary dependencies for building
 RUN apt-get update && apt-get install -y \
@@ -24,7 +24,7 @@ COPY . .
 RUN cargo build --release
 
 # Broker stage: use the same base image as the build stage
-FROM base as broker
+FROM base AS broker
 
 # Install protobuf-compiler in the final image as well
 RUN apt-get update && apt-get install -y protobuf-compiler
@@ -43,26 +43,25 @@ ENTRYPOINT ["/usr/local/bin/danube-broker"]
 CMD ["--config-file", "/etc/danube_broker.yml", "--broker-addr", "0.0.0.0:6650", "--advertised-addr", "0.0.0.0:6650"]
 
 # CLI stage: use the same base image as the build stage
-FROM base as cli
+FROM base AS cli
 
 # Install protobuf-compiler and curl for testing
 RUN apt-get update && apt-get install -y protobuf-compiler curl
 
-# Copy the compiled CLI binaries from the builder stage
+# Copy the compiled CLI binary from the builder stage
 COPY --from=builder /app/target/release/danube-cli /usr/local/bin/danube-cli
-COPY --from=builder /app/target/release/danube-admin-cli /usr/local/bin/danube-admin-cli
 
-# No default entrypoint - users can call either binary directly
+# No default entrypoint - users can call the binary directly
 ENTRYPOINT []
 
-# Admin Gateway stage: serve the HTTP BFF for the UI
-FROM base as admin-gateway
+# Admin stage: consolidated admin binary with CLI and server modes
+FROM base AS admin
 
-# Copy the compiled admin gateway binary from the builder stage
-COPY --from=builder /app/target/release/danube-admin-gateway /usr/local/bin/danube-admin-gateway
+# Copy the consolidated danube-admin binary from the builder stage
+COPY --from=builder /app/target/release/danube-admin /usr/local/bin/danube-admin
 
-# Expose the HTTP port
+# Expose the HTTP port (used in 'serve' mode)
 EXPOSE 8080
 
 # Define entrypoint
-ENTRYPOINT ["/usr/local/bin/danube-admin-gateway"]
+ENTRYPOINT ["/usr/local/bin/danube-admin"]

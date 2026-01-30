@@ -190,10 +190,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Admin Gateway (HTTP BFF for the UI)
-  admin-gateway:
-    container_name: "danube-admin-gateway"
-    image: ghcr.io/danube-messaging/danube-admin-gateway:latest
+  # Danube Admin Server (HTTP API for the UI)
+  danube-admin:
+    container_name: "danube-admin"
+    image: ghcr.io/danube-messaging/danube-admin:latest
     depends_on:
       broker1:
         condition: service_started
@@ -204,11 +204,12 @@ services:
     ports:
       - "8080:8080"
     command: [
+      "serve",
       "--broker-endpoint", "broker1:50051",
       "--listen-addr", "0.0.0.0:8080",
-      "--request-timeout-ms", "800",
-      "--per-endpoint-cache-ms", "3000",
-      "--prometheus-base-url", "http://prometheus:9090",
+      "--request-timeout-ms", "5000",
+      "--cache-ttl-ms", "3000",
+      "--prometheus-url", "http://prometheus:9090",
       "--cors-allow-origin", "http://localhost:8081"
     ]
 
@@ -217,7 +218,7 @@ services:
     container_name: "danube-admin-ui"
     image: ghcr.io/danube-messaging/danube-admin-ui:latest
     depends_on:
-      admin-gateway:
+      danube-admin:
         condition: service_started
     networks:
       - danube_net
