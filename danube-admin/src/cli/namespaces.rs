@@ -13,21 +13,66 @@ pub struct Namespaces {
 
 #[derive(Debug, Subcommand)]
 enum NamespacesCommands {
-    #[command(about = "List topics in the specified namespace")]
+    #[command(
+        about = "List topics in the specified namespace",
+        after_help = "Examples:
+  danube-admin namespaces topics default
+  danube-admin namespaces topics my-namespace --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Topics {
         namespace: String,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
-    #[command(about = "List the configuration policies for a specified namespace")]
+    #[command(
+        about = "List the configuration policies for a specified namespace",
+        after_help = "Examples:
+  danube-admin namespaces policies default
+  danube-admin namespaces policies my-namespace --output json
+
+Policies Control:
+  - max_producers_per_topic: Limit concurrent producers
+  - max_subscriptions_per_topic: Limit subscriptions
+  - max_consumers_per_topic: Limit total consumers
+  - max_consumers_per_subscription: Limit per subscription
+  - max_publish_rate: Rate limiting for producers
+  - max_subscription_dispatch_rate: Rate limiting for consumers
+  - max_message_size: Maximum message payload size
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Policies {
         namespace: String,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
         output: Option<String>,
     },
-    #[command(about = "Create a new namespace")]
+    #[command(
+        about = "Create a new namespace",
+        after_help = "Examples:
+  danube-admin namespaces create my-namespace
+  danube-admin namespaces create production
+
+Note: Namespaces provide logical isolation for topics and policies.
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Create { namespace: String },
-    #[command(about = "Delete an existing namespace")]
+    #[command(
+        about = "Delete an existing namespace",
+        after_help = "Examples:
+  danube-admin namespaces delete my-namespace
+  danube-admin namespaces delete test-namespace
+
+Note: The namespace must be empty (no topics) before deletion.
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Delete { namespace: String },
 }
 

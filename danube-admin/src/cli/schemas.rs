@@ -22,7 +22,18 @@ pub struct Schemas {
 
 #[derive(Debug, Subcommand)]
 enum SchemasCommands {
-    #[command(about = "Register a new schema or update existing schema")]
+    #[command(
+        about = "Register a new schema or update existing schema",
+        after_help = "Examples:
+  danube-admin schemas register user-events --schema-type json_schema --file schema.json
+  danube-admin schemas register user-events --schema-type avro --schema '{...}'
+  danube-admin schemas register user-events --schema-type json_schema --file schema.json --description 'User event schema' --tags analytics events
+  danube-admin schemas register user-events --schema-type protobuf --file user.proto --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)
+  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY"
+    )]
     Register {
         #[arg(help = "Schema subject name")]
         subject: String,
@@ -50,7 +61,17 @@ enum SchemasCommands {
         output: Option<String>,
     },
 
-    #[command(about = "Get a schema by subject or ID")]
+    #[command(
+        about = "Get a schema by subject or ID",
+        after_help = "Examples:
+  danube-admin schemas get --subject user-events
+  danube-admin schemas get --id 42
+  danube-admin schemas get --id 42 --version 3
+  danube-admin schemas get --subject user-events --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Get {
         #[arg(long, conflicts_with = "subject", help = "Schema ID")]
         id: Option<u64>,
@@ -65,7 +86,15 @@ enum SchemasCommands {
         output: Option<String>,
     },
 
-    #[command(about = "List all versions for a subject")]
+    #[command(
+        about = "List all versions for a subject",
+        after_help = "Examples:
+  danube-admin schemas versions user-events
+  danube-admin schemas versions user-events --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Versions {
         #[arg(help = "Schema subject name")]
         subject: String,
@@ -74,7 +103,16 @@ enum SchemasCommands {
         output: Option<String>,
     },
 
-    #[command(about = "Check if a schema is compatible")]
+    #[command(
+        about = "Check if a schema is compatible",
+        after_help = "Examples:
+  danube-admin schemas check user-events --schema-type json_schema --file new-schema.json
+  danube-admin schemas check user-events --schema-type avro --schema '{...}'
+  danube-admin schemas check user-events --schema-type json_schema --file new-schema.json --mode backward
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Check {
         #[arg(help = "Schema subject name")]
         subject: String,
@@ -96,7 +134,15 @@ enum SchemasCommands {
         mode: Option<String>,
     },
 
-    #[command(about = "Get compatibility mode for a subject")]
+    #[command(
+        about = "Get compatibility mode for a subject",
+        after_help = "Examples:
+  danube-admin schemas get-compatibility user-events
+  danube-admin schemas get-compatibility user-events --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     GetCompatibility {
         #[arg(help = "Schema subject name")]
         subject: String,
@@ -105,7 +151,22 @@ enum SchemasCommands {
         output: Option<String>,
     },
 
-    #[command(about = "Set compatibility mode for a subject")]
+    #[command(
+        about = "Set compatibility mode for a subject",
+        after_help = "Examples:
+  danube-admin schemas set-compatibility user-events --mode backward
+  danube-admin schemas set-compatibility user-events --mode full
+  danube-admin schemas set-compatibility user-events --mode none
+
+Compatibility Modes:
+  none     - No compatibility checking
+  backward - New schema can read data written by old schema
+  forward  - Old schema can read data written by new schema
+  full     - Both backward and forward compatible
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     SetCompatibility {
         #[arg(help = "Schema subject name")]
         subject: String,
@@ -118,7 +179,16 @@ enum SchemasCommands {
         mode: String,
     },
 
-    #[command(about = "Delete a specific schema version")]
+    #[command(
+        about = "Delete a specific schema version",
+        after_help = "Examples:
+  danube-admin schemas delete user-events --version 2 --confirm
+
+Note: Deletion requires --confirm flag to prevent accidental deletion.
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Delete {
         #[arg(help = "Schema subject name")]
         subject: String,

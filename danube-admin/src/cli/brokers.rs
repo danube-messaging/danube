@@ -14,19 +14,58 @@ pub struct Brokers {
 
 #[derive(Debug, Subcommand)]
 enum BrokersCommands {
-    #[command(about = "List all active brokers in the cluster")]
+    #[command(
+        about = "List all active brokers in the cluster",
+        after_help = "Examples:
+  danube-admin brokers list
+  danube-admin brokers list --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     List {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
         output: Option<String>,
     },
-    #[command(about = "List the cluster leader broker")]
+    #[command(
+        about = "List the cluster leader broker",
+        after_help = "Examples:
+  danube-admin brokers leader-broker
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     LeaderBroker,
-    #[command(about = "List all namespaces in the cluster")]
+    #[command(
+        about = "List all namespaces in the cluster",
+        after_help = "Examples:
+  danube-admin brokers namespaces
+  danube-admin brokers namespaces --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Namespaces {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
         output: Option<String>,
     },
-    #[command(about = "Unload a broker by migrating all hosted topics off it")]
+    #[command(
+        about = "Unload a broker by migrating all hosted topics off it",
+        after_help = "Examples:
+  danube-admin brokers unload --broker-id broker-123
+  danube-admin brokers unload --broker-id broker-123 --dry-run
+  danube-admin brokers unload --broker-id broker-123 --max-parallel 5
+  danube-admin brokers unload --broker-id broker-123 --namespaces-include default --timeout-seconds 120
+  danube-admin brokers unload --broker-id broker-123 --namespaces-exclude test
+
+Use Cases:
+  - Graceful broker shutdown for maintenance
+  - Rolling upgrades without downtime
+  - Decommissioning brokers from the cluster
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Unload {
         #[arg(long, required = true, help = "Target broker id")]
         broker_id: String,
@@ -45,7 +84,20 @@ enum BrokersCommands {
         #[arg(long, default_value_t = 60, help = "Per-topic timeout seconds")]
         timeout_seconds: u32,
     },
-    #[command(about = "Activate a broker (set state to active)")]
+    #[command(
+        about = "Activate a broker (set state to active)",
+        after_help = "Examples:
+  danube-admin brokers activate --broker-id broker-123
+  danube-admin brokers activate --broker-id broker-123 --reason 'Maintenance complete'
+
+Use Cases:
+  - Re-enable broker after maintenance
+  - Bring broker back into topic assignment rotation
+  - Resume normal cluster operations
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Activate {
         #[arg(long, help = "Target broker id")]
         broker_id: String,
@@ -56,12 +108,52 @@ enum BrokersCommands {
         )]
         reason: String,
     },
-    #[command(about = "Show cluster balance metrics and broker loads")]
+    #[command(
+        about = "Show cluster balance metrics and broker loads",
+        after_help = "Examples:
+  danube-admin brokers balance
+  danube-admin brokers balance --output json
+
+Metrics Explained:
+  CV < 20%  = Well Balanced (optimal)
+  CV 20-30% = Balanced (acceptable)
+  CV 30-40% = Imbalanced (consider rebalancing)
+  CV > 40%  = Severely Imbalanced (rebalancing recommended)
+
+Coefficient of Variation (CV):
+  Measures load distribution uniformity across brokers.
+  Lower CV = more even distribution.
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Balance {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
         output: Option<String>,
     },
-    #[command(about = "Trigger manual cluster rebalancing")]
+    #[command(
+        about = "Trigger manual cluster rebalancing",
+        after_help = "Examples:
+  danube-admin brokers rebalance --dry-run
+  danube-admin brokers rebalance
+  danube-admin brokers rebalance --max-moves 10
+  danube-admin brokers rebalance --max-moves 5 --dry-run
+
+Workflow:
+  1. Check current balance: danube-admin brokers balance
+  2. Preview moves:         danube-admin brokers rebalance --dry-run
+  3. Execute rebalancing:   danube-admin brokers rebalance
+  4. Verify results:        danube-admin brokers balance
+
+When to Use:
+  - After adding/removing brokers
+  - When CV > 30% (imbalanced cluster)
+  - Before maintenance windows
+  - To optimize resource utilization
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
     Rebalance {
         #[arg(
             long,
