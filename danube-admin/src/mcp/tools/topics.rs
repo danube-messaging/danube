@@ -1,9 +1,9 @@
 //! Topic management tools
 
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use std::sync::Arc;
 use crate::core::AdminGrpcClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ListTopicsParams {
@@ -11,10 +11,7 @@ pub struct ListTopicsParams {
     pub namespace: String,
 }
 
-pub async fn list_topics(
-    client: &Arc<AdminGrpcClient>,
-    params: ListTopicsParams,
-) -> String {
+pub async fn list_topics(client: &Arc<AdminGrpcClient>, params: ListTopicsParams) -> String {
     let req = danube_core::admin_proto::NamespaceRequest {
         name: params.namespace.clone(),
     };
@@ -58,10 +55,7 @@ pub struct DescribeTopicParams {
     pub topic: String,
 }
 
-pub async fn describe_topic(
-    client: &Arc<AdminGrpcClient>,
-    params: DescribeTopicParams,
-) -> String {
+pub async fn describe_topic(client: &Arc<AdminGrpcClient>, params: DescribeTopicParams) -> String {
     let req = danube_core::admin_proto::DescribeTopicRequest {
         name: params.topic.clone(),
     };
@@ -90,7 +84,10 @@ pub async fn describe_topic(
             }
 
             if !response.subscriptions.is_empty() {
-                output.push_str(&format!("\nSubscriptions ({}):\n", response.subscriptions.len()));
+                output.push_str(&format!(
+                    "\nSubscriptions ({}):\n",
+                    response.subscriptions.len()
+                ));
                 for (i, sub) in response.subscriptions.iter().enumerate() {
                     output.push_str(&format!("  {}. {}\n", i + 1, sub));
                 }
@@ -122,10 +119,7 @@ fn default_dispatch_strategy() -> String {
     "reliable".to_string()
 }
 
-pub async fn create_topic(
-    client: &Arc<AdminGrpcClient>,
-    params: CreateTopicParams,
-) -> String {
+pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicParams) -> String {
     let dispatch = if params.dispatch_strategy.to_lowercase() == "reliable" {
         1 // Reliable
     } else {
@@ -145,9 +139,7 @@ pub async fn create_topic(
             Ok(_) => {
                 format!(
                     "Successfully created partitioned topic '{}' with {} partitions ({})",
-                    params.name,
-                    params.partitions,
-                    params.dispatch_strategy
+                    params.name, params.partitions, params.dispatch_strategy
                 )
             }
             Err(e) => format!("Error creating partitioned topic: {}", e),
@@ -164,8 +156,7 @@ pub async fn create_topic(
             Ok(_) => {
                 format!(
                     "Successfully created topic '{}' ({})",
-                    params.name,
-                    params.dispatch_strategy
+                    params.name, params.dispatch_strategy
                 )
             }
             Err(e) => format!("Error creating topic: {}", e),
@@ -179,10 +170,7 @@ pub struct DeleteTopicParams {
     pub topic: String,
 }
 
-pub async fn delete_topic(
-    client: &Arc<AdminGrpcClient>,
-    params: DeleteTopicParams,
-) -> String {
+pub async fn delete_topic(client: &Arc<AdminGrpcClient>, params: DeleteTopicParams) -> String {
     let req = danube_core::admin_proto::TopicRequest {
         name: params.topic.clone(),
     };
@@ -228,5 +216,201 @@ pub async fn list_subscriptions(
             output
         }
         Err(e) => format!("Error listing subscriptions: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UnsubscribeParams {
+    /// Topic name (e.g., "/default/my-topic")
+    pub topic: String,
+    /// Subscription name to delete
+    pub subscription: String,
+}
+
+pub async fn unsubscribe(client: &Arc<AdminGrpcClient>, params: UnsubscribeParams) -> String {
+    let req = danube_core::admin_proto::SubscriptionRequest {
+        topic: params.topic.clone(),
+        subscription: params.subscription.clone(),
+    };
+
+    match client.unsubscribe(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Successfully deleted subscription '{}' from topic '{}'",
+                    params.subscription, params.topic
+                )
+            } else {
+                format!(
+                    "✗ Failed to delete subscription '{}' from topic '{}'",
+                    params.subscription, params.topic
+                )
+            }
+        }
+        Err(e) => format!("Error deleting subscription: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UnloadTopicParams {
+    /// Topic name to unload (e.g., "/default/my-topic")
+    pub topic: String,
+}
+
+pub async fn unload_topic(client: &Arc<AdminGrpcClient>, params: UnloadTopicParams) -> String {
+    let req = danube_core::admin_proto::TopicRequest {
+        name: params.topic.clone(),
+    };
+
+    match client.unload_topic(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Successfully unloaded topic '{}' for reassignment",
+                    params.topic
+                )
+            } else {
+                format!("✗ Failed to unload topic '{}'", params.topic)
+            }
+        }
+        Err(e) => format!("Error unloading topic: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ConfigureTopicSchemaParams {
+    /// Topic name (e.g., "/default/my-topic")
+    pub topic: String,
+    /// Schema subject name
+    pub schema_subject: String,
+    /// Validation policy: none, warn, or enforce
+    #[serde(default = "default_validation_policy")]
+    pub validation_policy: String,
+    /// Enable deep payload validation
+    #[serde(default)]
+    pub enable_payload_validation: bool,
+}
+
+fn default_validation_policy() -> String {
+    "none".to_string()
+}
+
+pub async fn configure_topic_schema(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureTopicSchemaParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::ConfigureTopicSchemaRequest {
+        topic_name: params.topic.clone(),
+        schema_subject: params.schema_subject.clone(),
+        validation_policy: params.validation_policy.to_uppercase(),
+        enable_payload_validation: params.enable_payload_validation,
+    };
+
+    match client.configure_topic_schema(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Schema configuration set for topic '{}'\n  Subject: {}\n  Policy: {}\n  Validation: {}",
+                    params.topic,
+                    params.schema_subject,
+                    params.validation_policy.to_uppercase(),
+                    if params.enable_payload_validation { "ENABLED" } else { "DISABLED" }
+                )
+            } else {
+                format!(
+                    "✗ Failed to configure schema for topic '{}': {}",
+                    params.topic, response.message
+                )
+            }
+        }
+        Err(e) => format!("Error configuring topic schema: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SetValidationPolicyParams {
+    /// Topic name (e.g., "/default/my-topic")
+    pub topic: String,
+    /// Validation policy: none, warn, or enforce
+    pub policy: String,
+    /// Enable deep payload validation
+    #[serde(default)]
+    pub enable_payload_validation: bool,
+}
+
+pub async fn set_validation_policy(
+    client: &Arc<AdminGrpcClient>,
+    params: SetValidationPolicyParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::UpdateTopicValidationPolicyRequest {
+        topic_name: params.topic.clone(),
+        validation_policy: params.policy.to_uppercase(),
+        enable_payload_validation: params.enable_payload_validation,
+    };
+
+    match client.update_topic_validation_policy(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Validation policy updated for topic '{}'\n  Policy: {}\n  Validation: {}",
+                    params.topic,
+                    params.policy.to_uppercase(),
+                    if params.enable_payload_validation {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                )
+            } else {
+                format!(
+                    "✗ Failed to update validation policy for topic '{}': {}",
+                    params.topic, response.message
+                )
+            }
+        }
+        Err(e) => format!("Error updating validation policy: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GetSchemaConfigParams {
+    /// Topic name (e.g., "/default/my-topic")
+    pub topic: String,
+}
+
+pub async fn get_topic_schema_config(
+    client: &Arc<AdminGrpcClient>,
+    params: GetSchemaConfigParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::GetTopicSchemaConfigRequest {
+        topic_name: params.topic.clone(),
+    };
+
+    match client.get_topic_schema_config(req).await {
+        Ok(response) => {
+            if response.schema_subject.is_empty() {
+                format!("No schema configured for topic '{}'", params.topic)
+            } else {
+                let mut output = format!("Schema Configuration for topic '{}':\n\n", params.topic);
+                output.push_str(&format!("  Subject: {}\n", response.schema_subject));
+                output.push_str(&format!(
+                    "  Policy: {}\n",
+                    response.validation_policy.to_uppercase()
+                ));
+                output.push_str(&format!(
+                    "  Payload Validation: {}\n",
+                    if response.enable_payload_validation {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                ));
+                if response.schema_id > 0 {
+                    output.push_str(&format!("  Cached Schema ID: {}\n", response.schema_id));
+                }
+                output
+            }
+        }
+        Err(e) => format!("Error getting schema config: {}", e),
     }
 }

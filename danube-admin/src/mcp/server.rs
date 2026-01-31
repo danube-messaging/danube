@@ -83,6 +83,42 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    #[tool(description = "Activate a broker to bring it back into service after maintenance")]
+    async fn activate_broker(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ActivateBrokerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::activate_broker(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Get configuration policies for a specific namespace")]
+    async fn get_namespace_policies(
+        &self,
+        Parameters(params): Parameters<tools::cluster::NamespaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::get_namespace_policies(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Create a new namespace for logical isolation of topics")]
+    async fn create_namespace(
+        &self,
+        Parameters(params): Parameters<tools::cluster::NamespaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::create_namespace(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Delete an empty namespace (must have no topics)")]
+    async fn delete_namespace(
+        &self,
+        Parameters(params): Parameters<tools::cluster::NamespaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::delete_namespace(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     // ===== TOPIC MANAGEMENT TOOLS =====
 
     #[tool(
@@ -136,6 +172,51 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    #[tool(description = "Delete a subscription from a topic")]
+    async fn unsubscribe(
+        &self,
+        Parameters(params): Parameters<tools::topics::UnsubscribeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::unsubscribe(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Unload a topic from its current broker for reassignment")]
+    async fn unload_topic(
+        &self,
+        Parameters(params): Parameters<tools::topics::UnloadTopicParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::unload_topic(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Configure schema settings for a topic (admin-only)")]
+    async fn configure_topic_schema(
+        &self,
+        Parameters(params): Parameters<tools::topics::ConfigureTopicSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::configure_topic_schema(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Update validation policy for a topic")]
+    async fn set_topic_validation_policy(
+        &self,
+        Parameters(params): Parameters<tools::topics::SetValidationPolicyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::set_validation_policy(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Get schema configuration for a topic")]
+    async fn get_topic_schema_config(
+        &self,
+        Parameters(params): Parameters<tools::topics::GetSchemaConfigParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::get_topic_schema_config(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     // ===== SCHEMA REGISTRY TOOLS =====
 
     #[tool(
@@ -173,6 +254,35 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::CheckCompatibilityParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::check_compatibility(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Get compatibility mode for a schema subject")]
+    async fn get_schema_compatibility_mode(
+        &self,
+        Parameters(params): Parameters<tools::schemas::CompatibilityModeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::schemas::get_compatibility_mode(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Set compatibility mode for a schema subject (none, backward, forward, full)"
+    )]
+    async fn set_schema_compatibility_mode(
+        &self,
+        Parameters(params): Parameters<tools::schemas::SetCompatibilityModeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::schemas::set_compatibility_mode(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Delete a specific version of a schema (WARNING: destructive operation)")]
+    async fn delete_schema_version(
+        &self,
+        Parameters(params): Parameters<tools::schemas::DeleteSchemaVersionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::schemas::delete_schema_version(&self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 

@@ -1,9 +1,9 @@
 //! Cluster management tools
 
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use std::sync::Arc;
 use crate::core::AdminGrpcClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub async fn list_brokers(client: &Arc<AdminGrpcClient>) -> String {
     match client.list_brokers().await {
@@ -13,7 +13,7 @@ pub async fn list_brokers(client: &Arc<AdminGrpcClient>) -> String {
             }
 
             let mut output = format!("Found {} broker(s):\n\n", response.brokers.len());
-            
+
             for broker in &response.brokers {
                 output.push_str(&format!(
                     "Broker ID: {}\n\
@@ -30,7 +30,7 @@ pub async fn list_brokers(client: &Arc<AdminGrpcClient>) -> String {
                     broker.metrics_addr,
                 ));
             }
-            
+
             output
         }
         Err(e) => format!("Error listing brokers: {}", e),
@@ -55,10 +55,7 @@ pub struct RebalanceParams {
     pub max_moves: Option<u32>,
 }
 
-pub async fn trigger_rebalance(
-    client: &Arc<AdminGrpcClient>,
-    params: RebalanceParams,
-) -> String {
+pub async fn trigger_rebalance(client: &Arc<AdminGrpcClient>, params: RebalanceParams) -> String {
     let req = danube_core::admin_proto::RebalanceRequest {
         dry_run: params.dry_run,
         max_moves: params.max_moves,
@@ -71,7 +68,7 @@ pub async fn trigger_rebalance(
             }
 
             let mut output = String::new();
-            
+
             if params.dry_run {
                 output.push_str("DRY RUN - No changes were made\n\n");
             } else {
@@ -112,7 +109,7 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
     match client.get_cluster_balance(req).await {
         Ok(response) => {
             let is_balanced = response.coefficient_of_variation < 0.2;
-            
+
             let mut output = String::new();
             output.push_str("Cluster Balance Metrics:\n\n");
             output.push_str(&format!(
@@ -123,7 +120,11 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
                  Min Load: {:.2}\n\
                  Std Deviation: {:.2}\n\
                  Active Brokers: {}\n\n",
-                if is_balanced { "✓ Balanced" } else { "⚠ Imbalanced" },
+                if is_balanced {
+                    "✓ Balanced"
+                } else {
+                    "⚠ Imbalanced"
+                },
                 response.coefficient_of_variation,
                 response.mean_load,
                 response.max_load,
@@ -145,16 +146,15 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
 
                     output.push_str(&format!(
                         "  Broker {}: {:.2} load ({} topics) - {}\n",
-                        broker.broker_id,
-                        broker.load,
-                        broker.topic_count,
-                        status
+                        broker.broker_id, broker.load, broker.topic_count, status
                     ));
                 }
             }
 
             if !is_balanced {
-                output.push_str("\nRecommendation: Consider running 'trigger_rebalance' to improve balance.\n");
+                output.push_str(
+                    "\nRecommendation: Consider running 'trigger_rebalance' to improve balance.\n",
+                );
             }
 
             output
@@ -175,12 +175,11 @@ pub struct UnloadBrokerParams {
     pub dry_run: bool,
 }
 
-fn default_max_parallel() -> u32 { 1 }
+fn default_max_parallel() -> u32 {
+    1
+}
 
-pub async fn unload_broker(
-    client: &Arc<AdminGrpcClient>,
-    params: UnloadBrokerParams,
-) -> String {
+pub async fn unload_broker(client: &Arc<AdminGrpcClient>, params: UnloadBrokerParams) -> String {
     let req = danube_core::admin_proto::UnloadBrokerRequest {
         broker_id: params.broker_id.clone(),
         max_parallel: params.max_parallel,
@@ -193,7 +192,7 @@ pub async fn unload_broker(
     match client.unload_broker(req).await {
         Ok(response) => {
             let mut output = String::new();
-            
+
             if params.dry_run {
                 output.push_str("DRY RUN - No topics were actually unloaded\n\n");
             }
@@ -235,9 +234,105 @@ pub async fn list_namespaces(client: &Arc<AdminGrpcClient>) -> String {
             for (i, ns) in response.namespaces.iter().enumerate() {
                 output.push_str(&format!("  {}. {}\n", i + 1, ns));
             }
-            
+
             output
         }
         Err(e) => format!("Error listing namespaces: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ActivateBrokerParams {
+    /// Broker ID to activate
+    pub broker_id: String,
+    /// Reason for activation (for audit trail)
+    #[serde(default = "default_reason")]
+    pub reason: String,
+}
+
+fn default_reason() -> String {
+    "admin_activate".to_string()
+}
+
+pub async fn activate_broker(
+    client: &Arc<AdminGrpcClient>,
+    params: ActivateBrokerParams,
+) -> String {
+    let req = danube_core::admin_proto::ActivateBrokerRequest {
+        broker_id: params.broker_id.clone(),
+        reason: params.reason,
+    };
+
+    match client.activate_broker(req).await {
+        Ok(response) => {
+            if response.success {
+                format!("✓ Successfully activated broker '{}'", params.broker_id)
+            } else {
+                format!("✗ Failed to activate broker '{}'", params.broker_id)
+            }
+        }
+        Err(e) => format!("Error activating broker: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct NamespaceParams {
+    /// Namespace name
+    pub namespace: String,
+}
+
+pub async fn get_namespace_policies(
+    client: &Arc<AdminGrpcClient>,
+    params: NamespaceParams,
+) -> String {
+    let req = danube_core::admin_proto::NamespaceRequest {
+        name: params.namespace.clone(),
+    };
+
+    match client.get_namespace_policies(req).await {
+        Ok(response) => {
+            format!(
+                "Policies for namespace '{}':\n\n{}",
+                params.namespace, response.policies
+            )
+        }
+        Err(e) => format!("Error getting namespace policies: {}", e),
+    }
+}
+
+pub async fn create_namespace(client: &Arc<AdminGrpcClient>, params: NamespaceParams) -> String {
+    let req = danube_core::admin_proto::NamespaceRequest {
+        name: params.namespace.clone(),
+    };
+
+    match client.create_namespace(req).await {
+        Ok(response) => {
+            if response.success {
+                format!("✓ Successfully created namespace '{}'", params.namespace)
+            } else {
+                format!("✗ Failed to create namespace '{}'", params.namespace)
+            }
+        }
+        Err(e) => format!("Error creating namespace: {}", e),
+    }
+}
+
+pub async fn delete_namespace(client: &Arc<AdminGrpcClient>, params: NamespaceParams) -> String {
+    let req = danube_core::admin_proto::NamespaceRequest {
+        name: params.namespace.clone(),
+    };
+
+    match client.delete_namespace(req).await {
+        Ok(response) => {
+            if response.success {
+                format!("✓ Successfully deleted namespace '{}'", params.namespace)
+            } else {
+                format!(
+                    "✗ Failed to delete namespace '{}'. Note: namespace must be empty (no topics).",
+                    params.namespace
+                )
+            }
+        }
+        Err(e) => format!("Error deleting namespace: {}", e),
     }
 }

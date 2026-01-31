@@ -1,9 +1,9 @@
 //! Schema registry tools
 
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use std::sync::Arc;
 use crate::core::AdminGrpcClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct RegisterSchemaParams {
@@ -43,11 +43,7 @@ pub async fn register_schema(
                  Schema ID: {}\n\
                  Version: {}\n\
                  Fingerprint: {}",
-                params.subject,
-                status,
-                response.schema_id,
-                response.version,
-                response.fingerprint
+                params.subject, status, response.schema_id, response.version, response.fingerprint
             )
         }
         Err(e) => format!("Error registering schema: {}", e),
@@ -60,10 +56,7 @@ pub struct GetSchemaParams {
     pub subject: String,
 }
 
-pub async fn get_schema(
-    client: &Arc<AdminGrpcClient>,
-    params: GetSchemaParams,
-) -> String {
+pub async fn get_schema(client: &Arc<AdminGrpcClient>, params: GetSchemaParams) -> String {
     let req = danube_core::proto::danube_schema::GetLatestSchemaRequest {
         subject: params.subject.clone(),
     };
@@ -71,7 +64,7 @@ pub async fn get_schema(
     match client.get_latest_schema(req).await {
         Ok(response) => {
             let schema_def = String::from_utf8_lossy(&response.schema_definition);
-            
+
             format!(
                 "Schema Subject: {}\n\
                  Schema ID: {}\n\
@@ -173,7 +166,10 @@ pub async fn check_compatibility(
             if response.is_compatible {
                 format!("✓ Schema is COMPATIBLE with subject '{}'", params.subject)
             } else {
-                let mut output = format!("✗ Schema is INCOMPATIBLE with subject '{}':\n\n", params.subject);
+                let mut output = format!(
+                    "✗ Schema is INCOMPATIBLE with subject '{}':\n\n",
+                    params.subject
+                );
                 for (i, error) in response.errors.iter().enumerate() {
                     output.push_str(&format!("  {}. {}\n", i + 1, error));
                 }
@@ -181,5 +177,102 @@ pub async fn check_compatibility(
             }
         }
         Err(e) => format!("Error checking compatibility: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CompatibilityModeParams {
+    /// Schema subject name
+    pub subject: String,
+}
+
+pub async fn get_compatibility_mode(
+    client: &Arc<AdminGrpcClient>,
+    params: CompatibilityModeParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::GetLatestSchemaRequest {
+        subject: params.subject.clone(),
+    };
+
+    match client.get_latest_schema(req).await {
+        Ok(response) => {
+            format!(
+                "Compatibility mode for subject '{}':\n  Mode: {}",
+                params.subject,
+                response.compatibility_mode.to_uppercase()
+            )
+        }
+        Err(e) => format!("Error getting compatibility mode: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SetCompatibilityModeParams {
+    /// Schema subject name
+    pub subject: String,
+    /// Compatibility mode: none, backward, forward, or full
+    pub mode: String,
+}
+
+pub async fn set_compatibility_mode(
+    client: &Arc<AdminGrpcClient>,
+    params: SetCompatibilityModeParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::SetCompatibilityModeRequest {
+        subject: params.subject.clone(),
+        compatibility_mode: params.mode.to_uppercase(),
+    };
+
+    match client.set_compatibility_mode(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Compatibility mode set for subject '{}'\n  Mode: {}",
+                    params.subject,
+                    params.mode.to_uppercase()
+                )
+            } else {
+                format!(
+                    "✗ Failed to set compatibility mode for subject '{}': {}",
+                    params.subject, response.message
+                )
+            }
+        }
+        Err(e) => format!("Error setting compatibility mode: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DeleteSchemaVersionParams {
+    /// Schema subject name
+    pub subject: String,
+    /// Version to delete
+    pub version: u32,
+}
+
+pub async fn delete_schema_version(
+    client: &Arc<AdminGrpcClient>,
+    params: DeleteSchemaVersionParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::DeleteSchemaVersionRequest {
+        subject: params.subject.clone(),
+        version: params.version,
+    };
+
+    match client.delete_schema_version(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Successfully deleted version {} of schema '{}'",
+                    params.version, params.subject
+                )
+            } else {
+                format!(
+                    "✗ Failed to delete version {}: {}",
+                    params.version, response.message
+                )
+            }
+        }
+        Err(e) => format!("Error deleting schema version: {}", e),
     }
 }
