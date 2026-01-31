@@ -1,4 +1,4 @@
-//! MCP tool implementations
+//! MCP Tool implementations
 //!
 //! Each module contains tool functions that interact with the Danube cluster
 //! and return human-readable output for AI assistants.
