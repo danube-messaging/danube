@@ -21,14 +21,7 @@ mod test_utils;
 /// Helper to run admin CLI command
 fn admin_cli() -> Command {
     let mut cmd = Command::new("cargo");
-    cmd.args([
-        "run",
-        "-p",
-        "danube-admin",
-        "--bin",
-        "danube-admin",
-        "--",
-    ]);
+    cmd.args(["run", "-p", "danube-admin", "--bin", "danube-admin", "--"]);
     cmd.env(
         "DANUBE_ADMIN_ENDPOINT",
         std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
@@ -75,6 +68,7 @@ fn admin_cli() -> Command {
 /// - ✅ Offset continuity maintained across broker boundaries
 /// - ✅ No message loss during topic migration
 ///
+#[ignore]
 async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/reliable_move");

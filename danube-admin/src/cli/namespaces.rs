@@ -121,8 +121,11 @@ fn display_policies(policies: &Policies) {
     println!("-----------------------");
 }
 
-pub async fn handle(namespaces: Namespaces) -> Result<()> {
-    let config = GrpcClientConfig::default();
+pub async fn handle(namespaces: Namespaces, endpoint: &str) -> Result<()> {
+    let config = GrpcClientConfig {
+        endpoint: endpoint.to_string(),
+        ..Default::default()
+    };
     let client = AdminGrpcClient::connect(config).await?;
 
     match namespaces.command {

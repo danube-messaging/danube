@@ -72,24 +72,27 @@ docker exec -it danube-cli danube-cli consume \
 
 ### 🏗️ **Cluster & Broker Characteristics**
 - **Stateless brokers**: Metadata in ETCD and data in WAL/Object Storage
-- **Horizontal scaling**: Add brokers in seconds; partitions rebalance automatically
-- **Leader election & HA**: Automatic failover and coordination via ETCD
+- **Horizontal scaling**: Add brokers in seconds with zero-downtime expansion
+- **Intelligent load balancing**: Automatic topic placement and rebalancing across brokers
 - **Rolling upgrades**: Restart or replace brokers with minimal disruption
-- **Multi-tenancy**: Isolated namespaces with policy controls
 - **Security-ready**: TLS/mTLS support in Admin and data paths
-
-**Cloud-Native by Design** - Danube's architecture separates compute from storage, enabling:
+- **Leader election & HA**: Automatic failover and coordination via ETCD
+- **Multi-tenancy**: Isolated namespaces with policy controls
 
 ### 🌩️ **Write-Ahead Log + Cloud Persistence**
-- **Sub-millisecond producer acknowledgments** via local WAL
+- **Cloud-Native by Design** - Danube's architecture separates compute from storage
+- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
+- **Hot path optimization**: Messages served from in-memory WAL cache
+- **Stream per subscription**: WAL + cloud storage from selected offset
 - **Asynchronous background uploads** to S3/GCS/Azure object storage
-- **Automatic failover** with shared cloud state
 - **Infinite retention** without local disk constraints
 
-### ⚡ **Performance & Scalability**
-- **Hot path optimization**: Messages served from in-memory WAL cache
-- **Stream per subscription**: WAL + cloud storage from selected offset 
-- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
+### 🎯 **Intelligent Load Management**
+- **Automated rebalancing**: Detects cluster imbalances and redistributes topics automatically
+- **Smart topic assignment**: Places new topics on least-loaded brokers using configurable strategies
+- **Resource monitoring**: Tracks CPU, memory, throughput, and backlog per broker in real-time
+- **Configurable policies**: Conservative, balanced, or aggressive rebalancing based on workload
+- **Graceful topic migration**: Moves topics between brokers without downtime
 
 ## Core Capabilities
 
@@ -97,19 +100,28 @@ docker exec -it danube-cli danube-cli consume \
 - **[Topics](https://danube-docs.dev-state.com/architecture/topics/)**: Partitioned and non-partitioned with automatic load balancing
 - **[Reliable Dispatch](https://danube-docs.dev-state.com/architecture/dispatch_strategy/)**: At-least-once delivery with configurable storage backends
 - **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
-- **Flexible Schemas**: Bytes, String, Int64, JSON with automatic serialization
 
 ### 🔄 **Subscription Models**
 - **[Exclusive](https://danube-docs.dev-state.com/architecture/subscriptions/)**: Single consumer per subscription
 - **Shared**: Load-balanced message distribution across consumers
 - **Failover**: Automatic consumer failover with ordered delivery
 
-![Producers Consumers](https://danube-docs.dev-state.com/architecture/img/producers_consumers.png "Producers Consumers")
+### 📋 **Schema Registry**
+- **Centralized schema management**: Single source of truth for message schemas across all topics
+- **Schema versioning**: Automatic version tracking with compatibility enforcement
+- **Multiple formats**: Bytes, String, Number, JSON Schema, Avro, Protobuf
+- **Validation & governance**: Prevent invalid messages and ensure data quality
 
-### 🛠️ **Developer Experience**
-- **Multi-language clients**: [Rust](https://crates.io/crates/danube-client), [Go](https://pkg.go.dev/github.com/danrusei/danube-go)
-- **[CLI Tools](danube-cli/)**: Message publishing and consumption
-- **[Admin Tools](danube-admin/)**: Cluster management (CLI + HTTP server)
+### 🤖 **AI-Powered Administration**
+
+Danube features **the AI-native messaging platform administration** through the Model Context Protocol (MCP):
+
+- **Natural language cluster management**: Manage your cluster by talking to AI assistants (Claude, Cursor, Windsurf)
+- **32 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
+- **Automated troubleshooting**: AI-guided workflows for consumer lag analysis, health checks, and performance optimization
+- **Multiple interfaces**: CLI commands, Web UI, or AI conversation - your choice
+
+**Example**: Ask Claude *"What's the cluster balance?"* or *"Create a partitioned topic for analytics"* and watch it happen.
 
 ## Community & Clients
 
@@ -131,6 +143,4 @@ Contributions in **Python**, **Java**, **JavaScript**, and other languages are w
 - **[danube-persistent-storage](danube-persistent-storage/)** - WAL and cloud storage integration
 - **[danube-client](danube-client/)** - Async Rust client library  
 - **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
-- **[danube-admin](danube-admin/)** - Unified admin CLI and HTTP server
-
----
+- **[danube-admin](danube-admin/)** - Unified admin tool (CLI + AI/MCP + Web UI)

@@ -23,11 +23,9 @@ use super::ui::{
     topic_series::topic_series,
     topics::{cluster_topics, TopicsResponse},
 };
-use super::{
-    metrics::{MetricsClient, MetricsConfig},
-    ServerArgs,
-};
+use super::ServerArgs;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::metrics::{MetricsClient, MetricsConfig};
 
 #[derive(Clone)]
 pub struct CacheEntry<T> {

@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::metrics::queries::{fetch_topic_series, fetch_topic_series_multi};
 use crate::server::app::AppState;
 
 #[derive(Clone, Serialize)]
@@ -41,7 +42,11 @@ pub async fn topic_series(
     let now = chrono::Utc::now().timestamp();
     let from = clamp(p.from, now - 24 * 3600, now);
     let to = clamp(p.to, from + 1, now);
-    let step = if p.step.is_empty() { "15s".to_string() } else { p.step };
+    let step = if p.step.is_empty() {
+        "15s".to_string()
+    } else {
+        p.step
+    };
 
     let q_publish = format!(
         "sum(rate(danube_topic_messages_in_total{{topic=\"{}\"}}[1m]))",
@@ -66,80 +71,63 @@ pub async fn topic_series(
 
     let mut out: Vec<Series> = Vec::new();
 
-    let to_points = |vals: &Vec<(f64, String)>| -> Vec<(i64, f64)> {
-        vals.iter()
-            .filter_map(|(ts, v)| v.parse::<f64>().ok().map(|vv| ((*ts as f64 * 1000.0) as i64, vv)))
-            .collect()
-    };
-
-    match state.metrics.query_range(&q_publish, from, to, &step).await {
-        Ok(resp) => {
-            let points = resp
-                .data
-                .result
-                .get(0)
-                .map(|s| to_points(&s.values))
-                .unwrap_or_default();
-            out.push(Series { name: "publish_rate_1m".to_string(), labels: None, points });
-        }
-        Err(e) => errors.push(format!("publish_rate_1m query failed: {}", e)),
+    // Use shared query functions for time-series data
+    match fetch_topic_series(&state.metrics, &q_publish, from, to, &step).await {
+        Ok(points) => out.push(Series {
+            name: "publish_rate_1m".to_string(),
+            labels: None,
+            points,
+        }),
+        Err(e) => errors.push(format!("publish_rate_1m {}", e)),
     }
 
-    match state.metrics.query_range(&q_dispatch, from, to, &step).await {
-        Ok(resp) => {
-            let points = resp
-                .data
-                .result
-                .get(0)
-                .map(|s| to_points(&s.values))
-                .unwrap_or_default();
-            out.push(Series { name: "dispatch_rate_1m".to_string(), labels: None, points });
-        }
-        Err(e) => errors.push(format!("dispatch_rate_1m query failed: {}", e)),
+    match fetch_topic_series(&state.metrics, &q_dispatch, from, to, &step).await {
+        Ok(points) => out.push(Series {
+            name: "dispatch_rate_1m".to_string(),
+            labels: None,
+            points,
+        }),
+        Err(e) => errors.push(format!("dispatch_rate_1m {}", e)),
     }
 
-    match state.metrics.query_range(&q_bytes_in, from, to, &step).await {
-        Ok(resp) => {
-            let points = resp
-                .data
-                .result
-                .get(0)
-                .map(|s| to_points(&s.values))
-                .unwrap_or_default();
-            out.push(Series { name: "bytes_in_rate_1m".to_string(), labels: None, points });
-        }
-        Err(e) => errors.push(format!("bytes_in_rate_1m query failed: {}", e)),
+    match fetch_topic_series(&state.metrics, &q_bytes_in, from, to, &step).await {
+        Ok(points) => out.push(Series {
+            name: "bytes_in_rate_1m".to_string(),
+            labels: None,
+            points,
+        }),
+        Err(e) => errors.push(format!("bytes_in_rate_1m {}", e)),
     }
 
-    match state.metrics.query_range(&q_bytes_out, from, to, &step).await {
-        Ok(resp) => {
-            let points = resp
-                .data
-                .result
-                .get(0)
-                .map(|s| to_points(&s.values))
-                .unwrap_or_default();
-            out.push(Series { name: "bytes_out_rate_1m".to_string(), labels: None, points });
-        }
-        Err(e) => errors.push(format!("bytes_out_rate_1m query failed: {}", e)),
+    match fetch_topic_series(&state.metrics, &q_bytes_out, from, to, &step).await {
+        Ok(points) => out.push(Series {
+            name: "bytes_out_rate_1m".to_string(),
+            labels: None,
+            points,
+        }),
+        Err(e) => errors.push(format!("bytes_out_rate_1m {}", e)),
     }
 
-    match state.metrics.query_range(&q_errors_by_code, from, to, &step).await {
-        Ok(resp) => {
-            for s in resp.data.result.iter() {
+    match fetch_topic_series_multi(&state.metrics, &q_errors_by_code, from, to, &step).await {
+        Ok(results) => {
+            for (metric_labels, points) in results {
                 let mut labels = HashMap::new();
-                if let Some(code) = s.metric.get("error_code") {
+                if let Some(code) = metric_labels.get("error_code") {
                     labels.insert("error_code".to_string(), code.clone());
                 }
                 out.push(Series {
                     name: "producer_send_errors".to_string(),
                     labels: Some(labels),
-                    points: to_points(&s.values),
+                    points,
                 });
             }
         }
-        Err(e) => errors.push(format!("producer_send_errors query failed: {}", e)),
+        Err(e) => errors.push(format!("producer_send_errors {}", e)),
     }
 
-    Json(TopicSeriesResponse { series: out, errors }).into_response()
+    Json(TopicSeriesResponse {
+        series: out,
+        errors,
+    })
+    .into_response()
 }

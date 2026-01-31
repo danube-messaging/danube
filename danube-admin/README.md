@@ -10,7 +10,7 @@ Danube Admin is a single binary that operates in three modes:
 
 - **CLI Mode** - Interactive command-line tool for cluster operations
 - **Server Mode** - HTTP/JSON API server for the Danube Admin UI
-- **MCP Mode** *(coming soon)* - Model Context Protocol server for AI assistants
+- **MCP Mode** - Model Context Protocol server for AI assistants
 
 ## 🚀 Quick Start
 
@@ -52,6 +52,29 @@ The server provides REST endpoints for:
 - Topic and namespace management
 - Schema registry operations
 - Metrics integration with Prometheus
+
+### MCP Mode
+
+Start the MCP server for AI assistant integration (Claude Desktop, Cursor, Windsurf):
+
+```bash
+# Start MCP server (uses stdio transport)
+danube-admin serve --mode mcp
+
+# With custom broker endpoint
+DANUBE_ADMIN_ENDPOINT=http://broker1:50051 danube-admin serve --mode mcp
+```
+
+The MCP server provides **32 tools** for AI assistants to:
+- **Cluster Management** - List brokers, check balance, trigger rebalancing
+- **Topic Operations** - Create, delete, describe topics and subscriptions
+- **Namespace Management** - Create, delete, manage namespace policies
+- **Schema Registry** - Register, validate, and manage schemas with compatibility checking
+- **Diagnostics** - Health checks, consumer lag analysis, performance recommendations
+- **Metrics** - Query Prometheus metrics for cluster/broker/topic health
+- **Log Access** - Fetch broker logs from Docker/Kubernetes deployments
+
+Plus **4 troubleshooting prompts** and **1 metrics resource catalog** for context-aware assistance.
 
 ## 📖 Command Categories
 
@@ -157,20 +180,39 @@ docker run -p 8080:8080 \
   serve --listen-addr 0.0.0.0:8080
 ```
 
-## 🔮 Future: MCP Support
+## 🤖 MCP Configuration
 
-Model Context Protocol integration is planned to enable AI assistants (Claude, Cursor, Windsurf) to interact with Danube clusters:
+Integrate Danube Admin with AI assistants using the Model Context Protocol.
 
-```bash
-# Coming soon
-danube-admin serve --mode mcp --stdio
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "danube": {
+      "command": "danube-admin",
+      "args": ["serve", "--mode", "mcp"],
+      "env": {
+        "DANUBE_ADMIN_ENDPOINT": "http://localhost:50051"
+      }
+    }
+  }
+}
 ```
 
-This will allow AI assistants to:
-- Query cluster status and metrics
-- Manage topics and schemas
-- Diagnose issues and suggest optimizations
-- Generate configuration templates
+### Cursor / Windsurf
+
+Configure in your IDE's MCP settings with the same command structure.
+
+### Available Capabilities
+
+- **32 Tools** - Full cluster administration via AI
+- **4 Prompts** - Guided troubleshooting workflows
+- **1 Resource** - Prometheus metrics catalog for observability
+
+AI assistants can now manage your Danube cluster through natural language!
 
 ## 🛠️ Development
 
