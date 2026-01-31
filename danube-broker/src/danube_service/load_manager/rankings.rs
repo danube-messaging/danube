@@ -54,32 +54,51 @@ fn calculate_weighted_topic_load(topics: &[TopicLoad]) -> f64 {
 /// Combines weighted topic load (30%) with system resources (70%)
 /// - Topic load: count + throughput + connections + backlog
 /// - System: CPU (35%) + Memory (35%)
+///
+/// When no system resource data is available (early cluster startup or no load reports),
+/// falls back to topic-count-based scoring to ensure fair distribution.
 pub(super) async fn rankings_composite(
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
 ) -> Vec<(u64, usize)> {
     let brokers_usage = brokers_usage.lock().await;
 
+    // First pass: check if ANY broker has CPU/memory data
+    // If not, we fall back to topic-count-based scoring
+    let has_resource_data = brokers_usage.values().any(|report| {
+        report.resources_usage.iter().any(|sys| {
+            matches!(sys.resource, ResourceType::CPU | ResourceType::Memory) && sys.usage > 0.0
+        })
+    });
+
     let mut broker_loads: Vec<(u64, usize)> = brokers_usage
         .iter()
         .map(|(&broker_id, load_report)| {
-            // Weighted topic load (not just count!)
-            let topic_load = calculate_weighted_topic_load(&load_report.topics) * 0.3;
+            if !has_resource_data {
+                // No system resource data available (early startup, no load reports yet)
+                // Fall back to pure topic count for fair distribution
+                // This ensures topics are evenly distributed before load reports arrive
+                (broker_id, load_report.topics.len())
+            } else {
+                // Normal balanced scoring with system resources
+                // Weighted topic load (not just count!)
+                let topic_load = calculate_weighted_topic_load(&load_report.topics) * 0.3;
 
-            let mut cpu_load = 0.0;
-            let mut memory_load = 0.0;
+                let mut cpu_load = 0.0;
+                let mut memory_load = 0.0;
 
-            for system_load in &load_report.resources_usage {
-                match system_load.resource {
-                    ResourceType::CPU => cpu_load = system_load.usage * 0.35,
-                    ResourceType::Memory => memory_load = system_load.usage * 0.35,
-                    ResourceType::DiskIO | ResourceType::NetworkIO => {
-                        // Reserved for weighted_load strategy
+                for system_load in &load_report.resources_usage {
+                    match system_load.resource {
+                        ResourceType::CPU => cpu_load = system_load.usage * 0.35,
+                        ResourceType::Memory => memory_load = system_load.usage * 0.35,
+                        ResourceType::DiskIO | ResourceType::NetworkIO => {
+                            // Reserved for weighted_load strategy
+                        }
                     }
                 }
-            }
 
-            let total_load = (topic_load + cpu_load + memory_load) as usize;
-            (broker_id, total_load)
+                let total_load = (topic_load + cpu_load + memory_load) as usize;
+                (broker_id, total_load)
+            }
         })
         .collect();
 
@@ -183,14 +202,26 @@ pub(super) async fn rankings_weighted_load(
             // If a resource is >70% utilized, give it extra weight
             let score = if max_util > 0.7 {
                 match max_util {
-                    util if util == cpu_util => cpu_util * 0.5 + mem_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15,
-                    util if util == mem_util => mem_util * 0.5 + cpu_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15,
-                    util if util == throughput_util => throughput_util * 0.5 + net_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15,
-                    util if util == net_util => net_util * 0.5 + throughput_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15,
+                    util if util == cpu_util => {
+                        cpu_util * 0.5 + mem_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15
+                    }
+                    util if util == mem_util => {
+                        mem_util * 0.5 + cpu_util * 0.2 + throughput_util * 0.15 + topic_util * 0.15
+                    }
+                    util if util == throughput_util => {
+                        throughput_util * 0.5 + net_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15
+                    }
+                    util if util == net_util => {
+                        net_util * 0.5 + throughput_util * 0.2 + cpu_util * 0.15 + mem_util * 0.15
+                    }
                     _ => topic_util * 0.5 + cpu_util * 0.2 + mem_util * 0.2 + throughput_util * 0.1,
                 }
             } else {
-                topic_util * 0.25 + cpu_util * 0.25 + mem_util * 0.25 + throughput_util * 0.15 + net_util * 0.1
+                topic_util * 0.25
+                    + cpu_util * 0.25
+                    + mem_util * 0.25
+                    + throughput_util * 0.15
+                    + net_util * 0.1
             };
 
             (broker_id, (score * 100.0) as usize)
@@ -373,7 +404,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_load_brokers() {
-        let meta_store = MetadataStorage::InMemory(MemoryStore::new().await.expect("Failed to create memory store"));
+        let meta_store = MetadataStorage::InMemory(
+            MemoryStore::new()
+                .await
+                .expect("Failed to create memory store"),
+        );
         let load_manager = LoadManager::new(1, meta_store);
 
         load_manager

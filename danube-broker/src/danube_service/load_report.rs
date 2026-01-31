@@ -35,6 +35,26 @@ pub(crate) struct LoadReport {
     pub(crate) broker_id: u64,
 }
 
+impl LoadReport {
+    /// Creates an empty load report for a newly registered broker.
+    /// This allows the broker to participate in topic assignment immediately,
+    /// even before its first real load report is published.
+    pub(crate) fn empty(broker_id: u64) -> Self {
+        Self {
+            resources_usage: vec![],
+            topics: vec![],
+            total_throughput_mbps: 0.0,
+            total_message_rate: 0,
+            total_lag_messages: 0,
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            broker_id,
+        }
+    }
+}
+
 /// Per-topic load information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TopicLoad {
