@@ -1,9 +1,9 @@
 //! Diagnostic and health check tools
 
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use std::sync::Arc;
 use crate::core::AdminGrpcClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ConsumerLagParams {
@@ -21,8 +21,7 @@ pub async fn diagnose_consumer_lag(
         "Diagnosing consumer lag for:\n\
          Topic: {}\n\
          Subscription: {}\n\n",
-        params.topic,
-        params.subscription
+        params.topic, params.subscription
     );
 
     // 1. Check topic details
@@ -63,8 +62,10 @@ pub async fn diagnose_consumer_lag(
                 balance.coefficient_of_variation
             ));
 
-            if balance.coefficient_of_variation > 0.5 {
-                output.push_str("⚠ Cluster is significantly imbalanced - this may affect performance\n");
+            if balance.coefficient_of_variation > 0.4 {
+                output.push_str("⚠ Cluster is severely imbalanced - this may affect performance\n");
+            } else if balance.coefficient_of_variation > 0.3 {
+                output.push_str("⚠ Cluster is imbalanced - consider rebalancing\n");
             }
             output.push_str("\n");
         }
@@ -94,8 +95,11 @@ pub async fn health_check(client: &Arc<AdminGrpcClient>) -> String {
     // 1. Check brokers
     match client.list_brokers().await {
         Ok(brokers_resp) => {
-            output.push_str(&format!("✓ Brokers: {} active\n", brokers_resp.brokers.len()));
-            
+            output.push_str(&format!(
+                "✓ Brokers: {} active\n",
+                brokers_resp.brokers.len()
+            ));
+
             if brokers_resp.brokers.is_empty() {
                 issues.push("No brokers found - cluster is DOWN".to_string());
             }
@@ -127,24 +131,30 @@ pub async fn health_check(client: &Arc<AdminGrpcClient>) -> String {
     }
 
     // 3. Check cluster balance
-    match client.get_cluster_balance(danube_core::admin_proto::ClusterBalanceRequest {}).await {
+    match client
+        .get_cluster_balance(danube_core::admin_proto::ClusterBalanceRequest {})
+        .await
+    {
         Ok(balance) => {
             let status = if balance.coefficient_of_variation < 0.2 {
+                "✓ Well Balanced"
+            } else if balance.coefficient_of_variation < 0.3 {
                 "✓ Balanced"
-            } else if balance.coefficient_of_variation < 0.5 {
-                "⚠ Slightly imbalanced"
+            } else if balance.coefficient_of_variation < 0.4 {
+                "⚠ Imbalanced"
             } else {
-                "✗ Significantly imbalanced"
+                "✗ Severely Imbalanced"
             };
 
             output.push_str(&format!(
                 "{} (CoV: {:.4})\n",
-                status,
-                balance.coefficient_of_variation
+                status, balance.coefficient_of_variation
             ));
 
-            if balance.coefficient_of_variation > 0.5 {
-                issues.push("Cluster is significantly imbalanced - consider rebalancing".to_string());
+            if balance.coefficient_of_variation > 0.4 {
+                issues.push("Cluster is severely imbalanced - rebalancing recommended".to_string());
+            } else if balance.coefficient_of_variation > 0.3 {
+                issues.push("Cluster is imbalanced - consider rebalancing".to_string());
             }
         }
         Err(_) => {
@@ -181,7 +191,10 @@ pub async fn get_recommendations(client: &Arc<AdminGrpcClient>) -> String {
     let mut recommendations: Vec<(String, String, String)> = Vec::new();
 
     // Check cluster balance
-    if let Ok(balance) = client.get_cluster_balance(danube_core::admin_proto::ClusterBalanceRequest {}).await {
+    if let Ok(balance) = client
+        .get_cluster_balance(danube_core::admin_proto::ClusterBalanceRequest {})
+        .await
+    {
         if balance.coefficient_of_variation > 0.3 {
             recommendations.push((
                 "High Priority".to_string(),
