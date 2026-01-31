@@ -76,7 +76,7 @@ jobs:
             --admin-addr 0.0.0.0:50051 \
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
-          
+
           # Wait for admin port (50051) to be ready
           echo "Waiting for admin port 50051..."
           for i in {1..10}; do
@@ -91,7 +91,7 @@ jobs:
             echo "⏳ Waiting for admin port to start..."
             sleep 5
           done
-          
+
           # Wait for broker port (6650) to be ready
           echo "Waiting for broker port 6650..."
           for i in {1..10}; do
@@ -106,10 +106,10 @@ jobs:
             echo "⏳ Waiting for broker port to start..."
             sleep 3
           done
-          
+
           echo "🎯 Broker is fully ready (admin:50051 and broker:6650 without TLS)"
 
-      - name: Run admin CLI E2E tests
+      - name: Run admin CLI E2E tests (includes MCP smoke test)
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
