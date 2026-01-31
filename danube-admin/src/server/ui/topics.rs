@@ -4,10 +4,11 @@ use std::time::Instant;
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
 
+use crate::metrics::queries::fetch_topics_by_broker;
 use crate::server::app::{AppState, CacheEntry};
 use crate::server::ui::broker::{BrokerIdentity, BrokerTopicMini};
-use danube_core::admin_proto::TopicInfo;
 use crate::server::ui::shared::fetch_brokers;
+use danube_core::admin_proto::TopicInfo;
 
 #[derive(Clone, Serialize)]
 pub struct BrokerWithTopics {
@@ -53,10 +54,19 @@ pub async fn cluster_topics(State(state): State<Arc<AppState>>) -> impl IntoResp
             broker_status: b.broker_status.clone(),
         };
         match fetch_topics_for_broker(&state, &b.broker_id).await {
-            Ok(v) => brokers_with_topics.push(BrokerWithTopics { broker: ident, topics: v }),
+            Ok(v) => brokers_with_topics.push(BrokerWithTopics {
+                broker: ident,
+                topics: v,
+            }),
             Err(e) => {
-                errors.push(format!("topics fetch failed for broker {}: {}", b.broker_id, e));
-                brokers_with_topics.push(BrokerWithTopics { broker: ident, topics: Vec::new() });
+                errors.push(format!(
+                    "topics fetch failed for broker {}: {}",
+                    b.broker_id, e
+                ));
+                brokers_with_topics.push(BrokerWithTopics {
+                    broker: ident,
+                    topics: Vec::new(),
+                });
             }
         }
     }
@@ -76,71 +86,36 @@ pub async fn cluster_topics(State(state): State<Arc<AppState>>) -> impl IntoResp
     Json(dto).into_response()
 }
 
-async fn fetch_topics_for_broker(state: &AppState, broker_id: &str) -> anyhow::Result<Vec<BrokerTopicMini>> {
-    let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
-    let q_cons = format!("danube_topic_active_consumers{{broker=\"{}\"}}", broker_id);
-    let q_subs = format!("danube_topic_active_subscriptions{{broker=\"{}\"}}", broker_id);
-
-    let mut prod_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_prod).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        prod_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => return Err(anyhow::anyhow!(format!("producers query failed: {}", e))),
-    }
-
-    let mut cons_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_cons).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        cons_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => return Err(anyhow::anyhow!(format!("consumers query failed: {}", e))),
-    }
-
-    let mut subs_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_subs).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        subs_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => return Err(anyhow::anyhow!(format!("subscriptions query failed: {}", e))),
+async fn fetch_topics_for_broker(
+    state: &AppState,
+    broker_id: &str,
+) -> anyhow::Result<Vec<BrokerTopicMini>> {
+    // Use shared query to fetch per-topic metrics by broker
+    let (topics_map, errors) = fetch_topics_by_broker(&state.metrics, broker_id).await;
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(errors.join("; ")));
     }
 
     // Fetch authoritative topic list via gRPC and enrich with metric counts
-    let req = danube_core::admin_proto::BrokerRequest { broker_id: broker_id.to_string() };
+    let req = danube_core::admin_proto::BrokerRequest {
+        broker_id: broker_id.to_string(),
+    };
     let list = state.client.list_broker_topics(req).await?;
     let mut infos: Vec<TopicInfo> = list.topics;
     infos.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut out: Vec<BrokerTopicMini> = Vec::new();
-    for info in infos.into_iter() {
-        let name = info.name.clone();
-        let p = *prod_by_topic.get(&name).unwrap_or(&0);
-        let c = *cons_by_topic.get(&name).unwrap_or(&0);
-        let s = *subs_by_topic.get(&name).unwrap_or(&0);
-        out.push(BrokerTopicMini {
-            name,
-            delivery: info.delivery,
-            producers_connected: p,
-            consumers_connected: c,
-            subscriptions: s,
-        });
-    }
+
+    let out: Vec<BrokerTopicMini> = infos
+        .into_iter()
+        .map(|info| {
+            let (p, c, s) = topics_map.get(&info.name).copied().unwrap_or((0, 0, 0));
+            BrokerTopicMini {
+                name: info.name,
+                delivery: info.delivery,
+                producers_connected: p,
+                consumers_connected: c,
+                subscriptions: s,
+            }
+        })
+        .collect();
     Ok(out)
 }

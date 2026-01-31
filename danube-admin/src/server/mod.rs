@@ -1,6 +1,5 @@
 mod app;
 pub mod http;
-pub mod metrics;
 pub mod ui;
 
 use anyhow::Result;

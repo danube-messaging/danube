@@ -6,5 +6,6 @@
 pub mod cluster;
 pub mod diagnostics;
 pub mod logs;
+pub mod metrics;
 pub mod schemas;
 pub mod topics;

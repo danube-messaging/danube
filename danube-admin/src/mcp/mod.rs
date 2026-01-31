@@ -8,6 +8,7 @@ pub mod tools;
 pub mod types;
 
 use crate::core::AdminGrpcClient;
+use crate::metrics::{MetricsClient, MetricsConfig};
 use config::McpConfig;
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
@@ -20,15 +21,17 @@ use std::sync::Arc;
 pub struct DanubeMcpServer {
     client: Arc<AdminGrpcClient>,
     config: Arc<McpConfig>,
+    metrics: Arc<MetricsClient>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl DanubeMcpServer {
-    pub fn new(client: Arc<AdminGrpcClient>, config: McpConfig) -> Self {
+    pub fn new(client: Arc<AdminGrpcClient>, config: McpConfig, metrics: MetricsClient) -> Self {
         Self {
             client,
             config: Arc::new(config),
+            metrics: Arc::new(metrics),
             tool_router: Self::tool_router(),
         }
     }
@@ -260,6 +263,49 @@ impl DanubeMcpServer {
         let output = tools::logs::fetch_k8s_logs(&params.namespace, &params.pod_name, params.lines);
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
+
+    // ===== METRICS TOOLS =====
+
+    #[tool(
+        description = "Get cluster-wide metrics from Prometheus: broker count, total topics, producers, consumers, message rates, and cluster balance. Requires Prometheus to be running."
+    )]
+    async fn get_cluster_metrics(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::metrics::get_cluster_metrics(&self.metrics).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Get metrics for a specific broker: topics owned, RPC count, producers, consumers, bytes in/out. Use list_brokers first to get broker IDs."
+    )]
+    async fn get_broker_metrics(
+        &self,
+        Parameters(params): Parameters<tools::metrics::BrokerMetricsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::metrics::get_broker_metrics(&self.metrics, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Get metrics for a specific topic: message counts, byte counts, active producers/consumers, publish/dispatch rates, subscription lag, and latency percentiles."
+    )]
+    async fn get_topic_metrics(
+        &self,
+        Parameters(params): Parameters<tools::metrics::TopicMetricsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::metrics::get_topic_metrics(&self.metrics, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Execute a raw PromQL query against Prometheus. Useful for custom metric investigations. Example: sum(rate(danube_topic_messages_in_total[5m]))"
+    )]
+    async fn query_prometheus(
+        &self,
+        Parameters(params): Parameters<tools::metrics::RawQueryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::metrics::query_prometheus(&self.metrics, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -286,7 +332,15 @@ pub async fn run_mcp_server(client: Arc<AdminGrpcClient>, config: McpConfig) -> 
         tracing::info!("Log access not configured - log fetching tools will be unavailable");
     }
 
-    let server = DanubeMcpServer::new(client, config);
+    // Create metrics client for Prometheus queries
+    let metrics_config = MetricsConfig {
+        base_url: config.prometheus_url.clone(),
+        timeout_ms: 5000,
+    };
+    let metrics = MetricsClient::new(metrics_config)?;
+    tracing::info!("Metrics client configured for {}", config.prometheus_url);
+
+    let server = DanubeMcpServer::new(client, config, metrics);
     let transport = (stdin(), stdout());
     let service = server.serve(transport).await?;
 

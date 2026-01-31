@@ -7,9 +7,10 @@ use axum::{
     Json,
 };
 
+use crate::metrics::queries::{fetch_broker_metrics_for_ui, fetch_topics_by_broker};
 use crate::server::app::{AppState, CacheEntry};
-use serde::Serialize;
 use danube_core::admin_proto::TopicInfo;
+use serde::Serialize;
 
 #[derive(Clone, Serialize)]
 pub struct BrokerPage {
@@ -75,7 +76,9 @@ pub async fn broker_page(
 
     // Fetch authoritative topic list via gRPC, then enrich with metrics
     let mut errors = Vec::new();
-    let req = danube_core::admin_proto::BrokerRequest { broker_id: broker_id.clone() };
+    let req = danube_core::admin_proto::BrokerRequest {
+        broker_id: broker_id.clone(),
+    };
     let topic_infos: Vec<TopicInfo> = match state.client.list_broker_topics(req).await {
         Ok(resp) => resp.topics,
         Err(e) => {
@@ -135,81 +138,25 @@ async fn query_metrics_and_topics(
     broker_id: &str,
     topic_infos: &[TopicInfo],
 ) -> (BrokerMetrics, Vec<BrokerTopicMini>, Option<String>) {
-    let q_rpc_total = format!("sum(danube_broker_rpc_total{{broker=\"{}\"}})", broker_id);
-    let q_prod = format!("danube_topic_active_producers{{broker=\"{}\"}}", broker_id);
-    let q_cons = format!("danube_topic_active_consumers{{broker=\"{}\"}}", broker_id);
-    let q_subs = format!("danube_topic_active_subscriptions{{broker=\"{}\"}}", broker_id);
-    let q_bytes_in = format!("sum(danube_topic_bytes_in_total{{broker=\"{}\"}})", broker_id);
-    let q_bytes_out = format!("sum(danube_consumer_bytes_out_total{{broker=\"{}\"}})", broker_id);
-
     let mut errors: Vec<String> = Vec::new();
 
     // Use authoritative topic list length for topics_owned
     let topics_owned: u64 = topic_infos.len() as u64;
 
-    let rpc_total: u64 = match state.metrics.query_instant(&q_rpc_total).await {
-        Ok(resp) => resp
-            .data
-            .result
-            .iter()
-            .filter_map(|r| r.value.1.parse::<f64>().ok())
-            .map(|v| v as u64)
-            .sum(),
-        Err(e) => {
-            errors.push(format!("rpc_total query failed: {}", e));
-            0
-        }
-    };
+    // Fetch broker-level metrics using shared query
+    let (bytes, rpc_total, mut broker_errs) =
+        fetch_broker_metrics_for_ui(&state.metrics, broker_id).await;
+    errors.append(&mut broker_errs);
 
-    let mut prod_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_prod).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        prod_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => errors.push(format!("producers query failed: {}", e)),
-    }
-
-    let mut cons_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_cons).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        cons_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => errors.push(format!("consumers query failed: {}", e)),
-    }
-
-    let mut subs_by_topic: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    match state.metrics.query_instant(&q_subs).await {
-        Ok(resp) => {
-            for r in resp.data.result.iter() {
-                if let Some(t) = r.metric.get("topic") {
-                    if let Ok(v) = r.value.1.parse::<f64>() {
-                        subs_by_topic.insert(t.clone(), v as u64);
-                    }
-                }
-            }
-        }
-        Err(e) => errors.push(format!("subscriptions query failed: {}", e)),
-    }
+    // Fetch per-topic metrics using shared query
+    let (topics_map, mut topic_errs) = fetch_topics_by_broker(&state.metrics, broker_id).await;
+    errors.append(&mut topic_errs);
 
     // Build topics strictly from provided list; enrich with metrics counts
     let mut topics: Vec<BrokerTopicMini> = Vec::new();
     for info in topic_infos.iter() {
         let name = &info.name;
-        let p = *prod_by_topic.get(name).unwrap_or(&0);
-        let c = *cons_by_topic.get(name).unwrap_or(&0);
-        let s = *subs_by_topic.get(name).unwrap_or(&0);
+        let (p, c, s) = topics_map.get(name).copied().unwrap_or((0, 0, 0));
         topics.push(BrokerTopicMini {
             name: name.clone(),
             delivery: info.delivery.clone(),
@@ -219,39 +166,11 @@ async fn query_metrics_and_topics(
         });
     }
 
-    let inbound_bytes_total: u64 = match state.metrics.query_instant(&q_bytes_in).await {
-        Ok(resp) => resp
-            .data
-            .result
-            .iter()
-            .filter_map(|r| r.value.1.parse::<f64>().ok())
-            .map(|v| v as u64)
-            .sum(),
-        Err(e) => {
-            errors.push(format!("inbound bytes query failed: {}", e));
-            0
-        }
-    };
-
-    let outbound_bytes_total: u64 = match state.metrics.query_instant(&q_bytes_out).await {
-        Ok(resp) => resp
-            .data
-            .result
-            .iter()
-            .filter_map(|r| r.value.1.parse::<f64>().ok())
-            .map(|v| v as u64)
-            .sum(),
-        Err(e) => {
-            errors.push(format!("outbound bytes query failed: {}", e));
-            0
-        }
-    };
-
     let metrics = BrokerMetrics {
         rpc_total,
         topics_owned,
-        inbound_bytes_total,
-        outbound_bytes_total,
+        inbound_bytes_total: bytes.bytes_in_total,
+        outbound_bytes_total: bytes.bytes_out_total,
         errors_5xx_total: 0,
     };
 

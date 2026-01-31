@@ -1,7 +1,8 @@
 # MCP Configuration for Danube Admin
-# This config enables log access and resource exposure for AI assistants
+# This config enables log access, metrics, and resource exposure for AI assistants
 
 broker_endpoint: http://127.0.0.1:50051
+prometheus_url: http://localhost:9090
 
 deployment:
   type: docker

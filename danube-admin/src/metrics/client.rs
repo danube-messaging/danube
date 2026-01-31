@@ -1,3 +1,5 @@
+//! Prometheus HTTP API client for querying metrics
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -31,11 +33,9 @@ impl MetricsClient {
         Ok(Self { cfg, http })
     }
 
+    /// Execute an instant query (returns current value)
     pub async fn query_instant(&self, query: &str) -> Result<PromResponse> {
-        let url = format!(
-            "{}/api/v1/query",
-            self.cfg.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/api/v1/query", self.cfg.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .get(url)
@@ -53,6 +53,7 @@ impl MetricsClient {
         Ok(body)
     }
 
+    /// Execute a range query (returns time series)
     pub async fn query_range(
         &self,
         query: &str,
@@ -85,7 +86,19 @@ impl MetricsClient {
         }
         Ok(body)
     }
+
+    /// Check if Prometheus is reachable
+    #[allow(dead_code)]
+    pub async fn health_check(&self) -> Result<bool> {
+        let url = format!("{}/-/healthy", self.cfg.base_url.trim_end_matches('/'));
+        match self.http.get(&url).send().await {
+            Ok(resp) => Ok(resp.status().is_success()),
+            Err(_) => Ok(false),
+        }
+    }
 }
+
+// Prometheus API response types
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PromResponse {

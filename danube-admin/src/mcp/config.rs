@@ -11,12 +11,20 @@ pub struct McpConfig {
     /// Broker gRPC endpoint
     pub broker_endpoint: String,
 
+    /// Prometheus URL for metrics queries (default: http://localhost:9090)
+    #[serde(default = "default_prometheus_url")]
+    pub prometheus_url: String,
+
     /// Deployment configuration for log access
     pub deployment: Option<DeploymentConfig>,
 
     /// Resources to expose to AI (docs, config files) - future feature
     #[allow(dead_code)]
     pub resources: Option<ResourcesConfig>,
+}
+
+fn default_prometheus_url() -> String {
+    "http://localhost:9090".to_string()
 }
 
 /// Deployment configuration - determines how to fetch logs
@@ -131,6 +139,7 @@ impl McpConfig {
     pub fn minimal(broker_endpoint: String) -> Self {
         Self {
             broker_endpoint,
+            prometheus_url: default_prometheus_url(),
             deployment: None,
             resources: None,
         }
