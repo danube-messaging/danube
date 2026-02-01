@@ -476,11 +476,11 @@ where
     let threshold_multiplier = if cv > 0.3 { 0.5 } else { 1.0 };
 
     // Minimum std_dev floor to prevent over-sensitive labeling on idle/uniform clusters.
-    // Without this, small CPU fluctuations (2-3 points) would cause status flapping
-    // between Normal/Overloaded/Underloaded on idle clusters.
-    // With floor of 5.0, brokers need to differ by at least 5 points from mean to be labeled.
-    const MIN_STD_DEV_FLOOR: f64 = 5.0;
-    let effective_std_dev = std_dev.max(MIN_STD_DEV_FLOOR);
+    // Use relative threshold (20% of mean, min 2.0) to work for both topic-count (small numbers)
+    // and resource metrics (CPU/memory percentages). This prevents flapping while allowing
+    // rebalancing when actual imbalance exists.
+    let min_std_dev_floor = (mean * 0.2).max(2.0);
+    let effective_std_dev = std_dev.max(min_std_dev_floor);
 
     for (broker_id, load) in rankings.iter() {
         let load_f64 = *load as f64;

@@ -1,0 +1,214 @@
+# Danube cluster name
+cluster_name: "MY_CLUSTER"
+
+# Broker Services Configuration
+broker:
+  # Hostname or IP address for all broker services
+  host: "0.0.0.0"
+  ports:
+    # Client connections (producers/consumers)
+    client: 6650
+    # Admin API
+    admin: 50051
+    # Prometheus metrics exporter
+    prometheus: 9040
+
+# Metadata Store Configuration (etcd)
+meta_store:
+  host: "etcd"
+  port: 2379
+
+# Namespaces to be created on boot
+bootstrap_namespaces:
+  - "default"
+
+# Allow producers to auto-create topics when missing
+auto_create_topics: true
+
+# Security Configuration
+auth:
+  mode: none # Options: none, tls, tlswithjwt
+  tls:
+    cert_file: "./cert/server-cert.pem"
+    key_file: "./cert/server-key.pem"
+    ca_file: "./cert/ca-cert.pem"
+    verify_client: false
+  jwt:
+    secret_key: "your-secret-key"
+    issuer: "danube-auth"
+    expiration_time: 3600 # in seconds
+
+# Load Manager Configuration (Automated Proactive Rebalancing)
+load_manager:
+  # Topic Assignment Strategy: How to assign NEW topics to brokers
+  # Options:
+  #   - fair: Simple topic count only (predictable, testing-friendly)
+  #
+  #   - balanced: Multi-factor scoring (RECOMMENDED for production)
+  #               Formula: (weighted_topic_load × 0.3) + (CPU × 0.35) + (Memory × 0.35)
+  #
+  #   - weighted_load: Adaptive smart algorithm (advanced)
+  #                    Automatically detects bottleneck resources and prioritizes them
+  assignment_strategy: "fair"
+
+  # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
+  # - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+  # - Higher values (30-60s): Less overhead, suitable for stable production clusters
+  # Default: 30 seconds
+  load_report_interval_seconds: 30
+
+  # Automated Rebalancing: Proactive optimization of EXISTING topic placement
+  rebalancing:
+    # Enable/disable automated rebalancing (starts disabled for safety)
+    enabled: false
+
+    # Aggressiveness level: Controls how aggressively to optimize cluster balance
+    # Options:
+    #   - conservative: Fewer moves, only when severely imbalanced (CV > 40%), more stable
+    #   - balanced: Moderate optimization (CV > 30%), good for most production clusters
+    #   - aggressive: Optimize harder (CV > 20%), more moves, responds faster to changes
+    aggressiveness: "balanced"
+
+    # Check frequency: How often to evaluate cluster balance (seconds)
+    # Defaults by aggressiveness: conservative=600, balanced=300, aggressive=180
+    check_interval_seconds: 300
+
+    # Move limits: Prevent rebalancing storms
+    # Rebalancing moves 1 topic per cycle (hardcoded for safety)
+    # Max topic moves per hour (rate limiting across all cycles)
+    # Defaults by aggressiveness: conservative=5, balanced=10, aggressive=20
+    max_moves_per_hour: 10
+
+    # Wait time between individual topic moves (seconds)
+    # Defaults by aggressiveness: conservative=120, balanced=60, aggressive=30
+    cooldown_seconds: 60
+
+    # Cluster requirements: Minimum brokers needed to enable rebalancing
+    # Rebalancing is skipped if cluster has fewer brokers than this
+    min_brokers_for_rebalance: 2
+
+    # Topic protection: Don't move topics younger than this (seconds)
+    # Prevents moving topics that were just created or recently moved
+    min_topic_age_seconds: 300
+
+    # Topic blacklist: Topics matching these patterns will NEVER be rebalanced
+    # Supports:
+    #   - Exact topic names: /admin/critical-topic
+    #   - Namespace wildcards: /system/* (all topics in /system namespace)
+    # Examples: ["/system/*", "/admin/critical-topic", "/production/*"]
+    blacklist_topics: []
+
+# WAL and Cloud Storage Configuration
+# Cloud-native persistence: local WAL (hot path) + background cloud uploads (durability)
+wal_cloud:
+  # Local Write-Ahead Log: Fast append-only log with in-memory cache
+  wal:
+    # WAL root directory (per-topic subdirectories created automatically)
+    # Use fast local SSD for best performance. Set to null for in-memory mode (testing only)
+    dir: "./danube-data/wal"
+
+    # Base filename for WAL (with rotation: wal.<seq>.log)
+    file_name: "wal.log"
+
+    # In-memory cache capacity (number of recent messages)
+    # Higher = better consumer hit rates, more memory. Lower = less memory, more disk reads
+    cache_capacity: 1024
+
+    # File sync configuration: fsync cadence and write batching
+    file_sync:
+      # Flush interval (milliseconds): how often to fsync buffered writes
+      # Production: 5000 (5s). High-throughput: 10000 (10s). Low-latency: 1000 (1s)
+      interval_ms: 5000
+
+      # Max buffered bytes before forcing a flush (write batch size)
+      # Larger = better throughput. Smaller = lower latency, more frequent fsyncs
+      max_batch_bytes: 10485760 # 10 MiB
+
+    # File rotation: prevents unbounded file growth, creates wal.0.log, wal.1.log, etc.
+    rotation:
+      # Size-based rotation threshold (bytes)
+      max_bytes: 536870912 # 512 MiB
+
+      # Time-based rotation threshold (hours) - optional
+      # Ensures no infinitely old files (good for low-traffic topics)
+      # max_hours: 24
+
+    # Local WAL retention: prunes old files after cloud upload
+    # Both time and size limits applied; whichever triggers first
+    retention:
+      # Time-based: delete files older than this (minutes)
+      # Must be larger than uploader interval. Production: 48h. Min: 24h
+      time_minutes: 2880 # 48 hours
+
+      # Size-based: delete oldest files when total exceeds this (MB per topic)
+      # Production: 20 GiB. Space-constrained: 10 GiB minimum
+      size_mb: 20480 # 20 GiB
+
+      # How often to check retention policy (minutes)
+      check_interval_minutes: 5
+
+  # Cloud Uploader: background task that persists WAL to cloud storage
+  uploader:
+    # Enable cloud uploads (disable for local-only dev/testing)
+    enabled: true
+
+    # Upload cycle interval (seconds)
+    # Testing: 30s. Production: 300s (5 min). High-durability: 60s (1 min)
+    interval_seconds: 30
+
+    # ETCD metadata root prefix (change only for multiple independent clusters)
+    root_prefix: "/danube-data"
+
+    # Max cloud object size (MB) - optimal for S3/GCS multipart uploads
+    max_object_mb: 256
+
+  # Cloud Storage Backend (powered by OpenDAL)
+  cloud:
+    # Backend options: fs | s3 | gcs | azblob | memory
+    # Production: Use s3/gcs/azblob for cloud-native. Multi-broker: shared fs or cloud
+    backend: "fs"
+
+    # Storage root (backend-specific format)
+    # fs: "./path", s3: "s3://bucket/prefix", gcs: "gcs://bucket/prefix"
+    # Multi-broker: must be shared/accessible across all brokers
+    root: "./danube-data/cloud-storage"
+
+    # Backend-specific options - see commented examples below
+
+  # Metadata Store: ETCD for cloud object descriptors and indexes
+  metadata:
+    # ETCD endpoint (should match broker's meta_store for consistency)
+    etcd_endpoint: "127.0.0.1:2379"
+
+    # In-memory metadata (testing only, no durability)
+    in_memory: false
+
+# Broker policies, that can be overwritten by namespace / topic policies
+policies:
+  # Limits the maximum number of producers that can simultaneously publish messages to a specific topic.
+  # Default is 0, unlimited.
+  max_producers_per_topic: 0
+
+  # Limits the maximum number of subscriptions that can be created on the topic.
+  # Default is 0, unlimited.
+  max_subscriptions_per_topic: 0
+
+  # Limits the maximum number of consumers that can simultaneously consume messages from a specific topic.
+  # Default is 0, unlimited.
+  max_consumers_per_topic: 0
+
+  # Limits the maximum number of consumers that can simultaneously use a single subscription on a topic.
+  # Default is 0, unlimited.
+  max_consumers_per_subscription: 0
+
+  # Defines the Max publish rate (number of messages and/or bytes per second) for producers publishing to the topic.
+  # Default is 0, unlimited.
+  max_publish_rate: 0
+
+  # Defines the dispatch rate for each subscription on the topic.
+  # Default is 0, unlimited.
+  max_subscription_dispatch_rate: 0
+
+  # Limits the maximum size of a single message that can be published to the topic.
+  # Default is 10 MB
+  max_message_size: 10485760 # in bytes which means 10 MB

@@ -90,20 +90,21 @@ services:
   broker1:
     container_name: "danube-broker1"
     image: ghcr.io/danube-messaging/danube-broker:latest
+    restart: on-failure
     depends_on:
       etcd:
         condition: service_healthy
       minio:
         condition: service_healthy
       mc:
-        condition: service_started
+        condition: service_completed_successfully
     environment:
       - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
     volumes:
-      - ../../config/for_tests/danube_broker_cloud.yml:/etc/danube_broker.yml:ro
+      - ../danube_broker_cloud.yml:/etc/danube_broker.yml:ro
       - broker1_wal:/data/wal
     networks:
       - danube_net
@@ -135,20 +136,21 @@ services:
   broker2:
     container_name: "danube-broker2"
     image: ghcr.io/danube-messaging/danube-broker:latest
+    restart: on-failure
     depends_on:
       etcd:
         condition: service_healthy
       minio:
         condition: service_healthy
       mc:
-        condition: service_started
+        condition: service_completed_successfully
     environment:
       - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
     volumes:
-      - ../../config/for_tests/danube_broker_cloud.yml:/etc/danube_broker.yml:ro
+      - ../danube_broker_cloud.yml:/etc/danube_broker.yml:ro
       - broker2_wal:/data/wal
     networks:
       - danube_net

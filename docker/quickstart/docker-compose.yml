@@ -42,13 +42,14 @@ services:
   broker1:
     container_name: "danube-broker1"
     image: ghcr.io/danube-messaging/danube-broker:latest
+    restart: on-failure
     depends_on:
       etcd:
         condition: service_healthy
     environment:
       - RUST_LOG=danube_broker=info,danube_core=info
     volumes:
-      - ../../config/danube_broker.yml:/etc/danube_broker.yml:ro
+      - ../danube_broker.yml:/etc/danube_broker.yml:ro
       - broker1_data:/danube-data
     networks:
       - danube_net
@@ -80,13 +81,14 @@ services:
   broker2:
     container_name: "danube-broker2"
     image: ghcr.io/danube-messaging/danube-broker:latest
+    restart: on-failure
     depends_on:
       etcd:
         condition: service_healthy
     environment:
       - RUST_LOG=danube_broker=info,danube_core=info
     volumes:
-      - ../../config/danube_broker.yml:/etc/danube_broker.yml:ro
+      - ../danube_broker.yml:/etc/danube_broker.yml:ro
       - broker2_data:/danube-data
     networks:
       - danube_net
