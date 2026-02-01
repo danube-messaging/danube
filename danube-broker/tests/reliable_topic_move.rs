@@ -68,7 +68,7 @@ fn admin_cli() -> Command {
 /// - ✅ Offset continuity maintained across broker boundaries
 /// - ✅ No message loss during topic migration
 ///
-///#[ignore]
+#[ignore]
 async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/reliable_move");
