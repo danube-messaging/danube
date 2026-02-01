@@ -114,6 +114,9 @@ impl LoadManager {
     /// The caller should process these events to handle load balancing and assignments.
     pub async fn bootstrap(&mut self, _broker_id: u64) -> Result<WatchStream> {
         // Initialize broker state from metadata store
+        // First fetch registered brokers to ensure all brokers participate in assignment
+        self.fetch_registered_brokers().await?;
+        // Then fetch load reports (will update entries with real data if available)
         self.fetch_initial_load().await?;
 
         // Calculate initial broker rankings using configured strategy
@@ -174,6 +177,40 @@ impl LoadManager {
                                 "Failed to deserialize LoadReport for broker_id: {}",
                                 broker_id
                             ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Fetches registered brokers and initializes them in brokers_usage with empty load reports.
+    /// This ensures all registered brokers participate in topic assignment immediately,
+    /// even if they haven't published a load report yet.
+    async fn fetch_registered_brokers(&self) -> Result<()> {
+        let response = self
+            .meta_store
+            .get(
+                BASE_REGISTER_PATH,
+                MetaOptions::EtcdGet(EtcdGetOptions::new().with_prefix()),
+            )
+            .await?;
+
+        if let Some(Value::Object(map)) = response {
+            let mut brokers_usage = self.brokers_usage.lock().await;
+
+            for (key, _value) in map {
+                // Extract broker ID from the key path: /cluster/register/{broker_id}
+                if let Some(broker_id_str) = key.strip_prefix(&format!("{}/", BASE_REGISTER_PATH)) {
+                    if let Ok(broker_id) = broker_id_str.parse::<u64>() {
+                        // Only add if not already present (don't overwrite existing load data)
+                        if !brokers_usage.contains_key(&broker_id) {
+                            info!(
+                                broker_id = %broker_id,
+                                "initializing registered broker with empty load report"
+                            );
+                            brokers_usage.insert(broker_id, LoadReport::empty(broker_id));
                         }
                     }
                 }
@@ -385,7 +422,32 @@ impl LoadManager {
                     );
                 }
             }
-            WatchEvent::Put { .. } => (), // Broker registration handled via load reports
+            WatchEvent::Put { key, .. } => {
+                // Initialize newly registered broker in brokers_usage with empty load report
+                // This ensures the broker participates in topic assignment immediately,
+                // even before its first load report is published
+                let key_str = std::str::from_utf8(&key)
+                    .map_err(|e| anyhow!("Invalid UTF-8 in key: {}", e))?;
+
+                let new_broker = match key_str.split('/').last().unwrap().parse::<u64>() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        error!(error = %err, "unable to parse the broker id from registration");
+                        return Ok(());
+                    }
+                };
+
+                // Only add if not already present (avoid overwriting actual load data)
+                let mut brokers_usage_lock = self.brokers_usage.lock().await;
+                if !brokers_usage_lock.contains_key(&new_broker) {
+                    info!(broker_id = %new_broker, "initializing new broker with empty load report for fair topic distribution");
+                    brokers_usage_lock.insert(new_broker, LoadReport::empty(new_broker));
+                    drop(brokers_usage_lock);
+
+                    // Recalculate rankings to include the new broker
+                    self.calculate_rankings().await;
+                }
+            }
         }
         Ok(())
     }

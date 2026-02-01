@@ -342,7 +342,9 @@ where
 
             // Step 5 + Step 6: Execute the single rebalancing move
             // execute_rebalancing expects Vec, so wrap in a vec with 1 element
-            match execute_rebalancing(&meta_store, vec![rebalancing_move], &config, &mut history).await {
+            match execute_rebalancing(&meta_store, vec![rebalancing_move], &config, &mut history)
+                .await
+            {
                 Ok(executed) => {
                     // Record cycle duration
                     let cycle_duration = cycle_start.elapsed().as_secs_f64();
@@ -473,15 +475,22 @@ where
     // For moderate imbalance, use 1.0 std_dev threshold (original behavior)
     let threshold_multiplier = if cv > 0.3 { 0.5 } else { 1.0 };
 
+    // Minimum std_dev floor to prevent over-sensitive labeling on idle/uniform clusters.
+    // Without this, small CPU fluctuations (2-3 points) would cause status flapping
+    // between Normal/Overloaded/Underloaded on idle clusters.
+    // With floor of 5.0, brokers need to differ by at least 5 points from mean to be labeled.
+    const MIN_STD_DEV_FLOOR: f64 = 5.0;
+    let effective_std_dev = std_dev.max(MIN_STD_DEV_FLOOR);
+
     for (broker_id, load) in rankings.iter() {
         let load_f64 = *load as f64;
 
         // Overloaded: more than threshold above mean
-        if load_f64 > mean + (std_dev * threshold_multiplier) {
+        if load_f64 > mean + (effective_std_dev * threshold_multiplier) {
             overloaded.push(*broker_id);
         }
         // Underloaded: more than threshold below mean
-        else if load_f64 < mean - (std_dev * threshold_multiplier) {
+        else if load_f64 < mean - (effective_std_dev * threshold_multiplier) {
             underloaded.push(*broker_id);
         }
     }

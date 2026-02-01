@@ -108,8 +108,6 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
 
     match client.get_cluster_balance(req).await {
         Ok(response) => {
-            let is_balanced = response.coefficient_of_variation < 0.2;
-
             let mut output = String::new();
             output.push_str("Cluster Balance Metrics:\n\n");
             output.push_str(&format!(
@@ -120,10 +118,14 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
                  Min Load: {:.2}\n\
                  Std Deviation: {:.2}\n\
                  Active Brokers: {}\n\n",
-                if is_balanced {
+                if response.coefficient_of_variation < 0.2 {
+                    "✓ Well Balanced"
+                } else if response.coefficient_of_variation < 0.3 {
                     "✓ Balanced"
-                } else {
+                } else if response.coefficient_of_variation < 0.4 {
                     "⚠ Imbalanced"
+                } else {
+                    "✗ Severely Imbalanced"
                 },
                 response.coefficient_of_variation,
                 response.mean_load,
@@ -151,7 +153,7 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
                 }
             }
 
-            if !is_balanced {
+            if response.coefficient_of_variation >= 0.3 {
                 output.push_str(
                     "\nRecommendation: Consider running 'trigger_rebalance' to improve balance.\n",
                 );

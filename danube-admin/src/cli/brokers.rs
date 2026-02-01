@@ -320,9 +320,9 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
                 println!("  > 40%  = ❌ Severely Imbalanced");
                 println!();
                 println!("Load Statistics:");
-                println!("  Mean Load:       {:.2} topics", balance.mean_load);
-                println!("  Max Load:        {:.2} topics", balance.max_load);
-                println!("  Min Load:        {:.2} topics", balance.min_load);
+                println!("  Mean Load:       {:.2}", balance.mean_load);
+                println!("  Max Load:        {:.2}", balance.max_load);
+                println!("  Min Load:        {:.2}", balance.min_load);
                 println!("  Std Deviation:   {:.2}", balance.std_deviation);
                 println!("  Broker Count:    {}", balance.broker_count);
                 println!();
