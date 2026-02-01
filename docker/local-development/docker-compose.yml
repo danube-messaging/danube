@@ -1,6 +1,6 @@
 # Licensed under the Apache License, Version 2.0
-# Danube Messaging Platform - Docker Compose Setup
-# Multi-broker setup with MinIO (S3-compatible) storage and ETCD metadata store
+# Danube Local Development - Builds from source for contributors
+# Perfect for: Developing broker/admin code, testing local changes
 
 services:
   # ETCD service for metadata storage
@@ -38,55 +38,7 @@ services:
       retries: 10
       start_period: 10s
 
-  # MinIO service for S3-compatible object storage
-  minio:
-    container_name: "danube-minio"
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin123
-      - MINIO_DOMAIN=minio
-    ports:
-      - "9000:9000" # MinIO API
-      - "9001:9001" # MinIO Console
-    command: ["server", "/data", "--console-address", ":9001"]
-    networks:
-      - danube_net
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # MinIO client to create required buckets
-  mc:
-    container_name: "danube-mc"
-    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
-    depends_on:
-      minio:
-        condition: service_healthy
-    networks:
-      - danube_net
-    entrypoint: >
-      /bin/sh -c "
-      echo 'Waiting for MinIO to be ready...';
-      until (/usr/bin/mc alias set danube-minio http://minio:9000 minioadmin minioadmin123) do 
-        echo 'MinIO not ready, waiting...' && sleep 2; 
-      done;
-      echo 'Creating Danube buckets...';
-      /usr/bin/mc rm -r --force danube-minio/danube-messages || true;
-      /usr/bin/mc rm -r --force danube-minio/danube-wal || true;
-      /usr/bin/mc mb danube-minio/danube-messages;
-      /usr/bin/mc mb danube-minio/danube-wal;
-      echo 'Buckets created successfully';
-      echo 'MinIO setup complete - keeping container alive';
-      tail -f /dev/null
-      "
-
-  # Danube Broker 1
+  # Danube Broker 1 (built from local source)
   broker1:
     container_name: "danube-broker1"
     build:
@@ -96,18 +48,11 @@ services:
     depends_on:
       etcd:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      mc:
-        condition: service_started
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin123
-      - AWS_REGION=us-east-1
+      - RUST_LOG=danube_broker=info,danube_core=info
     volumes:
-      - ./danube_broker.yml:/etc/danube_broker.yml:ro
-      - broker1_wal:/data/wal
+      - ../../config/danube_broker.yml:/etc/danube_broker.yml:ro
+      - broker1_data:/danube-data
     networks:
       - danube_net
     ports:
@@ -134,7 +79,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # Danube Broker 2
+  # Danube Broker 2 (built from local source)
   broker2:
     container_name: "danube-broker2"
     build:
@@ -144,18 +89,11 @@ services:
     depends_on:
       etcd:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      mc:
-        condition: service_started
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin123
-      - AWS_REGION=us-east-1
+      - RUST_LOG=danube_broker=info,danube_core=info
     volumes:
-      - ./danube_broker.yml:/etc/danube_broker.yml:ro
-      - broker2_wal:/data/wal
+      - ../../config/danube_broker.yml:/etc/danube_broker.yml:ro
+      - broker2_data:/danube-data
     networks:
       - danube_net
     ports:
@@ -182,13 +120,13 @@ services:
       retries: 3
       start_period: 30s
 
-  # Danube CLI for testing within Docker network
+  # Danube CLI (built from local source)
   danube-cli:
     container_name: "danube-cli"
     build:
       context: ../../
       dockerfile: Dockerfile
-      target: cli # We'll need to add this target
+      target: cli
     depends_on:
       broker1:
         condition: service_started
@@ -198,24 +136,78 @@ services:
       - danube_net
     stdin_open: true
     tty: true
-    command: ["sleep", "infinity"] # Keep container running for interactive use
+    command: ["sleep", "infinity"]
+
+  # Prometheus for metrics collection
+  prometheus:
+    container_name: "danube-prometheus"
+    image: prom/prometheus:latest
+    depends_on:
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # Danube Admin Server (built from local source)
+  danube-admin:
+    container_name: "danube-admin"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: admin
+    depends_on:
+      broker1:
+        condition: service_started
+      prometheus:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "8080:8080"
+    command:
+      [
+        "serve",
+        "--broker-endpoint",
+        "broker1:50051",
+        "--listen-addr",
+        "0.0.0.0:8080",
+        "--request-timeout-ms",
+        "5000",
+        "--cache-ttl-ms",
+        "3000",
+        "--prometheus-url",
+        "http://prometheus:9090",
+        "--cors-allow-origin",
+        "http://localhost:8081",
+      ]
+
+  # Admin UI (external image)
+  admin-ui:
+    container_name: "danube-admin-ui"
+    image: ghcr.io/danube-messaging/danube-admin-ui:latest
+    depends_on:
+      danube-admin:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "8081:80"
 
 networks:
   danube_net:
     name: danube_net
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: "172.20.0.0/16"
-          gateway: "172.20.0.1"
 
 volumes:
   etcd_data:
     name: danube_etcd_data
-  minio_data:
-    name: danube_minio_data
-  broker1_wal:
-    name: danube_broker1_wal
-  broker2_wal:
-    name: danube_broker2_wal
+  broker1_data:
+    name: danube_broker1_data
+  broker2_data:
+    name: danube_broker2_data

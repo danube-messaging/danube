@@ -1,0 +1,80 @@
+# Danube Broker Configuration for Docker with Cloud Storage (S3/MinIO)
+# Optimized for testing cloud-native storage
+
+cluster_name: "DANUBE_DOCKER_CLUSTER"
+
+broker:
+  host: "0.0.0.0"
+  ports:
+    client: 6650
+    admin: 50051
+    prometheus: 9040
+
+meta_store:
+  host: "etcd"
+  port: 2379
+
+bootstrap_namespaces:
+  - "default"
+
+auto_create_topics: true
+
+auth:
+  mode: none
+
+load_manager:
+  assignment_strategy: "balanced"
+  load_report_interval_seconds: 30
+  rebalancing:
+    enabled: false
+    aggressiveness: "balanced"
+    check_interval_seconds: 300
+    max_moves_per_hour: 10
+    cooldown_seconds: 60
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 300
+    blacklist_topics: []
+
+wal_cloud:
+  wal:
+    dir: "./danube-data/wal"
+    file_name: "wal.log"
+    cache_capacity: 1024
+    file_sync:
+      interval_ms: 5000
+      max_batch_bytes: 10485760
+    rotation:
+      max_bytes: 536870912
+    retention:
+      time_minutes: 2880
+      size_mb: 20480
+      check_interval_minutes: 5
+
+  uploader:
+    enabled: true
+    interval_seconds: 60
+    root_prefix: "/danube-data"
+    max_object_mb: 1024
+
+  cloud:
+    backend: "s3"
+    root: "s3://danube-messages/cluster-data"
+    region: "us-east-1"
+    endpoint: "http://minio:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin123"
+    anonymous: false
+    virtual_host_style: false
+
+  metadata:
+    etcd_endpoint: "etcd:2379"
+    in_memory: false
+
+policies:
+  max_producers_per_topic: 0
+  max_subscriptions_per_topic: 0
+  max_consumers_per_topic: 0
+  max_consumers_per_subscription: 0
+  max_publish_rate: 0
+  max_subscription_dispatch_rate: 0
+  max_message_size: 52428800

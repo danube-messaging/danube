@@ -6,6 +6,5 @@ scrape_configs:
   - job_name: 'danube-brokers'
     static_configs:
       - targets:
-          - 'host.docker.internal:9040'
-          - 'host.docker.internal:9041'
-          - 'host.docker.internal:9042'
+          - 'broker1:9040'
+          - 'broker2:9041'

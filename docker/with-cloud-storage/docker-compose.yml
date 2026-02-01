@@ -1,6 +1,6 @@
 # Licensed under the Apache License, Version 2.0
-# Danube Messaging Platform - Docker Compose Setup
-# Multi-broker setup with MinIO (S3-compatible) storage and ETCD metadata store
+# Danube with Cloud Storage - S3/MinIO backend for testing cloud-native storage
+# Perfect for: Testing S3 integration, cloud deployment preparation, durability testing
 
 services:
   # ETCD service for metadata storage
@@ -25,7 +25,14 @@ services:
     volumes:
       - etcd_data:/etcd-data
     healthcheck:
-      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      test:
+        [
+          "CMD",
+          "etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,8 +47,8 @@ services:
       - MINIO_ROOT_PASSWORD=minioadmin123
       - MINIO_DOMAIN=minio
     ports:
-      - "9000:9000"  # MinIO API
-      - "9001:9001"  # MinIO Console
+      - "9000:9000" # MinIO API
+      - "9001:9001" # MinIO Console
     command: ["server", "/data", "--console-address", ":9001"]
     networks:
       - danube_net
@@ -96,21 +103,27 @@ services:
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
     volumes:
-      - ./danube_broker.yml:/etc/danube_broker.yml:ro
+      - ../../config/for_tests/danube_broker_cloud.yml:/etc/danube_broker.yml:ro
       - broker1_wal:/data/wal
     networks:
       - danube_net
     ports:
-      - "6650:6650"   # Broker gRPC
+      - "6650:6650" # Broker gRPC
       - "50051:50051" # Admin API
-      - "9040:9040"   # Prometheus metrics
-    command: [
-      "--config-file", "/etc/danube_broker.yml",
-      "--broker-addr", "0.0.0.0:6650",
-      "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040",
-      "--advertised-addr", "broker1:6650"
-    ]
+      - "9040:9040" # Prometheus metrics
+    command:
+      [
+        "--config-file",
+        "/etc/danube_broker.yml",
+        "--broker-addr",
+        "0.0.0.0:6650",
+        "--admin-addr",
+        "0.0.0.0:50051",
+        "--prom-exporter",
+        "0.0.0.0:9040",
+        "--advertised-addr",
+        "broker1:6650",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
       interval: 30s
@@ -135,21 +148,27 @@ services:
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
     volumes:
-      - ./danube_broker.yml:/etc/danube_broker.yml:ro
+      - ../../config/for_tests/danube_broker_cloud.yml:/etc/danube_broker.yml:ro
       - broker2_wal:/data/wal
     networks:
       - danube_net
     ports:
-      - "6651:6650"   # Broker gRPC
+      - "6651:6650" # Broker gRPC
       - "50052:50051" # Admin API
-      - "9041:9040"   # Prometheus metrics
-    command: [
-      "--config-file", "/etc/danube_broker.yml",
-      "--broker-addr", "0.0.0.0:6650",
-      "--admin-addr", "0.0.0.0:50051",
-      "--prom-exporter", "0.0.0.0:9040",
-      "--advertised-addr", "broker2:6650"
-    ]
+      - "9041:9040" # Prometheus metrics
+    command:
+      [
+        "--config-file",
+        "/etc/danube_broker.yml",
+        "--broker-addr",
+        "0.0.0.0:6650",
+        "--admin-addr",
+        "0.0.0.0:50051",
+        "--prom-exporter",
+        "0.0.0.0:9040",
+        "--advertised-addr",
+        "broker2:6650",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
       interval: 30s
@@ -170,17 +189,28 @@ services:
       - danube_net
     stdin_open: true
     tty: true
-    command: ["sleep", "infinity"]  # Keep container running for interactive use
+    command: ["sleep", "infinity"]
+
+  # Prometheus for metrics collection
+  prometheus:
+    container_name: "danube-prometheus"
+    image: prom/prometheus:latest
+    depends_on:
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    networks:
+      - danube_net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
 networks:
   danube_net:
     name: danube_net
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: "172.20.0.0/16"
-          gateway: "172.20.0.1"
 
 volumes:
   etcd_data:

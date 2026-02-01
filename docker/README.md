@@ -1,174 +1,252 @@
-# Danube Docker Compose Setup
+# Danube Docker Setups
 
-This directory contains a production-ready Docker Compose setup for the Danube messaging platform, demonstrating cloud-ready deployment with S3-compatible storage (MinIO) and distributed metadata management (ETCD).
+Choose the right setup for your use case:
 
-## Architecture Overview
-
-The setup includes:
-- **2 Danube Brokers**: High-availability message brokers with load balancing
-- **ETCD**: Distributed metadata store for cluster coordination
-- **MinIO**: S3-compatible object storage for persistent message storage
-- **MinIO Client (MC)**: Automatic bucket creation and configuration
+| Setup | Services | Backend | Use Case |
+|-------|----------|---------|----------|
+| **[quickstart](#quickstart)** | ETCD + 2 Brokers + CLI + Prometheus | Filesystem | Quick testing, learning, MCP development |
+| **[with-ui](#with-ui)** | + Admin Server + Web UI | Filesystem | Cluster monitoring, visual exploration |
+| **[with-cloud-storage](#with-cloud-storage)** | + MinIO + MC | S3/MinIO | Cloud storage testing, durability testing |
+| **[local-development](#local-development)** | All above (builds from source) | Filesystem | Development, testing local changes |
 
 ## Prerequisites
 
 - Docker Engine 20.10+
 - Docker Compose 2.0+
-- At least 4GB RAM available for containers
-- Ports 2379, 2380, 6650-6651, 9000-9001, 9040-9041, 50051-50052 available
+- At least 2GB RAM (4GB for cloud-storage setup)
 
-## Quick Start
+---
 
-### Step 1: Setup (Choose One Option)
+## Quickstart
 
-**Option 1: Download Docker Compose Files (Recommended for running the broker)**
+**Minimal setup with filesystem backend** - Perfect for quick testing and MCP tools development.
 
-Create a directory and download the required files:
+**Services:** ETCD, 2 Brokers, CLI, Prometheus  
+**Storage:** Filesystem (no MinIO overhead)  
+**Ports:** 2379-2380 (ETCD), 6650-6651 (Brokers), 50051-50052 (Admin), 9040-9041 (Metrics), 9090 (Prometheus)
 
-```bash
-mkdir danube-docker && cd danube-docker
-```
-
-Download the docker-compose file:
+### Start
 
 ```bash
-curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/docker-compose.yml
-```
-
-Download the broker configuration file:
-
-```bash
-curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/danube_broker.yml
-```
-
-**Option 2: Clone Repository (Recommended for development and building from source)**
-
-```bash
-git clone https://github.com/danube-messaging/danube.git
-cd danube/docker
-```
-
-### Step 2: Start the Cluster
-
-Start the entire cluster:
-
-```bash
+cd quickstart/
 docker-compose up -d
 ```
 
-### Step 3: Verify all services are healthy
-
-Verify all services are running:
+### Verify
 
 ```bash
 docker-compose ps
+# All services should show "Up" status
 ```
 
-Expected output:
+### Test
 
 ```bash
-✗ docker-compose ps
-NAME        IMAGE        COMMAND       SERVICE         CREATED        STATUS       PORTS
-
-danube-broker1   docker-broker1                             "/usr/local/bin/danu…"   broker1      About a minute ago   Up 6 seconds (health: starting)   0.0.0.0:6650->6650/tcp, [::]:6650->6650/tcp, 0.0.0.0:9040->9040/tcp, [::]:9040->9040/tcp, 0.0.0.0:50051->50051/tcp, [::]:50051->50051/tcp
-
-danube-broker2   docker-broker2                             "/usr/local/bin/danu…"   broker2      About a minute ago   Up 6 seconds (health: starting)   0.0.0.0:6651->6650/tcp, [::]:6651->6650/tcp, 0.0.0.0:9041->9040/tcp, [::]:9041->9040/tcp, 0.0.0.0:50052->50051/tcp, [::]:50052->50051/tcp
-
-danube-cli       docker-danube-cli                          "sleep infinity"         danube-cli   About a minute ago   Up 6 seconds                      
-
-danube-etcd      quay.io/coreos/etcd:v3.5.9                 "/usr/local/bin/etcd"    etcd         About a minute ago   Up 12 seconds (healthy)           0.0.0.0:2379-2380->2379-2380/tcp, [::]:2379-2380->2379-2380/tcp
-
-danube-mc        minio/mc:RELEASE.2024-09-16T17-43-14Z      "/bin/sh -c ' echo '…"   mc           About a minute ago   Up About a minute                 
-
-danube-minio     minio/minio:RELEASE.2025-07-23T15-54-02Z   "/usr/bin/docker-ent…"   minio        About a minute ago   Up About a minute (healthy)       0.0.0.0:9000-9001->9000-9001/tcp, [::]:9000-9001->9000-9001/tcp
-```
-
-**Check logs** (optional):
-   ```bash
-   # View all logs
-   docker-compose logs -f
-   
-   # View specific service logs
-   docker-compose logs -f broker1
-   docker-compose logs -f broker2
-   ```
-
-## Service Endpoints
-
-| Service | Endpoint | Purpose |
-|---------|----------|---------|
-| Danube Broker 1 | `localhost:6650` | gRPC messaging |
-| Danube Broker 2 | `localhost:6651` | gRPC messaging |
-| Admin API 1 | `localhost:50051` | Broker administration |
-| Admin API 2 | `localhost:50052` | Broker administration |
-| Prometheus 1 | `localhost:9040` | Metrics and monitoring |
-| Prometheus 2 | `localhost:9041` | Metrics and monitoring |
-| MinIO API | `localhost:9000` | S3-compatible storage |
-| MinIO Console | `localhost:9001` | Web UI (minioadmin/minioadmin123) |
-| ETCD | `localhost:2379` | Metadata store |
-
-## Testing with Danube CLI
-
-### Using the CLI Container
-
-The Docker Compose setup includes a `danube-cli` container with the Danube CLI tools. This eliminates the need to build or install Rust locally.
-
-**No local installation required** - use the containerized tools directly.
-
-### Reliable Messaging with S3 Storage
-
-Test the cloud-ready persistent storage capabilities:
-
-**Produce with reliable delivery and S3 persistence:**
-
-```bash
+# Produce messages
 docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
-  --topic "/default/persistent-topic" \
+  --topic "/default/test" \
+  --count 100 \
+  --message "Hello Danube!"
+
+# Consume messages
+docker exec -it danube-cli consume \
+  --service-addr http://broker1:6650 \
+  --topic "/default/test" \
+  --subscription "my-sub"
+```
+
+### Stop
+
+```bash
+docker-compose down -v  # -v removes volumes for fresh start
+```
+
+---
+
+## With UI
+
+**Adds web dashboard and admin server** - Perfect for cluster monitoring and exploration.
+
+**Services:** Quickstart + Admin Server + Web UI  
+**Storage:** Filesystem  
+**Additional Ports:** 8080 (Admin API), 8081 (Web UI)
+
+### Start
+
+```bash
+cd with-ui/
+docker-compose up -d
+```
+
+### Access UI
+
+Open **http://localhost:8081** in your browser
+
+The UI provides:
+- Real-time cluster status and metrics
+- Topic and subscription management
+- Broker load visualization
+- Schema registry browser
+
+### Admin CLI
+
+```bash
+# List brokers
+docker exec danube-admin brokers list
+
+# Check cluster balance
+docker exec danube-admin brokers balance
+
+# List topics
+docker exec danube-admin topics list --namespace default
+```
+
+### Stop
+
+```bash
+docker-compose down -v
+```
+
+---
+
+## With Cloud Storage
+
+**S3/MinIO backend for testing cloud-native storage** - Perfect for durability and cloud migration testing.
+
+**Services:** ETCD, MinIO, MC, 2 Brokers, CLI, Prometheus  
+**Storage:** MinIO (S3-compatible)  
+**Additional Ports:** 9000 (MinIO API), 9001 (MinIO Console)
+
+### Start
+
+```bash
+cd with-cloud-storage/
+docker-compose up -d
+```
+
+### MinIO Console
+
+1. Open **http://localhost:9001**
+2. Login: `minioadmin` / `minioadmin123`
+3. View buckets: `danube-messages`, `danube-wal`
+
+### Test Reliable Messaging
+
+```bash
+# Produce with reliable delivery (persisted to S3)
+docker exec danube-cli produce \
+  --service-addr http://broker1:6650 \
+  --topic "/default/persistent" \
   --count 1000 \
   --message "Persistent message" \
   --reliable
-```
 
-**Consume persistent messages:**
-
-```bash
+# Consume persistent messages
 docker exec -it danube-cli consume \
   --service-addr http://broker1:6650 \
-  --topic "/default/persistent-topic" \
+  --topic "/default/persistent" \
   --subscription "persistent-sub" \
   --sub-type exclusive
 ```
 
-### Non-Reliable Message Flow Testing
-
-#### Basic string messages
-
-**Produce basic string messages:**
+### Stop
 
 ```bash
-docker exec danube-cli produce \
-  --service-addr http://broker1:6650 \
-  --topic "/default/test-topic" \
-  --count 100 \
-  --message "Hello from Danube Docker!"
+docker-compose down -v
 ```
 
-**Consume from shared subscription:**
+---
+
+## Local Development
+
+**Builds from source for contributors** - Perfect for developing broker/admin code.
+
+**Services:** All above (built locally) + UI  
+**Storage:** Filesystem  
+**Build Time:** ~5-10 minutes first time (cached after)
+
+### Start
 
 ```bash
-docker exec -it danube-cli consume \
-  --service-addr http://broker1:6650 \
-  --topic "/default/test-topic" \
-  --subscription "shared-sub" \
-  --consumer "docker-consumer"
+# From repo root
+cd docker/local-development/
+docker-compose up -d --build
 ```
 
-#### JSON schema messages
-
-**Produce JSON messages with schema:**
+### Rebuild After Code Changes
 
 ```bash
+# Rebuild specific services
+docker-compose build broker1 broker2 danube-admin
+docker-compose up -d --no-deps broker1 broker2 danube-admin
+
+# Or rebuild everything
+docker-compose up -d --build
+```
+
+### Stop
+
+```bash
+docker-compose down -v
+```
+
+---
+
+## Common Operations
+
+### View Logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f broker1
+docker-compose logs -f danube-admin
+```
+
+### Prometheus Metrics
+
+```bash
+# Broker metrics
+curl http://localhost:9040/metrics  # broker1
+curl http://localhost:9041/metrics  # broker2
+
+# Prometheus UI
+open http://localhost:9090
+```
+
+### ETCD Inspection
+
+```bash
+# List all keys
+docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix ""
+
+# Watch for changes
+docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 watch --prefix ""
+```
+
+### Admin Operations
+
+```bash
+# List brokers
+docker exec danube-admin brokers list
+
+# List namespaces
+docker exec danube-admin brokers namespaces
+
+# Check cluster balance
+docker exec danube-admin brokers balance
+
+# Trigger rebalancing
+docker exec danube-admin brokers rebalance
+```
+
+### JSON Schema Messages
+
+```bash
+# Produce with schema
 docker exec danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
@@ -176,138 +254,128 @@ docker exec danube-cli produce \
   --schema json \
   --json-schema '{"type":"object","properties":{"message":{"type":"string"},"timestamp":{"type":"number"}}}' \
   --message '{"message":"Hello JSON","timestamp":1640995200}'
-```
 
-**Consume JSON messages:**
-
-```bash
+# Consume
 docker exec -it danube-cli consume \
-  --service-addr http://broker2:6650 \
+  --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
-  --subscription "json-sub" \
-  --consumer "json-consumer"
+  --subscription "json-sub"
 ```
 
-### Admin Operations
-
-**Use the danube-admin container for cluster management:**
-
-```bash
-# List active brokers
-docker exec danube-admin brokers list
-
-# List namespaces in cluster
-docker exec danube-admin brokers namespaces
-
-# List topics in a namespace
-docker exec danube-admin topics list --namespace default
-
-# List subscriptions on a topic
-docker exec danube-admin topics subscriptions /default/test-topic
-
-# Check cluster balance
-docker exec danube-admin brokers balance
-```
-
-## Monitoring and Observability
-
-### Prometheus Metrics
-
-Access broker metrics for monitoring:
-
-```bash
-# Broker 1 metrics
-curl http://localhost:9040/metrics
-
-# Broker 2 metrics  
-curl http://localhost:9041/metrics
-```
-
-### MinIO Console
-
-1. Open http://localhost:9001 in your browser
-2. Login with credentials: `minioadmin` / `minioadmin123`
-3. Navigate to "Buckets" to see:
-   - `danube-messages`: Persistent message storage
-   - `danube-wal`: Write-ahead log storage
-
-### ETCD Inspection
-
-```bash
-# List all keys in ETCD
-docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix ""
-
-# Watch for changes
-docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 watch --prefix ""
-
-# Check broker registrations
-docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix "/cluster/register"
-```
+---
 
 ## Configuration
 
-### Broker Configuration
+### Broker Configs
 
-The `danube_broker.yml` file is optimized for:
-- **S3 Storage**: MinIO integration with automatic credential management
-- **High Performance**: Optimized WAL rotation and batch sizes
-- **Development**: Relaxed security and unlimited resource policies
-- **Monitoring**: Prometheus metrics enabled on all brokers
+- **Quickstart/With-UI/Local-Development:** Uses `../config/danube_broker.yml` (filesystem backend)
+- **With-Cloud-Storage:** Uses `../config/danube_broker_cloud.yml` (S3 backend)
 
-### Environment Variables
+Both configs include:
+- `assignment_strategy: "balanced"` - Multi-factor broker selection
+- `auth: none` - Disabled for development
+- `policies: unlimited` - No rate limits for testing
 
-Key environment variables used:
-- `AWS_ACCESS_KEY_ID=minioadmin`
-- `AWS_SECRET_ACCESS_KEY=minioadmin123`
-- `AWS_REGION=us-east-1`
-- `RUST_LOG=danube_broker=info,danube_core=info`
+### Prometheus Config
+
+Shared across all setups: `docker/prometheus.yml`
+
+Scrapes both brokers every 5 seconds.
+
+---
 
 ## Troubleshooting
 
-### Common Issues
+### Port Conflicts
 
-1. **Port conflicts**: Ensure all required ports are available
-2. **Memory issues**: Increase Docker memory allocation if containers fail to start
-3. **Storage issues**: Check MinIO bucket creation in logs: `docker-compose logs mc`
-
-### Reset Environment
+Check if ports are already in use:
 
 ```bash
-# Stop and remove all containers, networks, and volumes
-docker-compose down -v
+# Check specific port
+lsof -i :6650
 
-# Remove all Danube-related Docker resources
+# Kill process using port
+kill -9 <PID>
+```
+
+### Container Won't Start
+
+```bash
+# Check logs
+docker-compose logs broker1
+
+# Check Docker resources
+docker stats
+```
+
+### Reset Everything
+
+```bash
+# Stop and remove all Danube containers/volumes
+docker-compose down -v
 docker volume prune -f
 docker network prune -f
 
-# Restart fresh
+# Start fresh
 docker-compose up -d
 ```
 
+### Build Issues (local-development)
+
+```bash
+# Clear Docker build cache
+docker builder prune -a
+
+# Rebuild from scratch
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+---
+
 ## Production Considerations
 
-This setup demonstrates Danube's cloud-ready capabilities. For production deployment:
+For production deployment:
 
-1. **Replace MinIO** with AWS S3, Google Cloud Storage, or Azure Blob Storage
-2. **Enable TLS/SSL** authentication in broker configuration
-3. **Configure resource limits** and health checks appropriately
-4. **Set up monitoring** with Prometheus and Grafana
-5. **Implement backup strategies** for ETCD and persistent storage
-6. **Use container orchestration** like Kubernetes for scaling
+1. **Storage:** Replace MinIO with AWS S3, GCS, or Azure Blob
+2. **Security:** Enable TLS/mTLS in broker config (`auth: tls`)
+3. **Resources:** Configure CPU/memory limits in compose file
+4. **Monitoring:** Add Grafana dashboards for Prometheus
+5. **Backup:** Implement ETCD backup strategy
+6. **Orchestration:** Use Kubernetes for scaling and HA
 
-## AWS S3 Migration
+### AWS S3 Migration
 
-To migrate from MinIO to AWS S3, update `danube_broker.yml`:
+Update `../config/danube_broker.yml`:
 
 ```yaml
 wal_cloud:
   cloud:
     backend: "s3"
-    root: "s3://your-production-bucket/danube-cluster"
+    root: "s3://your-bucket/danube"
     region: "us-west-2"
-    # Remove endpoint for AWS S3
-    # endpoint: "http://minio:9000"  
-    # Use IAM roles or environment variables for credentials
+    # Remove endpoint for AWS (uses default AWS endpoints)
+    # Use IAM roles instead of hardcoded keys
 ```
 
-This Docker Compose setup showcases Danube's architecture with cloud-native storage.
+---
+
+## Structure
+
+```
+docker/
+├── README.md                    # This file
+├── prometheus.yml               # Shared Prometheus config
+├── quickstart/
+│   └── docker-compose.yml
+├── with-ui/
+│   └── docker-compose.yml
+├── with-cloud-storage/
+│   └── docker-compose.yml
+└── local-development/
+    └── docker-compose.yml
+```
+
+Config files referenced from `../config/`:
+- `danube_broker.yml` - Filesystem backend (default)
+- `danube_broker_cloud.yml` - S3/MinIO backend
