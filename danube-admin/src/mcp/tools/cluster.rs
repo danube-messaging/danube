@@ -77,13 +77,20 @@ pub async fn trigger_rebalance(client: &Arc<AdminGrpcClient>, params: RebalanceP
 
             if params.dry_run {
                 output.push_str("DRY RUN - No changes were made\n\n");
+            } else if response.proposed_moves.len() > 1 {
+                output.push_str("Rebalancing started in background!\n");
+                output.push_str(
+                    "First move initiated, remaining moves will execute automatically.\n\n",
+                );
+            } else if response.moves_executed > 0 {
+                output.push_str("Rebalancing completed!\n\n");
             } else {
-                output.push_str("Rebalancing completed successfully!\n\n");
+                output.push_str("Cluster is already balanced.\n\n");
             }
 
             output.push_str(&format!(
-                "Moves executed: {}\n\
-                 Proposed moves: {}\n\n",
+                "Moves initiated: {}\n\
+                 Total proposed: {}\n\n",
                 response.moves_executed,
                 response.proposed_moves.len()
             ));
@@ -119,6 +126,7 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
             output.push_str(&format!(
                 "Status: {}\n\
                  Coefficient of Variation: {:.4}\n\
+                 Assignment Strategy: {}\n\
                  Mean Load: {:.2}\n\
                  Max Load: {:.2}\n\
                  Min Load: {:.2}\n\
@@ -134,6 +142,7 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
                     "✗ Severely Imbalanced"
                 },
                 response.coefficient_of_variation,
+                response.assignment_strategy,
                 response.mean_load,
                 response.max_load,
                 response.min_load,

@@ -11,7 +11,7 @@ pub async fn fetch_cluster_metrics(client: &MetricsClient) -> MetricResult<Clust
 
     let topics_total = sum_u64(
         client
-            .query_instant("count(danube_broker_topics_owned)")
+            .query_instant("sum(danube_broker_topics_owned)")
             .await,
         &mut errors,
     );
@@ -63,8 +63,12 @@ pub async fn fetch_cluster_metrics(client: &MetricsClient) -> MetricResult<Clust
             .await,
         &mut errors,
     );
+    // Use max() to get CV from whichever broker calculated it most recently
+    // (only the broker running calculate_imbalance updates this metric)
     let imbalance_cv = one_f64(
-        client.query_instant("danube_cluster_imbalance_cv").await,
+        client
+            .query_instant("max(danube_cluster_imbalance_cv)")
+            .await,
         &mut errors,
     );
 

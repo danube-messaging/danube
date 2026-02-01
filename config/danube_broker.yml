@@ -49,7 +49,7 @@ load_manager:
   #
   #   - weighted_load: Adaptive smart algorithm (advanced)
   #                    Automatically detects bottleneck resources and prioritizes them
-  assignment_strategy: "balanced"
+  assignment_strategy: "fair"
 
   # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
   # - Lower values (5-10s): Faster response, more etcd traffic, better for testing

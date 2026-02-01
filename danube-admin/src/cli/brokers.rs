@@ -312,6 +312,7 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
                 println!();
                 println!("Status:                    {}", status);
                 println!("Coefficient of Variation:  {:.2}%", cv_percent);
+                println!("Assignment Strategy:       {}", balance.assignment_strategy);
                 println!();
                 println!("Interpretation Guide:");
                 println!("  < 20%  = ✅ Well Balanced");
@@ -409,21 +410,24 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
                         println!("ℹ️  {}", result.error_message);
                     }
                 } else {
-                    println!("✅ Rebalancing Complete!");
-                    println!();
-                    println!("  Moves executed: {}", result.moves_executed);
+                    // Check if rebalancing is running in background
+                    let is_background = result.error_message.contains("background");
+
+                    if is_background {
+                        println!("🔄 Rebalancing Started in Background!");
+                        println!();
+                        println!("  The cluster will be rebalanced automatically.");
+                        println!("  Check broker logs for progress.");
+                    } else {
+                        println!("✅ Rebalancing Complete!");
+                    }
                     println!();
 
                     if !result.proposed_moves.is_empty() {
-                        println!("Executed moves:");
-                        for (_i, mv) in result
-                            .proposed_moves
-                            .iter()
-                            .take(result.moves_executed as usize)
-                            .enumerate()
-                        {
+                        println!("First move initiated:");
+                        for mv in &result.proposed_moves {
                             println!(
-                                "  ✓ {} (Broker {} → Broker {})",
+                                "  → {} (Broker {} → Broker {})",
                                 mv.topic_name, mv.from_broker, mv.to_broker
                             );
                         }
