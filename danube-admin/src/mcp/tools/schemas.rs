@@ -14,7 +14,7 @@ pub struct RegisterSchemaParams {
 
     /// Schema type determining the format and validation rules.
     /// Options: "json_schema" (JSON Schema draft-07), "avro" (Apache Avro),
-    /// "protobuf" (Protocol Buffers), "string" (plain text), "bytes" (binary).
+    /// "protobuf" (Protocol Buffers), "string" (plain text), "number" (numeric values), "bytes" (binary).
     /// Most common: "json_schema" for structured JSON data.
     pub schema_type: String,
 
@@ -167,7 +167,7 @@ pub struct CheckCompatibilityParams {
 
     /// Schema type of the new schema being validated.
     /// Must match the type of existing schemas in the subject.
-    /// Options: "json_schema", "avro", "protobuf"
+    /// Options: "json_schema", "avro", "protobuf", "string", "number", "bytes"
     pub schema_type: String,
 
     /// New schema definition to validate for compatibility.
