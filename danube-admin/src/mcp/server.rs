@@ -467,32 +467,64 @@ impl DanubeMcpServer {
 
     // ===== DIAGNOSTIC TOOLS =====
 
-    #[tool(description = "Diagnose why a consumer might be lagging on a topic")]
-    async fn diagnose_consumer_lag(
+    /// Analyze consumer lag data for a topic and subscription.
+    ///
+    /// Returns factual data about the topic, subscription status, and cluster balance metrics.
+    /// Use this to gather diagnostic information that helps identify the root cause of lag.
+    ///
+    /// Checks: topic existence, subscription presence, broker assignment, cluster balance status.
+    /// Does not provide recommendations - use troubleshooting prompts for guided workflows.
+    #[tool]
+    async fn analyze_consumer_lag(
         &self,
         Parameters(params): Parameters<tools::diagnostics::ConsumerLagParams>,
     ) -> Result<CallToolResult, McpError> {
-        let output = tools::diagnostics::diagnose_consumer_lag(&self.client, params).await;
+        let output = tools::diagnostics::analyze_consumer_lag(&self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Analyze cluster health and identify potential issues")]
+    /// Perform a comprehensive cluster health check.
+    ///
+    /// Returns health status for brokers (active/inactive count), leader election status,
+    /// cluster balance metrics (CoV), and namespace count. Lists detected issues if any.
+    ///
+    /// Use this as a first step for troubleshooting or regular health monitoring. Provides
+    /// factual status without prescriptive recommendations.
+    #[tool]
     async fn health_check(&self) -> Result<CallToolResult, McpError> {
         let output = tools::diagnostics::health_check(&self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Get recommended actions to improve cluster performance")]
+    /// Get optimization recommendations based on current cluster state.
+    ///
+    /// Analyzes cluster metrics and provides prioritized recommendations for:
+    /// load imbalance, overloaded brokers, and high availability concerns.
+    ///
+    /// Recommendations include specific tool calls to address issues. Use this after health_check
+    /// to get actionable next steps. Note: This tool provides suggestions based on heuristics;
+    /// use troubleshooting prompts for comprehensive guided workflows.
+    #[tool]
     async fn get_recommendations(&self) -> Result<CallToolResult, McpError> {
         let output = tools::diagnostics::get_recommendations(&self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     // ===== LOG ACCESS TOOLS =====
+    // NOTE: These tools require mcp-config.yml with deployment configuration.
+    // Without config, tools will return error messages indicating unavailability.
 
-    #[tool(
-        description = "Get logs from a specific broker by its ID (e.g., 'broker1'). Use list_configured_brokers first to see available broker IDs. Returns recent log output for debugging issues."
-    )]
+    /// Get logs from a specific broker by its ID.
+    ///
+    /// **Config Required**: This tool requires mcp-config.yml with deployment configuration
+    /// (Docker, Kubernetes, or local file paths). Returns an error message if config is missing.
+    ///
+    /// Returns the last N lines (default 500) of log output for the specified broker.
+    /// Use list_configured_brokers first to discover available broker IDs.
+    ///
+    /// Supports: Docker containers (docker logs), Kubernetes pods (kubectl logs),
+    /// and local log files (file reads).
+    #[tool]
     async fn get_broker_logs(
         &self,
         Parameters(params): Parameters<tools::logs::BrokerLogsParams>,
@@ -501,25 +533,42 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "List all brokers and containers configured in the MCP config file that can be queried for logs. Call this first before get_broker_logs to see available broker IDs."
-    )]
+    /// List all brokers configured in the MCP config file.
+    ///
+    /// **Config Required**: Returns available broker IDs only if mcp-config.yml is provided.
+    /// Returns an error message if no deployment configuration exists.
+    ///
+    /// Call this first before get_broker_logs to discover which broker IDs are available.
+    /// Output format depends on deployment type (Docker container names, K8s service info,
+    /// or local file mappings).
+    #[tool]
     async fn list_configured_brokers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::logs::list_configured_brokers(&self.config);
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "List all running Docker containers with their names, status, and ports. Useful to discover container names for fetch_container_logs."
-    )]
+    /// List all running Docker containers on the host.
+    ///
+    /// **No Config Required**: Directly queries Docker daemon via `docker ps` command.
+    /// Returns container names, status, and exposed ports.
+    ///
+    /// Use this to discover container names for fetch_container_logs when you don't have
+    /// a config file, or to see all containers beyond configured brokers.
+    /// Requires Docker to be installed and running.
+    #[tool]
     async fn list_docker_containers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::logs::list_docker_containers();
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "List all Kubernetes pods in a specific namespace with their status. Useful to discover pod names for fetch_pod_logs."
-    )]
+    /// List all Kubernetes pods in a specific namespace.
+    ///
+    /// **No Config Required**: Directly queries Kubernetes via `kubectl get pods` command.
+    /// Returns pod names, status, and node placement.
+    ///
+    /// Use this to discover pod names for fetch_pod_logs. Requires kubectl to be installed
+    /// and configured with access to the cluster.
+    #[tool]
     async fn list_k8s_pods(
         &self,
         Parameters(params): Parameters<tools::logs::ListPodsParams>,
@@ -528,9 +577,14 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "Fetch logs directly from any Docker container by its exact container name. Use list_docker_containers to find container names. Returns the last N lines (default 500)."
-    )]
+    /// Fetch logs directly from any Docker container.
+    ///
+    /// **No Config Required**: Directly executes `docker logs` command.
+    /// Works with any container name, not limited to configured brokers.
+    ///
+    /// Use list_docker_containers to discover container names. Returns the last N lines
+    /// (default 500). Useful when config is unavailable or for ad-hoc log inspection.
+    #[tool]
     async fn fetch_container_logs(
         &self,
         Parameters(params): Parameters<tools::logs::ContainerLogsParams>,
@@ -539,9 +593,14 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "Fetch logs directly from a Kubernetes pod by namespace and pod name. Use list_k8s_pods to find pod names. Returns the last N lines (default 500)."
-    )]
+    /// Fetch logs directly from a Kubernetes pod.
+    ///
+    /// **No Config Required**: Directly executes `kubectl logs` command.
+    /// Works with any pod in any namespace.
+    ///
+    /// Use list_k8s_pods to discover pod names. Returns the last N lines (default 500).
+    /// Requires kubectl to be installed and configured with cluster access.
+    #[tool]
     async fn fetch_pod_logs(
         &self,
         Parameters(params): Parameters<tools::logs::PodLogsParams>,
@@ -551,18 +610,33 @@ impl DanubeMcpServer {
     }
 
     // ===== METRICS TOOLS =====
+    // NOTE: These tools require Prometheus to be running and accessible.
+    // Prometheus URL is configured in mcp-config.yml (default: http://localhost:9090).
 
-    #[tool(
-        description = "Get cluster-wide metrics from Prometheus: broker count, total topics, producers, consumers, message rates, and cluster balance. Requires Prometheus to be running."
-    )]
+    /// Get cluster-wide metrics summary from Prometheus.
+    ///
+    /// **Prometheus Required**: Queries Prometheus at the configured URL (default: http://localhost:9090).
+    /// Set prometheus_url in mcp-config.yml or ensure Prometheus is accessible at the default location.
+    ///
+    /// Returns: broker count, total topics/producers/consumers/subscriptions, message rates
+    /// (messages in/out, bytes in/out per second), and cluster balance coefficient of variation.
+    ///
+    /// Use this for high-level cluster health overview and capacity planning.
+    #[tool]
     async fn get_cluster_metrics(&self) -> Result<CallToolResult, McpError> {
         let output = tools::metrics::get_cluster_metrics(&self.metrics).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "Get metrics for a specific broker: topics owned, RPC count, producers, consumers, bytes in/out. Use list_brokers first to get broker IDs."
-    )]
+    /// Get metrics for a specific broker from Prometheus.
+    ///
+    /// **Prometheus Required**: Queries Prometheus for broker-specific metrics.
+    ///
+    /// Returns: topics owned, total RPC count, active producers/consumers, and cumulative
+    /// bytes in/out. Use list_brokers first to discover valid broker IDs.
+    ///
+    /// Use this to identify overloaded brokers or investigate broker-specific issues.
+    #[tool]
     async fn get_broker_metrics(
         &self,
         Parameters(params): Parameters<tools::metrics::BrokerMetricsParams>,
@@ -571,9 +645,16 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "Get metrics for a specific topic: message counts, byte counts, active producers/consumers, publish/dispatch rates, subscription lag, and latency percentiles."
-    )]
+    /// Get comprehensive metrics for a specific topic from Prometheus.
+    ///
+    /// **Prometheus Required**: Queries Prometheus for topic-specific metrics.
+    ///
+    /// Returns: message/byte counters (in/out totals), active producers/consumers/subscriptions,
+    /// publish and dispatch rates (1m average), total subscription lag, and latency percentiles
+    /// (p50/p95/p99 in milliseconds).
+    ///
+    /// Use this for performance analysis and troubleshooting consumer lag or latency issues.
+    #[tool]
     async fn get_topic_metrics(
         &self,
         Parameters(params): Parameters<tools::metrics::TopicMetricsParams>,
@@ -582,9 +663,18 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(
-        description = "Execute a raw PromQL query against Prometheus. Useful for custom metric investigations. Example: sum(rate(danube_topic_messages_in_total[5m]))"
-    )]
+    /// Execute a raw PromQL query against Prometheus.
+    ///
+    /// **Prometheus Required**: Sends a custom PromQL query to Prometheus.
+    ///
+    /// Use this for advanced metric investigations not covered by other tools.
+    /// Supports full PromQL syntax including aggregations, functions, and time ranges.
+    ///
+    /// Example queries:
+    /// - `sum(rate(danube_topic_messages_in_total[5m]))` - Total cluster message rate
+    /// - `histogram_quantile(0.99, rate(danube_producer_send_latency_bucket[5m]))` - p99 latency
+    /// - `danube_subscription_lag{topic="/default/events"}` - Lag for specific topic
+    #[tool]
     async fn query_prometheus(
         &self,
         Parameters(params): Parameters<tools::metrics::RawQueryParams>,

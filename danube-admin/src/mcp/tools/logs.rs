@@ -8,10 +8,16 @@ use std::process::Command;
 /// Parameters for fetching broker logs
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BrokerLogsParams {
-    /// Broker identifier (e.g., "broker1", "broker-0")
+    /// Broker identifier as configured in mcp-config.yml.
+    /// Must match an ID from the deployment configuration (Docker, K8s, or local).
+    /// Use list_configured_brokers to discover available IDs.
+    /// Example: "broker1", "broker-0", "danube-broker-2"
     pub broker_id: String,
 
-    /// Number of lines to fetch (default: 500)
+    /// Number of log lines to fetch from the end of the log.
+    /// Higher values return more history but take longer to fetch.
+    /// Default: 500
+    /// Range: 1-10000 (implementation may cap at reasonable limits)
     #[serde(default = "default_lines")]
     pub lines: u32,
 }
@@ -23,10 +29,13 @@ fn default_lines() -> u32 {
 /// Parameters for fetching container logs (Docker)
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContainerLogsParams {
-    /// Docker container name
+    /// Exact Docker container name or ID.
+    /// Use list_docker_containers to discover running containers.
+    /// Example: "danube-broker1", "my-service", "abc123def456"
     pub container_name: String,
 
-    /// Number of lines to fetch (default: 500)
+    /// Number of log lines to fetch from the end of the log.
+    /// Default: 500
     #[serde(default = "default_lines")]
     pub lines: u32,
 }
@@ -34,13 +43,17 @@ pub struct ContainerLogsParams {
 /// Parameters for fetching pod logs (Kubernetes)
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PodLogsParams {
-    /// Kubernetes namespace
+    /// Kubernetes namespace where the pod is running.
+    /// Example: "default", "danube-system", "production"
     pub namespace: String,
 
-    /// Pod name
+    /// Exact pod name.
+    /// Use list_k8s_pods to discover pods in a namespace.
+    /// Example: "danube-broker-0", "my-service-abc123-xyz"
     pub pod_name: String,
 
-    /// Number of lines to fetch (default: 500)
+    /// Number of log lines to fetch from the end of the log.
+    /// Default: 500
     #[serde(default = "default_lines")]
     pub lines: u32,
 }
@@ -48,7 +61,9 @@ pub struct PodLogsParams {
 /// Parameters for listing K8s pods
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListPodsParams {
-    /// Kubernetes namespace
+    /// Kubernetes namespace to list pods from.
+    /// Returns all pods in this namespace regardless of labels or status.
+    /// Example: "default", "danube-system", "kube-system"
     pub namespace: String,
 }
 
