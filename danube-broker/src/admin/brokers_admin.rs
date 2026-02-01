@@ -1,8 +1,8 @@
 use crate::admin::DanubeAdminImpl;
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
-    BrokerListResponse, BrokerResponse, ClusterBalanceRequest, ClusterBalanceResponse,
-    BrokerLoadInfo, Empty, NamespaceListResponse, ProposedMove, RebalanceRequest,
+    BrokerListResponse, BrokerLoadInfo, BrokerResponse, ClusterBalanceRequest,
+    ClusterBalanceResponse, Empty, NamespaceListResponse, ProposedMove, RebalanceRequest,
     RebalanceResponse, UnloadBrokerRequest, UnloadBrokerResponse,
 };
 
@@ -255,17 +255,13 @@ impl BrokerAdmin for DanubeAdminImpl {
         trace!("get cluster balance command");
 
         // Calculate current imbalance metrics
-        let metrics = self
-            .load_manager
-            .calculate_imbalance()
-            .await
-            .map_err(|e| {
-                tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
-            })?;
+        let metrics = self.load_manager.calculate_imbalance().await.map_err(|e| {
+            tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
+        })?;
 
         // Get broker rankings for detailed information
         let rankings = self.load_manager.get_rankings().await;
-        
+
         // Get actual topic counts from broker usage reports
         let brokers_usage = self.load_manager.get_brokers_usage().await;
 
@@ -274,7 +270,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         for (broker_id, load) in rankings.iter() {
             let is_overloaded = metrics.overloaded_brokers.contains(broker_id);
             let is_underloaded = metrics.underloaded_brokers.contains(broker_id);
-            
+
             // Get actual topic count from load report (not the ranking score!)
             let actual_topic_count = brokers_usage
                 .get(broker_id)
@@ -298,6 +294,7 @@ impl BrokerAdmin for DanubeAdminImpl {
             std_deviation: metrics.std_deviation,
             broker_count: rankings.len() as u32,
             brokers: broker_infos,
+            assignment_strategy: format!("{:?}", self.load_manager.get_assignment_strategy()),
         };
 
         Ok(Response::new(response))
@@ -326,50 +323,34 @@ impl BrokerAdmin for DanubeAdminImpl {
             })?;
 
         // Calculate imbalance
-        let metrics = self
-            .load_manager
-            .calculate_imbalance()
-            .await
-            .map_err(|e| {
-                tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
-            })?;
+        let metrics = self.load_manager.calculate_imbalance().await.map_err(|e| {
+            tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
+        })?;
 
-        // Check if rebalancing is needed
-        if !self.load_manager.should_rebalance(&metrics, &config) {
+        // Check if rebalancing is needed based on CV threshold
+        // Note: For manual triggers via CLI, we do NOT check config.enabled
+        // The enabled flag is for automated background rebalancing only
+        let threshold = config.aggressiveness.threshold();
+        if metrics.coefficient_of_variation < threshold {
             return Ok(Response::new(RebalanceResponse {
                 success: true,
                 moves_executed: 0,
                 proposed_moves: vec![],
                 error_message: format!(
                     "Cluster is balanced (CV: {:.3}, threshold: {:.3})",
-                    metrics.coefficient_of_variation,
-                    config.aggressiveness.threshold()
+                    metrics.coefficient_of_variation, threshold
                 ),
             }));
         }
 
-        // Select rebalancing candidates (1 at a time, respecting max_moves if provided)
-        let max_moves = req.max_moves.unwrap_or(1) as usize;
-        let mut moves = Vec::new();
-        
-        for _ in 0..max_moves {
-            let candidate = self
-                .load_manager
-                .select_rebalancing_candidate(&metrics, &config)
-                .await
-                .map_err(|e| {
-                    tonic::Status::internal(format!("Failed to select candidate: {}", e))
-                })?;
-            
-            if let Some(mv) = candidate {
-                moves.push(mv);
-            } else {
-                // No more suitable topics found
-                break;
-            }
-        }
+        // Select first rebalancing candidate to return to CLI
+        let first_candidate = self
+            .load_manager
+            .select_rebalancing_candidate(&metrics, &config)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Failed to select candidate: {}", e)))?;
 
-        if moves.is_empty() {
+        if first_candidate.is_none() {
             return Ok(Response::new(RebalanceResponse {
                 success: true,
                 moves_executed: 0,
@@ -378,46 +359,117 @@ impl BrokerAdmin for DanubeAdminImpl {
             }));
         }
 
-        // Convert to ProposedMove format
-        let proposed_moves: Vec<ProposedMove> = moves
-            .iter()
-            .map(|m| ProposedMove {
-                topic_name: m.topic_name.clone(),
-                from_broker: m.from_broker,
-                to_broker: m.to_broker,
-                estimated_load: m.estimated_load,
-                reason: format!("{:?}", m.reason),
-            })
-            .collect();
+        let first_move = first_candidate.unwrap();
+        let proposed_moves = vec![ProposedMove {
+            topic_name: first_move.topic_name.clone(),
+            from_broker: first_move.from_broker,
+            to_broker: first_move.to_broker,
+            estimated_load: first_move.estimated_load,
+            reason: format!("{:?}", first_move.reason),
+        }];
 
-        // If dry-run, just return the proposed moves
+        // If dry-run, just return the first proposed move
         if req.dry_run {
-            info!(move_count = proposed_moves.len(), "dry-run completed");
+            info!("dry-run completed, showing first proposed move");
             return Ok(Response::new(RebalanceResponse {
                 success: true,
                 moves_executed: 0,
                 proposed_moves,
-                error_message: String::new(),
+                error_message: "Dry run: rebalancing will continue until balanced".to_string(),
             }));
         }
 
-        // Execute rebalancing
-        let executed = self
-            .load_manager
-            .execute_rebalancing(moves, &config)
-            .await
-            .map_err(|e| {
-                warn!(error = %e, "rebalancing execution failed");
-                tonic::Status::internal(format!("Rebalancing failed: {}", e))
-            })?;
+        // Execute rebalancing in background task - loop until cluster is balanced
+        let load_manager = self.load_manager.clone();
+        let max_moves = req.max_moves.map(|m| m as usize);
+        tokio::spawn(async move {
+            let mut total_executed = 0usize;
+            let mut current_move = Some(first_move);
 
-        info!(executed = executed, "manual rebalancing completed");
+            loop {
+                // Execute the current move
+                if let Some(mv) = current_move.take() {
+                    match load_manager.execute_rebalancing(vec![mv], &config).await {
+                        Ok(executed) => {
+                            total_executed += executed;
+                            info!(
+                                total_executed = total_executed,
+                                "rebalancing move completed"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "rebalancing move failed");
+                            break;
+                        }
+                    }
+                }
+
+                // Check max_moves limit
+                if let Some(max) = max_moves {
+                    if total_executed >= max {
+                        info!(
+                            total_executed = total_executed,
+                            max = max,
+                            "max moves reached"
+                        );
+                        break;
+                    }
+                }
+
+                // Recalculate imbalance
+                let new_metrics = match load_manager.calculate_imbalance().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(error = %e, "failed to recalculate imbalance");
+                        break;
+                    }
+                };
+
+                // Check if balanced
+                if new_metrics.coefficient_of_variation < threshold {
+                    info!(
+                        cv = new_metrics.coefficient_of_variation,
+                        threshold = threshold,
+                        total_executed = total_executed,
+                        "cluster is now balanced"
+                    );
+                    break;
+                }
+
+                // Select next candidate
+                current_move = match load_manager
+                    .select_rebalancing_candidate(&new_metrics, &config)
+                    .await
+                {
+                    Ok(Some(mv)) => Some(mv),
+                    Ok(None) => {
+                        info!(
+                            total_executed = total_executed,
+                            "no more candidates available"
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to select next candidate");
+                        break;
+                    }
+                };
+            }
+
+            info!(
+                total_executed = total_executed,
+                "background rebalancing finished"
+            );
+        });
+
+        info!("rebalancing started in background (will continue until balanced)");
 
         Ok(Response::new(RebalanceResponse {
             success: true,
-            moves_executed: executed as u32,
+            moves_executed: 1, // First move initiated
             proposed_moves,
-            error_message: String::new(),
+            error_message: "Rebalancing started in background, will continue until balanced"
+                .to_string(),
         }))
     }
 }

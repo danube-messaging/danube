@@ -211,6 +211,8 @@ message ClusterBalanceResponse {
   uint32 broker_count = 6;
   // Detailed broker load information
   repeated BrokerLoadInfo brokers = 7;
+  // Assignment strategy currently in use (fair, balanced, weighted_load)
+  string assignment_strategy = 8;
 }
 
 // Load information for a single broker

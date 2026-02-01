@@ -887,6 +887,8 @@ impl LoadManager {
 
     /// Determines if cluster needs rebalancing based on configuration and metrics
     /// (Delegates to rebalancing module)
+    /// Note: Manual rebalance via CLI bypasses this (doesn't check config.enabled)
+    #[allow(dead_code)]
     pub fn should_rebalance(
         &self,
         metrics: &ImbalanceMetrics,
@@ -1014,6 +1016,11 @@ impl LoadManager {
     /// Returns the current rebalancing config if available from service configuration.
     pub async fn get_rebalancing_config(&self) -> Option<config::RebalancingConfig> {
         self.rebalancing_config.clone()
+    }
+
+    /// Gets assignment strategy (for admin CLI)
+    pub fn get_assignment_strategy(&self) -> &config::AssignmentStrategy {
+        &self.assignment_strategy
     }
 }
 

@@ -579,22 +579,46 @@ where
     let rankings = rankings.lock().await;
     let brokers = brokers_usage.lock().await;
 
-    // Need brokers and overloaded brokers to proceed
-    if rankings.is_empty() || metrics.overloaded_brokers.is_empty() {
+    if rankings.is_empty() {
         return Ok(None);
     }
 
-    // For each overloaded broker, select ONE topic to move
+    // Determine source brokers to move topics FROM:
+    // 1. First choice: overloaded brokers (significantly above mean)
+    // 2. Fallback: if no overloaded but underloaded exists, use brokers above mean
+    //    This handles cases where CV is below threshold but distribution is still uneven
+    let source_brokers: Vec<u64> = if !metrics.overloaded_brokers.is_empty() {
+        metrics.overloaded_brokers.clone()
+    } else if !metrics.underloaded_brokers.is_empty() {
+        // Fallback: find brokers above mean that could donate topics
+        // Only if the gap between max and min is significant (> 10% of mean)
+        // This works for all strategies: fair (topic count), balanced, weighted_load
+        let gap = metrics.max_load - metrics.min_load;
+        let min_gap = (metrics.mean_load * 0.1).max(2.0); // At least 2, or 10% of mean
+        if gap > min_gap {
+            rankings
+                .iter()
+                .filter(|(_, load)| (*load as f64) > metrics.mean_load)
+                .map(|(id, _)| *id)
+                .collect()
+        } else {
+            return Ok(None);
+        }
+    } else {
+        return Ok(None);
+    };
+
+    // For each source broker, select ONE topic to move
     // We only move 1 topic per cycle to avoid overshooting
-    for overloaded_id in &metrics.overloaded_brokers {
+    for source_id in &source_brokers {
         // Get broker's load report
-        let overloaded_report = match brokers.get(overloaded_id) {
+        let source_report = match brokers.get(source_id) {
             Some(r) => r,
             None => continue,
         };
 
         // Get topics with their estimated load scores
-        let mut candidates: Vec<_> = overloaded_report
+        let mut candidates: Vec<_> = source_report
             .topics
             .iter()
             .map(|t| (t.clone(), t.estimated_load_score()))
@@ -623,11 +647,11 @@ where
 
         // Select target broker (least loaded, excluding source)
         let target_broker =
-            match select_target_broker(*overloaded_id, &rankings, &is_broker_active).await {
+            match select_target_broker(*source_id, &rankings, &is_broker_active).await {
                 Ok(broker) => broker,
                 Err(e) => {
                     warn!(
-                        source_broker = %overloaded_id,
+                        source_broker = %source_id,
                         error = %e,
                         "no suitable target broker found for rebalancing"
                     );
@@ -640,7 +664,7 @@ where
         if let Some((topic, estimated_load)) = candidates.first() {
             let rebalancing_move = RebalancingMove::new(
                 topic.topic_name.clone(),
-                *overloaded_id,
+                *source_id,
                 target_broker,
                 RebalancingReason::LoadImbalance,
                 *estimated_load,

@@ -243,6 +243,9 @@ pub struct ClusterBalanceResponse {
     /// Detailed broker load information
     #[prost(message, repeated, tag = "7")]
     pub brokers: ::prost::alloc::vec::Vec<BrokerLoadInfo>,
+    /// Assignment strategy currently in use (fair, balanced, weighted_load)
+    #[prost(string, tag = "8")]
+    pub assignment_strategy: ::prost::alloc::string::String,
 }
 /// Load information for a single broker
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
