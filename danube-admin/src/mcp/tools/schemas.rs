@@ -7,13 +7,27 @@ use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct RegisterSchemaParams {
-    /// Schema subject name (e.g., "user-events")
+    /// Schema subject name - identifies the schema across versions.
+    /// Typically matches topic name or follows pattern "{topic}-key" or "{topic}-value".
+    /// Example: "user-events", "user-events-value", "analytics-key"
     pub subject: String,
-    /// Schema type: "json_schema", "avro", "protobuf", "string", "bytes"
+
+    /// Schema type determining the format and validation rules.
+    /// Options: "json_schema" (JSON Schema draft-07), "avro" (Apache Avro),
+    /// "protobuf" (Protocol Buffers), "string" (plain text), "bytes" (binary).
+    /// Most common: "json_schema" for structured JSON data.
     pub schema_type: String,
-    /// Schema definition (JSON string for json_schema)
+
+    /// Schema definition as a string.
+    /// For json_schema: Valid JSON Schema definition.
+    /// For avro: Avro schema in JSON format.
+    /// For protobuf: .proto file contents.
+    /// Example (json_schema): '{"type":"object","properties":{"name":{"type":"string"}}}'
     pub schema_definition: String,
-    /// Optional description
+
+    /// Human-readable description explaining the schema's purpose and usage.
+    /// Appears in schema registry listings for documentation.
+    /// Example: "User profile update events schema v2"
     pub description: Option<String>,
 }
 
@@ -52,7 +66,9 @@ pub async fn register_schema(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GetSchemaParams {
-    /// Schema subject name
+    /// Schema subject name to retrieve.
+    /// Returns the latest version of the schema.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
 }
 
@@ -93,7 +109,9 @@ pub async fn get_schema(client: &Arc<AdminGrpcClient>, params: GetSchemaParams) 
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ListVersionsParams {
-    /// Schema subject name
+    /// Schema subject name to list versions for.
+    /// Returns all registered versions in chronological order.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
 }
 
@@ -142,11 +160,19 @@ pub async fn list_schema_versions(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CheckCompatibilityParams {
-    /// Schema subject name
+    /// Schema subject name to check compatibility against.
+    /// The new schema will be validated against existing versions of this subject.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
-    /// Schema type
+
+    /// Schema type of the new schema being validated.
+    /// Must match the type of existing schemas in the subject.
+    /// Options: "json_schema", "avro", "protobuf"
     pub schema_type: String,
-    /// New schema definition to check
+
+    /// New schema definition to validate for compatibility.
+    /// Should be the updated schema you want to register.
+    /// Example: '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}}}'
     pub schema_definition: String,
 }
 
@@ -182,7 +208,8 @@ pub async fn check_compatibility(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CompatibilityModeParams {
-    /// Schema subject name
+    /// Schema subject name to get or set compatibility mode for.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
 }
 
@@ -208,9 +235,17 @@ pub async fn get_compatibility_mode(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SetCompatibilityModeParams {
-    /// Schema subject name
+    /// Schema subject name to configure.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
-    /// Compatibility mode: none, backward, forward, or full
+
+    /// Compatibility mode controlling schema evolution rules.
+    /// Options:
+    ///   - "none": No compatibility checking (any schema allowed)
+    ///   - "backward": New schema can read data written with old schema (add optional fields, remove fields)
+    ///   - "forward": Old schema can read data written with new schema (add fields, make optional)
+    ///   - "full": Both backward and forward compatible (most restrictive)
+    /// Common choice: "backward" for most use cases.
     pub mode: String,
 }
 
@@ -244,9 +279,14 @@ pub async fn set_compatibility_mode(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteSchemaVersionParams {
-    /// Schema subject name
+    /// Schema subject name containing the version to delete.
+    /// Example: "user-events", "user-events-value"
     pub subject: String,
-    /// Version to delete
+
+    /// Specific version number to delete.
+    /// Use list_schema_versions to discover available versions.
+    /// WARNING: Deleting versions may break topics using this schema.
+    /// Example: 2, 5
     pub version: u32,
 }
 

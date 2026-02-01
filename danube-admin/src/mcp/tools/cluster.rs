@@ -48,10 +48,16 @@ pub async fn get_leader(client: &Arc<AdminGrpcClient>) -> String {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct RebalanceParams {
-    /// Perform a dry run without actually moving topics
+    /// Preview mode - show proposed moves without executing them.
+    /// Set to true to see which topics will move before actually rebalancing.
+    /// Default: false (execute moves)
     #[serde(default)]
     pub dry_run: bool,
-    /// Maximum number of topic moves to execute
+
+    /// Maximum number of topic moves to execute in this rebalancing operation.
+    /// Use this to limit the scope of rebalancing (e.g., max_moves=5 for gradual rebalancing).
+    /// If not specified, all necessary moves to achieve balance will be executed.
+    /// Example: 10
     pub max_moves: Option<u32>,
 }
 
@@ -167,12 +173,21 @@ pub async fn get_cluster_balance(client: &Arc<AdminGrpcClient>) -> String {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct UnloadBrokerParams {
-    /// Broker ID to unload
+    /// Broker ID to unload topics from.
+    /// Use list_brokers to discover available broker IDs.
+    /// Example: "4541396853251852833"
     pub broker_id: String,
-    /// Maximum parallel unloads
+
+    /// Maximum number of topics to unload in parallel.
+    /// Higher values speed up the operation but increase load on the cluster.
+    /// Range: 1-10. Default: 1 (sequential unloading)
+    /// Example: 3
     #[serde(default = "default_max_parallel")]
     pub max_parallel: u32,
-    /// Perform dry run
+
+    /// Preview mode - show which topics would be unloaded without actually doing it.
+    /// Always use true first to verify the operation before executing.
+    /// Default: false (execute unload)
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -245,9 +260,15 @@ pub async fn list_namespaces(client: &Arc<AdminGrpcClient>) -> String {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ActivateBrokerParams {
-    /// Broker ID to activate
+    /// Broker ID to activate and bring back into service.
+    /// Use list_brokers to discover available broker IDs.
+    /// Example: "4541396853251852833"
     pub broker_id: String,
-    /// Reason for activation (for audit trail)
+
+    /// Reason for activation - used for audit trail and operational documentation.
+    /// Describe why the broker is being activated (e.g., "Maintenance complete", "Added capacity").
+    /// Default: "admin_activate"
+    /// Example: "Maintenance window completed successfully"
     #[serde(default = "default_reason")]
     pub reason: String,
 }
@@ -279,7 +300,11 @@ pub async fn activate_broker(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct NamespaceParams {
-    /// Namespace name
+    /// Namespace name.
+    /// Use list_namespaces to discover existing namespaces.
+    /// Namespace names should be lowercase alphanumeric with hyphens (e.g., "production", "dev-team-1").
+    /// The "default" namespace is always present.
+    /// Example: "production", "staging", "team-analytics"
     pub namespace: String,
 }
 
