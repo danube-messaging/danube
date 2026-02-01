@@ -377,6 +377,79 @@ fn mcp_tool_invocation_end_to_end() {
 }
 
 #[test]
+fn mcp_tool_descriptions_from_doc_comments() {
+    let mut client = McpClient::spawn();
+    client.initialize();
+
+    // List tools and verify specific descriptions are properly extracted from /// comments
+    let response = client.list_tools();
+    let tools = response["result"]["tools"]
+        .as_array()
+        .expect("tools should be an array");
+
+    // Helper to find tool by name
+    let find_tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"].as_str() == Some(name))
+            .expect(&format!("Tool '{}' not found", name))
+    };
+
+    // Test 1: Verify list_brokers has comprehensive description
+    let list_brokers = find_tool("list_brokers");
+    let desc = list_brokers["description"].as_str().unwrap();
+    assert!(
+        desc.contains("Returns broker IDs, status"),
+        "list_brokers description missing expected content. Got: {}",
+        desc
+    );
+    assert!(
+        desc.contains("Use this first to discover"),
+        "list_brokers description missing usage guidance. Got: {}",
+        desc
+    );
+
+    // Test 2: Verify get_broker_logs mentions config requirement
+    let get_logs = find_tool("get_broker_logs");
+    let desc = get_logs["description"].as_str().unwrap();
+    assert!(
+        desc.contains("Config Required") || desc.contains("mcp-config.yml"),
+        "get_broker_logs should mention config requirement. Got: {}",
+        desc
+    );
+
+    // Test 3: Verify get_cluster_metrics mentions Prometheus
+    let cluster_metrics = find_tool("get_cluster_metrics");
+    let desc = cluster_metrics["description"].as_str().unwrap();
+    assert!(
+        desc.contains("Prometheus"),
+        "get_cluster_metrics should mention Prometheus requirement. Got: {}",
+        desc
+    );
+
+    // Test 4: Verify inputSchema is present and valid
+    let create_topic = find_tool("create_topic");
+    let schema = &create_topic["inputSchema"];
+    assert!(
+        schema.get("type").is_some(),
+        "inputSchema should have a type field"
+    );
+    assert!(
+        schema.get("properties").is_some(),
+        "inputSchema should have properties for parameters"
+    );
+
+    // Verify parameter descriptions are included (from JsonSchema derive)
+    let properties = schema["properties"].as_object().unwrap();
+    if let Some(name_field) = properties.get("name") {
+        assert!(
+            name_field.get("description").is_some(),
+            "Parameter 'name' should have description from doc comment"
+        );
+    }
+}
+
+#[test]
 fn mcp_error_handling() {
     let mut client = McpClient::spawn();
     client.initialize();

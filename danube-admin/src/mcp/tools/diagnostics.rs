@@ -7,18 +7,24 @@ use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ConsumerLagParams {
-    /// Topic to diagnose
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
     pub topic: String,
-    /// Subscription name
+
+    /// Subscription name to analyze for lag.
+    /// Must be an existing subscription on the topic.
+    /// Use list_subscriptions to discover subscription names.
+    /// Example: "my-consumer-group", "analytics-processor"
     pub subscription: String,
 }
 
-pub async fn diagnose_consumer_lag(
+pub async fn analyze_consumer_lag(
     client: &Arc<AdminGrpcClient>,
     params: ConsumerLagParams,
 ) -> String {
     let mut output = format!(
-        "Diagnosing consumer lag for:\n\
+        "Consumer Lag Analysis:\n\
          Topic: {}\n\
          Subscription: {}\n\n",
         params.topic, params.subscription
@@ -52,7 +58,7 @@ pub async fn diagnose_consumer_lag(
         }
     }
 
-    // 2. Check cluster balance
+    // 2. Check cluster balance (affects consumer performance)
     let balance_req = danube_core::admin_proto::ClusterBalanceRequest {};
     match client.get_cluster_balance(balance_req).await {
         Ok(balance) => {
@@ -62,28 +68,21 @@ pub async fn diagnose_consumer_lag(
                 balance.coefficient_of_variation
             ));
 
-            if balance.coefficient_of_variation > 0.4 {
-                output.push_str("⚠ Cluster is severely imbalanced - this may affect performance\n");
+            let balance_status = if balance.coefficient_of_variation > 0.4 {
+                "Severely Imbalanced"
             } else if balance.coefficient_of_variation > 0.3 {
-                output.push_str("⚠ Cluster is imbalanced - consider rebalancing\n");
-            }
-            output.push_str("\n");
+                "Imbalanced"
+            } else if balance.coefficient_of_variation > 0.2 {
+                "Slightly Imbalanced"
+            } else {
+                "Well Balanced"
+            };
+            output.push_str(&format!("- Status: {}\n\n", balance_status));
         }
-        Err(_) => {}
+        Err(e) => {
+            output.push_str(&format!("✗ Error checking cluster balance: {}\n\n", e));
+        }
     }
-
-    output.push_str("Possible Causes of Consumer Lag:\n");
-    output.push_str("1. Consumer processing is too slow (check consumer application logs)\n");
-    output.push_str("2. Not enough consumers (check if subscription is 'shared' type)\n");
-    output.push_str("3. Broker overload (check cluster balance metrics)\n");
-    output.push_str("4. Network issues between consumer and broker\n");
-    output.push_str("5. Consumer group rebalancing (temporary lag spikes)\n\n");
-
-    output.push_str("Recommended Actions:\n");
-    output.push_str("1. Run 'get_cluster_balance' to check broker load\n");
-    output.push_str("2. Check if topic has multiple partitions for parallelism\n");
-    output.push_str("3. Scale consumer group if using 'shared' subscription\n");
-    output.push_str("4. Monitor broker metrics for throughput limits\n");
 
     output
 }
@@ -157,8 +156,8 @@ pub async fn health_check(client: &Arc<AdminGrpcClient>) -> String {
                 issues.push("Cluster is imbalanced - consider rebalancing".to_string());
             }
         }
-        Err(_) => {
-            output.push_str("⚠ Balance: Unable to check\n");
+        Err(e) => {
+            output.push_str(&format!("⚠ Balance: Unable to check - {}\n", e));
         }
     }
 
@@ -222,15 +221,28 @@ pub async fn get_recommendations(client: &Arc<AdminGrpcClient>) -> String {
         }
     }
 
-    // Check broker count
+    // Check broker count for HA concerns
     if let Ok(brokers) = client.list_brokers().await {
-        if brokers.brokers.len() < 3 {
+        let active_count = brokers
+            .brokers
+            .iter()
+            .filter(|b| b.broker_status == "active")
+            .count();
+
+        if active_count == 1 {
+            recommendations.push((
+                "High Priority".to_string(),
+                "Single Broker - No High Availability".to_string(),
+                format!(
+                    "Only 1 active broker. Cluster has no fault tolerance. Any broker failure will cause downtime."
+                )
+            ));
+        } else if active_count == 2 {
             recommendations.push((
                 "Medium Priority".to_string(),
                 "Low Broker Count".to_string(),
                 format!(
-                    "Only {} broker(s) running. For high availability, consider running at least 3 brokers.",
-                    brokers.brokers.len()
+                    "Only 2 active brokers. For production use with proper HA, consider running at least 3 brokers."
                 )
             ));
         }

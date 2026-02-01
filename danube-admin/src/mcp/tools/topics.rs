@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ListTopicsParams {
-    /// Namespace to list topics from (e.g., "default")
+    /// Namespace to list topics from.
+    /// Use list_namespaces to discover available namespaces.
+    /// The "default" namespace is always present.
+    /// Example: "default", "production", "team-analytics"
     pub namespace: String,
 }
 
@@ -51,7 +54,9 @@ pub async fn list_topics(client: &Arc<AdminGrpcClient>, params: ListTopicsParams
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DescribeTopicParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events", "/production/analytics-stream"
     pub topic: String,
 }
 
@@ -103,20 +108,34 @@ pub async fn describe_topic(client: &Arc<AdminGrpcClient>, params: DescribeTopic
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateTopicParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events", "/production/analytics-stream"
     pub name: String,
-    /// Number of partitions (0 for non-partitioned)
+
+    /// Number of partitions for parallel processing.
+    /// Set to 0 for non-partitioned topic (single partition).
+    /// Range: 0-256. Higher values enable greater parallelism for high-throughput topics.
+    /// Default: 0 (non-partitioned)
+    /// Example: 4, 8, 16
     #[serde(default)]
     pub partitions: u32,
-    /// Dispatch strategy: "reliable" or "non_reliable"
+
+    /// Message delivery and persistence strategy.
+    /// Options: "reliable" (WAL + cloud storage, survives broker restarts) or
+    /// "non_reliable" (in-memory only, faster but data loss on broker failure).
+    /// Default: "non_reliable"
     #[serde(default = "default_dispatch_strategy")]
     pub dispatch_strategy: String,
-    /// Optional schema subject
+
+    /// Schema subject name from the schema registry (optional).
+    /// If specified, the schema must already be registered. Use register_schema first.
+    /// Example: "user-events-value", "analytics-v2"
     pub schema_subject: Option<String>,
 }
 
 fn default_dispatch_strategy() -> String {
-    "reliable".to_string()
+    "non_reliable".to_string()
 }
 
 pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicParams) -> String {
@@ -166,7 +185,10 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteTopicParams {
-    /// Topic name to delete (e.g., "/default/my-topic")
+    /// Full topic name to delete including namespace.
+    /// Format: "/namespace/topic-name"
+    /// WARNING: This operation cannot be undone. All data will be permanently lost.
+    /// Example: "/default/user-events"
     pub topic: String,
 }
 
@@ -185,7 +207,9 @@ pub async fn delete_topic(client: &Arc<AdminGrpcClient>, params: DeleteTopicPara
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ListSubscriptionsParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
     pub topic: String,
 }
 
@@ -221,9 +245,14 @@ pub async fn list_subscriptions(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct UnsubscribeParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
     pub topic: String,
-    /// Subscription name to delete
+
+    /// Subscription name to delete.
+    /// Use list_subscriptions to discover existing subscription names.
+    /// Example: "my-consumer-group", "analytics-processor"
     pub subscription: String,
 }
 
@@ -253,7 +282,10 @@ pub async fn unsubscribe(client: &Arc<AdminGrpcClient>, params: UnsubscribeParam
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct UnloadTopicParams {
-    /// Topic name to unload (e.g., "/default/my-topic")
+    /// Full topic name to unload including namespace.
+    /// Format: "/namespace/topic-name"
+    /// The topic will be reassigned to a different broker automatically.
+    /// Example: "/default/user-events"
     pub topic: String,
 }
 
@@ -279,14 +311,26 @@ pub async fn unload_topic(client: &Arc<AdminGrpcClient>, params: UnloadTopicPara
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ConfigureTopicSchemaParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
     pub topic: String,
-    /// Schema subject name
+
+    /// Schema subject name from the schema registry.
+    /// The schema must already be registered. Use register_schema first.
+    /// Example: "user-events-value", "analytics-v2"
     pub schema_subject: String,
-    /// Validation policy: none, warn, or enforce
+
+    /// Schema validation policy controlling enforcement level.
+    /// Options: "none" (no validation), "warn" (log violations but allow),
+    /// "enforce" (reject invalid messages).
+    /// Default: "none"
     #[serde(default = "default_validation_policy")]
     pub validation_policy: String,
-    /// Enable deep payload validation
+
+    /// Enable deep payload validation (field-level checks).
+    /// When true, validates individual field constraints beyond schema structure.
+    /// Default: false
     #[serde(default)]
     pub enable_payload_validation: bool,
 }
@@ -329,11 +373,21 @@ pub async fn configure_topic_schema(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SetValidationPolicyParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// The topic must already have a schema configured.
+    /// Example: "/default/user-events"
     pub topic: String,
-    /// Validation policy: none, warn, or enforce
+
+    /// Schema validation policy to apply.
+    /// Options: "none" (no validation), "warn" (log violations),
+    /// "enforce" (reject invalid messages).
+    /// Use this to gradually roll out stricter validation.
     pub policy: String,
-    /// Enable deep payload validation
+
+    /// Enable deep payload validation (field-level checks).
+    /// When true, validates individual field constraints beyond schema structure.
+    /// Default: false
     #[serde(default)]
     pub enable_payload_validation: bool,
 }
@@ -374,7 +428,9 @@ pub async fn set_validation_policy(
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GetSchemaConfigParams {
-    /// Topic name (e.g., "/default/my-topic")
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
     pub topic: String,
 }
 
