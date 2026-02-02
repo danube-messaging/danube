@@ -1,3 +1,30 @@
+<!-- v0.7.1 START -->
+## v0.7.1 - 2026-02-02
+
+🎉 **AI-Native Cluster Management**
+
+Danube now integrates with AI assistants via Model Context Protocol (MCP), enabling natural language cluster management. We've also consolidated admin binaries into a unified tool.
+
+📖 **Read more**: [AI-Native Messaging: Managing Danube with Natural Language](https://dev-state.com/posts/ai_native_messaging_with_danube/)
+
+### 🤖 AI & MCP Integration
+
+* **Model Context Protocol (MCP) Server** (#185) - 40+ tools and 7 guided prompts for natural language cluster management through Claude Desktop, Windsurf, VSCode, and other MCP-compatible IDEs. by @danrusei in 7c9bc2a
+
+* **Enhanced Tool Documentation** (#187) - Detailed MCP tool descriptions with usage guidance, parameter explanations, and configuration requirements. by @danrusei in d2b3979
+
+### 🔧 Binary Consolidation
+
+* **Unified danube-admin** (#184) - Merged CLI and gateway into single binary with three modes (CLI, HTTP server, MCP). 40% smaller, ~400 lines of duplicate code eliminated. by @danrusei in f534b77
+
+### 🐛 Bug Fixes
+
+* Allow manual rebalancing when auto-rebalance is disabled (#189) by @danrusei in 680dc88
+* Fixed topic distribution calculation affecting load balancing (#186) by @danrusei in ecae3a9
+* Simplified Docker folder structure by @danrusei in b953138
+
+<!-- v0.7.1 END -->
+
 <!-- v0.7.0 START -->
 ## v0.7.0 - 2026-01-27
 

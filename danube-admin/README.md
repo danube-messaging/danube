@@ -8,9 +8,9 @@
 
 Danube Admin is a single binary that operates in three modes:
 
-- **CLI Mode** - Interactive command-line tool for cluster operations
-- **Server Mode** - HTTP/JSON API server for the Danube Admin UI
-- **MCP Mode** - Model Context Protocol server for AI assistants
+- **>_ CLI Mode** - Interactive command-line tool for cluster operations
+- **🌐 Server Mode** - HTTP/JSON API server for the Danube Admin UI
+- **🤖 MCP Mode** - Model Context Protocol server for AI assistants
 
 ## 🚀 Quick Start
 
@@ -88,8 +88,6 @@ danube-admin brokers balance                 # View load distribution
 danube-admin brokers rebalance --dry-run     # Preview rebalancing
 ```
 
-[Full broker command documentation →](--help)
-
 ### Topics
 
 Create, delete, and manage topics:
@@ -100,20 +98,6 @@ danube-admin topics list --namespace default
 danube-admin topics describe /default/events
 ```
 
-[Full topic command documentation →](--help)
-
-### Namespaces
-
-Organize topics with namespaces and policies:
-
-```bash
-danube-admin namespaces create production
-danube-admin namespaces topics production
-danube-admin namespaces policies production
-```
-
-[Full namespace command documentation →](--help)
-
 ### Schemas
 
 Register and manage schemas:
@@ -123,8 +107,6 @@ danube-admin schemas register user-events --schema-type json_schema --file schem
 danube-admin schemas get --subject user-events
 danube-admin schemas check user-events --file new-schema.json --schema-type json_schema
 ```
-
-[Full schema command documentation →](--help)
 
 ## ⚙️ Configuration
 
@@ -202,9 +184,75 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Cursor / Windsurf
+### Windsurf
 
-Configure in your IDE's MCP settings with the same command structure.
+Windsurf MCP config (`~/.codeium/windsurf/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "danube-admin": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "/path/to/danube-admin serve --mode mcp --broker-endpoint http://127.0.0.1:50051"
+      ],
+      "env": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "NO_COLOR": "1",
+        "RUST_LOG": "error"
+      }
+    }
+  }
+}
+```
+
+### VSCode
+
+VSCode MCP config:
+
+```json
+{
+  "servers": {
+    "danube-admin": {
+      "type": "stdio",
+      "command": "/path/to/danube-admin",
+      "args": [
+        "serve",
+        "--mode",
+        "mcp",
+        "--broker-endpoint",
+        "http://127.0.0.1:50051"
+      ],
+      "env": {
+        "NO_COLOR": "1",
+        "RUST_LOG": "error"
+      }
+    }
+  }
+}
+```
+
+### Optional: Advanced Configuration
+
+For log access and metrics, create `mcp-config.yml`:
+
+```yaml
+broker_endpoint: http://127.0.0.1:50051
+prometheus_url: http://localhost:9090  # If running Prometheus
+
+# To read Logs from Docker deployments
+deployment:
+  type: docker
+  docker:
+    container_mappings:
+      - id: "broker1"
+        container: "danube-broker1"
+      - id: "broker2"
+        container: "danube-broker2"
+```
+
+Then update the MCP config to include `--config /path/to/mcp-config.yml` in the args.
 
 ### Available Capabilities
 
@@ -237,10 +285,6 @@ danube-admin --help                          # General help
 danube-admin brokers --help                  # Brokers subcommands
 danube-admin topics create --help            # Specific command help
 ```
-
-## 📝 License
-
-Apache 2.0
 
 ---
 
