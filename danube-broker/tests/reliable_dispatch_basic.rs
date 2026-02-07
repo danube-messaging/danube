@@ -20,7 +20,7 @@ async fn run_reliable_basic(topic_prefix: &str, sub_type: SubType) -> Result<()>
         .with_topic(&topic)
         .with_name("producer_reliable_basic")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Consumer
@@ -35,7 +35,7 @@ async fn run_reliable_basic(topic_prefix: &str, sub_type: SubType) -> Result<()>
         .with_consumer_name(cname.to_string())
         .with_subscription(format!("rel_sub_{}", cname))
         .with_subscription_type(sub_type)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 

@@ -1,19 +1,17 @@
 use crate::{
     errors::{DanubeError, Result},
     retry_manager::{status_to_danube_error, RetryManager},
-    DanubeClient, ProducerOptions,
+    DanubeClient, ProducerOptions, SchemaRegistryClient,
 };
 use danube_core::proto::{
-    producer_service_client::ProducerServiceClient, DispatchStrategy as ProtoDispatchStrategy,
-    ProducerAccessMode, ProducerRequest, SchemaReference, StreamMessage as ProtoStreamMessage,
+    producer_service_client::ProducerServiceClient, schema_reference::VersionRef,
+    DispatchStrategy as ProtoDispatchStrategy, ProducerAccessMode, ProducerRequest,
+    SchemaReference, StreamMessage as ProtoStreamMessage,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
     message::{MessageID, StreamMessage},
 };
-
-use tracing::warn;
-
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -21,6 +19,7 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::transport::Uri;
+use tracing::warn;
 
 /// Represents a Producer
 #[derive(Debug)]
@@ -132,14 +131,16 @@ impl TopicProducer {
                     // IMPORTANT: Schema resolution errors must fail producer creation to ensure
                     // that invalid versions are rejected early
                     if let Some(schema_ref) = self.schema_ref.clone() {
-                        let (schema_id, schema_version) = self.resolve_schema_metadata(&schema_ref).await
+                        let (schema_id, schema_version) = self
+                            .resolve_schema_metadata(&schema_ref)
+                            .await
                             .map_err(|e| {
                                 DanubeError::Unrecoverable(format!(
                                     "Failed to resolve schema for producer '{}': {}",
                                     self.producer_name, e
                                 ))
                             })?;
-                        
+
                         self.schema_id = Some(schema_id);
                         self.schema_version = Some(schema_version);
                         tracing::debug!(
@@ -262,9 +263,6 @@ impl TopicProducer {
         &mut self,
         schema_ref: &SchemaReference,
     ) -> Result<(u64, u32)> {
-        use crate::SchemaRegistryClient;
-        use danube_core::proto::schema_reference::VersionRef;
-
         let mut schema_client = SchemaRegistryClient::new(&self.client).await?;
 
         // Resolve based on version_ref
@@ -278,7 +276,7 @@ impl TopicProducer {
 
                 // First get latest to obtain schema_id for the subject
                 let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
-                
+
                 // Validate pinned version exists (must be <= latest)
                 if *pinned_version > latest.version {
                     return Err(DanubeError::Unrecoverable(format!(
@@ -286,17 +284,17 @@ impl TopicProducer {
                         pinned_version, schema_ref.subject, latest.version
                     )));
                 }
-                
+
                 // If pinned version is the latest, use it directly
                 if *pinned_version == latest.version {
                     return Ok((latest.schema_id, latest.version));
                 }
-                
+
                 // Otherwise fetch the specific pinned version
                 let pinned_schema = schema_client
                     .get_schema_version(latest.schema_id, Some(*pinned_version))
                     .await?;
-                    
+
                 Ok((pinned_schema.schema_id, pinned_schema.version))
             }
 
@@ -309,7 +307,7 @@ impl TopicProducer {
 
                 // Get latest schema
                 let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
-                
+
                 // Validate latest version meets minimum requirement
                 if latest.version < *min_version {
                     return Err(DanubeError::Unrecoverable(format!(
@@ -317,13 +315,16 @@ impl TopicProducer {
                         latest.version, min_version, schema_ref.subject
                     )));
                 }
-                
+
                 Ok((latest.schema_id, latest.version))
             }
 
             Some(VersionRef::UseLatest(_)) | None => {
-                tracing::debug!("Resolving latest version for subject '{}'", schema_ref.subject);
-                
+                tracing::debug!(
+                    "Resolving latest version for subject '{}'",
+                    schema_ref.subject
+                );
+
                 // Get latest schema (default behavior)
                 let latest = schema_client.get_latest_schema(&schema_ref.subject).await?;
                 Ok((latest.schema_id, latest.version))

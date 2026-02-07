@@ -38,7 +38,7 @@ async fn first_producer_assigns_schema() -> Result<()> {
         .with_topic(&topic)
         .with_name("first_producer")
         .with_schema_subject("first-schema")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Second producer with same schema - should succeed
@@ -47,7 +47,7 @@ async fn first_producer_assigns_schema() -> Result<()> {
         .with_topic(&topic)
         .with_name("second_producer")
         .with_schema_subject("first-schema")
-        .build();
+        .build()?;
 
     let result = producer2.create().await;
     assert!(
@@ -91,7 +91,7 @@ async fn second_producer_different_schema_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_schema_a")
         .with_schema_subject("schema-a")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Second producer tries to use schema-b (should fail)
@@ -100,7 +100,7 @@ async fn second_producer_different_schema_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_schema_b")
         .with_schema_subject("schema-b")
-        .build();
+        .build()?;
 
     let result = producer2.create().await;
     assert!(
@@ -136,7 +136,7 @@ async fn producer_without_schema_can_connect() -> Result<()> {
         .with_topic(&topic)
         .with_name("first_with_schema")
         .with_schema_subject("optional-schema")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Second producer WITHOUT schema (should succeed - schema is optional for producers)
@@ -144,7 +144,7 @@ async fn producer_without_schema_can_connect() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("second_no_schema")
-        .build();
+        .build()?;
 
     let result = producer2.create().await;
     assert!(
@@ -182,7 +182,7 @@ async fn topic_allows_different_versions_same_subject() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v1")
         .with_schema_version(subject, 1)
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Register V2
@@ -200,7 +200,7 @@ async fn topic_allows_different_versions_same_subject() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v2")
         .with_schema_version(subject, 2)
-        .build();
+        .build()?;
 
     let result = producer2.create().await;
     assert!(

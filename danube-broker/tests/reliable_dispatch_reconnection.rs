@@ -42,7 +42,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .with_topic(&topic)
         .with_name("producer_exclusive_reconnect")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     let total_messages = 10usize;
@@ -55,7 +55,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .with_consumer_name("cons_exclusive_reconnect".to_string())
         .with_subscription("sub_exclusive_reconnect".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -98,7 +98,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         .with_consumer_name("cons_exclusive_reconnect".to_string())
         .with_subscription("sub_exclusive_reconnect".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer_reconnected.subscribe().await?;
     let mut stream_reconnected = consumer_reconnected.receive().await?;
 
@@ -160,7 +160,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         .with_topic(&topic)
         .with_name("producer_shared_reconnect")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     let sub_name = "sub_shared_reconnect";
@@ -172,7 +172,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         .with_consumer_name("c1_shared_reconnect".to_string())
         .with_subscription(sub_name.to_string())
         .with_subscription_type(SubType::Shared)
-        .build();
+        .build()?;
     c1.subscribe().await?;
     let mut s1 = c1.receive().await?;
 
@@ -182,7 +182,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         .with_consumer_name("c2_shared_reconnect".to_string())
         .with_subscription(sub_name.to_string())
         .with_subscription_type(SubType::Shared)
-        .build();
+        .build()?;
     c2.subscribe().await?;
     let mut s2 = c2.receive().await?;
 
@@ -351,7 +351,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_multi_reconnect")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     let payloads: Vec<String> = (0..5).map(|i| format!("msg_{}", i)).collect();
@@ -366,7 +366,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .with_consumer_name(consumer_name.to_string())
         .with_subscription(sub_name.to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -400,7 +400,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .with_consumer_name(consumer_name.to_string())
         .with_subscription(sub_name.to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -425,7 +425,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .with_consumer_name(consumer_name.to_string())
         .with_subscription(sub_name.to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 

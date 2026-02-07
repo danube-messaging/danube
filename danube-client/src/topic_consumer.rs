@@ -56,11 +56,7 @@ impl TopicConsumer {
         sub_type: Option<SubType>,
         consumer_options: ConsumerOptions,
     ) -> Self {
-        let subscription_type = if let Some(sub_type) = sub_type {
-            sub_type
-        } else {
-            SubType::Shared
-        };
+        let subscription_type = sub_type.unwrap_or(SubType::Shared);
 
         let retry_manager = RetryManager::new(
             consumer_options.max_retries,

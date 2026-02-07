@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         .with_topic(topic)
         .with_name(producer_name)
         .with_schema_subject("user-events")
-        .build();
+        .build()?;
 
     producer.create().await?;
     println!(

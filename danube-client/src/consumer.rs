@@ -14,6 +14,7 @@ use std::sync::{
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
 
 /// Represents the type of subscription
 ///
@@ -61,11 +62,7 @@ impl Consumer {
         sub_type: Option<SubType>,
         consumer_options: ConsumerOptions,
     ) -> Self {
-        let subscription_type = if let Some(sub_type) = sub_type {
-            sub_type
-        } else {
-            SubType::Shared
-        };
+        let subscription_type = sub_type.unwrap_or(SubType::Shared);
 
         Consumer {
             client,
@@ -215,7 +212,7 @@ impl Consumer {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("Error receiving message: {}", e);
+                                        warn!(error = %e, "error receiving message");
                                         break; // Stream error, will retry receive
                                     }
                                 }
@@ -228,10 +225,7 @@ impl Consumer {
                             }
                             // Check if this is an unrecoverable error (e.g., stream client not initialized)
                             if matches!(error, DanubeError::Unrecoverable(_)) {
-                                eprintln!(
-                                    "Unrecoverable error detected, attempting resubscription: {:?}",
-                                    error
-                                );
+                                warn!(error = ?error, "unrecoverable error detected, attempting resubscription");
 
                                 // Attempt to resubscribe for unrecoverable errors
                                 let resubscribe_result = {
@@ -241,15 +235,14 @@ impl Consumer {
 
                                 match resubscribe_result {
                                     Ok(_) => {
-                                        eprintln!("Resubscription successful after unrecoverable error, continuing...");
+                                        info!(
+                                            "resubscription successful after unrecoverable error"
+                                        );
                                         attempts = 0; // Reset attempts after successful resubscription
                                         continue; // Go back to creating stream_result
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "Resubscription failed after unrecoverable error: {:?}",
-                                            e
-                                        );
+                                        error!(error = ?e, "resubscription failed after unrecoverable error");
                                         return; // Exit task if resubscription fails
                                     }
                                 }
@@ -259,7 +252,7 @@ impl Consumer {
                             if retry_manager.is_retryable_error(&error) {
                                 attempts += 1;
                                 if attempts > max_retries {
-                                    eprintln!("Max retries exceeded for consumer receive, attempting resubscription");
+                                    warn!("max retries exceeded for consumer receive, attempting resubscription");
 
                                     // Attempt to resubscribe
                                     let resubscribe_result = {
@@ -269,11 +262,11 @@ impl Consumer {
 
                                     match resubscribe_result {
                                         Ok(_) => {
-                                            eprintln!("Resubscription successful, continuing...");
+                                            info!("resubscription successful");
                                             break; // Break out of retry loop and go back to creating stream_result
                                         }
                                         Err(e) => {
-                                            eprintln!("Resubscription failed: {:?}", e);
+                                            error!(error = ?e, "resubscription failed");
                                             return; // Exit task if resubscription fails
                                         }
                                     }
@@ -281,7 +274,7 @@ impl Consumer {
                                 let backoff = retry_manager.calculate_backoff(attempts - 1);
                                 tokio::time::sleep(backoff).await;
                             } else {
-                                eprintln!("Non-retryable error in consumer receive: {:?}", error);
+                                error!(error = ?error, "non-retryable error in consumer receive");
                                 return; // Non-retryable error
                             }
                         }
@@ -412,22 +405,24 @@ impl ConsumerBuilder {
     /// # Returns
     ///
     /// -  A `Consumer` instance if the builder configuration is valid and the consumer is created successfully.
-    pub fn build(self) -> Consumer {
-        let topic = self.topic.expect("you should specify the topic");
-        let consumer_name = self
-            .consumer_name
-            .expect("you should provide a name for the consumer");
-        let subscription = self
-            .subscription
-            .expect("you should provide the name of the subscription");
-        Consumer::new(
+    pub fn build(self) -> Result<Consumer> {
+        let topic = self.topic.ok_or_else(|| {
+            DanubeError::Unrecoverable("topic is required to build a Consumer".into())
+        })?;
+        let consumer_name = self.consumer_name.ok_or_else(|| {
+            DanubeError::Unrecoverable("consumer name is required to build a Consumer".into())
+        })?;
+        let subscription = self.subscription.ok_or_else(|| {
+            DanubeError::Unrecoverable("subscription is required to build a Consumer".into())
+        })?;
+        Ok(Consumer::new(
             self.client,
             topic,
             consumer_name,
             subscription,
             self.subscription_type,
             self.consumer_options,
-        )
+        ))
     }
 }
 

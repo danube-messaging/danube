@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
         .with_consumer_name(consumer_name)
         .with_subscription(subscription_name)
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
 
     // Subscribe to the topic
     consumer.subscribe().await?;

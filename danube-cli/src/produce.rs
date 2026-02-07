@@ -333,7 +333,7 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         producer_builder = producer_builder.with_reliable_dispatch();
     }
 
-    let mut producer = producer_builder.build();
+    let mut producer = producer_builder.build()?;
 
     producer.create().await
         .context("Failed to create producer")?;

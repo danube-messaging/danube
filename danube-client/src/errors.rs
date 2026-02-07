@@ -2,6 +2,7 @@ use base64::prelude::*;
 use prost::Message;
 use thiserror::Error;
 use tonic::{codegen::http::uri, Status};
+use tracing::warn;
 
 use danube_core::proto::{ErrorMessage, ErrorType};
 
@@ -51,7 +52,7 @@ pub(crate) fn decode_error_details(status: &Status) -> Option<ErrorMessage> {
         match ErrorMessage::decode(&buffer[..]) {
             Ok(error_message) => Some(error_message),
             Err(err) => {
-                eprintln!("Error decoding error message: {}", err);
+                warn!(error = %err, "error decoding error message");
                 None
             }
         }

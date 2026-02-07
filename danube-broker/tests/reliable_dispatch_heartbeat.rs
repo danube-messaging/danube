@@ -47,7 +47,7 @@ async fn test_notification_coalescing_recovery() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_coalescing")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create exclusive consumer
@@ -57,7 +57,7 @@ async fn test_notification_coalescing_recovery() -> Result<()> {
         .with_consumer_name("consumer_coalescing".to_string())
         .with_subscription("sub_coalescing".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -145,7 +145,7 @@ async fn test_subscription_creation_race_condition() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_race")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create consumer (subscription initialization starts)
@@ -155,7 +155,7 @@ async fn test_subscription_creation_race_condition() -> Result<()> {
         .with_consumer_name("consumer_race".to_string())
         .with_subscription("sub_race".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -247,7 +247,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_disconnect")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Phase 1: Consumer connects and processes some messages
@@ -257,7 +257,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         .with_consumer_name("consumer_disconnect".to_string())
         .with_subscription("sub_disconnect".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -304,7 +304,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         .with_consumer_name("consumer_disconnect".to_string()) // SAME consumer name
         .with_subscription("sub_disconnect".to_string()) // Same subscription
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer2.subscribe().await?;
     let mut stream2 = consumer2.receive().await?;
 
@@ -378,7 +378,7 @@ async fn test_poll_next_returns_none_recovery() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_poll_none")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create exclusive consumer
@@ -388,7 +388,7 @@ async fn test_poll_next_returns_none_recovery() -> Result<()> {
         .with_consumer_name("consumer_poll_none".to_string())
         .with_subscription("sub_poll_none".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 

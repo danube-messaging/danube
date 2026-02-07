@@ -102,16 +102,18 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         .with_consumer_name(consume.consumer)
         .with_subscription(consume.subscription)
         .with_subscription_type(sub_type)
-        .build();
+        .build()?;
 
     // Initialize schema registry client for runtime schema fetching
-    let mut schema_client = SchemaRegistryClient::new(&client).await
+    let mut schema_client = SchemaRegistryClient::new(&client)
+        .await
         .context("Failed to create schema registry client")?;
 
     println!("ℹ️  Consumer will fetch schemas dynamically based on message metadata");
-    
+
     // Cache for schema validators
-    let mut schema_cache: HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)> = HashMap::new();
+    let mut schema_cache: HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)> =
+        HashMap::new();
 
     consumer.subscribe().await?;
     let mut message_stream = consumer.receive().await?;
@@ -129,14 +131,16 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         let (schema_info, validator) = if let Some(schema_id) = stream_message.schema_id {
             // Check cache first
             if !schema_cache.contains_key(&schema_id) {
-                match fetch_and_cache_schema(&mut schema_client, schema_id, &mut schema_cache).await {
-                    Ok(_) => {},
+                match fetch_and_cache_schema(&mut schema_client, schema_id, &mut schema_cache).await
+                {
+                    Ok(_) => {}
                     Err(e) => {
                         eprintln!("⚠️  Failed to fetch schema {}: {}", schema_id, e);
                     }
                 }
             }
-            schema_cache.get(&schema_id)
+            schema_cache
+                .get(&schema_id)
                 .map(|(info, val)| (Some(info), val.as_ref()))
                 .unwrap_or((None, None))
         } else {
@@ -169,25 +173,30 @@ async fn fetch_and_cache_schema(
     schema_id: u64,
     cache: &mut HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)>,
 ) -> Result<()> {
-    let schema_info: SchemaInfo = schema_client.get_schema_by_id(schema_id).await
+    let schema_info: SchemaInfo = schema_client
+        .get_schema_by_id(schema_id)
+        .await
         .context("Failed to fetch schema from registry")?;
 
-    println!("✅ Loaded schema: {} v{} (ID: {}, Type: {})", 
-        schema_info.subject, schema_info.version, schema_info.schema_id, schema_info.schema_type);
+    println!(
+        "✅ Loaded schema: {} v{} (ID: {}, Type: {})",
+        schema_info.subject, schema_info.version, schema_info.schema_id, schema_info.schema_type
+    );
 
     // Compile JSON schema validator if applicable
     let validator = if schema_info.schema_type == "json_schema" {
         if let Some(schema_str) = schema_info.schema_definition_as_string() {
             match serde_json::from_str::<Value>(&schema_str) {
-                Ok(schema_value) => {
-                    match jsonschema::validator_for(&schema_value) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            eprintln!("⚠️  Warning: Failed to compile JSON schema validator: {}", e);
-                            None
-                        }
+                Ok(schema_value) => match jsonschema::validator_for(&schema_value) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!(
+                            "⚠️  Warning: Failed to compile JSON schema validator: {}",
+                            e
+                        );
+                        None
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("⚠️  Warning: Failed to parse JSON schema: {}", e);
                     None

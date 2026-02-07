@@ -81,7 +81,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_topic_move")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create and subscribe consumer BEFORE producing messages
@@ -91,7 +91,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_consumer_name("consumer_topic_move".to_string())
         .with_subscription("sub_topic_move".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -179,7 +179,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_topic_move_2")
         .with_reliable_dispatch()
-        .build();
+        .build()?;
     producer2.create().await?;
 
     // Give producer time to fully connect
@@ -202,7 +202,7 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         .with_consumer_name("consumer_topic_move_2".to_string())
         .with_subscription("sub_topic_move".to_string()) // Same subscription
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer2.subscribe().await?;
     let mut stream2 = consumer2.receive().await?;
 
