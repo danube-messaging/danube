@@ -1,5 +1,5 @@
 use crate::{
-    errors::{decode_error_details, DanubeError, Result},
+    errors::{DanubeError, Result},
     DanubeClient,
 };
 use rand::{rng, Rng};
@@ -65,24 +65,18 @@ impl RetryManager {
             .await
     }
 
-    /// Check if an error is retryable based on status codes and error types
+    /// Check if an error is retryable based on gRPC status codes.
+    ///
+    /// Retryable codes:
+    /// - `Unavailable` — broker not reachable or topic moved (ServiceNotReady)
+    /// - `DeadlineExceeded` — request timed out
+    /// - `ResourceExhausted` — rate limited / overloaded
     pub fn is_retryable_error(&self, error: &DanubeError) -> bool {
         match error {
-            DanubeError::FromStatus(status, error_message) => {
-                // Transport-level retryable errors
-                let transport_retryable = matches!(
-                    status.code(),
-                    Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted
-                );
-
-                // Service-level retryable errors (SERVICE_NOT_READY = 3)
-                let service_retryable = error_message
-                    .as_ref()
-                    .map(|msg| msg.error_type == 3)
-                    .unwrap_or(false);
-
-                transport_retryable || service_retryable
-            }
+            DanubeError::FromStatus(status) => matches!(
+                status.code(),
+                Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted
+            ),
             _ => false,
         }
     }
@@ -97,8 +91,7 @@ impl RetryManager {
     }
 }
 
-/// Convert gRPC Status to DanubeError with proper error details
+/// Convert gRPC Status to DanubeError
 pub fn status_to_danube_error(status: Status) -> DanubeError {
-    let error_message = decode_error_details(&status);
-    DanubeError::FromStatus(status, error_message)
+    DanubeError::FromStatus(status)
 }

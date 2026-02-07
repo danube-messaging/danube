@@ -74,7 +74,7 @@ impl LookupService {
             }
             // maybe some checks on the status, if anything can be handled by server
             Err(status) => {
-                return Err(DanubeError::FromStatus(status, None));
+                return Err(DanubeError::FromStatus(status));
             }
         };
 
@@ -113,7 +113,7 @@ impl LookupService {
                 lookup_resp.partitions
             }
             Err(status) => {
-                return Err(DanubeError::FromStatus(status, None));
+                return Err(DanubeError::FromStatus(status));
             }
         };
 

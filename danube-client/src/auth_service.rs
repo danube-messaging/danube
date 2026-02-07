@@ -41,7 +41,7 @@ impl AuthService {
         let response: Response<AuthResponse> = client
             .authenticate(request)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?;
+            .map_err(|status| DanubeError::FromStatus(status))?;
         let token = response.into_inner().token;
 
         // Store the token and its expiry time

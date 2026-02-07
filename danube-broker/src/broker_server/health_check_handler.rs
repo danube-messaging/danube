@@ -1,11 +1,10 @@
 use crate::broker_server::DanubeServerImpl;
-use crate::error_message::create_error_status;
 use danube_core::proto::{
     health_check_request::ClientType, health_check_response::ClientStatus,
-    health_check_server::HealthCheck, ErrorType, HealthCheckRequest, HealthCheckResponse,
+    health_check_server::HealthCheck, HealthCheckRequest, HealthCheckResponse,
 };
 
-use tonic::{Code, Request, Response};
+use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
 
 #[tonic::async_trait]
@@ -35,14 +34,7 @@ impl HealthCheck for DanubeServerImpl {
                 client_status = ClientStatus::Close;
             }
         } else {
-            let error_string = "Invalid client type";
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::UnknownError,
-                error_string,
-                None,
-            );
-            return Err(status);
+            return Err(Status::invalid_argument("Invalid client type"));
         }
 
         let response = HealthCheckResponse {

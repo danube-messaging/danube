@@ -96,7 +96,7 @@ impl SchemaRegistryClient {
         let response = client
             .get_schema(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(SchemaInfo::from(response))
     }
@@ -114,7 +114,7 @@ impl SchemaRegistryClient {
         let response = client
             .get_schema(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(SchemaInfo::from(response))
     }
@@ -130,7 +130,7 @@ impl SchemaRegistryClient {
         let response = client
             .get_latest_schema(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(SchemaInfo::from(response))
     }
@@ -159,7 +159,7 @@ impl SchemaRegistryClient {
         let response = client
             .check_compatibility(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(response)
     }
@@ -189,7 +189,7 @@ impl SchemaRegistryClient {
         let response = client
             .set_compatibility_mode(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(response)
     }
@@ -203,7 +203,7 @@ impl SchemaRegistryClient {
         let response = client
             .list_versions(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(response.versions.into_iter().map(|v| v.version).collect())
     }
@@ -227,7 +227,7 @@ impl SchemaRegistryClient {
         let response = client
             .register_schema(req)
             .await
-            .map_err(|status| DanubeError::FromStatus(status, None))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
         Ok(response)
     }

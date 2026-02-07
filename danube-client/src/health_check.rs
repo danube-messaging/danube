@@ -110,7 +110,7 @@ impl HealthCheckService {
                     Ok(())
                 }
             }
-            Err(status) => Err(DanubeError::FromStatus(status, None)),
+            Err(status) => Err(DanubeError::FromStatus(status)),
         }
     }
 }

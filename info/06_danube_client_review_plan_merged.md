@@ -85,9 +85,12 @@ This plan merges the original client review plan (info/04_danube_client_improvem
     - Fixed inverted `proxy` flag: `proxy = broker_url != connect_url` (was backwards).
     - Added `Display` and `FromStr` for `CompatibilityMode` and `SchemaType` enums.
 
-## Phase 4 — Broker alignment (only if needed)
-18. **Broker error metadata alignment**
-    - Ensure `error-message-bin` consistently encodes retryable errors if client retry classification is unreliable.
+## Phase 4 — Broker alignment ✅
+18. ~~**Broker error metadata alignment**~~ ✅
+    - **Decision**: Dropped custom `ErrorMessage`/`ErrorType` metadata in favor of plain gRPC status codes.
+    - **Rationale**: `ServiceNotReady` was always sent with `Code::Unavailable`, so the custom metadata was redundant. Plain status codes work natively in Go/Python clients — no custom decoding needed.
+    - **Client**: Simplified `DanubeError::FromStatus(Status)` (removed `Option<ErrorMessage>`). `is_retryable_error()` now checks only gRPC codes (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Removed `decode_error_details`, `error_type_from_i32`, and `ErrorMessage`/`ErrorType` imports.
+    - **Broker**: Replaced all `create_error_status()` calls with plain `Status::*()` in `auth_handler.rs`, `discovery_handler.rs`, `health_check_handler.rs`, `broker_service.rs`, `topic_cluster.rs`. Deleted `error_message.rs`. Also improved status code accuracy (e.g., `TopicNotFound` now uses `Status::not_found` instead of `Status::invalid_argument`).
 
 ## Recommended Execution Order
 1 → 2 → 4 → 3 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15 → 16 → 17 → 18

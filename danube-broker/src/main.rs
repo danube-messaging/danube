@@ -8,7 +8,6 @@ mod broker_service;
 mod consumer;
 mod danube_service;
 mod dispatcher;
-mod error_message;
 mod message;
 mod policies;
 mod producer;
@@ -197,16 +196,15 @@ async fn main() -> Result<()> {
     );
 
     // Load Manager, monitor and distribute load across brokers.
-    let (assignment_strategy, rebalancing_config) = if let Some(ref lm_config) =
-        service_config.load_manager
-    {
-        (
-            lm_config.assignment_strategy.clone(),
-            Some(lm_config.rebalancing.clone()),
-        )
-    } else {
-        (Default::default(), None)
-    };
+    let (assignment_strategy, rebalancing_config) =
+        if let Some(ref lm_config) = service_config.load_manager {
+            (
+                lm_config.assignment_strategy.clone(),
+                Some(lm_config.rebalancing.clone()),
+            )
+        } else {
+            (Default::default(), None)
+        };
 
     let load_manager = LoadManager::with_config(
         broker_service.broker_id,

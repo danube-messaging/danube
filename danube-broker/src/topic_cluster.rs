@@ -5,12 +5,9 @@ use tokio::sync::Mutex;
 use tonic::Status;
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, ErrorType, SchemaReference};
+use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaReference};
 
-use crate::{
-    broker_service::validate_topic_format, error_message::create_error_status, policies::Policies,
-    resources::Resources,
-};
+use crate::{broker_service::validate_topic_format, policies::Policies, resources::Resources};
 
 /// TopicCluster encapsulates cluster/metadata operations for topics.
 ///
@@ -44,28 +41,14 @@ impl TopicCluster {
     ) -> Result<(), Status> {
         // The topic format is /{namespace_name}/{topic_name}
         if !validate_topic_format(topic_name) {
-            let error_string = format!(
+            return Err(Status::invalid_argument(format!(
                 "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
                 topic_name
-            );
-            let status = create_error_status(
-                tonic::Code::InvalidArgument,
-                ErrorType::InvalidTopicName,
-                &error_string,
-                None,
-            );
-            return Err(status);
+            )));
         }
 
         if dispatch_strategy.is_none() {
-            let error_string = "Dispatch strategy is missing";
-            let status = create_error_status(
-                tonic::Code::InvalidArgument,
-                ErrorType::UnknownError,
-                error_string,
-                None,
-            );
-            return Err(status);
+            return Err(Status::invalid_argument("Dispatch strategy is missing"));
         }
 
         let ns_name = get_nsname_from_topic(topic_name);
@@ -84,14 +67,14 @@ impl TopicCluster {
         // Check if topic already exists (prevent duplicate creation)
         {
             let resources = self.resources.lock().await;
-            if resources.namespace.check_if_topic_exist(ns_name, topic_name) {
-                let status = create_error_status(
-                    tonic::Code::AlreadyExists,
-                    ErrorType::UnknownError,
-                    &format!("Topic '{}' already exists", topic_name),
-                    None,
-                );
-                return Err(status);
+            if resources
+                .namespace
+                .check_if_topic_exist(ns_name, topic_name)
+            {
+                return Err(Status::already_exists(format!(
+                    "Topic '{}' already exists",
+                    topic_name
+                )));
             }
         }
 
@@ -108,16 +91,10 @@ impl TopicCluster {
                     .namespace
                     .check_if_topic_exist(ns_name, base_topic)
                 {
-                    let status = create_error_status(
-                        tonic::Code::AlreadyExists,
-                        ErrorType::UnknownError,
-                        &format!(
-                            "Cannot create partitioned topic '{}': a non-partitioned topic '{}' already exists. Delete the non-partitioned topic first.",
-                            topic_name, base_topic
-                        ),
-                        None,
-                    );
-                    return Err(status);
+                    return Err(Status::already_exists(format!(
+                        "Cannot create partitioned topic '{}': a non-partitioned topic '{}' already exists. Delete the non-partitioned topic first.",
+                        topic_name, base_topic
+                    )));
                 }
             }
         } else {
@@ -130,16 +107,10 @@ impl TopicCluster {
                 .await;
 
             if !partitions.is_empty() {
-                let status = create_error_status(
-                    tonic::Code::AlreadyExists,
-                    ErrorType::UnknownError,
-                    &format!(
-                        "Cannot create topic '{}': partitioned topics with this base name already exist (found {} partitions). Delete the partitioned topics first.",
-                        topic_name, partitions.len()
-                    ),
-                    None,
-                );
-                return Err(status);
+                return Err(Status::already_exists(format!(
+                    "Cannot create topic '{}': partitioned topics with this base name already exist (found {} partitions). Delete the partitioned topics first.",
+                    topic_name, partitions.len()
+                )));
             }
         }
 

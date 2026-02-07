@@ -366,17 +366,6 @@ pub struct AuthResponse {
     #[prost(string, tag = "1")]
     pub token: ::prost::alloc::string::String,
 }
-/// A message that encapsulate the error details
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ErrorMessage {
-    #[prost(enumeration = "ErrorType", tag = "1")]
-    pub error_type: i32,
-    #[prost(string, tag = "2")]
-    pub error_message: ::prost::alloc::string::String,
-    /// Optional: for redirection information
-    #[prost(string, tag = "3")]
-    pub redirect_to: ::prost::alloc::string::String,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ProducerAccessMode {
@@ -427,51 +416,6 @@ impl DispatchStrategy {
         match value {
             "NonReliable" => Some(Self::NonReliable),
             "Reliable" => Some(Self::Reliable),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum ErrorType {
-    UnknownError = 0,
-    /// The topic name is not valid
-    InvalidTopicName = 1,
-    /// Topic not found
-    TopicNotFound = 2,
-    /// Any error that requires client retry operation with a fresh lookup
-    ServiceNotReady = 3,
-    ProducerAlreadyExists = 4,
-    SubscribePermissionDenied = 5,
-    /// Subscription not found
-    SubscriptionNotFound = 6,
-}
-impl ErrorType {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::UnknownError => "UNKNOWN_ERROR",
-            Self::InvalidTopicName => "INVALID_TOPIC_NAME",
-            Self::TopicNotFound => "TOPIC_NOT_FOUND",
-            Self::ServiceNotReady => "SERVICE_NOT_READY",
-            Self::ProducerAlreadyExists => "PRODUCER_ALREADY_EXISTS",
-            Self::SubscribePermissionDenied => "SUBSCRIBE_PERMISSION_DENIED",
-            Self::SubscriptionNotFound => "SUBSCRIPTION_NOT_FOUND",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "UNKNOWN_ERROR" => Some(Self::UnknownError),
-            "INVALID_TOPIC_NAME" => Some(Self::InvalidTopicName),
-            "TOPIC_NOT_FOUND" => Some(Self::TopicNotFound),
-            "SERVICE_NOT_READY" => Some(Self::ServiceNotReady),
-            "PRODUCER_ALREADY_EXISTS" => Some(Self::ProducerAlreadyExists),
-            "SUBSCRIBE_PERMISSION_DENIED" => Some(Self::SubscribePermissionDenied),
-            "SUBSCRIPTION_NOT_FOUND" => Some(Self::SubscriptionNotFound),
             _ => None,
         }
     }

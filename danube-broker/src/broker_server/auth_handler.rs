@@ -1,10 +1,9 @@
 use crate::auth_jwt::{create_token, Claims};
 use crate::broker_server::DanubeServerImpl;
-use crate::error_message::create_error_status;
 
-use danube_core::proto::{auth_service_server::AuthService, AuthRequest, AuthResponse, ErrorType};
+use danube_core::proto::{auth_service_server::AuthService, AuthRequest, AuthResponse};
 
-use tonic::{Code, Request, Response};
+use tonic::{Request, Response, Status};
 use tracing::Level;
 
 #[tonic::async_trait]
@@ -26,28 +25,17 @@ impl AuthService for DanubeServerImpl {
             let token = match create_token(&claims, &self.auth.jwt.as_ref().unwrap().secret_key) {
                 Ok(token) => token,
                 Err(e) => {
-                    let error_string = format!("Unable to create JWT token: {}", e);
-                    let status = create_error_status(
-                        Code::InvalidArgument,
-                        ErrorType::UnknownError,
-                        &error_string,
-                        None,
-                    );
-                    return Err(status);
+                    return Err(Status::invalid_argument(format!(
+                        "Unable to create JWT token: {}",
+                        e
+                    )));
                 }
             };
 
             let response = AuthResponse { token };
             Ok(Response::new(response))
         } else {
-            let error_string = format!("Invalid API key");
-            let status = create_error_status(
-                Code::InvalidArgument,
-                ErrorType::UnknownError,
-                &error_string,
-                None,
-            );
-            return Err(status);
+            return Err(Status::invalid_argument("Invalid API key"));
         }
     }
 }
