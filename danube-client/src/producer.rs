@@ -124,17 +124,7 @@ impl Producer {
         data: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
     ) -> Result<u64> {
-        let next_partition = match self.partitions {
-            Some(_) => self
-                .message_router
-                .as_ref()
-                .expect("already initialized")
-                .round_robin(),
-
-            None => 0,
-        };
-
-        // Create retry manager for producers
+        let partition = self.select_partition();
         let retry_manager = RetryManager::new(
             self.producer_options.max_retries,
             self.producer_options.base_backoff_ms,
@@ -142,94 +132,89 @@ impl Producer {
         );
 
         let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 {
-            5
-        } else {
-            self.producer_options.max_retries
-        };
 
         loop {
             let send_result = {
                 let mut producers = self.producers.lock().await;
-                producers[next_partition]
+                producers[partition]
                     .send(data.clone(), attributes.clone())
                     .await
             };
 
             match send_result {
                 Ok(sequence_id) => return Ok(sequence_id),
+
+                // Unrecoverable: attempt full recreation
+                Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
+                    warn!(error = ?error, "unrecoverable error, attempting producer recreation");
+                    self.recreate_producer(partition).await?;
+                    attempts = 0;
+                }
+
+                // Retryable: backoff, then escalate to lookup+recreate after max retries
+                Err(error) if retry_manager.is_retryable_error(&error) => {
+                    attempts += 1;
+                    if attempts > retry_manager.max_retries() {
+                        warn!("max retries exceeded, attempting broker lookup and recreation");
+                        self.lookup_and_recreate(partition, error).await?;
+                        attempts = 0;
+                        continue;
+                    }
+                    let backoff = retry_manager.calculate_backoff(attempts - 1);
+                    tokio::time::sleep(backoff).await;
+                }
+
+                // Non-retryable: bail
                 Err(error) => {
-                    // Check if this is an unrecoverable error (e.g., stream client not initialized)
-                    if matches!(error, DanubeError::Unrecoverable(_)) {
-                        warn!(error = ?error, "unrecoverable error detected in producer send, attempting recreation");
-
-                        // Attempt to recreate the producer for unrecoverable errors
-                        let recreate_result = {
-                            let mut producers = self.producers.lock().await;
-                            producers[next_partition].create().await
-                        };
-
-                        match recreate_result {
-                            Ok(_) => {
-                                info!("producer recreation successful after unrecoverable error");
-                                attempts = 0; // Reset attempts after successful recreation
-                                continue; // Go back to sending
-                            }
-                            Err(e) => {
-                                error!(error = ?e, "producer recreation failed after unrecoverable error");
-                                return Err(e); // Return error if recreation fails
-                            }
-                        }
-                    }
-
-                    // Failed to send, check if retryable
-                    if retry_manager.is_retryable_error(&error) {
-                        attempts += 1;
-                        if attempts > max_retries {
-                            warn!("max retries exceeded for producer send, attempting broker lookup and recreation");
-
-                            // Attempt broker lookup and producer recreation
-                            let lookup_and_recreate_result = {
-                                let mut producers = self.producers.lock().await;
-                                let producer = &mut producers[next_partition];
-
-                                // Perform lookup and reconnect
-                                if let Ok(new_addr) = producer
-                                    .client
-                                    .lookup_service
-                                    .handle_lookup(&producer.client.uri, &producer.topic)
-                                    .await
-                                {
-                                    producer.client.uri = new_addr;
-                                    producer.connect(&producer.client.uri.clone()).await?;
-                                    // Recreate producer on new connection
-                                    producer.create().await
-                                } else {
-                                    Err(error)
-                                }
-                            };
-
-                            match lookup_and_recreate_result {
-                                Ok(_) => {
-                                    info!("broker lookup and producer recreation successful");
-                                    attempts = 0; // Reset attempts after successful recreation
-                                    continue; // Go back to sending
-                                }
-                                Err(e) => {
-                                    error!(error = ?e, "broker lookup and producer recreation failed");
-                                    return Err(e); // Return error if recreation fails
-                                }
-                            }
-                        }
-                        let backoff = retry_manager.calculate_backoff(attempts - 1);
-                        tokio::time::sleep(backoff).await;
-                    } else {
-                        error!(error = ?error, "non-retryable error in producer send");
-                        return Err(error); // Non-retryable error
-                    }
+                    error!(error = ?error, "non-retryable error in producer send");
+                    return Err(error);
                 }
             }
         }
+    }
+
+    /// Select the next partition using round-robin, or 0 for non-partitioned topics.
+    fn select_partition(&self) -> usize {
+        match self.partitions {
+            Some(_) => self
+                .message_router
+                .as_ref()
+                .expect("message_router must be initialized for partitioned topics")
+                .round_robin(),
+            None => 0,
+        }
+    }
+
+    /// Recreate a single topic producer (e.g., after an unrecoverable error).
+    async fn recreate_producer(&self, partition: usize) -> Result<()> {
+        let mut producers = self.producers.lock().await;
+        producers[partition].create().await?;
+        info!("producer recreation successful");
+        Ok(())
+    }
+
+    /// Look up a new broker and recreate the topic producer on the new connection.
+    /// On lookup failure, returns the `original_error` from the failed send.
+    async fn lookup_and_recreate(
+        &self,
+        partition: usize,
+        original_error: DanubeError,
+    ) -> Result<()> {
+        let mut producers = self.producers.lock().await;
+        let producer = &mut producers[partition];
+
+        let new_addr = producer
+            .client
+            .lookup_service
+            .handle_lookup(&producer.client.uri, &producer.topic)
+            .await
+            .map_err(|_| original_error)?;
+
+        producer.client.uri = new_addr;
+        producer.connect(&producer.client.uri.clone()).await?;
+        producer.create().await?;
+        info!("broker lookup and producer recreation successful");
+        Ok(())
     }
 }
 

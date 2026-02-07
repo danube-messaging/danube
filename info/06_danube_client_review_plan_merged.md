@@ -20,22 +20,24 @@ This plan merges the original client review plan (info/04_danube_client_improvem
 4. ~~**Imports to top of file**~~ ✅
    - Moved mid-file and function-body `use` statements to top in `producer.rs` and `topic_producer.rs`.
 
-## Phase 1 — Cross-cutting structural cleanup
-5. **Centralize retry/backoff logic**
-   - Extract a generic retry helper in `RetryManager` and collapse duplicate loops in:
-     - `Consumer::receive`
-     - `TopicConsumer::subscribe`
-     - `Producer::send`
-     - `TopicProducer::create`
+## Phase 1 — Cross-cutting structural cleanup ✅
+5. ~~**Centralize retry/backoff logic**~~ ✅
+   - Extracted `try_create()`/`lookup_new_broker()` in `TopicProducer`, `try_subscribe()`/`lookup_new_broker()` in `TopicConsumer`.
+   - Extracted `select_partition()`/`recreate_producer()`/`lookup_and_recreate()` in `Producer`, `resubscribe()` in `Consumer`.
+   - Removed redundant max_retries re-defaulting everywhere (RetryManager already handles it).
 
-6. **Unify auth token insertion**
-   - Use a single helper (likely `AuthService` or `RetryManager::insert_auth_token`) and remove duplicates in lookup/health check.
+6. ~~**Unify auth token insertion**~~ ✅
+   - Single implementation: `AuthService::insert_token_if_needed()`. Removed duplicates from `LookupService`, `HealthCheckService`. `RetryManager` delegates to it.
 
-7. **Fix `MessageRouter` round‑robin race**
-   - Use `fetch_add` or `fetch_update` instead of `load` + `store`.
+7. ~~**Fix `MessageRouter` round‑robin race**~~ ✅
+   - Replaced non-atomic `load`+`store` with single `fetch_add(1, Relaxed) % partitions`.
 
-8. **Replace magic numbers with named constants/enums**
-   - Health check client type, retry defaults, channel buffer sizes.
+8. ~~**Replace magic numbers with named constants/enums**~~ ✅
+   - `ClientType::Producer`/`Consumer` enum for health check (from proto).
+   - `DEFAULT_MAX_RETRIES`, `DEFAULT_BASE_BACKOFF_MS`, `DEFAULT_MAX_BACKOFF_MS` in `RetryManager`.
+   - `RECEIVE_CHANNEL_BUFFER`, `GRACEFUL_CLOSE_DELAY_MS` in `Consumer`.
+   - `HEALTH_CHECK_INTERVAL_SECS` in `HealthCheckService`.
+   - `TOKEN_EXPIRY_SECS` in `AuthService`.
 
 ## Phase 2 — Consumer/Producer refactor for readability
 9. **Refactor `Consumer::receive` into smaller functions**

@@ -8,8 +8,8 @@ use tracing::warn;
 
 use danube_core::message::MessageID;
 use danube_core::proto::{
-    consumer_service_client::ConsumerServiceClient, AckRequest, AckResponse, ConsumerRequest,
-    ReceiveRequest, StreamMessage,
+    consumer_service_client::ConsumerServiceClient, health_check_request::ClientType, AckRequest,
+    AckResponse, ConsumerRequest, ReceiveRequest, StreamMessage,
 };
 
 use std::sync::{
@@ -85,73 +85,80 @@ impl TopicConsumer {
     }
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
         let mut attempts = 0;
-        let max_retries = 5; // Default for consumers
 
         loop {
-            // Connect to current broker
-            self.connect(&self.client.uri.clone()).await?;
-
-            let consumer_request = ConsumerRequest {
-                request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
-                topic_name: self.topic_name.clone(),
-                consumer_name: self.consumer_name.clone(),
-                subscription: self.subscription.clone(),
-                subscription_type: self.subscription_type.clone() as i32,
-            };
-
-            let mut request = tonic::Request::new(consumer_request);
-            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-            let stream_client = self.stream_client.as_mut().unwrap();
-            match stream_client.subscribe(request).await {
-                Ok(resp) => {
-                    let response = resp.into_inner();
-                    self.consumer_id = Some(response.consumer_id);
-
-                    // Start health check
-                    let stop_signal = Arc::clone(&self.stop_signal);
-                    let _ = self
-                        .client
-                        .health_check_service
-                        .start_health_check(&self.client.uri, 1, response.consumer_id, stop_signal)
-                        .await;
-
-                    return Ok(response.consumer_id);
-                }
-                Err(status) => {
-                    // Handle AlreadyExists specifically - consumer already present on connection
-                    if status.code() == tonic::Code::AlreadyExists {
-                        warn!(
-                            "The consumer already exist, not allowed to create the same consumer twice"
-                        );
-                        return Err(status_to_danube_error(status));
-                    }
-
-                    let error = status_to_danube_error(status);
-
+            match self.try_subscribe().await {
+                Ok(consumer_id) => return Ok(consumer_id),
+                Err(error) => {
                     if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
-
                     attempts += 1;
-                    if attempts > max_retries {
+                    if attempts > self.retry_manager.max_retries() {
                         return Err(error);
                     }
-
-                    // Perform lookup and backoff
-                    if let Ok(new_addr) = self
-                        .client
-                        .lookup_service
-                        .handle_lookup(&self.client.uri, &self.topic_name)
-                        .await
-                    {
-                        self.client.uri = new_addr;
-                    }
-
+                    self.lookup_new_broker().await;
                     let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
             }
+        }
+    }
+
+    /// Attempt a single subscribe RPC call: connect, register, and start health check.
+    async fn try_subscribe(&mut self) -> Result<u64> {
+        self.connect(&self.client.uri.clone()).await?;
+
+        let consumer_request = ConsumerRequest {
+            request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
+            topic_name: self.topic_name.clone(),
+            consumer_name: self.consumer_name.clone(),
+            subscription: self.subscription.clone(),
+            subscription_type: self.subscription_type.clone() as i32,
+        };
+
+        let mut request = tonic::Request::new(consumer_request);
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+
+        let stream_client = self.stream_client.as_mut().unwrap();
+        let response = stream_client
+            .subscribe(request)
+            .await
+            .map_err(|status| {
+                if status.code() == tonic::Code::AlreadyExists {
+                    warn!("consumer already exists, not allowed to create the same consumer twice");
+                }
+                status_to_danube_error(status)
+            })?
+            .into_inner();
+
+        self.consumer_id = Some(response.consumer_id);
+
+        // Start health check
+        let stop_signal = Arc::clone(&self.stop_signal);
+        let _ = self
+            .client
+            .health_check_service
+            .start_health_check(
+                &self.client.uri,
+                ClientType::Consumer,
+                response.consumer_id,
+                stop_signal,
+            )
+            .await;
+
+        Ok(response.consumer_id)
+    }
+
+    /// Look up the current broker for this topic and update the connection target.
+    async fn lookup_new_broker(&mut self) {
+        if let Ok(new_addr) = self
+            .client
+            .lookup_service
+            .handle_lookup(&self.client.uri, &self.topic_name)
+            .await
+        {
+            self.client.uri = new_addr;
         }
     }
 

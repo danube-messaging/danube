@@ -4,9 +4,9 @@ use crate::{
     DanubeClient, ProducerOptions, SchemaRegistryClient,
 };
 use danube_core::proto::{
-    producer_service_client::ProducerServiceClient, schema_reference::VersionRef,
-    DispatchStrategy as ProtoDispatchStrategy, ProducerAccessMode, ProducerRequest,
-    SchemaReference, StreamMessage as ProtoStreamMessage,
+    health_check_request::ClientType, producer_service_client::ProducerServiceClient,
+    schema_reference::VersionRef, DispatchStrategy as ProtoDispatchStrategy, ProducerAccessMode,
+    ProducerRequest, SchemaReference, StreamMessage as ProtoStreamMessage,
 };
 use danube_core::{
     dispatch_strategy::ConfigDispatchStrategy,
@@ -86,107 +86,109 @@ impl TopicProducer {
     }
     pub(crate) async fn create(&mut self) -> Result<u64> {
         let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 {
-            5
-        } else {
-            self.producer_options.max_retries
-        };
 
         loop {
-            // Connect to current broker
-            self.connect(&self.client.uri.clone()).await?;
-
-            let producer_request = ProducerRequest {
-                request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
-                producer_name: self.producer_name.clone(),
-                topic_name: self.topic.clone(),
-                schema_ref: self.schema_ref.clone(),
-                producer_access_mode: ProducerAccessMode::Shared.into(),
-                dispatch_strategy: match &self.dispatch_strategy {
-                    ConfigDispatchStrategy::NonReliable => {
-                        ProtoDispatchStrategy::NonReliable as i32
-                    }
-                    ConfigDispatchStrategy::Reliable => ProtoDispatchStrategy::Reliable as i32,
-                },
-            };
-
-            let mut request = tonic::Request::new(producer_request);
-            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-            let stream_client = self.stream_client.as_mut().unwrap();
-            match stream_client.create_producer(request).await {
-                Ok(resp) => {
-                    let response = resp.into_inner();
-                    self.producer_id = Some(response.producer_id);
-
-                    // Start health check
-                    let stop_signal = Arc::clone(&self.stop_signal);
-                    let _ = self
-                        .client
-                        .health_check_service
-                        .start_health_check(&self.client.uri, 0, response.producer_id, stop_signal)
-                        .await;
-
-                    // If producer has schema_ref, resolve schema metadata and cache it
-                    // IMPORTANT: Schema resolution errors must fail producer creation to ensure
-                    // that invalid versions are rejected early
-                    if let Some(schema_ref) = self.schema_ref.clone() {
-                        let (schema_id, schema_version) = self
-                            .resolve_schema_metadata(&schema_ref)
-                            .await
-                            .map_err(|e| {
-                                DanubeError::Unrecoverable(format!(
-                                    "Failed to resolve schema for producer '{}': {}",
-                                    self.producer_name, e
-                                ))
-                            })?;
-
-                        self.schema_id = Some(schema_id);
-                        self.schema_version = Some(schema_version);
-                        tracing::debug!(
-                            "Producer '{}' cached schema: id={}, version={}",
-                            self.producer_name,
-                            schema_id,
-                            schema_version
-                        );
-                    }
-
-                    return Ok(response.producer_id);
-                }
-                Err(status) => {
-                    // Handle AlreadyExists specifically - producer already present on connection
-                    if status.code() == tonic::Code::AlreadyExists {
-                        warn!(
-                            "The producer already exist, not allowed to create the same producer twice"
-                        );
-                        return Err(status_to_danube_error(status));
-                    }
-
-                    let error = status_to_danube_error(status);
-
+            match self.try_create().await {
+                Ok(producer_id) => return Ok(producer_id),
+                Err(error) => {
                     if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
-
                     attempts += 1;
-                    if attempts > max_retries {
+                    if attempts > self.retry_manager.max_retries() {
                         return Err(error);
                     }
-
-                    // Perform lookup and backoff
-                    if let Ok(new_addr) = self
-                        .client
-                        .lookup_service
-                        .handle_lookup(&self.client.uri, &self.topic)
-                        .await
-                    {
-                        self.client.uri = new_addr;
-                    }
-
+                    self.lookup_new_broker().await;
                     let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
             }
+        }
+    }
+
+    /// Attempt a single create_producer RPC call: connect, register, start health check,
+    /// and resolve schema metadata if configured.
+    async fn try_create(&mut self) -> Result<u64> {
+        self.connect(&self.client.uri.clone()).await?;
+
+        let producer_request = ProducerRequest {
+            request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
+            producer_name: self.producer_name.clone(),
+            topic_name: self.topic.clone(),
+            schema_ref: self.schema_ref.clone(),
+            producer_access_mode: ProducerAccessMode::Shared.into(),
+            dispatch_strategy: match &self.dispatch_strategy {
+                ConfigDispatchStrategy::NonReliable => ProtoDispatchStrategy::NonReliable as i32,
+                ConfigDispatchStrategy::Reliable => ProtoDispatchStrategy::Reliable as i32,
+            },
+        };
+
+        let mut request = tonic::Request::new(producer_request);
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+
+        let stream_client = self.stream_client.as_mut().unwrap();
+        let response = stream_client
+            .create_producer(request)
+            .await
+            .map_err(|status| {
+                if status.code() == tonic::Code::AlreadyExists {
+                    warn!("producer already exists, not allowed to create the same producer twice");
+                }
+                status_to_danube_error(status)
+            })?
+            .into_inner();
+
+        self.producer_id = Some(response.producer_id);
+
+        // Start health check
+        let stop_signal = Arc::clone(&self.stop_signal);
+        let _ = self
+            .client
+            .health_check_service
+            .start_health_check(
+                &self.client.uri,
+                ClientType::Producer,
+                response.producer_id,
+                stop_signal,
+            )
+            .await;
+
+        // If producer has schema_ref, resolve schema metadata and cache it
+        // IMPORTANT: Schema resolution errors must fail producer creation to ensure
+        // that invalid versions are rejected early
+        if let Some(schema_ref) = self.schema_ref.clone() {
+            let (schema_id, schema_version) = self
+                .resolve_schema_metadata(&schema_ref)
+                .await
+                .map_err(|e| {
+                    DanubeError::Unrecoverable(format!(
+                        "Failed to resolve schema for producer '{}': {}",
+                        self.producer_name, e
+                    ))
+                })?;
+
+            self.schema_id = Some(schema_id);
+            self.schema_version = Some(schema_version);
+            tracing::debug!(
+                "Producer '{}' cached schema: id={}, version={}",
+                self.producer_name,
+                schema_id,
+                schema_version
+            );
+        }
+
+        Ok(response.producer_id)
+    }
+
+    /// Look up the current broker for this topic and update the connection target.
+    async fn lookup_new_broker(&mut self) {
+        if let Ok(new_addr) = self
+            .client
+            .lookup_service
+            .handle_lookup(&self.client.uri, &self.topic)
+            .await
+        {
+            self.client.uri = new_addr;
         }
     }
 

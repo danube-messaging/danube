@@ -5,17 +5,19 @@ use crate::{
 };
 
 use danube_core::proto::{
-    health_check_client::HealthCheckClient, health_check_response::ClientStatus, HealthCheckRequest,
+    health_check_client::HealthCheckClient, health_check_request::ClientType,
+    health_check_response::ClientStatus, HealthCheckRequest,
 };
-use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use tokio::time::{sleep, Duration};
-use tonic::metadata::MetadataValue;
 use tonic::transport::Uri;
 use tracing::warn;
+
+/// Interval between health check pings to the broker.
+const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
 
 // HealthCheckService is used to validate that the producer/consumer are still served by the connected broker
 #[derive(Debug, Clone)]
@@ -35,12 +37,10 @@ impl HealthCheckService {
         }
     }
 
-    // client_type could be producer or consumer,
-    // client_id is the producer_id or the consumer_id provided by broker
     pub(crate) async fn start_health_check(
         &self,
         addr: &Uri,
-        client_type: i32,
+        client_type: ClientType,
         client_id: u64,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<()> {
@@ -70,7 +70,7 @@ impl HealthCheckService {
                     warn!("Error in health check: {:?}", e);
                     break;
                 }
-                sleep(Duration::from_secs(5)).await;
+                sleep(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)).await;
             }
         });
         Ok(())
@@ -79,7 +79,7 @@ impl HealthCheckService {
     async fn health_check(
         request_id: Arc<AtomicU64>,
         grpc_cnx: Arc<RpcConnection>,
-        client_type: i32,
+        client_type: ClientType,
         client_id: u64,
         stop_signal: Arc<AtomicBool>,
         api_key: Option<&str>,
@@ -88,21 +88,15 @@ impl HealthCheckService {
     ) -> Result<()> {
         let health_request = HealthCheckRequest {
             request_id: request_id.fetch_add(1, Ordering::SeqCst),
-            client: client_type,
+            client: client_type as i32,
             id: client_id,
         };
 
         let mut request = tonic::Request::new(health_request);
 
-        if let Some(api_key) = api_key {
-            HealthCheckService::insert_auth_token(
-                &mut request,
-                addr,
-                api_key,
-                auth_service.clone(),
-            )
+        auth_service
+            .insert_token_if_needed(api_key, &mut request, addr)
             .await?;
-        }
 
         let mut client = HealthCheckClient::new(grpc_cnx.grpc_cnx.clone());
 
@@ -118,20 +112,5 @@ impl HealthCheckService {
             }
             Err(status) => Err(DanubeError::FromStatus(status, None)),
         }
-    }
-
-    async fn insert_auth_token(
-        request: &mut tonic::Request<HealthCheckRequest>,
-        addr: &Uri,
-        api_key: &str,
-        auth_service: AuthService,
-    ) -> Result<()> {
-        let token = auth_service.get_valid_token(addr, api_key).await?;
-        let token_metadata = MetadataValue::from_str(&format!("Bearer {}", token))
-            .map_err(|_| DanubeError::InvalidToken)?;
-        request
-            .metadata_mut()
-            .insert("authorization", token_metadata);
-        Ok(())
     }
 }
