@@ -166,15 +166,7 @@ impl TopicProducer {
         // IMPORTANT: Schema resolution errors must fail producer creation to ensure
         // that invalid versions are rejected early
         if let Some(schema_ref) = self.schema_ref.clone() {
-            let (schema_id, schema_version) = self
-                .resolve_schema_metadata(&schema_ref)
-                .await
-                .map_err(|e| {
-                    DanubeError::Unrecoverable(format!(
-                        "Failed to resolve schema for producer '{}': {}",
-                        self.producer_name, e
-                    ))
-                })?;
+            let (schema_id, schema_version) = self.resolve_schema_metadata(&schema_ref).await?;
 
             self.schema_id = Some(schema_id);
             self.schema_version = Some(schema_version);
@@ -302,7 +294,7 @@ impl TopicProducer {
 
                 // Validate pinned version exists (must be <= latest)
                 if *pinned_version > latest.version {
-                    return Err(DanubeError::Unrecoverable(format!(
+                    return Err(DanubeError::SchemaError(format!(
                         "Pinned version {} does not exist for subject '{}'. Latest version is {}",
                         pinned_version, schema_ref.subject, latest.version
                     )));
@@ -333,7 +325,7 @@ impl TopicProducer {
 
                 // Validate latest version meets minimum requirement
                 if latest.version < *min_version {
-                    return Err(DanubeError::Unrecoverable(format!(
+                    return Err(DanubeError::SchemaError(format!(
                         "Latest version {} does not meet minimum version requirement {} for subject '{}'",
                         latest.version, min_version, schema_ref.subject
                     )));

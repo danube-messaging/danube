@@ -445,9 +445,8 @@ impl ProducerBuilder {
 
 /// Configuration options for producers
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ProducerOptions {
-    // Reserved for future use
-    pub others: String,
     // Maximum number of retries for operations like create/send on transient failures
     pub max_retries: usize,
     // Base backoff in milliseconds for exponential backoff

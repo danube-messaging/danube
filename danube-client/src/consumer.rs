@@ -424,9 +424,8 @@ impl ConsumerBuilder {
 
 /// Configuration options for consumers
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ConsumerOptions {
-    // Reserved for future use
-    pub others: String,
     // Maximum number of retry attempts
     pub max_retries: usize,
     // Base backoff in milliseconds for exponential backoff

@@ -26,26 +26,6 @@ pub struct DanubeClient {
 }
 
 impl DanubeClient {
-    fn new_client(builder: DanubeClientBuilder, uri: Uri) -> Self {
-        let cnx_manager = ConnectionManager::new(builder.connection_options);
-        let cnx_manager = Arc::new(cnx_manager);
-
-        let auth_service = AuthService::new(cnx_manager.clone());
-
-        let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
-
-        let health_check_service =
-            HealthCheckService::new(cnx_manager.clone(), auth_service.clone());
-
-        DanubeClient {
-            uri: uri.clone(),
-            cnx_manager,
-            lookup_service,
-            health_check_service,
-            auth_service,
-        }
-    }
-
     /// Initializes a new `DanubeClientBuilder` instance.
     ///
     /// The builder pattern allows for configuring and constructing a `DanubeClient` instance with optional settings and options.
@@ -169,15 +149,30 @@ impl DanubeClientBuilder {
     /// - `Err(e)`: An error if the configuration is invalid or incomplete.
     pub async fn build(mut self) -> Result<DanubeClient> {
         let uri = self.uri.parse::<Uri>()?;
-        let cnx_manager = Arc::new(ConnectionManager::new(self.connection_options.clone()));
-        let auth_service = AuthService::new(cnx_manager.clone());
 
-        if let Some(api_key) = self.api_key.clone() {
+        // Set api_key on connection_options before creating the single ConnectionManager
+        if let Some(ref api_key) = self.api_key {
             self.connection_options.api_key = Some(api_key.clone());
-            let token = auth_service.authenticate_client(&uri, &api_key).await?;
-            self.connection_options.jwt_token = Some(token);
         }
 
-        Ok(DanubeClient::new_client(self, uri))
+        let cnx_manager = Arc::new(ConnectionManager::new(self.connection_options));
+        let auth_service = AuthService::new(cnx_manager.clone());
+
+        // Authenticate if api_key is present; token is cached inside AuthService
+        if let Some(ref api_key) = self.api_key {
+            auth_service.authenticate_client(&uri, api_key).await?;
+        }
+
+        let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
+        let health_check_service =
+            HealthCheckService::new(cnx_manager.clone(), auth_service.clone());
+
+        Ok(DanubeClient {
+            uri,
+            cnx_manager,
+            lookup_service,
+            health_check_service,
+            auth_service,
+        })
     }
 }

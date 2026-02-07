@@ -30,7 +30,6 @@ enum ConnectionStatus {
 pub(crate) struct ConnectionOptions {
     pub(crate) tls_config: Option<ClientTlsConfig>,
     pub(crate) api_key: Option<String>,
-    pub(crate) jwt_token: Option<String>,
     pub(crate) use_tls: bool,
 }
 
@@ -53,10 +52,7 @@ impl ConnectionManager {
         broker_url: &Uri,
         connect_url: &Uri,
     ) -> Result<Arc<RpcConnection>> {
-        let mut proxy = false;
-        if broker_url == connect_url {
-            proxy = true;
-        }
+        let proxy = broker_url != connect_url;
         let broker = BrokerAddress {
             connect_url: connect_url.clone(),
             broker_url: broker_url.clone(),

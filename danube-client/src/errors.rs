@@ -28,6 +28,9 @@ pub enum DanubeError {
     #[error("unable to perform operation: {0}")]
     Unrecoverable(String),
 
+    #[error("schema error: {0}")]
+    SchemaError(String),
+
     #[error("invalid token")]
     InvalidToken,
 }
@@ -46,7 +49,13 @@ pub(crate) fn decode_error_details(status: &Status) -> Option<ErrorMessage> {
         let base64_buffer = metadata_value.as_encoded_bytes();
 
         // Decode the base64 string to get the original bytes
-        let buffer = BASE64_STANDARD_NO_PAD.decode(base64_buffer).unwrap();
+        let buffer = match BASE64_STANDARD_NO_PAD.decode(base64_buffer) {
+            Ok(buf) => buf,
+            Err(err) => {
+                warn!(error = %err, "error decoding base64 error metadata");
+                return None;
+            }
+        };
 
         // Decode the protobuf message directly from the metadata bytes
         match ErrorMessage::decode(&buffer[..]) {

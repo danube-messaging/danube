@@ -60,23 +60,30 @@ This plan merges the original client review plan (info/04_danube_client_improvem
     - `Producer::send` passes `&data` and `attributes.as_ref()` — no clones in the retry loop.
     - Full zero-copy would require `Bytes` in `danube-core::StreamMessage` (deferred — cross-crate API change).
 
-## Phase 3 — Schema registry + structural polish
-13. **Schema registry error ergonomics**
-    - Use typed errors instead of stringly `Unrecoverable` for schema resolution.
+## Phase 3 — Schema registry + structural polish ✅
+13. ~~**Schema registry error ergonomics**~~ ✅
+    - Added `SchemaError(String)` variant to `DanubeError` for schema-specific errors.
+    - Changed gRPC status wrapping from `Unrecoverable(format!(...))` to `FromStatus(status, None)` — preserves structured error info.
+    - Schema validation errors (pinned version, min version) now use `SchemaError`.
+    - Removed double-wrapping in `try_create()` — schema errors propagate directly with `?`.
 
-14. **Reduce schema registry boilerplate**
-    - Extract internal helper for connect/auth/unwrap/error mapping.
+14. ~~**Reduce schema registry boilerplate**~~ ✅
+    - Extracted `prepare_request<T>()` helper in `SchemaRegistryClient` — handles connect, auth token, and client unwrap in one call.
+    - All 7 public methods simplified from ~15 lines to ~6 lines each.
 
-15. **Clean up `ProducerOptions` / `ConsumerOptions`**
-    - Remove `others` or mark structs `#[non_exhaustive]` for forward compatibility.
+15. ~~**Clean up `ProducerOptions` / `ConsumerOptions`**~~ ✅
+    - Removed unused `pub others: String` field from both structs.
+    - Added `#[non_exhaustive]` for forward compatibility.
 
-16. **Fix `DanubeClientBuilder::build()` double ConnectionManager creation**
-    - Create `ConnectionManager` once and pass through.
+16. ~~**Fix `DanubeClientBuilder::build()` double ConnectionManager creation**~~ ✅
+    - Set `api_key` on `connection_options` before creating the single `ConnectionManager`.
+    - Build `DanubeClient` directly in `build()` — removed `new_client()`.
+    - Removed dead `jwt_token` field from `ConnectionOptions`.
 
-17. **Minor cleanups**
-    - Avoid `unwrap()` in `decode_error_details`.
-    - Validate `proxy` flag in `ConnectionManager`.
-    - Consider `Display`/`FromStr` for schema enums.
+17. ~~**Minor cleanups**~~ ✅
+    - Replaced `unwrap()` in `decode_error_details` with graceful `match` + `warn!` log.
+    - Fixed inverted `proxy` flag: `proxy = broker_url != connect_url` (was backwards).
+    - Added `Display` and `FromStr` for `CompatibilityMode` and `SchemaType` enums.
 
 ## Phase 4 — Broker alignment (only if needed)
 18. **Broker error metadata alignment**
