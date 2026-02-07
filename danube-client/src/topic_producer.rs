@@ -21,6 +21,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::transport::Uri;
 use tracing::warn;
 
+/// Connection state for a topic producer.
+#[derive(Debug)]
+enum ProducerState {
+    Disconnected,
+    Ready {
+        stream_client: ProducerServiceClient<tonic::transport::Channel>,
+        producer_id: u64,
+    },
+}
+
 /// Represents a Producer
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -31,8 +41,6 @@ pub(crate) struct TopicProducer {
     pub(crate) topic: String,
     // the name of the producer
     producer_name: String,
-    // unique identifier of the producer, provided by the Broker
-    producer_id: Option<u64>,
     // unique identifier for every request sent by the producer
     request_id: AtomicU64,
     // optional schema reference for new schema registry
@@ -45,8 +53,10 @@ pub(crate) struct TopicProducer {
     dispatch_strategy: ConfigDispatchStrategy,
     // other configurable options for the producer
     producer_options: ProducerOptions,
-    // the grpc client cnx
-    stream_client: Option<ProducerServiceClient<tonic::transport::Channel>>,
+    // connection state: Disconnected or Ready with stream_client + producer_id
+    state: ProducerState,
+    // the broker URI this producer is connected to (avoids mutating shared client)
+    pub(crate) broker_addr: Uri,
     // stop_signal received from broker, should close the producer
     stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
@@ -68,18 +78,20 @@ impl TopicProducer {
             producer_options.max_backoff_ms,
         );
 
+        let broker_addr = client.uri.clone();
+
         TopicProducer {
             client,
             topic,
             producer_name,
-            producer_id: None,
             request_id: AtomicU64::new(0),
             schema_ref,
             schema_id: None,
             schema_version: None,
             dispatch_strategy,
             producer_options,
-            stream_client: None,
+            state: ProducerState::Disconnected,
+            broker_addr,
             stop_signal: Arc::new(AtomicBool::new(false)),
             retry_manager,
         }
@@ -109,7 +121,7 @@ impl TopicProducer {
     /// Attempt a single create_producer RPC call: connect, register, start health check,
     /// and resolve schema metadata if configured.
     async fn try_create(&mut self) -> Result<u64> {
-        self.connect(&self.client.uri.clone()).await?;
+        let mut stream_client = self.connect().await?;
 
         let producer_request = ProducerRequest {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
@@ -124,9 +136,8 @@ impl TopicProducer {
         };
 
         let mut request = tonic::Request::new(producer_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
 
-        let stream_client = self.stream_client.as_mut().unwrap();
         let response = stream_client
             .create_producer(request)
             .await
@@ -138,15 +149,13 @@ impl TopicProducer {
             })?
             .into_inner();
 
-        self.producer_id = Some(response.producer_id);
-
         // Start health check
         let stop_signal = Arc::clone(&self.stop_signal);
         let _ = self
             .client
             .health_check_service
             .start_health_check(
-                &self.client.uri,
+                &self.broker_addr,
                 ClientType::Producer,
                 response.producer_id,
                 stop_signal,
@@ -177,6 +186,12 @@ impl TopicProducer {
             );
         }
 
+        // Transition to Ready state atomically
+        self.state = ProducerState::Ready {
+            stream_client,
+            producer_id: response.producer_id,
+        };
+
         Ok(response.producer_id)
     }
 
@@ -185,54 +200,58 @@ impl TopicProducer {
         if let Ok(new_addr) = self
             .client
             .lookup_service
-            .handle_lookup(&self.client.uri, &self.topic)
+            .handle_lookup(&self.broker_addr, &self.topic)
             .await
         {
-            self.client.uri = new_addr;
+            self.broker_addr = new_addr;
         }
     }
 
     // the Producer sends messages to the topic
     pub(crate) async fn send(
         &mut self,
-        data: Vec<u8>,
-        attributes: Option<HashMap<String, String>>,
+        data: &[u8],
+        attributes: Option<&HashMap<String, String>>,
     ) -> Result<u64> {
+        let (stream_client, producer_id) = match &self.state {
+            ProducerState::Ready {
+                stream_client,
+                producer_id,
+            } => (stream_client.clone(), *producer_id),
+            ProducerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "Send: producer is not connected".into(),
+                ));
+            }
+        };
+
         let publish_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
             .as_millis() as u64;
 
-        let attr = attributes.unwrap_or_default();
-
         let msg_id = MessageID {
-            producer_id: self
-                .producer_id
-                .expect("Producer ID should be set before sending messages"),
+            producer_id,
             topic_name: self.topic.clone(),
-            broker_addr: self.client.uri.to_string(),
+            broker_addr: self.broker_addr.to_string(),
             topic_offset: 0,
         };
 
         let send_message = StreamMessage {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
             msg_id,
-            payload: data,
+            payload: data.to_vec(),
             publish_time,
             producer_name: self.producer_name.clone(),
             subscription_name: None,
-            attributes: attr,
+            attributes: attributes.cloned().unwrap_or_default(),
             schema_id: self.schema_id,
             schema_version: self.schema_version,
         };
 
         let req: ProtoStreamMessage = send_message.into();
         let mut request = tonic::Request::new(req);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-        let stream_client = self.stream_client.as_ref().ok_or_else(|| {
-            DanubeError::Unrecoverable("Send: Stream client is not initialized".to_string())
-        })?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
 
         let response = stream_client
             .clone()
@@ -242,11 +261,13 @@ impl TopicProducer {
         Ok(response.into_inner().request_id)
     }
 
-    pub(crate) async fn connect(&mut self, addr: &Uri) -> Result<()> {
-        let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
-        let client = ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone());
-        self.stream_client = Some(client);
-        Ok(())
+    async fn connect(&self) -> Result<ProducerServiceClient<tonic::transport::Channel>> {
+        let grpc_cnx = self
+            .client
+            .cnx_manager
+            .get_connection(&self.broker_addr, &self.broker_addr)
+            .await?;
+        Ok(ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone()))
     }
 
     /// Resolve schema_id and version from schema registry

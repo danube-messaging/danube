@@ -136,9 +136,7 @@ impl Producer {
         loop {
             let send_result = {
                 let mut producers = self.producers.lock().await;
-                producers[partition]
-                    .send(data.clone(), attributes.clone())
-                    .await
+                producers[partition].send(&data, attributes.as_ref()).await
             };
 
             match send_result {
@@ -206,12 +204,11 @@ impl Producer {
         let new_addr = producer
             .client
             .lookup_service
-            .handle_lookup(&producer.client.uri, &producer.topic)
+            .handle_lookup(&producer.broker_addr, &producer.topic)
             .await
             .map_err(|_| original_error)?;
 
-        producer.client.uri = new_addr;
-        producer.connect(&producer.client.uri.clone()).await?;
+        producer.broker_addr = new_addr;
         producer.create().await?;
         info!("broker lookup and producer recreation successful");
         Ok(())

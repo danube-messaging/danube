@@ -39,19 +39,26 @@ This plan merges the original client review plan (info/04_danube_client_improvem
    - `HEALTH_CHECK_INTERVAL_SECS` in `HealthCheckService`.
    - `TOKEN_EXPIRY_SECS` in `AuthService`.
 
-## Phase 2 — Consumer/Producer refactor for readability
-9. **Refactor `Consumer::receive` into smaller functions**
-   - Extract per-partition loop and use structured shutdown signaling.
-   - Consider a `Stream` return type (only if acceptable API change).
+## Phase 2 — Consumer/Producer refactor for readability ✅
+9. ~~**Refactor `Consumer::receive` into smaller functions**~~ ✅
+   - Extracted `partition_receive_loop()` standalone async function from the `tokio::spawn` closure. `receive()` is now a short method that spawns tasks.
 
-10. **Make `TopicConsumer` and `TopicProducer` state machines**
-    - Replace `Option` + `unwrap()` with explicit states (Disconnected/Connected/Registered).
+10. ~~**Make `TopicConsumer` and `TopicProducer` state machines**~~ ✅
+    - Added `ProducerState` enum (`Disconnected` / `Ready { stream_client, producer_id }`) in `TopicProducer`.
+    - Added `ConsumerState` enum (`Disconnected` / `Ready { stream_client, consumer_id }`) in `TopicConsumer`.
+    - Eliminated all `Option::unwrap()` calls — methods now match on state and return proper errors.
+    - `connect()` returns the client instead of storing it; state transitions are atomic in `try_create()`/`try_subscribe()`.
 
-11. **Stop mutating `DanubeClient.uri` inside topic actors**
-    - Store per-topic broker URI inside topic actors instead of mutating the shared client.
+11. ~~**Stop mutating `DanubeClient.uri` inside topic actors**~~ ✅
+    - Added `broker_addr: Uri` field to both `TopicProducer` and `TopicConsumer`, initialized from `client.uri`.
+    - All methods use `self.broker_addr` instead of `self.client.uri`.
+    - `lookup_new_broker()` updates `self.broker_addr` instead of `self.client.uri`.
+    - `Producer::lookup_and_recreate()` updated to use `producer.broker_addr`.
 
-12. **Reduce clone-heavy send paths**
-    - Consider `Bytes` or `Arc<Vec<u8>>` for payload to reduce repeated cloning.
+12. ~~**Reduce clone-heavy send paths**~~ ✅
+    - Changed `TopicProducer::send` signature to borrow `&[u8]` + `Option<&HashMap<String, String>>` instead of taking ownership.
+    - `Producer::send` passes `&data` and `attributes.as_ref()` — no clones in the retry loop.
+    - Full zero-copy would require `Bytes` in `danube-core::StreamMessage` (deferred — cross-crate API change).
 
 ## Phase 3 — Schema registry + structural polish
 13. **Schema registry error ergonomics**

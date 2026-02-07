@@ -171,96 +171,12 @@ impl Consumer {
         );
 
         for (_, consumer) in &self.consumers {
-            let tx = tx.clone();
-            let consumer = Arc::clone(consumer);
-            let retry_manager = retry_manager.clone();
-            let shutdown = self.shutdown.clone();
-
-            let handle: JoinHandle<()> = tokio::spawn(async move {
-                let mut attempts = 0;
-
-                loop {
-                    if shutdown.load(Ordering::SeqCst) {
-                        return;
-                    }
-
-                    let stream_result = {
-                        let mut locked = consumer.lock().await;
-                        locked.receive().await
-                    };
-
-                    match stream_result {
-                        Ok(mut stream) => {
-                            attempts = 0;
-
-                            while !shutdown.load(Ordering::SeqCst) {
-                                match stream.next().await {
-                                    Some(Ok(stream_message)) => {
-                                        let message: StreamMessage = stream_message.into();
-                                        if tx.send(message).await.is_err() {
-                                            return; // Channel closed
-                                        }
-                                    }
-                                    Some(Err(e)) => {
-                                        warn!(error = %e, "error receiving message");
-                                        break; // Stream error, will retry
-                                    }
-                                    None => break, // Stream ended, will retry
-                                }
-                            }
-                        }
-
-                        // Unrecoverable: attempt resubscription
-                        Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
-                            if shutdown.load(Ordering::SeqCst) {
-                                return;
-                            }
-                            warn!(error = ?error, "unrecoverable error, attempting resubscription");
-                            match resubscribe(&consumer).await {
-                                Ok(_) => {
-                                    info!("resubscription successful after unrecoverable error");
-                                    attempts = 0;
-                                    continue;
-                                }
-                                Err(e) => {
-                                    error!(error = ?e, "resubscription failed after unrecoverable error");
-                                    return;
-                                }
-                            }
-                        }
-
-                        // Retryable: backoff, then escalate to resubscription after max retries
-                        Err(error) if retry_manager.is_retryable_error(&error) => {
-                            if shutdown.load(Ordering::SeqCst) {
-                                return;
-                            }
-                            attempts += 1;
-                            if attempts > retry_manager.max_retries() {
-                                warn!("max retries exceeded, attempting resubscription");
-                                match resubscribe(&consumer).await {
-                                    Ok(_) => {
-                                        info!("resubscription successful");
-                                        attempts = 0;
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        error!(error = ?e, "resubscription failed");
-                                        return;
-                                    }
-                                }
-                            }
-                            let backoff = retry_manager.calculate_backoff(attempts - 1);
-                            tokio::time::sleep(backoff).await;
-                        }
-
-                        // Non-retryable: bail
-                        Err(error) => {
-                            error!(error = ?error, "non-retryable error in consumer receive");
-                            return;
-                        }
-                    }
-                }
-            });
+            let handle = tokio::spawn(partition_receive_loop(
+                Arc::clone(consumer),
+                tx.clone(),
+                retry_manager.clone(),
+                self.shutdown.clone(),
+            ));
             self.task_handles.push(handle);
         }
 
@@ -298,6 +214,99 @@ impl Consumer {
         }
         // small delay to allow server to observe closure
         tokio::time::sleep(std::time::Duration::from_millis(GRACEFUL_CLOSE_DELAY_MS)).await;
+    }
+}
+
+/// Per-partition receive loop: opens a message stream, forwards messages to `tx`,
+/// and handles retries / resubscription on errors.
+async fn partition_receive_loop(
+    consumer: Arc<Mutex<TopicConsumer>>,
+    tx: mpsc::Sender<StreamMessage>,
+    retry_manager: RetryManager,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut attempts = 0;
+
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let stream_result = {
+            let mut locked = consumer.lock().await;
+            locked.receive().await
+        };
+
+        match stream_result {
+            Ok(mut stream) => {
+                attempts = 0;
+
+                while !shutdown.load(Ordering::SeqCst) {
+                    match stream.next().await {
+                        Some(Ok(stream_message)) => {
+                            let message: StreamMessage = stream_message.into();
+                            if tx.send(message).await.is_err() {
+                                return; // Channel closed
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "error receiving message");
+                            break; // Stream error, will retry
+                        }
+                        None => break, // Stream ended, will retry
+                    }
+                }
+            }
+
+            // Unrecoverable: attempt resubscription
+            Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                warn!(error = ?error, "unrecoverable error, attempting resubscription");
+                match resubscribe(&consumer).await {
+                    Ok(_) => {
+                        info!("resubscription successful after unrecoverable error");
+                        attempts = 0;
+                        continue;
+                    }
+                    Err(e) => {
+                        error!(error = ?e, "resubscription failed after unrecoverable error");
+                        return;
+                    }
+                }
+            }
+
+            // Retryable: backoff, then escalate to resubscription after max retries
+            Err(error) if retry_manager.is_retryable_error(&error) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                attempts += 1;
+                if attempts > retry_manager.max_retries() {
+                    warn!("max retries exceeded, attempting resubscription");
+                    match resubscribe(&consumer).await {
+                        Ok(_) => {
+                            info!("resubscription successful");
+                            attempts = 0;
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(error = ?e, "resubscription failed");
+                            return;
+                        }
+                    }
+                }
+                let backoff = retry_manager.calculate_backoff(attempts - 1);
+                tokio::time::sleep(backoff).await;
+            }
+
+            // Non-retryable: bail
+            Err(error) => {
+                error!(error = ?error, "non-retryable error in consumer receive");
+                return;
+            }
+        }
     }
 }
 
