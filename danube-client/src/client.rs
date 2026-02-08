@@ -145,9 +145,15 @@ impl DanubeClientBuilder {
     }
 
     /// Sets the API key for the client in the builder.
+    ///
+    /// Automatically enables TLS. If no TLS config has been set via `with_tls()` or
+    /// `with_mtls()`, a default TLS config using system root certificates is applied.
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = Some(api_key.into());
-        self.connection_options.use_tls = true; // API key automatically enables TLS
+        if self.connection_options.tls_config.is_none() {
+            self.connection_options.tls_config = Some(ClientTlsConfig::new());
+        }
+        self.connection_options.use_tls = true;
         self
     }
 

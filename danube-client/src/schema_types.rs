@@ -150,7 +150,9 @@ impl SchemaInfo {
     ///
     /// Returns None if the schema definition is not valid UTF-8
     pub fn schema_definition_as_string(&self) -> Option<String> {
-        String::from_utf8(self.schema_definition.clone()).ok()
+        std::str::from_utf8(&self.schema_definition)
+            .ok()
+            .map(|s| s.to_string())
     }
 }
 

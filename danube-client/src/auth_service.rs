@@ -58,21 +58,23 @@ impl AuthService {
 
     pub async fn get_valid_token(&self, addr: &Uri, api_key: &str) -> Result<String> {
         let now = Instant::now();
-        let mut token_guard = self.token.lock().await;
-        let mut expiry_guard = self.token_expiry.lock().await;
 
-        if let Some(expiry) = *expiry_guard {
-            if now < expiry {
-                if let Some(token) = &*token_guard {
-                    return Ok(token.clone());
+        // Fast path: return cached token if still valid (locks released immediately)
+        {
+            let token_guard = self.token.lock().await;
+            let expiry_guard = self.token_expiry.lock().await;
+
+            if let Some(expiry) = *expiry_guard {
+                if now < expiry {
+                    if let Some(token) = &*token_guard {
+                        return Ok(token.clone());
+                    }
                 }
             }
-        }
+        } // locks dropped here before the async call
 
-        // Token is expired or not present, renew it
+        // Slow path: refresh token without holding any locks
         let new_token = self.authenticate_client(addr, api_key).await?;
-        *token_guard = Some(new_token.clone());
-        *expiry_guard = Some(now + Duration::from_secs(TOKEN_EXPIRY_SECS));
 
         Ok(new_token)
     }
