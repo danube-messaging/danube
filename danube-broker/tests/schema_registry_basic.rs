@@ -97,7 +97,7 @@ async fn producer_with_registered_schema_succeeds() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_registered")
         .with_schema_subject("test-registered-schema")
-        .build();
+        .build()?;
 
     let result = producer.create().await;
     assert!(
@@ -128,7 +128,7 @@ async fn producer_with_unregistered_schema_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_unregistered")
         .with_schema_subject("non-existent-schema")
-        .build();
+        .build()?;
 
     // This should FAIL because schema is not registered
     let result = producer.create().await;
@@ -160,7 +160,7 @@ async fn producer_without_schema_works() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_no_schema")
-        .build();
+        .build()?;
 
     let result = producer.create().await;
     assert!(
@@ -246,7 +246,7 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_metadata")
         .with_schema_subject("metadata-test-schema")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create consumer
@@ -256,7 +256,7 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
         .with_consumer_name("consumer_metadata")
         .with_subscription("sub_metadata")
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -314,7 +314,7 @@ async fn multiple_producers_same_schema() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer1_shared")
         .with_schema_subject("shared-schema")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     let mut producer2 = client
@@ -322,7 +322,7 @@ async fn multiple_producers_same_schema() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer2_shared")
         .with_schema_subject("shared-schema")
-        .build();
+        .build()?;
     producer2.create().await?;
 
 

@@ -40,7 +40,7 @@ async fn matching_schemas_end_to_end() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_matching")
         .with_schema_subject("matching-schema")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create consumer
@@ -50,7 +50,7 @@ async fn matching_schemas_end_to_end() -> Result<()> {
         .with_consumer_name("consumer_matching")
         .with_subscription("sub_matching")
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -112,7 +112,7 @@ async fn multiple_valid_payloads() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_multi")
         .with_schema_subject("multi-type-schema")
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -120,7 +120,7 @@ async fn multiple_valid_payloads() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_multi")
         .with_subscription("sub_multi")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -177,7 +177,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v1")
         .with_schema_subject("evolution-schema")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Now create consumer after topic exists
@@ -186,7 +186,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_evolution")
         .with_subscription("sub_evolution")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -212,7 +212,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v2")
         .with_schema_subject("evolution-schema")
-        .build();
+        .build()?;
     producer2.create().await?;
 
     // Send V2 message
@@ -282,7 +282,7 @@ async fn avro_schema_end_to_end() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_avro")
         .with_schema_subject("avro-user-schema")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create consumer
@@ -291,7 +291,7 @@ async fn avro_schema_end_to_end() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_avro")
         .with_subscription("sub_avro")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -340,7 +340,7 @@ async fn string_schema_type() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_string")
         .with_schema_subject("log-messages")
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -348,7 +348,7 @@ async fn string_schema_type() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_string")
         .with_subscription("sub_string")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -403,7 +403,7 @@ async fn bytes_schema_type() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_bytes")
         .with_schema_subject("binary-data")
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -411,7 +411,7 @@ async fn bytes_schema_type() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_bytes")
         .with_subscription("sub_bytes")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -455,7 +455,7 @@ async fn verify_schema_metadata_in_messages() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_metadata")
         .with_schema_subject("metadata-schema")
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -463,7 +463,7 @@ async fn verify_schema_metadata_in_messages() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_metadata")
         .with_subscription("sub_metadata")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -534,7 +534,7 @@ async fn second_producer_different_subject_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_events")
         .with_schema_subject("event-schema")
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Second producer tries metric-schema (should fail - different subject)
@@ -543,7 +543,7 @@ async fn second_producer_different_subject_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_metrics")
         .with_schema_subject("metric-schema")
-        .build();
+        .build()?;
     
     let result = producer2.create().await;
     

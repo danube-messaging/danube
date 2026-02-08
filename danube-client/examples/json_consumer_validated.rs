@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
         .with_consumer_name(consumer_name)
         .with_subscription(subscription_name)
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
 
     consumer.subscribe().await?;
     println!("✅ Consumer {} subscribed to {}", consumer_name, topic);

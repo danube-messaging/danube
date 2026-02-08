@@ -58,7 +58,7 @@ async fn producer_reconnection_reuse() -> Result<()> {
         .new_producer()
         .with_topic(topic)
         .with_name(producer_name)
-        .build();
+        .build()?;
 
     producer1.create().await?;
 
@@ -74,7 +74,7 @@ async fn producer_reconnection_reuse() -> Result<()> {
         .new_producer()
         .with_topic(topic)
         .with_name(producer_name)
-        .build();
+        .build()?;
     // Ignore the result of creating a second one; different brokers/versions may allow it
     let _ = _producer2.create().await;
 

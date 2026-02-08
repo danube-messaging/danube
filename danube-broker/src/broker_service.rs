@@ -6,14 +6,13 @@ use danube_persistent_storage::WalStorageFactory;
 use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tonic::{Code, Status};
+use tonic::Status;
 use tracing::info;
 
-use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, ErrorType, SchemaReference};
+use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaReference};
 
 use crate::{
     consumer::Consumer,
-    error_message::create_error_status,
     message::AckMessage,
     resources::Resources,
     subscription::SubscriptionOptions,
@@ -117,27 +116,18 @@ impl BrokerService {
     ) -> Result<bool, Status> {
         // Validate topic format
         if !validate_topic_format(topic_name) {
-            let error_string = format!(
+            return Err(Status::invalid_argument(format!(
                 "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
                 topic_name
-            );
-            return Err(create_error_status(
-                Code::InvalidArgument,
-                ErrorType::InvalidTopicName,
-                &error_string,
-                None,
-            ));
+            )));
         }
 
         // Fast path: topic is local
         if self.topic_worker_pool.contains_topic(topic_name) {
             if let Some(req_ds) = dispatch_strategy {
                 if let Some(false) = self.topic_worker_pool.strategies_match(topic_name, req_ds) {
-                    return Err(create_error_status(
-                        Code::FailedPrecondition,
-                        ErrorType::UnknownError,
+                    return Err(Status::failed_precondition(
                         "Producer requested dispatch strategy does not match topic strategy",
-                        None,
                     ));
                 }
             }
@@ -154,30 +144,20 @@ impl BrokerService {
                         Some(existing) => {
                             // Topic has schema - producer's subject must match
                             if existing != subject {
-                                return Err(create_error_status(
-                                    Code::FailedPrecondition,
-                                    ErrorType::UnknownError,
-                                    &format!(
-                                        "Topic '{}' uses schema subject '{}', cannot use '{}'. Only admin can change topic schema.",
-                                        topic_name, existing, subject
-                                    ),
-                                    None,
-                                ));
+                                return Err(Status::failed_precondition(format!(
+                                    "Topic '{}' uses schema subject '{}', cannot use '{}'. Only admin can change topic schema.",
+                                    topic_name, existing, subject
+                                )));
                             }
                             // Subject matches - already set, no action needed
                         }
                         None => {
                             // Topic has no schema yet - first producer assigns it
                             topic.set_schema_ref(schema_ref).await.map_err(|e| {
-                                create_error_status(
-                                    Code::FailedPrecondition,
-                                    ErrorType::UnknownError,
-                                    &format!(
-                                        "Failed to assign schema '{}' to topic '{}': {}. Ensure schema is registered first.",
-                                        subject, topic_name, e
-                                    ),
-                                    None,
-                                )
+                                Status::failed_precondition(format!(
+                                    "Failed to assign schema '{}' to topic '{}': {}. Ensure schema is registered first.",
+                                    subject, topic_name, e
+                                ))
                             })?;
                         }
                     }
@@ -198,23 +178,17 @@ impl BrokerService {
                 "topic_ns" => ns
             )
             .increment(1);
-            return Err(create_error_status(
-                Code::Unavailable,
-                ErrorType::ServiceNotReady,
+            return Err(Status::unavailable(
                 "The topic exists but is served by another broker, redo the Lookup request",
-                None,
             ));
         }
 
         // Auto-create path if enabled
         if !self.auto_create_topics {
-            let error_string = &format!("Unable to find the topic: {}", topic_name);
-            return Err(create_error_status(
-                Code::InvalidArgument,
-                ErrorType::TopicNotFound,
-                error_string,
-                None,
-            ));
+            return Err(Status::not_found(format!(
+                "Unable to find the topic: {}",
+                topic_name
+            )));
         }
 
         match self
@@ -230,11 +204,8 @@ impl BrokerService {
                     "topic_ns" => ns
                 )
                 .increment(1);
-                Err(create_error_status(
-                Code::Unavailable,
-                ErrorType::ServiceNotReady,
-                "The topic metadata was created, need to redo the lookup to find the correct broker",
-                None,
+                Err(Status::unavailable(
+                    "The topic metadata was created, need to redo the lookup to find the correct broker",
                 ))
             }
             Err(err) => Err(err),

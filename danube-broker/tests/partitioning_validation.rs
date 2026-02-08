@@ -61,14 +61,14 @@ async fn partitioning_validation() -> Result<()> {
         .new_producer()
         .with_topic(np_topic)
         .with_name("producer_part_np_lookup")
-        .build();
+        .build()?;
     np_producer.create().await?;
     let mut np_consumer = danube_client
         .new_consumer()
         .with_topic(np_topic.to_string())
         .with_consumer_name("consumer_np".to_string())
         .with_subscription("sub_np".to_string())
-        .build();
+        .build()?;
     np_consumer.subscribe().await?;
     let mut np_stream = np_consumer.receive().await?;
     sleep(Duration::from_millis(200)).await;
@@ -85,14 +85,14 @@ async fn partitioning_validation() -> Result<()> {
         .with_topic(p_topic)
         .with_name("producer_part_lookup")
         .with_partitions(partitions)
-        .build();
+        .build()?;
     p_producer.create().await?;
     let mut p_consumer = danube_client
         .new_consumer()
         .with_topic(p_topic.to_string())
         .with_consumer_name("consumer_p".to_string())
         .with_subscription("sub_p".to_string())
-        .build();
+        .build()?;
     p_consumer.subscribe().await?;
     let mut p_stream = p_consumer.receive().await?;
     sleep(Duration::from_millis(300)).await;

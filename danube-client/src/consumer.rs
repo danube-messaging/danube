@@ -14,6 +14,12 @@ use std::sync::{
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
+
+/// Buffer size for the message channel between per-partition tasks and the consumer.
+const RECEIVE_CHANNEL_BUFFER: usize = 100;
+/// Small delay after signaling shutdown to allow the broker to observe closure.
+const GRACEFUL_CLOSE_DELAY_MS: u64 = 100;
 
 /// Represents the type of subscription
 ///
@@ -61,11 +67,7 @@ impl Consumer {
         sub_type: Option<SubType>,
         consumer_options: ConsumerOptions,
     ) -> Self {
-        let subscription_type = if let Some(sub_type) = sub_type {
-            sub_type
-        } else {
-            SubType::Shared
-        };
+        let subscription_type = sub_type.unwrap_or(SubType::Shared);
 
         Consumer {
             client,
@@ -160,134 +162,21 @@ impl Consumer {
     /// - `Ok(mpsc::Receiver<StreamMessage>)` if the receive client is successfully created and ready to receive messages.
     /// - `Err(e)` if the receive client cannot be created or if other issues occur.
     pub async fn receive(&mut self) -> Result<mpsc::Receiver<StreamMessage>> {
-        // Create a channel to send messages to the client
-        let (tx, rx) = mpsc::channel(100); // Buffer size of 100, adjust as needed
+        let (tx, rx) = mpsc::channel(RECEIVE_CHANNEL_BUFFER);
 
-        // Create retry manager for consumers
         let retry_manager = RetryManager::new(
             self.consumer_options.max_retries,
             self.consumer_options.base_backoff_ms,
             self.consumer_options.max_backoff_ms,
         );
 
-        // Spawn a task for each cloned TopicConsumer
         for (_, consumer) in &self.consumers {
-            let tx = tx.clone();
-            let consumer = Arc::clone(consumer);
-            let retry_manager = retry_manager.clone();
-            let shutdown = self.shutdown.clone();
-
-            let handle: JoinHandle<()> = tokio::spawn(async move {
-                let mut attempts = 0;
-                let max_retries = if retry_manager.max_retries() == 0 {
-                    5
-                } else {
-                    retry_manager.max_retries()
-                };
-
-                loop {
-                    if shutdown.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    // Try to get stream from consumer (subscribe is handled internally with its own retry)
-                    let stream_result = {
-                        let mut locked = consumer.lock().await;
-                        locked.receive().await
-                    };
-
-                    match stream_result {
-                        Ok(mut stream) => {
-                            attempts = 0; // Reset attempts on successful connection
-
-                            // Process messages until stream ends or errors
-                            while !shutdown.load(Ordering::SeqCst) {
-                                let message_opt = stream.next().await;
-                                if message_opt.is_none() {
-                                    break;
-                                }
-                                let message = message_opt.unwrap();
-                                match message {
-                                    Ok(stream_message) => {
-                                        let message: StreamMessage = stream_message.into();
-                                        if tx.send(message).await.is_err() {
-                                            // Channel is closed, exit the task
-                                            return;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error receiving message: {}", e);
-                                        break; // Stream error, will retry receive
-                                    }
-                                }
-                            }
-                            // Stream ended, retry receive
-                        }
-                        Err(error) => {
-                            if shutdown.load(Ordering::SeqCst) {
-                                return;
-                            }
-                            // Check if this is an unrecoverable error (e.g., stream client not initialized)
-                            if matches!(error, DanubeError::Unrecoverable(_)) {
-                                eprintln!(
-                                    "Unrecoverable error detected, attempting resubscription: {:?}",
-                                    error
-                                );
-
-                                // Attempt to resubscribe for unrecoverable errors
-                                let resubscribe_result = {
-                                    let mut locked = consumer.lock().await;
-                                    locked.subscribe().await
-                                };
-
-                                match resubscribe_result {
-                                    Ok(_) => {
-                                        eprintln!("Resubscription successful after unrecoverable error, continuing...");
-                                        attempts = 0; // Reset attempts after successful resubscription
-                                        continue; // Go back to creating stream_result
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "Resubscription failed after unrecoverable error: {:?}",
-                                            e
-                                        );
-                                        return; // Exit task if resubscription fails
-                                    }
-                                }
-                            }
-
-                            // Failed to get stream, check if retryable
-                            if retry_manager.is_retryable_error(&error) {
-                                attempts += 1;
-                                if attempts > max_retries {
-                                    eprintln!("Max retries exceeded for consumer receive, attempting resubscription");
-
-                                    // Attempt to resubscribe
-                                    let resubscribe_result = {
-                                        let mut locked = consumer.lock().await;
-                                        locked.subscribe().await
-                                    };
-
-                                    match resubscribe_result {
-                                        Ok(_) => {
-                                            eprintln!("Resubscription successful, continuing...");
-                                            break; // Break out of retry loop and go back to creating stream_result
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Resubscription failed: {:?}", e);
-                                            return; // Exit task if resubscription fails
-                                        }
-                                    }
-                                }
-                                let backoff = retry_manager.calculate_backoff(attempts - 1);
-                                tokio::time::sleep(backoff).await;
-                            } else {
-                                eprintln!("Non-retryable error in consumer receive: {:?}", error);
-                                return; // Non-retryable error
-                            }
-                        }
-                    }
-                }
-            });
+            let handle = tokio::spawn(partition_receive_loop(
+                Arc::clone(consumer),
+                tx.clone(),
+                retry_manager.clone(),
+                self.shutdown.clone(),
+            ));
             self.task_handles.push(handle);
         }
 
@@ -324,8 +213,108 @@ impl Consumer {
             handle.abort();
         }
         // small delay to allow server to observe closure
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(GRACEFUL_CLOSE_DELAY_MS)).await;
     }
+}
+
+/// Per-partition receive loop: opens a message stream, forwards messages to `tx`,
+/// and handles retries / resubscription on errors.
+async fn partition_receive_loop(
+    consumer: Arc<Mutex<TopicConsumer>>,
+    tx: mpsc::Sender<StreamMessage>,
+    retry_manager: RetryManager,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut attempts = 0;
+
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let stream_result = {
+            let mut locked = consumer.lock().await;
+            locked.receive().await
+        };
+
+        match stream_result {
+            Ok(mut stream) => {
+                attempts = 0;
+
+                while !shutdown.load(Ordering::SeqCst) {
+                    match stream.next().await {
+                        Some(Ok(stream_message)) => {
+                            let message: StreamMessage = stream_message.into();
+                            if tx.send(message).await.is_err() {
+                                return; // Channel closed
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "error receiving message");
+                            break; // Stream error, will retry
+                        }
+                        None => break, // Stream ended, will retry
+                    }
+                }
+            }
+
+            // Unrecoverable: attempt resubscription
+            Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                warn!(error = ?error, "unrecoverable error, attempting resubscription");
+                match resubscribe(&consumer).await {
+                    Ok(_) => {
+                        info!("resubscription successful after unrecoverable error");
+                        attempts = 0;
+                        continue;
+                    }
+                    Err(e) => {
+                        error!(error = ?e, "resubscription failed after unrecoverable error");
+                        return;
+                    }
+                }
+            }
+
+            // Retryable: backoff, then escalate to resubscription after max retries
+            Err(error) if retry_manager.is_retryable_error(&error) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                attempts += 1;
+                if attempts > retry_manager.max_retries() {
+                    warn!("max retries exceeded, attempting resubscription");
+                    match resubscribe(&consumer).await {
+                        Ok(_) => {
+                            info!("resubscription successful");
+                            attempts = 0;
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(error = ?e, "resubscription failed");
+                            return;
+                        }
+                    }
+                }
+                let backoff = retry_manager.calculate_backoff(attempts - 1);
+                tokio::time::sleep(backoff).await;
+            }
+
+            // Non-retryable: bail
+            Err(error) => {
+                error!(error = ?error, "non-retryable error in consumer receive");
+                return;
+            }
+        }
+    }
+}
+
+/// Resubscribe a topic consumer (e.g., after an unrecoverable error or max retries exceeded).
+async fn resubscribe(consumer: &Arc<Mutex<TopicConsumer>>) -> Result<()> {
+    let mut locked = consumer.lock().await;
+    locked.subscribe().await?;
+    Ok(())
 }
 
 /// ConsumerBuilder is a builder for creating a new Consumer instance.
@@ -412,30 +401,31 @@ impl ConsumerBuilder {
     /// # Returns
     ///
     /// -  A `Consumer` instance if the builder configuration is valid and the consumer is created successfully.
-    pub fn build(self) -> Consumer {
-        let topic = self.topic.expect("you should specify the topic");
-        let consumer_name = self
-            .consumer_name
-            .expect("you should provide a name for the consumer");
-        let subscription = self
-            .subscription
-            .expect("you should provide the name of the subscription");
-        Consumer::new(
+    pub fn build(self) -> Result<Consumer> {
+        let topic = self.topic.ok_or_else(|| {
+            DanubeError::Unrecoverable("topic is required to build a Consumer".into())
+        })?;
+        let consumer_name = self.consumer_name.ok_or_else(|| {
+            DanubeError::Unrecoverable("consumer name is required to build a Consumer".into())
+        })?;
+        let subscription = self.subscription.ok_or_else(|| {
+            DanubeError::Unrecoverable("subscription is required to build a Consumer".into())
+        })?;
+        Ok(Consumer::new(
             self.client,
             topic,
             consumer_name,
             subscription,
             self.subscription_type,
             self.consumer_options,
-        )
+        ))
     }
 }
 
 /// Configuration options for consumers
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ConsumerOptions {
-    // Reserved for future use
-    pub others: String,
     // Maximum number of retry attempts
     pub max_retries: usize,
     // Base backoff in milliseconds for exponential backoff

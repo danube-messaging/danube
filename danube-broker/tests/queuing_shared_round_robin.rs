@@ -33,7 +33,7 @@ async fn queue_shared_round_robin_distribution() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_queue_shared")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Consumers: 3 consumers, same subscription name
@@ -47,7 +47,7 @@ async fn queue_shared_round_robin_distribution() -> Result<()> {
             .with_consumer_name(cname.clone())
             .with_subscription(sub_name.to_string())
             .with_subscription_type(SubType::Shared)
-            .build();
+            .build()?;
         cons.subscribe().await?;
         let stream = cons.receive().await?;
         consumers.push((cname, cons, stream));

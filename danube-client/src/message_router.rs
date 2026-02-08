@@ -10,17 +10,10 @@ impl MessageRouter {
     pub(crate) fn new(partitions: usize) -> Self {
         MessageRouter {
             partitions,
-            last_partition: AtomicUsize::new(partitions - 1),
+            last_partition: AtomicUsize::new(0),
         }
     }
     pub(crate) fn round_robin(&self) -> usize {
-        // Atomically get the current value of last_partition
-        let last = self.last_partition.load(Ordering::Acquire);
-
-        // Calculate the next partition and update atomically
-        let next = (last + 1) % self.partitions;
-        self.last_partition.store(next, Ordering::Release);
-
-        next
+        self.last_partition.fetch_add(1, Ordering::Relaxed) % self.partitions
     }
 }

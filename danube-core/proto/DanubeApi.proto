@@ -207,21 +207,3 @@ message AuthResponse {
 }
 
 // ============================================================================================
-// Define the possible error types
-
-enum ErrorType {
-    UNKNOWN_ERROR = 0;
-    INVALID_TOPIC_NAME = 1; // The topic name is not valid
-    TOPIC_NOT_FOUND = 2; // Topic not found
-    SERVICE_NOT_READY = 3; // Any error that requires client retry operation with a fresh lookup
-    PRODUCER_ALREADY_EXISTS = 4;
-    SUBSCRIBE_PERMISSION_DENIED = 5;
-    SUBSCRIPTION_NOT_FOUND = 6; // Subscription not found
-}
-
-// A message that encapsulate the error details
-message ErrorMessage {
-    ErrorType error_type = 1;
-    string error_message = 2;
-    string redirect_to = 3; // Optional: for redirection information
-}

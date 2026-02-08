@@ -7,8 +7,8 @@ use crate::{
 use danube_core::proto::danube_schema::{
     schema_registry_client::SchemaRegistryClient as GrpcSchemaRegistryClient,
     CheckCompatibilityRequest, CheckCompatibilityResponse, GetLatestSchemaRequest,
-    GetSchemaRequest, ListVersionsRequest, RegisterSchemaRequest,
-    RegisterSchemaResponse, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
+    GetSchemaRequest, ListVersionsRequest, RegisterSchemaRequest, RegisterSchemaResponse,
+    SetCompatibilityModeRequest, SetCompatibilityModeResponse,
 };
 
 /// Client for interacting with the Danube Schema Registry
@@ -52,6 +52,25 @@ impl SchemaRegistryClient {
         Ok(())
     }
 
+    /// Prepare an authenticated gRPC request and return the ready client.
+    ///
+    /// Handles connect, auth token insertion, and client unwrap in one call.
+    async fn prepare_request<T>(
+        &mut self,
+        request: T,
+    ) -> Result<(
+        tonic::Request<T>,
+        &mut GrpcSchemaRegistryClient<tonic::transport::Channel>,
+    )> {
+        self.connect().await?;
+        let mut req = tonic::Request::new(request);
+        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
+        let grpc_client = self.grpc_client.as_mut().ok_or_else(|| {
+            DanubeError::SchemaError("Schema registry client not connected".into())
+        })?;
+        Ok((req, grpc_client))
+    }
+
     /// Register a new schema or get existing schema ID
     ///
     /// Returns a builder for configuring schema registration
@@ -69,27 +88,16 @@ impl SchemaRegistryClient {
     /// Returns schema information for the given schema ID.
     /// Schema ID identifies a subject (not a specific version).
     pub async fn get_schema_by_id(&mut self, schema_id: u64) -> Result<SchemaInfo> {
-        self.connect().await?;
-
         let request = GetSchemaRequest {
             schema_id,
             version: None,
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .get_schema(req)
             .await
-            .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get schema: {}", e)))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(SchemaInfo::from(response))
     }
 
@@ -101,54 +109,29 @@ impl SchemaRegistryClient {
         schema_id: u64,
         version: Option<u32>,
     ) -> Result<SchemaInfo> {
-        self.connect().await?;
-
         let request = GetSchemaRequest { schema_id, version };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .get_schema(req)
             .await
-            .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get schema: {}", e)))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(SchemaInfo::from(response))
     }
 
     /// Get latest schema for a subject
     ///
     /// Returns the latest schema version for the given subject.
-    pub async fn get_latest_schema(
-        &mut self,
-        subject: impl Into<String>,
-    ) -> Result<SchemaInfo> {
-        self.connect().await?;
-
+    pub async fn get_latest_schema(&mut self, subject: impl Into<String>) -> Result<SchemaInfo> {
         let request = GetLatestSchemaRequest {
             subject: subject.into(),
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .get_latest_schema(req)
             .await
-            .map_err(|e| DanubeError::Unrecoverable(format!("Failed to get latest schema: {}", e)))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(SchemaInfo::from(response))
     }
 
@@ -166,31 +149,18 @@ impl SchemaRegistryClient {
         schema_type: SchemaType,
         mode: Option<CompatibilityMode>,
     ) -> Result<CheckCompatibilityResponse> {
-        self.connect().await?;
-
         let request = CheckCompatibilityRequest {
             subject: subject.into(),
             new_schema_definition: schema_data,
             schema_type: schema_type.as_str().to_string(),
             compatibility_mode: mode.map(|m| m.as_str().to_string()),
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .check_compatibility(req)
             .await
-            .map_err(|e| {
-                DanubeError::Unrecoverable(format!("Failed to check compatibility: {}", e))
-            })?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(response)
     }
 
@@ -211,54 +181,30 @@ impl SchemaRegistryClient {
         subject: impl Into<String>,
         mode: CompatibilityMode,
     ) -> Result<SetCompatibilityModeResponse> {
-        self.connect().await?;
-
         let request = SetCompatibilityModeRequest {
             subject: subject.into(),
             compatibility_mode: mode.as_str().to_string(),
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .set_compatibility_mode(req)
             .await
-            .map_err(|e| {
-                DanubeError::Unrecoverable(format!("Failed to set compatibility mode: {}", e))
-            })?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(response)
     }
 
     /// List all versions for a subject
     pub async fn list_versions(&mut self, subject: impl Into<String>) -> Result<Vec<u32>> {
-        self.connect().await?;
-
         let request = ListVersionsRequest {
             subject: subject.into(),
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .list_versions(req)
             .await
-            .map_err(|e| DanubeError::Unrecoverable(format!("Failed to list versions: {}", e)))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(response.versions.into_iter().map(|v| v.version).collect())
     }
 
@@ -269,8 +215,6 @@ impl SchemaRegistryClient {
         schema_type: String,
         schema_data: Vec<u8>,
     ) -> Result<RegisterSchemaResponse> {
-        self.connect().await?;
-
         let request = RegisterSchemaRequest {
             subject,
             schema_type,
@@ -279,21 +223,12 @@ impl SchemaRegistryClient {
             created_by: String::from("danube-client"),
             tags: vec![],
         };
-
-        let mut req = tonic::Request::new(request);
-        RetryManager::insert_auth_token(&self.client, &mut req, &self.client.uri).await?;
-
-        let response = self
-            .grpc_client
-            .as_mut()
-            .ok_or_else(|| {
-                DanubeError::Unrecoverable("Schema registry client not connected".into())
-            })?
+        let (req, client) = self.prepare_request(request).await?;
+        let response = client
             .register_schema(req)
             .await
-            .map_err(|e| DanubeError::Unrecoverable(format!("Failed to register schema: {}", e)))?
+            .map_err(|status| DanubeError::FromStatus(status))?
             .into_inner();
-
         Ok(response)
     }
 }
@@ -366,10 +301,10 @@ impl<'a> SchemaRegistrationBuilder<'a> {
     pub async fn execute(self) -> Result<u64> {
         let schema_type = self
             .schema_type
-            .ok_or_else(|| DanubeError::Unrecoverable("Schema type is required".into()))?;
+            .ok_or_else(|| DanubeError::SchemaError("Schema type is required".into()))?;
         let schema_data = self
             .schema_data
-            .ok_or_else(|| DanubeError::Unrecoverable("Schema data is required".into()))?;
+            .ok_or_else(|| DanubeError::SchemaError("Schema data is required".into()))?;
 
         let response = self
             .client

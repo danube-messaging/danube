@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
         .new_producer()
         .with_topic(topic)
         .with_name("simple_producer")
-        .build();
+        .build()?;
 
     producer.create().await?;
     println!("✅ Producer created");
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         .with_consumer_name("simple_consumer")
         .with_subscription("simple_subscription")
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
 
     consumer.subscribe().await?;
     println!("✅ Consumer subscribed");

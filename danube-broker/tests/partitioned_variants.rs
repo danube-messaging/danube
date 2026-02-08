@@ -39,7 +39,7 @@ async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Resul
         .with_topic(&topic)
         .with_name("producer_part_queue_shared")
         .with_partitions(partitions)
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Three shared consumers on same subscription
@@ -53,7 +53,7 @@ async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Resul
             .with_consumer_name(cname.clone())
             .with_subscription(sub_name.to_string())
             .with_subscription_type(SubType::Shared)
-            .build();
+            .build()?;
         cons.subscribe().await?;
         let stream = cons.receive().await?;
         consumers.push((cname, cons, stream));
@@ -155,7 +155,7 @@ async fn partitioned_pubsub_fanout_exclusive_full_receipt() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_part_fanout_excl")
         .with_partitions(partitions)
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Three exclusive consumers, each with unique subscription name
@@ -169,7 +169,7 @@ async fn partitioned_pubsub_fanout_exclusive_full_receipt() -> Result<()> {
             .with_consumer_name(cname.clone())
             .with_subscription(sub)
             .with_subscription_type(SubType::Exclusive)
-            .build();
+            .build()?;
         cons.subscribe().await?;
         let stream = cons.receive().await?;
         consumers.push((cname, cons, stream));

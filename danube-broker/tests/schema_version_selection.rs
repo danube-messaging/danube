@@ -50,7 +50,7 @@ async fn producer_pin_to_specific_version() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v1_pinned")
         .with_schema_version(subject, 1)
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Create consumer
@@ -60,7 +60,7 @@ async fn producer_pin_to_specific_version() -> Result<()> {
         .with_consumer_name("consumer_version")
         .with_subscription("sub_version")
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -125,7 +125,7 @@ async fn producer_minimum_version_uses_latest() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_min_v2")
         .with_schema_min_version(subject, 2)
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -133,7 +133,7 @@ async fn producer_minimum_version_uses_latest() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_min")
         .with_subscription("sub_min")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -192,7 +192,7 @@ async fn multiple_producers_different_versions() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v1")
         .with_schema_version(subject, 1)
-        .build();
+        .build()?;
     producer1.create().await?;
 
     // Producer 2 pinned to V2
@@ -201,7 +201,7 @@ async fn multiple_producers_different_versions() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_v2")
         .with_schema_version(subject, 2)
-        .build();
+        .build()?;
     producer2.create().await?;
 
     // Consumer
@@ -210,7 +210,7 @@ async fn multiple_producers_different_versions() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_both")
         .with_subscription("sub_both")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -267,7 +267,7 @@ async fn producer_invalid_version_fails() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_invalid")
         .with_schema_version(subject, 99)
-        .build();
+        .build()?;
 
     let result = producer.create().await;
     assert!(result.is_err(), "Should fail with invalid version");
@@ -311,7 +311,7 @@ async fn producer_no_version_uses_latest() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_latest")
         .with_schema_subject(subject)
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -319,7 +319,7 @@ async fn producer_no_version_uses_latest() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_latest")
         .with_subscription("sub_latest")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 
@@ -373,7 +373,7 @@ async fn producer_minimum_version_at_boundary() -> Result<()> {
         .with_topic(&topic)
         .with_name("producer_boundary")
         .with_schema_min_version(subject, 3)
-        .build();
+        .build()?;
     producer.create().await?;
 
     let mut consumer = client
@@ -381,7 +381,7 @@ async fn producer_minimum_version_at_boundary() -> Result<()> {
         .with_topic(topic.clone())
         .with_consumer_name("consumer_boundary")
         .with_subscription("sub_boundary")
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 

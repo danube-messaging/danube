@@ -1,28 +1,28 @@
 use crate::{
-    errors::Result,
+    errors::{DanubeError, Result},
     message_router::MessageRouter,
+    retry_manager::RetryManager,
     topic_producer::TopicProducer,
     DanubeClient,
-    // TODO Phase 4: Schema removed
-    // Schema, SchemaType,
 };
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
+use danube_core::proto::schema_reference::VersionRef;
+use danube_core::proto::SchemaReference;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 
 /// Represents a message producer responsible for sending messages to partitioned or non-partitioned topics distributed across message brokers.
 ///
 /// The `Producer` struct is designed to handle the creation and management of a producer instance that sends messages to either partitioned or non-partitioned topics.
 /// It manages the producer's state and ensures that messages are sent according to the configured settings.
-use danube_core::proto::SchemaReference as ProtoSchemaReference;
-
 #[derive(Debug)]
 pub struct Producer {
     client: DanubeClient,
     topic_name: String,
-    schema_ref: Option<ProtoSchemaReference>,
+    schema_ref: Option<SchemaReference>,
     dispatch_strategy: ConfigDispatchStrategy,
     producer_name: String,
     partitions: Option<usize>,
@@ -35,18 +35,14 @@ impl Producer {
     pub(crate) fn new(
         client: DanubeClient,
         topic_name: String,
-        schema_ref: Option<ProtoSchemaReference>,
+        schema_ref: Option<SchemaReference>,
         dispatch_strategy: Option<ConfigDispatchStrategy>,
         producer_name: String,
         partitions: Option<usize>,
         message_router: Option<MessageRouter>,
         producer_options: ProducerOptions,
     ) -> Self {
-        let dispatch_strategy = if let Some(retention) = dispatch_strategy {
-            retention
-        } else {
-            ConfigDispatchStrategy::default()
-        };
+        let dispatch_strategy = dispatch_strategy.unwrap_or_default();
 
         Producer {
             client,
@@ -128,20 +124,7 @@ impl Producer {
         data: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
     ) -> Result<u64> {
-        use crate::errors::DanubeError;
-        use crate::retry_manager::RetryManager;
-
-        let next_partition = match self.partitions {
-            Some(_) => self
-                .message_router
-                .as_ref()
-                .expect("already initialized")
-                .round_robin(),
-
-            None => 0,
-        };
-
-        // Create retry manager for producers
+        let partition = self.select_partition();
         let retry_manager = RetryManager::new(
             self.producer_options.max_retries,
             self.producer_options.base_backoff_ms,
@@ -149,100 +132,86 @@ impl Producer {
         );
 
         let mut attempts = 0;
-        let max_retries = if self.producer_options.max_retries == 0 {
-            5
-        } else {
-            self.producer_options.max_retries
-        };
 
         loop {
             let send_result = {
                 let mut producers = self.producers.lock().await;
-                producers[next_partition]
-                    .send(data.clone(), attributes.clone())
-                    .await
+                producers[partition].send(&data, attributes.as_ref()).await
             };
 
             match send_result {
                 Ok(sequence_id) => return Ok(sequence_id),
+
+                // Unrecoverable: attempt full recreation
+                Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
+                    warn!(error = ?error, "unrecoverable error, attempting producer recreation");
+                    self.recreate_producer(partition).await?;
+                    attempts = 0;
+                }
+
+                // Retryable: backoff, then escalate to lookup+recreate after max retries
+                Err(error) if retry_manager.is_retryable_error(&error) => {
+                    attempts += 1;
+                    if attempts > retry_manager.max_retries() {
+                        warn!("max retries exceeded, attempting broker lookup and recreation");
+                        self.lookup_and_recreate(partition, error).await?;
+                        attempts = 0;
+                        continue;
+                    }
+                    let backoff = retry_manager.calculate_backoff(attempts - 1);
+                    tokio::time::sleep(backoff).await;
+                }
+
+                // Non-retryable: bail
                 Err(error) => {
-                    // Check if this is an unrecoverable error (e.g., stream client not initialized)
-                    if matches!(error, DanubeError::Unrecoverable(_)) {
-                        eprintln!("Unrecoverable error detected in producer send, attempting recreation: {:?}", error);
-
-                        // Attempt to recreate the producer for unrecoverable errors
-                        let recreate_result = {
-                            let mut producers = self.producers.lock().await;
-                            producers[next_partition].create().await
-                        };
-
-                        match recreate_result {
-                            Ok(_) => {
-                                eprintln!("Producer recreation successful after unrecoverable error, continuing...");
-                                attempts = 0; // Reset attempts after successful recreation
-                                continue; // Go back to sending
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Producer recreation failed after unrecoverable error: {:?}",
-                                    e
-                                );
-                                return Err(e); // Return error if recreation fails
-                            }
-                        }
-                    }
-
-                    // Failed to send, check if retryable
-                    if retry_manager.is_retryable_error(&error) {
-                        attempts += 1;
-                        if attempts > max_retries {
-                            eprintln!("Max retries exceeded for producer send, attempting broker lookup and recreation");
-
-                            // Attempt broker lookup and producer recreation
-                            let lookup_and_recreate_result = {
-                                let mut producers = self.producers.lock().await;
-                                let producer = &mut producers[next_partition];
-
-                                // Perform lookup and reconnect
-                                if let Ok(new_addr) = producer
-                                    .client
-                                    .lookup_service
-                                    .handle_lookup(&producer.client.uri, &producer.topic)
-                                    .await
-                                {
-                                    producer.client.uri = new_addr;
-                                    producer.connect(&producer.client.uri.clone()).await?;
-                                    // Recreate producer on new connection
-                                    producer.create().await
-                                } else {
-                                    Err(error)
-                                }
-                            };
-
-                            match lookup_and_recreate_result {
-                                Ok(_) => {
-                                    eprintln!("Broker lookup and producer recreation successful, continuing...");
-                                    attempts = 0; // Reset attempts after successful recreation
-                                    continue; // Go back to sending
-                                }
-                                Err(e) => {
-                                    eprintln!(
-                                        "Broker lookup and producer recreation failed: {:?}",
-                                        e
-                                    );
-                                    return Err(e); // Return error if recreation fails
-                                }
-                            }
-                        }
-                        let backoff = retry_manager.calculate_backoff(attempts - 1);
-                        tokio::time::sleep(backoff).await;
-                    } else {
-                        eprintln!("Non-retryable error in producer send: {:?}", error);
-                        return Err(error); // Non-retryable error
-                    }
+                    error!(error = ?error, "non-retryable error in producer send");
+                    return Err(error);
                 }
             }
         }
+    }
+
+    /// Select the next partition using round-robin, or 0 for non-partitioned topics.
+    fn select_partition(&self) -> usize {
+        match self.partitions {
+            Some(_) => self
+                .message_router
+                .as_ref()
+                .expect("message_router must be initialized for partitioned topics")
+                .round_robin(),
+            None => 0,
+        }
+    }
+
+    /// Recreate a single topic producer (e.g., after an unrecoverable error).
+    async fn recreate_producer(&self, partition: usize) -> Result<()> {
+        let mut producers = self.producers.lock().await;
+        producers[partition].create().await?;
+        info!("producer recreation successful");
+        Ok(())
+    }
+
+    /// Look up a new broker and recreate the topic producer on the new connection.
+    /// On lookup failure, returns the `original_error` from the failed send.
+    async fn lookup_and_recreate(
+        &self,
+        partition: usize,
+        original_error: DanubeError,
+    ) -> Result<()> {
+        let mut producers = self.producers.lock().await;
+        let producer = &mut producers[partition];
+
+        let new_addr = producer
+            .client
+            .lookup_service
+            .handle_lookup(&producer.broker_addr, &producer.topic)
+            .await
+            .map_err(|_| original_error)?;
+
+        producer.broker_addr = new_addr;
+        producer.create().await?;
+        info!("broker lookup and producer recreation successful");
+        Ok(())
     }
 }
 
@@ -250,8 +219,6 @@ impl Producer {
 ///
 /// `ProducerBuilder` provides a fluent API for configuring and instantiating a `Producer`.
 /// It allows you to set various properties that define how the producer will behave and interact with the message broker.
-use danube_core::proto::SchemaReference;
-
 #[derive(Debug, Clone)]
 pub struct ProducerBuilder {
     client: DanubeClient,
@@ -317,13 +284,11 @@ impl ProducerBuilder {
     /// let producer = client.producer()
     ///     .with_topic("user-events")
     ///     .with_schema_subject("user-events-value")  // Uses latest version
-    ///     .build();
+    ///     .build()?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn with_schema_subject(mut self, subject: impl Into<String>) -> Self {
-        use danube_core::proto::schema_reference::VersionRef;
-
         self.schema_ref = Some(SchemaReference {
             subject: subject.into(),
             version_ref: Some(VersionRef::UseLatest(true)),
@@ -343,13 +308,11 @@ impl ProducerBuilder {
     /// let producer = client.producer()
     ///     .with_topic("user-events")
     ///     .with_schema_version("user-events-value", 2)  // Pin to version 2
-    ///     .build();
+    ///     .build()?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn with_schema_version(mut self, subject: impl Into<String>, version: u32) -> Self {
-        use danube_core::proto::schema_reference::VersionRef;
-
         self.schema_ref = Some(SchemaReference {
             subject: subject.into(),
             version_ref: Some(VersionRef::PinnedVersion(version)),
@@ -368,13 +331,11 @@ impl ProducerBuilder {
     /// let producer = client.producer()
     ///     .with_topic("user-events")
     ///     .with_schema_min_version("user-events-value", 2)  // Use v2 or newer
-    ///     .build();
+    ///     .build()?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn with_schema_min_version(mut self, subject: impl Into<String>, min_version: u32) -> Self {
-        use danube_core::proto::schema_reference::VersionRef;
-
         self.schema_ref = Some(SchemaReference {
             subject: subject.into(),
             version_ref: Some(VersionRef::MinVersion(min_version)),
@@ -397,7 +358,7 @@ impl ProducerBuilder {
     ///         subject: "user-events-value".to_string(),
     ///         version_ref: Some(VersionRef::PinnedVersion(2)),
     ///     })
-    ///     .build();
+    ///     .build()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -461,32 +422,31 @@ impl ProducerBuilder {
     ///     .with_schema("my-schema".to_string(), SchemaType::Json("schema-definition".to_string()))
     ///     .build()?;
     ///
-    pub fn build(self) -> Producer {
-        let topic_name = self
-            .topic
-            .expect("can't create a producer without assigning to a topic");
-        let producer_name = self
-            .producer_name
-            .expect("you should provide a name to the created producer");
+    pub fn build(self) -> Result<Producer> {
+        let topic_name = self.topic.ok_or_else(|| {
+            DanubeError::Unrecoverable("topic is required to build a Producer".into())
+        })?;
+        let producer_name = self.producer_name.ok_or_else(|| {
+            DanubeError::Unrecoverable("producer name is required to build a Producer".into())
+        })?;
 
-        Producer::new(
+        Ok(Producer::new(
             self.client,
             topic_name,
-            self.schema_ref, // Phase 5: SchemaReference support
+            self.schema_ref,
             self.dispatch_strategy,
             producer_name,
             self.num_partitions,
             None,
             self.producer_options,
-        )
+        ))
     }
 }
 
 /// Configuration options for producers
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ProducerOptions {
-    // Reserved for future use
-    pub others: String,
     // Maximum number of retries for operations like create/send on transient failures
     pub max_retries: usize,
     // Base backoff in milliseconds for exponential backoff

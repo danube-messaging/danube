@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
         .with_topic(topic)
         .with_name(producer_name)
         .with_reliable_dispatch()
-        .build();
+        .build()?;
 
     producer.create().await?;
     println!("The Producer {} was created", producer_name);

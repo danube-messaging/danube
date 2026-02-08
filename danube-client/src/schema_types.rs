@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 /// Schema compatibility modes for schema evolution
 ///
 /// Defines how strictly new schema versions must be compatible with existing versions.
@@ -33,6 +36,26 @@ impl CompatibilityMode {
 impl Default for CompatibilityMode {
     fn default() -> Self {
         CompatibilityMode::Backward
+    }
+}
+
+impl fmt::Display for CompatibilityMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CompatibilityMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(CompatibilityMode::None),
+            "backward" => Ok(CompatibilityMode::Backward),
+            "forward" => Ok(CompatibilityMode::Forward),
+            "full" => Ok(CompatibilityMode::Full),
+            other => Err(format!("unknown compatibility mode: '{}'", other)),
+        }
     }
 }
 
@@ -74,6 +97,28 @@ impl SchemaType {
             SchemaType::Avro => "avro",
             SchemaType::JsonSchema => "json_schema",
             SchemaType::Protobuf => "protobuf",
+        }
+    }
+}
+
+impl fmt::Display for SchemaType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SchemaType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "bytes" => Ok(SchemaType::Bytes),
+            "string" => Ok(SchemaType::String),
+            "number" => Ok(SchemaType::Number),
+            "avro" => Ok(SchemaType::Avro),
+            "json_schema" | "jsonschema" => Ok(SchemaType::JsonSchema),
+            "protobuf" | "proto" => Ok(SchemaType::Protobuf),
+            other => Err(format!("unknown schema type: '{}'", other)),
         }
     }
 }

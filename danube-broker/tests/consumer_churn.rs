@@ -35,7 +35,7 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("prod_churn_shared")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Start with 2 consumers on same shared subscription
@@ -49,7 +49,7 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
             .with_consumer_name(cname.clone())
             .with_subscription(sub.to_string())
             .with_subscription_type(SubType::Shared)
-            .build();
+            .build()?;
         c.subscribe().await?;
         let stream = c.receive().await?;
         consumers.push((cname, c, stream));
@@ -92,7 +92,7 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
         .with_consumer_name("cs-cons-2".to_string())
         .with_subscription(sub.to_string())
         .with_subscription_type(SubType::Shared)
-        .build();
+        .build()?;
     c3.subscribe().await?;
     let mut s3 = c3.receive().await?;
     let tx3 = tx.clone();
@@ -182,7 +182,7 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("prod_churn_excl")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Two exclusive consumers with unique subscriptions
@@ -196,7 +196,7 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
             .with_consumer_name(cname.clone())
             .with_subscription(sub)
             .with_subscription_type(SubType::Exclusive)
-            .build();
+            .build()?;
         c.subscribe().await?;
         let stream = c.receive().await?;
         consumers.push((cname, c, stream));
@@ -235,7 +235,7 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         .with_consumer_name("ce-cons-2".to_string())
         .with_subscription("ce-sub-2".to_string())
         .with_subscription_type(SubType::Exclusive)
-        .build();
+        .build()?;
     c3.subscribe().await?;
     let mut s3 = c3.receive().await?;
     let tx3 = tx.clone();

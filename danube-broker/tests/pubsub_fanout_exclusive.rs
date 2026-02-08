@@ -33,7 +33,7 @@ async fn pubsub_fanout_exclusive_unique_subscriptions() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_fanout_exclusive")
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Consumers: 3 consumers, each with unique Exclusive subscription name
@@ -47,7 +47,7 @@ async fn pubsub_fanout_exclusive_unique_subscriptions() -> Result<()> {
             .with_consumer_name(cname.clone())
             .with_subscription(sub_name)
             .with_subscription_type(SubType::Exclusive)
-            .build();
+            .build()?;
         cons.subscribe().await?;
         let stream = cons.receive().await?;
         consumers.push((cname, cons, stream));

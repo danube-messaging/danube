@@ -49,7 +49,7 @@ impl Syncronizer {
             .with_name("test_producer1")
             // Phase 6: Old schema API removed
             // .with_schema("my_app".into(), SchemaType::Bytes)
-            .build();
+            .build()?;
 
         let prod_id = producer.create().await?;
         self.producer = Some(producer);
@@ -73,7 +73,7 @@ impl Syncronizer {
             .with_consumer_name("")
             .with_subscription(SUBSCRIPTION_NAME)
             .with_subscription_type(SubType::Shared)
-            .build();
+            .build()?;
 
         // Subscribe to the topic
         let consumer_id = consumer.subscribe().await?;

@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
         .with_topic(topic)
         .with_name(producer_name)
         .with_schema_subject("my-app-events")
-        .build();
+        .build()?;
 
     producer.create().await?;
     println!("The Producer {} was created", producer_name);

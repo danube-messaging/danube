@@ -20,7 +20,7 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
         .with_topic(&topic)
         .with_name("producer_part_basic")
         .with_partitions(partitions)
-        .build();
+        .build()?;
     producer.create().await?;
 
     // Single consumer (sub_type)
@@ -35,7 +35,7 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
         .with_consumer_name(cname.to_string())
         .with_subscription(format!("sub_part_{}", cname))
         .with_subscription_type(sub_type)
-        .build();
+        .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
 

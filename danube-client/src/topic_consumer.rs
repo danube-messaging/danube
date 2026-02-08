@@ -8,8 +8,8 @@ use tracing::warn;
 
 use danube_core::message::MessageID;
 use danube_core::proto::{
-    consumer_service_client::ConsumerServiceClient, AckRequest, AckResponse, ConsumerRequest,
-    ReceiveRequest, StreamMessage,
+    consumer_service_client::ConsumerServiceClient, health_check_request::ClientType, AckRequest,
+    AckResponse, ConsumerRequest, ReceiveRequest, StreamMessage,
 };
 
 use std::sync::{
@@ -18,6 +18,16 @@ use std::sync::{
 };
 use tokio_stream::Stream;
 use tonic::{transport::Uri, Status};
+
+/// Connection state for a topic consumer.
+#[derive(Debug)]
+enum ConsumerState {
+    Disconnected,
+    Ready {
+        stream_client: ConsumerServiceClient<tonic::transport::Channel>,
+        consumer_id: u64,
+    },
+}
 
 /// Represents a Consumer
 #[derive(Debug)]
@@ -29,8 +39,6 @@ pub(crate) struct TopicConsumer {
     topic_name: String,
     // the name of the Consumer
     consumer_name: String,
-    // unique identifier of the consumer, provided by the Broker
-    consumer_id: Option<u64>,
     // the name of the subscription the consumer is attached to
     subscription: String,
     // the type of the subscription, that can be Shared and Exclusive
@@ -39,8 +47,10 @@ pub(crate) struct TopicConsumer {
     consumer_options: ConsumerOptions,
     // unique identifier for every request sent by consumer
     request_id: AtomicU64,
-    // the grpc client cnx
-    stream_client: Option<ConsumerServiceClient<tonic::transport::Channel>>,
+    // connection state: Disconnected or Ready with stream_client + consumer_id
+    state: ConsumerState,
+    // the broker URI this consumer is connected to (avoids mutating shared client)
+    broker_addr: Uri,
     // stop_signal received from broker, should close the consumer
     stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
@@ -56,11 +66,7 @@ impl TopicConsumer {
         sub_type: Option<SubType>,
         consumer_options: ConsumerOptions,
     ) -> Self {
-        let subscription_type = if let Some(sub_type) = sub_type {
-            sub_type
-        } else {
-            SubType::Shared
-        };
+        let subscription_type = sub_type.unwrap_or(SubType::Shared);
 
         let retry_manager = RetryManager::new(
             consumer_options.max_retries,
@@ -68,16 +74,18 @@ impl TopicConsumer {
             consumer_options.max_backoff_ms,
         );
 
+        let broker_addr = client.uri.clone();
+
         TopicConsumer {
             client,
             topic_name,
             consumer_name,
-            consumer_id: None,
             subscription,
             subscription_type,
             consumer_options,
             request_id: AtomicU64::new(0),
-            stream_client: None,
+            state: ConsumerState::Disconnected,
+            broker_addr,
             stop_signal: Arc::new(AtomicBool::new(false)),
             retry_manager,
         }
@@ -89,69 +97,19 @@ impl TopicConsumer {
     }
     pub(crate) async fn subscribe(&mut self) -> Result<u64> {
         let mut attempts = 0;
-        let max_retries = 5; // Default for consumers
 
         loop {
-            // Connect to current broker
-            self.connect(&self.client.uri.clone()).await?;
-
-            let consumer_request = ConsumerRequest {
-                request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
-                topic_name: self.topic_name.clone(),
-                consumer_name: self.consumer_name.clone(),
-                subscription: self.subscription.clone(),
-                subscription_type: self.subscription_type.clone() as i32,
-            };
-
-            let mut request = tonic::Request::new(consumer_request);
-            RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-            let stream_client = self.stream_client.as_mut().unwrap();
-            match stream_client.subscribe(request).await {
-                Ok(resp) => {
-                    let response = resp.into_inner();
-                    self.consumer_id = Some(response.consumer_id);
-
-                    // Start health check
-                    let stop_signal = Arc::clone(&self.stop_signal);
-                    let _ = self
-                        .client
-                        .health_check_service
-                        .start_health_check(&self.client.uri, 1, response.consumer_id, stop_signal)
-                        .await;
-
-                    return Ok(response.consumer_id);
-                }
-                Err(status) => {
-                    // Handle AlreadyExists specifically - consumer already present on connection
-                    if status.code() == tonic::Code::AlreadyExists {
-                        warn!(
-                            "The consumer already exist, not allowed to create the same consumer twice"
-                        );
-                        return Err(status_to_danube_error(status));
-                    }
-
-                    let error = status_to_danube_error(status);
-
+            match self.try_subscribe().await {
+                Ok(consumer_id) => return Ok(consumer_id),
+                Err(error) => {
                     if !self.retry_manager.is_retryable_error(&error) {
                         return Err(error);
                     }
-
                     attempts += 1;
-                    if attempts > max_retries {
+                    if attempts > self.retry_manager.max_retries() {
                         return Err(error);
                     }
-
-                    // Perform lookup and backoff
-                    if let Ok(new_addr) = self
-                        .client
-                        .lookup_service
-                        .handle_lookup(&self.client.uri, &self.topic_name)
-                        .await
-                    {
-                        self.client.uri = new_addr;
-                    }
-
+                    self.lookup_new_broker().await;
                     let backoff = self.retry_manager.calculate_backoff(attempts - 1);
                     tokio::time::sleep(backoff).await;
                 }
@@ -159,21 +117,89 @@ impl TopicConsumer {
         }
     }
 
+    /// Attempt a single subscribe RPC call: connect, register, and start health check.
+    async fn try_subscribe(&mut self) -> Result<u64> {
+        let mut stream_client = self.connect().await?;
+
+        let consumer_request = ConsumerRequest {
+            request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
+            topic_name: self.topic_name.clone(),
+            consumer_name: self.consumer_name.clone(),
+            subscription: self.subscription.clone(),
+            subscription_type: self.subscription_type.clone() as i32,
+        };
+
+        let mut request = tonic::Request::new(consumer_request);
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+
+        let response = stream_client
+            .subscribe(request)
+            .await
+            .map_err(|status| {
+                if status.code() == tonic::Code::AlreadyExists {
+                    warn!("consumer already exists, not allowed to create the same consumer twice");
+                }
+                status_to_danube_error(status)
+            })?
+            .into_inner();
+
+        // Start health check
+        let stop_signal = Arc::clone(&self.stop_signal);
+        let _ = self
+            .client
+            .health_check_service
+            .start_health_check(
+                &self.broker_addr,
+                ClientType::Consumer,
+                response.consumer_id,
+                stop_signal,
+            )
+            .await;
+
+        // Transition to Ready state atomically
+        self.state = ConsumerState::Ready {
+            stream_client,
+            consumer_id: response.consumer_id,
+        };
+
+        Ok(response.consumer_id)
+    }
+
+    /// Look up the current broker for this topic and update the connection target.
+    async fn lookup_new_broker(&mut self) {
+        if let Ok(new_addr) = self
+            .client
+            .lookup_service
+            .handle_lookup(&self.broker_addr, &self.topic_name)
+            .await
+        {
+            self.broker_addr = new_addr;
+        }
+    }
+
     // receive messages
     pub(crate) async fn receive(
         &mut self,
     ) -> Result<impl Stream<Item = std::result::Result<StreamMessage, Status>>> {
+        let (stream_client, consumer_id) = match &mut self.state {
+            ConsumerState::Ready {
+                stream_client,
+                consumer_id,
+            } => (stream_client, *consumer_id),
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "Receive: consumer is not connected".into(),
+                ));
+            }
+        };
+
         let receive_request = ReceiveRequest {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
-            consumer_id: self.consumer_id.unwrap(),
+            consumer_id,
         };
 
         let mut request = tonic::Request::new(receive_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("Receive: Stream client is not initialized".to_string())
-        })?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
 
         let response = match stream_client.receive_messages(request).await {
             Ok(response) => response,
@@ -190,6 +216,15 @@ impl TopicConsumer {
         msg_id: MessageID,
         subscription_name: &str,
     ) -> Result<AckResponse> {
+        let stream_client = match &mut self.state {
+            ConsumerState::Ready { stream_client, .. } => stream_client,
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "SendAck: consumer is not connected".into(),
+                ));
+            }
+        };
+
         let ack_request = AckRequest {
             request_id: req_id,
             msg_id: Some(msg_id.into()),
@@ -197,11 +232,7 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(ack_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.client.uri).await?;
-
-        let stream_client = self.stream_client.as_mut().ok_or_else(|| {
-            DanubeError::Unrecoverable("SendAck: Stream client is not initialized".to_string())
-        })?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
 
         let response = match stream_client.ack(request).await {
             Ok(response) => response,
@@ -216,10 +247,12 @@ impl TopicConsumer {
         &self.topic_name
     }
 
-    async fn connect(&mut self, addr: &Uri) -> Result<()> {
-        let grpc_cnx = self.client.cnx_manager.get_connection(addr, addr).await?;
-        let client = ConsumerServiceClient::new(grpc_cnx.grpc_cnx.clone());
-        self.stream_client = Some(client);
-        Ok(())
+    async fn connect(&self) -> Result<ConsumerServiceClient<tonic::transport::Channel>> {
+        let grpc_cnx = self
+            .client
+            .cnx_manager
+            .get_connection(&self.broker_addr, &self.broker_addr)
+            .await?;
+        Ok(ConsumerServiceClient::new(grpc_cnx.grpc_cnx.clone()))
     }
 }
