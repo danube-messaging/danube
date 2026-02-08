@@ -281,8 +281,9 @@ impl ProducerBuilder {
     /// ```no_run
     /// # use danube_client::DanubeClient;
     /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let producer = client.producer()
+    /// let mut producer = client.new_producer()
     ///     .with_topic("user-events")
+    ///     .with_name("my-producer")
     ///     .with_schema_subject("user-events-value")  // Uses latest version
     ///     .build()?;
     /// # Ok(())
@@ -305,8 +306,9 @@ impl ProducerBuilder {
     /// ```no_run
     /// # use danube_client::DanubeClient;
     /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let producer = client.producer()
+    /// let mut producer = client.new_producer()
     ///     .with_topic("user-events")
+    ///     .with_name("my-producer")
     ///     .with_schema_version("user-events-value", 2)  // Pin to version 2
     ///     .build()?;
     /// # Ok(())
@@ -328,8 +330,9 @@ impl ProducerBuilder {
     /// ```no_run
     /// # use danube_client::DanubeClient;
     /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let producer = client.producer()
+    /// let mut producer = client.new_producer()
     ///     .with_topic("user-events")
+    ///     .with_name("my-producer")
     ///     .with_schema_min_version("user-events-value", 2)  // Use v2 or newer
     ///     .build()?;
     /// # Ok(())
@@ -352,8 +355,9 @@ impl ProducerBuilder {
     /// ```no_run
     /// # use danube_client::{DanubeClient, SchemaReference, VersionRef};
     /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let producer = client.producer()
+    /// let mut producer = client.new_producer()
     ///     .with_topic("user-events")
+    ///     .with_name("my-producer")
     ///     .with_schema_reference(SchemaReference {
     ///         subject: "user-events-value".to_string(),
     ///         version_ref: Some(VersionRef::PinnedVersion(2)),
@@ -414,14 +418,17 @@ impl ProducerBuilder {
     /// - A `Producer` instance if the builder configuration is valid and the producer is created successfully.
     ///
     /// # Example
-    ///
-    /// let producer = ProducerBuilder::new()
+    /// ```no_run
+    /// # use danube_client::DanubeClient;
+    /// # async fn example(client: DanubeClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut producer = client.new_producer()
     ///     .with_topic("my-topic")
     ///     .with_name("my-producer")
     ///     .with_partitions(3)
-    ///     .with_schema("my-schema".to_string(), SchemaType::Json("schema-definition".to_string()))
     ///     .build()?;
-    ///
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn build(self) -> Result<Producer> {
         let topic_name = self.topic.ok_or_else(|| {
             DanubeError::Unrecoverable("topic is required to build a Producer".into())
@@ -429,6 +436,12 @@ impl ProducerBuilder {
         let producer_name = self.producer_name.ok_or_else(|| {
             DanubeError::Unrecoverable("producer name is required to build a Producer".into())
         })?;
+
+        if let Some(0) = self.num_partitions {
+            return Err(DanubeError::Unrecoverable(
+                "partitions must be > 0 or omitted for non-partitioned topic".into(),
+            ));
+        }
 
         Ok(Producer::new(
             self.client,

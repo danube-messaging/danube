@@ -19,7 +19,7 @@ Cargo.lock
 # etcd data and danube data are used for local testing
 etcd-data/
 danube-data/
-#info/
+info/
 
 temp/
 .vscode/

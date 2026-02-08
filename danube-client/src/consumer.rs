@@ -171,11 +171,16 @@ impl Consumer {
         );
 
         for (_, consumer) in &self.consumers {
+            let broker_stop = {
+                let locked = consumer.lock().await;
+                Arc::clone(&locked.stop_signal)
+            };
             let handle = tokio::spawn(partition_receive_loop(
                 Arc::clone(consumer),
                 tx.clone(),
                 retry_manager.clone(),
                 self.shutdown.clone(),
+                broker_stop,
             ));
             self.task_handles.push(handle);
         }
@@ -224,6 +229,7 @@ async fn partition_receive_loop(
     tx: mpsc::Sender<StreamMessage>,
     retry_manager: RetryManager,
     shutdown: Arc<AtomicBool>,
+    broker_stop: Arc<AtomicBool>,
 ) {
     let mut attempts = 0;
 
@@ -241,7 +247,7 @@ async fn partition_receive_loop(
             Ok(mut stream) => {
                 attempts = 0;
 
-                while !shutdown.load(Ordering::SeqCst) {
+                while !shutdown.load(Ordering::SeqCst) && !broker_stop.load(Ordering::Relaxed) {
                     match stream.next().await {
                         Some(Ok(stream_message)) => {
                             let message: StreamMessage = stream_message.into();
@@ -254,6 +260,26 @@ async fn partition_receive_loop(
                             break; // Stream error, will retry
                         }
                         None => break, // Stream ended, will retry
+                    }
+                }
+
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                // Broker signaled Close via health check — resubscribe immediately
+                if broker_stop.load(Ordering::Relaxed) {
+                    broker_stop.store(false, Ordering::Relaxed);
+                    warn!("broker signaled topic close, triggering resubscription");
+                    match resubscribe(&consumer).await {
+                        Ok(_) => {
+                            info!("resubscription successful after broker close signal");
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(error = ?e, "resubscription failed after broker close signal");
+                            return;
+                        }
                     }
                 }
             }

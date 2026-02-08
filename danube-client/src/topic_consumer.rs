@@ -52,7 +52,7 @@ pub(crate) struct TopicConsumer {
     // the broker URI this consumer is connected to (avoids mutating shared client)
     broker_addr: Uri,
     // stop_signal received from broker, should close the consumer
-    stop_signal: Arc<AtomicBool>,
+    pub(crate) stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
     retry_manager: RetryManager,
 }

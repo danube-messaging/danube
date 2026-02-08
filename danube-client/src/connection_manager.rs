@@ -1,4 +1,4 @@
-use crate::errors::Result;
+use crate::errors::{DanubeError, Result};
 
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -102,10 +102,11 @@ pub(crate) async fn new_rpc_connection(
         }
         true => {
             // TLS is enabled, tls_config must be present
-            let tls_config = cnx_options
-                .tls_config
-                .as_ref()
-                .expect("TLS config must be present when TLS is enabled");
+            let tls_config = cnx_options.tls_config.as_ref().ok_or_else(|| {
+                DanubeError::Unrecoverable(
+                    "TLS is enabled but no TLS config provided. Use with_tls() or with_mtls() before enabling TLS".to_string(),
+                )
+            })?;
 
             Channel::from_shared(connect_url.to_string())?
                 .tls_config(tls_config.clone())?

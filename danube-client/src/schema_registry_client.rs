@@ -75,6 +75,9 @@ impl SchemaRegistryClient {
             subject: subject.into(),
             schema_type: None,
             schema_data: None,
+            description: None,
+            created_by: None,
+            tags: None,
         }
     }
 
@@ -202,14 +205,17 @@ impl SchemaRegistryClient {
         subject: String,
         schema_type: String,
         schema_data: Vec<u8>,
+        description: String,
+        created_by: String,
+        tags: Vec<String>,
     ) -> Result<RegisterSchemaResponse> {
         let request = RegisterSchemaRequest {
             subject,
             schema_type,
             schema_definition: schema_data,
-            description: String::new(),
-            created_by: String::from("danube-client"),
-            tags: vec![],
+            description,
+            created_by,
+            tags,
         };
         let (req, mut client) = self.prepare_request(request).await?;
         let response = client
@@ -255,6 +261,9 @@ pub struct SchemaRegistrationBuilder<'a> {
     subject: String,
     schema_type: Option<SchemaType>,
     schema_data: Option<Vec<u8>>,
+    description: Option<String>,
+    created_by: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 impl<'a> SchemaRegistrationBuilder<'a> {
@@ -270,6 +279,24 @@ impl<'a> SchemaRegistrationBuilder<'a> {
         self
     }
 
+    /// Set an optional description for the schema
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Set who created the schema (defaults to "danube-client")
+    pub fn with_created_by(mut self, created_by: impl Into<String>) -> Self {
+        self.created_by = Some(created_by.into());
+        self
+    }
+
+    /// Set tags for the schema
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = Some(tags);
+        self
+    }
+
     /// Execute the schema registration
     pub async fn execute(self) -> Result<u64> {
         let schema_type = self
@@ -281,7 +308,14 @@ impl<'a> SchemaRegistrationBuilder<'a> {
 
         let response = self
             .client
-            .register_schema_internal(self.subject, schema_type.as_str().to_string(), schema_data)
+            .register_schema_internal(
+                self.subject,
+                schema_type.as_str().to_string(),
+                schema_data,
+                self.description.unwrap_or_default(),
+                self.created_by.unwrap_or_else(|| "danube-client".into()),
+                self.tags.unwrap_or_default(),
+            )
             .await?;
 
         Ok(response.schema_id)

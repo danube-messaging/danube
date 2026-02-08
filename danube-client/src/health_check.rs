@@ -52,6 +52,9 @@ impl HealthCheckService {
         let auth_service = self.auth_service.clone();
         tokio::spawn(async move {
             loop {
+                if stop_signal.load(Ordering::Relaxed) {
+                    break;
+                }
                 let stop_signal_clone = Arc::clone(&stop_signal);
                 let request_id_clone = Arc::clone(&request_id);
                 let grpc_cnx_clone = Arc::clone(&grpc_cnx);

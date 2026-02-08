@@ -16,8 +16,27 @@ use tracing::warn;
 
 #[derive(Debug, Default)]
 pub struct LookupResult {
-    response_type: i32,
-    addr: Uri,
+    /// The lookup response type (0 = Redirect, 1 = Connect, 2 = Failed)
+    pub response_type: i32,
+    /// The broker address returned by the lookup
+    pub addr: Uri,
+}
+
+impl LookupResult {
+    /// Returns true if the broker redirected to another broker
+    pub fn is_redirect(&self) -> bool {
+        self.response_type == 0 // LookupType::Redirect
+    }
+
+    /// Returns true if the client should connect to the original broker
+    pub fn is_connect(&self) -> bool {
+        self.response_type == 1 // LookupType::Connect
+    }
+
+    /// Returns the broker address to connect to
+    pub fn broker_addr(&self) -> &Uri {
+        &self.addr
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,9 +146,10 @@ impl LookupService {
             Ok(lookup_result) => match lookup_type_from_i32(lookup_result.response_type) {
                 Some(LookupType::Redirect) => Ok(lookup_result.addr),
                 Some(LookupType::Connect) => Ok(addr.to_owned()),
-                Some(LookupType::Failed) => {
-                    todo!()
-                }
+                Some(LookupType::Failed) => Err(DanubeError::Unrecoverable(
+                    "Topic lookup failed: topic may not exist or cluster is unavailable"
+                        .to_string(),
+                )),
 
                 None => {
                     warn!("we shouldn't get to this lookup option");
