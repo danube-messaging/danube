@@ -7,7 +7,7 @@
 //! - Multiple producers with different versions
 
 use anyhow::Result;
-use danube_client::{SchemaRegistryClient, SchemaType, SubType};
+use danube_client::{SchemaType, SubType};
 use serde_json::json;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -15,19 +15,20 @@ use tokio::time::{sleep, timeout, Duration};
 mod test_utils;
 
 /// Test 1: Producer pinned to specific schema version
-/// 
+///
 /// **What:** Registers V1 and V2, producer pins to V1, sends message.
 /// **Why:** Validates that producers can pin to specific versions instead of using latest.
 #[tokio::test]
 async fn producer_pin_to_specific_version() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/pin_version");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "version-pin-test";
 
     // Register V1
-    let schema_v1 = r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
+    let schema_v1 =
+        r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
     schema_client
         .register_schema(subject)
         .with_type(SchemaType::JsonSchema)
@@ -67,33 +68,40 @@ async fn producer_pin_to_specific_version() -> Result<()> {
     sleep(Duration::from_millis(200)).await;
 
     // Send message (should use V1 schema)
-    producer.send(json!({"id": 123}).to_string().as_bytes().to_vec(), None).await?;
+    producer
+        .send(json!({"id": 123}).to_string().as_bytes().to_vec(), None)
+        .await?;
 
     // Verify message has V1 schema version
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message");
 
-    assert_eq!(message.schema_version, Some(1), "Should use pinned version 1");
+    assert_eq!(
+        message.schema_version,
+        Some(1),
+        "Should use pinned version 1"
+    );
     consumer.ack(&message).await?;
 
     Ok(())
 }
 
 /// Test 2: Producer with minimum version constraint
-/// 
+///
 /// **What:** Registers V1, V2, V3, producer requires min V2, should use V3 (latest >= V2).
 /// **Why:** Validates that producers can enforce minimum version requirements.
 #[tokio::test]
 async fn producer_minimum_version_uses_latest() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/min_version");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "min-version-test";
 
     // Register V1
-    let schema_v1 = r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
+    let schema_v1 =
+        r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
     schema_client
         .register_schema(subject)
         .with_type(SchemaType::JsonSchema)
@@ -140,7 +148,9 @@ async fn producer_minimum_version_uses_latest() -> Result<()> {
     sleep(Duration::from_millis(200)).await;
 
     // Send message (should use V3, which is >= V2)
-    producer.send(json!({"id": 456}).to_string().as_bytes().to_vec(), None).await?;
+    producer
+        .send(json!({"id": 456}).to_string().as_bytes().to_vec(), None)
+        .await?;
 
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
@@ -157,14 +167,14 @@ async fn producer_minimum_version_uses_latest() -> Result<()> {
 }
 
 /// Test 3: Two producers same topic different versions
-/// 
+///
 /// **What:** Producer1 uses V1, Producer2 uses V2, both send to same topic.
 /// **Why:** Validates that multiple producers can use different versions on the same topic.
 #[tokio::test]
 async fn multiple_producers_different_versions() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/multi_version");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "multi-version-subject";
 
@@ -217,14 +227,24 @@ async fn multiple_producers_different_versions() -> Result<()> {
     sleep(Duration::from_millis(200)).await;
 
     // Send from both producers
-    producer1.send(json!({"value": 1}).to_string().as_bytes().to_vec(), None).await?;
-    producer2.send(json!({"value": 2, "label": "test"}).to_string().as_bytes().to_vec(), None).await?;
+    producer1
+        .send(json!({"value": 1}).to_string().as_bytes().to_vec(), None)
+        .await?;
+    producer2
+        .send(
+            json!({"value": 2, "label": "test"})
+                .to_string()
+                .as_bytes()
+                .to_vec(),
+            None,
+        )
+        .await?;
 
     // Receive both messages
     let msg1 = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message 1");
-    
+
     let msg2 = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message 2");
@@ -241,14 +261,14 @@ async fn multiple_producers_different_versions() -> Result<()> {
 }
 
 /// Test 4: Producer with non-existent version fails
-/// 
+///
 /// **What:** Attempts to create producer with version 99 that doesn't exist.
 /// **Why:** Validates that invalid version numbers are rejected at producer creation.
 #[tokio::test]
 async fn producer_invalid_version_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/invalid_version");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "invalid-version-test";
 
@@ -276,14 +296,14 @@ async fn producer_invalid_version_fails() -> Result<()> {
 }
 
 /// Test 5: Latest version behavior (no version specified)
-/// 
+///
 /// **What:** Registers V1, V2, producer uses .with_schema_subject() (no version), should use V2.
 /// **Why:** Confirms that not specifying a version defaults to latest.
 #[tokio::test]
 async fn producer_no_version_uses_latest() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/latest_version");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "latest-version-test";
 
@@ -297,7 +317,8 @@ async fn producer_no_version_uses_latest() -> Result<()> {
         .await?;
 
     // Register V2
-    let schema_v2 = r#"{"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}}}"#;
+    let schema_v2 =
+        r#"{"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}}}"#;
     schema_client
         .register_schema(subject)
         .with_type(SchemaType::JsonSchema)
@@ -325,7 +346,9 @@ async fn producer_no_version_uses_latest() -> Result<()> {
 
     sleep(Duration::from_millis(200)).await;
 
-    producer.send(json!({"a": "test"}).to_string().as_bytes().to_vec(), None).await?;
+    producer
+        .send(json!({"a": "test"}).to_string().as_bytes().to_vec(), None)
+        .await?;
 
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
@@ -342,14 +365,14 @@ async fn producer_no_version_uses_latest() -> Result<()> {
 }
 
 /// Test 6: Minimum version exactly at boundary
-/// 
+///
 /// **What:** Registers V1, V2, V3, producer requires min V3, should use exactly V3.
 /// **Why:** Validates that minimum version works when it equals the latest version.
 #[tokio::test]
 async fn producer_minimum_version_at_boundary() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/min_boundary");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "boundary-test";
 
@@ -387,17 +410,15 @@ async fn producer_minimum_version_at_boundary() -> Result<()> {
 
     sleep(Duration::from_millis(200)).await;
 
-    producer.send(json!({"v": 3}).to_string().as_bytes().to_vec(), None).await?;
+    producer
+        .send(json!({"v": 3}).to_string().as_bytes().to_vec(), None)
+        .await?;
 
     let message = timeout(Duration::from_secs(5), async { stream.recv().await })
         .await?
         .expect("Should receive message");
 
-    assert_eq!(
-        message.schema_version,
-        Some(3),
-        "Should use exactly V3"
-    );
+    assert_eq!(message.schema_version, Some(3), "Should use exactly V3");
     consumer.ack(&message).await?;
 
     Ok(())

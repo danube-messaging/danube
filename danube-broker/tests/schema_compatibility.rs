@@ -8,19 +8,19 @@
 //! - Compatibility violations are rejected
 
 use anyhow::Result;
-use danube_client::{CompatibilityMode, SchemaRegistryClient, SchemaType};
+use danube_client::{CompatibilityMode, SchemaType};
 
 #[path = "test_utils.rs"]
 mod test_utils;
 
 /// Test 1: Backward compatibility - adding optional field succeeds
-/// 
+///
 /// **What:** Registers V1 schema, sets BACKWARD mode, then adds an optional field in V2.
 /// **Why:** Validates that backward compatibility allows new optional fields (old consumers can read new data).
 #[tokio::test]
 async fn backward_compatibility_add_optional_field() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "backward-add-field";
 
@@ -57,13 +57,13 @@ async fn backward_compatibility_add_optional_field() -> Result<()> {
 }
 
 /// Test 2: Backward compatibility - removing required field fails
-/// 
+///
 /// **What:** Attempts to remove a required field under BACKWARD compatibility mode.
 /// **Why:** Ensures backward compatibility prevents breaking changes that would fail old consumers.
 #[tokio::test]
 async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "backward-remove-field";
 
@@ -100,13 +100,13 @@ async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
 }
 
 /// Test 3: Forward compatibility - removing optional field succeeds
-/// 
+///
 /// **What:** Registers V1 with optional field, sets FORWARD mode, removes it in V2.
 /// **Why:** Validates that forward compatibility allows removing optional fields (new consumers can read old data).
 #[tokio::test]
 async fn forward_compatibility_remove_optional_field() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "forward-remove-field";
 
@@ -143,13 +143,13 @@ async fn forward_compatibility_remove_optional_field() -> Result<()> {
 }
 
 /// Test 4: Forward compatibility - adding required field fails
-/// 
+///
 /// **What:** Attempts to add a required field under FORWARD compatibility mode.
 /// **Why:** Ensures forward compatibility prevents changes that would fail new consumers reading old data.
 #[tokio::test]
 async fn forward_compatibility_add_required_field_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "forward-add-required";
 
@@ -186,13 +186,13 @@ async fn forward_compatibility_add_required_field_fails() -> Result<()> {
 }
 
 /// Test 5: Full compatibility - only non-breaking changes allowed
-/// 
+///
 /// **What:** Sets FULL mode and tests both valid (add optional) and invalid (remove required) changes.
 /// **Why:** Validates that FULL compatibility is the strictest mode requiring both backward and forward compatibility.
 #[tokio::test]
 async fn full_compatibility_strict_evolution() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "full-compat";
 
@@ -241,13 +241,13 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
 }
 
 /// Test 6: Compatibility mode NONE - allows any change
-/// 
+///
 /// **What:** Sets NONE mode and registers a completely different schema as V2.
 /// **Why:** Confirms that NONE mode disables compatibility checking for rapid iteration scenarios.
 #[tokio::test]
 async fn compatibility_none_allows_breaking_changes() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "none-compat";
 
@@ -285,13 +285,13 @@ async fn compatibility_none_allows_breaking_changes() -> Result<()> {
 }
 
 /// Test 7: Avro backward compatibility - field addition
-/// 
+///
 /// **What:** Registers Avro schema V1, adds field with default value in V2 under BACKWARD mode.
 /// **Why:** Validates that Avro-specific compatibility rules work (fields with defaults are backward compatible).
 #[tokio::test]
 async fn avro_backward_compatibility() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "avro-backward";
 
@@ -328,13 +328,13 @@ async fn avro_backward_compatibility() -> Result<()> {
 }
 
 /// Test 8: Check compatibility before registration
-/// 
+///
 /// **What:** Uses check_compatibility() API to validate a schema before actually registering it.
 /// **Why:** Allows clients to test schema changes without committing them to the registry.
 #[tokio::test]
 async fn check_compatibility_before_registration() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "compat-check";
 
@@ -392,13 +392,13 @@ async fn check_compatibility_before_registration() -> Result<()> {
 }
 
 /// Test 9: Multiple schema versions evolution with backward compatibility
-/// 
+///
 /// **What:** Registers V1, V2, V3 sequentially, each adding optional fields under BACKWARD mode.
 /// **Why:** Validates that schema evolution works across multiple versions maintaining compatibility.
 #[tokio::test]
 async fn multiple_versions_evolution() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "multi-version-test";
 

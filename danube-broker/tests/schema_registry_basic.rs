@@ -7,20 +7,20 @@
 //! - Schema retrieval and versioning
 
 use anyhow::Result;
-use danube_client::{SchemaRegistryClient, SchemaType, SubType};
+use danube_client::{SchemaType, SubType};
 use tokio::time::{sleep, timeout, Duration};
 
 #[path = "test_utils.rs"]
 mod test_utils;
 
 /// Test 1: Register different schema types and verify they can be retrieved
-/// 
+///
 /// **What:** Registers multiple schemas of different types (JSON, Avro, String, Bytes) and retrieves them.
 /// **Why:** Validates that the schema registry supports various schema types and can store and return them correctly.
 #[tokio::test]
 async fn schema_registration_multiple_types() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // JSON Schema
     let json_schema = r#"{"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}"#;
@@ -31,7 +31,6 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .execute()
         .await?;
 
-
     // Avro Schema
     let avro_schema = r#"{"type": "record", "name": "User", "fields": [{"name": "name", "type": "string"}, {"name": "age", "type": "int"}]}"#;
     let avro_id = schema_client
@@ -41,7 +40,6 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .execute()
         .await?;
 
-
     // String Schema
     let _string_id = schema_client
         .register_schema("log-events-string")
@@ -50,7 +48,6 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .execute()
         .await?;
 
-
     // Bytes Schema
     let _bytes_id = schema_client
         .register_schema("binary-events")
@@ -58,7 +55,6 @@ async fn schema_registration_multiple_types() -> Result<()> {
         .with_schema_data(b"")
         .execute()
         .await?;
-
 
     // Verify retrieval
     let retrieved_json = schema_client.get_latest_schema("user-events-json").await?;
@@ -72,14 +68,14 @@ async fn schema_registration_multiple_types() -> Result<()> {
 }
 
 /// Test 2: Producer with registered schema succeeds
-/// 
+///
 /// **What:** Creates a producer with a registered schema subject and sends a message.
 /// **Why:** Validates that producers can successfully use registered schemas for type-safe messaging.
 #[tokio::test]
 async fn producer_with_registered_schema_succeeds() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/schema_registered");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register schema FIRST
     let json_schema = r#"{"type": "object", "properties": {"msg": {"type": "string"}}}"#;
@@ -89,7 +85,6 @@ async fn producer_with_registered_schema_succeeds() -> Result<()> {
         .with_schema_data(json_schema.as_bytes())
         .execute()
         .await?;
-
 
     // Create producer with schema reference - should succeed
     let mut producer = client
@@ -114,7 +109,7 @@ async fn producer_with_registered_schema_succeeds() -> Result<()> {
 }
 
 /// Test 3: Producer with UNREGISTERED schema fails (enforcement)
-/// 
+///
 /// **What:** Creates a producer with an unregistered schema subject and attempts to send a message.
 /// **Why:** Validates that schema enforcement prevents producers from sending messages with unregistered schemas.
 #[tokio::test]
@@ -147,7 +142,7 @@ async fn producer_with_unregistered_schema_fails() -> Result<()> {
 }
 
 /// Test 4: Producer without schema works (implicit Bytes schema)
-/// 
+///
 /// **What:** Creates a producer without specifying a schema and sends arbitrary bytes.
 /// **Why:** Confirms that schema enforcement is opt-in and producers can send raw bytes without schemas.
 #[tokio::test]
@@ -176,13 +171,13 @@ async fn producer_without_schema_works() -> Result<()> {
 }
 
 /// Test 5: Schema versioning - register, update, verify versions
-/// 
+///
 /// **What:** Registers V1 of a schema, then V2, and retrieves the latest version.
 /// **Why:** Validates that the registry supports schema evolution and version tracking for the same subject.
 #[tokio::test]
 async fn schema_versioning_evolution() -> Result<()> {
     let client = test_utils::setup_client().await?;
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "versioned-schema-test";
 
@@ -195,7 +190,6 @@ async fn schema_versioning_evolution() -> Result<()> {
         .execute()
         .await?;
 
-
     // Version 2: Add optional field (backward compatible)
     let schema_v2 = r#"{"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}}"#;
     let id_v2 = schema_client
@@ -204,7 +198,6 @@ async fn schema_versioning_evolution() -> Result<()> {
         .with_schema_data(schema_v2.as_bytes())
         .execute()
         .await?;
-
 
     // In this schema registry, versions of same subject share the schema_id
     // Versions are tracked separately
@@ -222,14 +215,14 @@ async fn schema_versioning_evolution() -> Result<()> {
 }
 
 /// Test 6: Consumer receives messages with schema metadata
-/// 
+///
 /// **What:** Producer sends message and consumer verifies schema_id and schema_version are present.
 /// **Why:** Ensures schema metadata is attached to messages for downstream validation and deserialization.
 #[tokio::test]
 async fn consumer_receives_schema_metadata() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/schema_metadata");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register schema
     let json_schema = r#"{"type": "object", "properties": {"data": {"type": "string"}}}"#;
@@ -271,7 +264,6 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
         .await?
         .expect("Should receive message");
 
-
     // Verify schema metadata is present
     if let Some(msg_schema_id) = message.schema_id {
         assert_eq!(msg_schema_id, schema_id, "Schema ID should match");
@@ -290,14 +282,14 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
 }
 
 /// Test 7: Multiple producers same schema subject
-/// 
+///
 /// **What:** Creates two producers both using the same registered schema and sends messages.
 /// **Why:** Validates that multiple producers can share the same schema for consistent data contracts.
 #[tokio::test]
 async fn multiple_producers_same_schema() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/multi_prod_schema");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register shared schema
     let schema = r#"{"type": "object", "properties": {"value": {"type": "integer"}}}"#;
@@ -325,7 +317,6 @@ async fn multiple_producers_same_schema() -> Result<()> {
         .build()?;
     producer2.create().await?;
 
-
     // Both send messages
     producer1
         .send(r#"{"value": 1}"#.as_bytes().to_vec(), None)
@@ -333,7 +324,6 @@ async fn multiple_producers_same_schema() -> Result<()> {
     producer2
         .send(r#"{"value": 2}"#.as_bytes().to_vec(), None)
         .await?;
-
 
     Ok(())
 }

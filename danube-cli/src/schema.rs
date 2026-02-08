@@ -54,11 +54,7 @@ pub struct RegisterArgs {
     )]
     pub schema_type: SchemaTypeArg,
 
-    #[arg(
-        long,
-        short = 'f',
-        help = "Path to schema definition file"
-    )]
+    #[arg(long, short = 'f', help = "Path to schema definition file")]
     pub file: PathBuf,
 
     #[arg(
@@ -76,11 +72,7 @@ pub struct GetArgs {
     #[arg(help = "Schema subject name")]
     pub subject: String,
 
-    #[arg(
-        long,
-        short = 'v',
-        help = "Specific version (defaults to latest)"
-    )]
+    #[arg(long, short = 'v', help = "Specific version (defaults to latest)")]
     pub version: Option<u32>,
 
     #[arg(
@@ -113,11 +105,7 @@ pub struct CheckArgs {
     #[arg(help = "Schema subject name")]
     pub subject: String,
 
-    #[arg(
-        long,
-        short = 'f',
-        help = "Path to schema definition file to check"
-    )]
+    #[arg(long, short = 'f', help = "Path to schema definition file to check")]
     pub file: PathBuf,
 
     #[arg(
@@ -162,10 +150,7 @@ pub struct DeleteArgs {
     )]
     pub version: Option<u32>,
 
-    #[arg(
-        long,
-        help = "Permanently delete (cannot be undone)"
-    )]
+    #[arg(long, help = "Permanently delete (cannot be undone)")]
     pub permanent: bool,
 
     #[arg(
@@ -280,25 +265,20 @@ pub async fn handle_schema(schema: Schema) -> Result<()> {
         .await
         .context("Failed to connect to Danube broker")?;
 
-    let mut schema_client = SchemaRegistryClient::new(&client)
-        .await
-        .context("Failed to create schema registry client")?;
+    let schema_client = client.schema();
 
     match schema.command {
-        SchemaCommands::Register(args) => handle_register(&mut schema_client, args).await,
-        SchemaCommands::Get(args) => handle_get(&mut schema_client, args).await,
-        SchemaCommands::Versions(args) => handle_versions(&mut schema_client, args).await,
-        SchemaCommands::Check(args) => handle_check(&mut schema_client, args).await,
-        SchemaCommands::List(args) => handle_list(&mut schema_client, args).await,
-        SchemaCommands::Delete(args) => handle_delete(&mut schema_client, args).await,
+        SchemaCommands::Register(args) => handle_register(&schema_client, args).await,
+        SchemaCommands::Get(args) => handle_get(&schema_client, args).await,
+        SchemaCommands::Versions(args) => handle_versions(&schema_client, args).await,
+        SchemaCommands::Check(args) => handle_check(&schema_client, args).await,
+        SchemaCommands::List(args) => handle_list(&schema_client, args).await,
+        SchemaCommands::Delete(args) => handle_delete(&schema_client, args).await,
     }
 }
 
 /// Register a new schema
-async fn handle_register(
-    client: &mut SchemaRegistryClient,
-    args: RegisterArgs,
-) -> Result<()> {
+async fn handle_register(client: &SchemaRegistryClient, args: RegisterArgs) -> Result<()> {
     // Load schema file
     let schema_data = fs::read(&args.file)
         .with_context(|| format!("Failed to read schema file: {:?}", args.file))?;
@@ -307,9 +287,15 @@ async fn handle_register(
     validate_schema_format(&schema_data, args.schema_type.into())?;
 
     if args.output == OutputFormat::Json {
-        eprintln!("📤 Registering schema '{}' (type: {:?})...", args.subject, args.schema_type);
+        eprintln!(
+            "📤 Registering schema '{}' (type: {:?})...",
+            args.subject, args.schema_type
+        );
     } else {
-        println!("📤 Registering schema '{}' (type: {:?})...", args.subject, args.schema_type);
+        println!(
+            "📤 Registering schema '{}' (type: {:?})...",
+            args.subject, args.schema_type
+        );
     }
 
     let schema_id = client
@@ -342,10 +328,7 @@ async fn handle_register(
 }
 
 /// Get schema details
-async fn handle_get(
-    client: &mut SchemaRegistryClient,
-    args: GetArgs,
-) -> Result<()> {
+async fn handle_get(client: &SchemaRegistryClient, args: GetArgs) -> Result<()> {
     if args.version.is_some() {
         return Err(anyhow::anyhow!(
             "Getting specific versions not yet supported. Use 'schema versions <subject>' to list versions."
@@ -353,16 +336,23 @@ async fn handle_get(
     }
 
     if args.output == OutputFormat::Json {
-        eprintln!("🔍 Fetching latest schema for subject '{}'...", args.subject);
+        eprintln!(
+            "🔍 Fetching latest schema for subject '{}'...",
+            args.subject
+        );
     } else {
-        println!("🔍 Fetching latest schema for subject '{}'...", args.subject);
+        println!(
+            "🔍 Fetching latest schema for subject '{}'...",
+            args.subject
+        );
     }
 
     let schema_info: SchemaInfo = client.get_latest_schema(&args.subject).await?;
 
     match args.output {
         OutputFormat::Json => {
-            let schema_def_str = schema_info.schema_definition_as_string()
+            let schema_def_str = schema_info
+                .schema_definition_as_string()
                 .unwrap_or_else(|| "[binary data]".to_string());
             let result = serde_json::json!({
                 "subject": schema_info.subject,
@@ -393,7 +383,10 @@ async fn handle_get(
                     println!("{}", schema_str);
                 }
             } else {
-                println!("[binary data - {} bytes]", schema_info.schema_definition.len());
+                println!(
+                    "[binary data - {} bytes]",
+                    schema_info.schema_definition.len()
+                );
             }
         }
     }
@@ -402,10 +395,7 @@ async fn handle_get(
 }
 
 /// List all versions of a schema
-async fn handle_versions(
-    client: &mut SchemaRegistryClient,
-    args: VersionsArgs,
-) -> Result<()> {
+async fn handle_versions(client: &SchemaRegistryClient, args: VersionsArgs) -> Result<()> {
     if args.output == OutputFormat::Json {
         eprintln!("📋 Listing versions for subject '{}'...", args.subject);
     } else {
@@ -439,10 +429,7 @@ async fn handle_versions(
 }
 
 /// Check schema compatibility
-async fn handle_check(
-    client: &mut SchemaRegistryClient,
-    args: CheckArgs,
-) -> Result<()> {
+async fn handle_check(client: &SchemaRegistryClient, args: CheckArgs) -> Result<()> {
     // Load schema file
     let schema_data = fs::read(&args.file)
         .with_context(|| format!("Failed to read schema file: {:?}", args.file))?;
@@ -451,9 +438,15 @@ async fn handle_check(
     validate_schema_format(&schema_data, args.schema_type.into())?;
 
     if args.output == OutputFormat::Json {
-        eprintln!("🔍 Checking compatibility for subject '{}'...", args.subject);
+        eprintln!(
+            "🔍 Checking compatibility for subject '{}'...",
+            args.subject
+        );
     } else {
-        println!("🔍 Checking compatibility for subject '{}'...", args.subject);
+        println!(
+            "🔍 Checking compatibility for subject '{}'...",
+            args.subject
+        );
     }
 
     let compatibility_result = client
@@ -472,7 +465,10 @@ async fn handle_check(
         OutputFormat::Table => {
             if compatibility_result.is_compatible {
                 println!("✅ Schema is COMPATIBLE");
-                println!("   Safe to register as a new version for '{}'", args.subject);
+                println!(
+                    "   Safe to register as a new version for '{}'",
+                    args.subject
+                );
             } else {
                 println!("❌ Schema is NOT COMPATIBLE");
                 println!("   Subject: {}", args.subject);
@@ -490,20 +486,14 @@ async fn handle_check(
 }
 
 /// List all schema subjects
-async fn handle_list(
-    _client: &mut SchemaRegistryClient,
-    _args: ListArgs,
-) -> Result<()> {
+async fn handle_list(_client: &SchemaRegistryClient, _args: ListArgs) -> Result<()> {
     Err(anyhow::anyhow!(
         "List subjects command not yet implemented in schema registry client.\nUse 'schema get <subject>' to retrieve a specific schema."
     ))
 }
 
 /// Delete a schema subject or version
-async fn handle_delete(
-    _client: &mut SchemaRegistryClient,
-    _args: DeleteArgs,
-) -> Result<()> {
+async fn handle_delete(_client: &SchemaRegistryClient, _args: DeleteArgs) -> Result<()> {
     Err(anyhow::anyhow!(
         "Delete command not yet implemented in schema registry client.\nSchema deletion will be available in a future release."
     ))

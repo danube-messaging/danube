@@ -1,7 +1,7 @@
 use crate::{
     errors::{DanubeError, Result},
     retry_manager::{status_to_danube_error, RetryManager},
-    DanubeClient, ProducerOptions, SchemaRegistryClient,
+    DanubeClient, ProducerOptions,
 };
 use danube_core::proto::{
     health_check_request::ClientType, producer_service_client::ProducerServiceClient,
@@ -271,14 +271,14 @@ impl TopicProducer {
     ///
     /// The resolved metadata is cached and attached to all messages sent by this producer.
     ///
-    /// Note: Creates a temporary SchemaRegistryClient. The connection is efficiently
-    /// reused via the client's connection manager, so this is only done once during
+    /// Note: Uses `client.schema()` which shares the connection manager, so the
+    /// gRPC connection is efficiently reused. This is only done once during
     /// producer creation.
     async fn resolve_schema_metadata(
         &mut self,
         schema_ref: &SchemaReference,
     ) -> Result<(u64, u32)> {
-        let mut schema_client = SchemaRegistryClient::new(&self.client).await?;
+        let schema_client = self.client.schema();
 
         // Resolve based on version_ref
         match &schema_ref.version_ref {

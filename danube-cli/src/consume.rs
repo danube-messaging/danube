@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use danube_client::{DanubeClient, SchemaInfo, SchemaRegistryClient, SubType};
+use danube_client::{DanubeClient, SchemaInfo, SubType};
 use danube_core::message::MessageID;
 use serde_json::{from_slice, Value};
 use std::{collections::HashMap, str::from_utf8};
@@ -105,9 +105,7 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         .build()?;
 
     // Initialize schema registry client for runtime schema fetching
-    let mut schema_client = SchemaRegistryClient::new(&client)
-        .await
-        .context("Failed to create schema registry client")?;
+    let schema_client = client.schema();
 
     println!("ℹ️  Consumer will fetch schemas dynamically based on message metadata");
 
@@ -131,8 +129,7 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
         let (schema_info, validator) = if let Some(schema_id) = stream_message.schema_id {
             // Check cache first
             if !schema_cache.contains_key(&schema_id) {
-                match fetch_and_cache_schema(&mut schema_client, schema_id, &mut schema_cache).await
-                {
+                match fetch_and_cache_schema(&schema_client, schema_id, &mut schema_cache).await {
                     Ok(_) => {}
                     Err(e) => {
                         eprintln!("⚠️  Failed to fetch schema {}: {}", schema_id, e);
@@ -169,7 +166,7 @@ pub async fn handle_consume(consume: Consume) -> Result<()> {
 
 /// Fetch schema by ID and cache it with validator
 async fn fetch_and_cache_schema(
-    schema_client: &mut SchemaRegistryClient,
+    schema_client: &danube_client::SchemaRegistryClient,
     schema_id: u64,
     cache: &mut HashMap<u64, (SchemaInfo, Option<jsonschema::Validator>)>,
 ) -> Result<()> {

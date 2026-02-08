@@ -49,7 +49,7 @@ Check out the [example files](https://github.com/danube-messaging/danube/tree/ma
 let client = DanubeClient::builder()
     .service_url("http://127.0.0.1:6650")
     .build()
-    .unwrap();
+    .await?;
 
 let topic_name = "/default/test_topic";
 let producer_name = "test_prod";
@@ -58,7 +58,7 @@ let mut producer = client
     .new_producer()
     .with_topic(topic_name)
     .with_name(producer_name)
-    .build();
+    .build()?;
 
 producer.create().await?;
 println!("The Producer {} was created", producer_name);
@@ -73,41 +73,41 @@ println!("The Message with id {} was sent", message_id);
 
 ```rust
 let client = DanubeClient::builder()
-        .service_url("http://127.0.0.1:6650")
-        .build()
-        .unwrap();
+    .service_url("http://127.0.0.1:6650")
+    .build()
+    .await?;
 
-    let topic = "/default/test_topic";
-    let consumer_name = "test_cons";
-    let subscription_name = "test_subs";
+let topic = "/default/test_topic";
+let consumer_name = "test_cons";
+let subscription_name = "test_subs";
 
-    let mut consumer = client
-        .new_consumer()
-        .with_topic(topic)
-        .with_consumer_name(consumer_name)
-        .with_subscription(subscription_name)
-        .with_subscription_type(SubType::Exclusive)
-        .build();
+let mut consumer = client
+    .new_consumer()
+    .with_topic(topic)
+    .with_consumer_name(consumer_name)
+    .with_subscription(subscription_name)
+    .with_subscription_type(SubType::Exclusive)
+    .build()?;
 
-    // Subscribe to the topic
-    consumer.subscribe().await?;
-    println!("The Consumer {} was created", consumer_name);
+// Subscribe to the topic
+consumer.subscribe().await?;
+println!("The Consumer {} was created", consumer_name);
 
-    // Start receiving messages
-    let mut message_stream = consumer.receive().await?;
+// Start receiving messages
+let mut message_stream = consumer.receive().await?;
 
-    while let Some(message) = message_stream.recv().await {
-        let payload = message.payload;
+while let Some(message) = message_stream.recv().await {
+    let payload = message.payload;
 
-        match String::from_utf8(payload) {
-            Ok(message_str) => {
-                println!("Received message: {:?}", message_str);
+    match String::from_utf8(payload) {
+        Ok(message_str) => {
+            println!("Received message: {:?}", message_str);
 
-                consumer.ack(&message).await?;
-            }
-            Err(e) => println!("Failed to convert Payload to String: {}", e),
+            consumer.ack(&message).await?;
         }
+        Err(e) => println!("Failed to convert Payload to String: {}", e),
     }
+}
 ```
 
 ## Advanced Features

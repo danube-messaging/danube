@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
+use danube_client::{DanubeClient, SchemaType};
 use serde::Serialize;
 use std::thread;
 use std::time::Duration;
@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     }
     "#;
 
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register the schema and get schema ID
     let schema_id = schema_client

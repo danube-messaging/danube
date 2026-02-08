@@ -10,6 +10,7 @@ use crate::{
     health_check::HealthCheckService,
     lookup_service::{LookupResult, LookupService},
     producer::ProducerBuilder,
+    schema_registry_client::SchemaRegistryClient,
 };
 
 /// The main client for interacting with the Danube messaging system.
@@ -48,6 +49,17 @@ impl DanubeClient {
     /// The builder pattern allows you to specify details such as the topic, consumer name, subscription, subscription type, and other configurations before creating the final `Consumer` instance.
     pub fn new_consumer(&self) -> ConsumerBuilder {
         ConsumerBuilder::new(self)
+    }
+
+    /// Returns a `SchemaRegistryClient` for schema registry operations.
+    ///
+    /// The returned client shares the same connection manager and auth service as the `DanubeClient`
+    pub fn schema(&self) -> SchemaRegistryClient {
+        SchemaRegistryClient::new(
+            self.cnx_manager.clone(),
+            self.auth_service.clone(),
+            self.uri.clone(),
+        )
     }
 
     /// Returns a reference to the `AuthService`.
