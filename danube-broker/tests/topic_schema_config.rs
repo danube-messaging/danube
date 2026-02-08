@@ -8,7 +8,7 @@
 //! - Admin override
 
 use anyhow::Result;
-use danube_client::{SchemaRegistryClient, SchemaType};
+use danube_client::SchemaType;
 
 #[path = "test_utils.rs"]
 mod test_utils;
@@ -21,7 +21,7 @@ mod test_utils;
 async fn first_producer_assigns_schema() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/first_producer");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register schema
     let schema = r#"{"type": "object", "properties": {"msg": {"type": "string"}}}"#;
@@ -66,7 +66,7 @@ async fn first_producer_assigns_schema() -> Result<()> {
 async fn second_producer_different_schema_fails() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/schema_mismatch");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register two different schemas
     let schema1 = r#"{"type": "object", "properties": {"a": {"type": "string"}}}"#;
@@ -120,7 +120,7 @@ async fn second_producer_different_schema_fails() -> Result<()> {
 async fn producer_without_schema_can_connect() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/no_schema_allowed");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Register and assign schema via first producer
     let schema = r#"{"type": "object", "properties": {"x": {"type": "number"}}}"#;
@@ -163,7 +163,7 @@ async fn producer_without_schema_can_connect() -> Result<()> {
 async fn topic_allows_different_versions_same_subject() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/version_evolution");
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     let subject = "evolving-schema";
 

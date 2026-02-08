@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
+use danube_client::{DanubeClient, SchemaType};
 
 /// This example demonstrates schema evolution and compatibility checking.
 /// It shows how to evolve a schema while maintaining backward compatibility.
@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
         .build()
         .await?;
 
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // Step 1: Register the initial schema (v1)
     println!("📝 Step 1: Registering initial schema (v1)");

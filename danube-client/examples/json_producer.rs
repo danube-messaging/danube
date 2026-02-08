@@ -1,5 +1,5 @@
 use anyhow::Result;
-use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
+use danube_client::{DanubeClient, SchemaType};
 use serde::Serialize;
 use std::thread;
 use std::time::Duration;
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     // Phase 5: Register schema in schema registry
     let json_schema = r#"{"type": "object", "properties": {"field1": {"type": "string"}, "field2": {"type": "integer"}}}"#;
 
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
     let schema_id = schema_client
         .register_schema("my-app-events")
         .with_type(SchemaType::JsonSchema)

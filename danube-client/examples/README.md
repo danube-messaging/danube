@@ -235,10 +235,12 @@ let mut producer = client
 Register schemas and enable validation:
 
 ```rust
-use danube_client::{SchemaRegistryClient, SchemaType, CompatibilityMode};
+use danube_client::{SchemaType, CompatibilityMode};
 
-// 1. Register schema
-let mut schema_client = SchemaRegistryClient::new(&client).await?;
+// 1. Get schema client from DanubeClient
+let schema_client = client.schema();
+
+// 2. Register schema
 let schema_id = schema_client
     .register_schema("my-subject")
     .with_type(SchemaType::Avro)  // Type-safe enum: Avro, JsonSchema, Protobuf, etc.
@@ -246,7 +248,7 @@ let schema_id = schema_client
     .execute()
     .await?;
 
-// 2. Check compatibility before evolution
+// 3. Check compatibility before evolution
 let compat_result = schema_client
     .check_compatibility(
         "my-subject",
@@ -256,12 +258,12 @@ let compat_result = schema_client
     )
     .await?;
 
-// 3. Set compatibility mode for a subject
+// 4. Set compatibility mode for a subject
 schema_client
     .set_compatibility_mode("critical-subject", CompatibilityMode::Full)
     .await?;
 
-// 4. Create producer with schema subject
+// 5. Create producer with schema subject
 let mut producer = client
     .new_producer()
     .with_topic("/default/my_topic")
@@ -269,9 +271,9 @@ let mut producer = client
     .with_schema_subject("my-subject")  // Link to schema
     .build();
 
-// 5. Consumer validates struct at startup (see json_consumer_validated.rs)
+// 6. Consumer validates struct at startup (see json_consumer_validated.rs)
 let schema_version = validate_struct_against_registry(
-    &mut schema_client,
+    &schema_client,
     "my-subject",
     &MyStruct::default(),
 ).await?;

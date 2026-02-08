@@ -23,7 +23,7 @@ struct MyMessage {
 /// # Returns
 /// Schema version number if validation succeeds
 async fn validate_struct_against_registry<T: Serialize>(
-    schema_client: &mut SchemaRegistryClient,
+    schema_client: &SchemaRegistryClient,
     subject: &str,
     sample: &T,
 ) -> Result<u32> {
@@ -82,11 +82,11 @@ async fn main() -> Result<()> {
     // Step 1: Validate struct against registry schema
     println!("📝 Step 1: Validating consumer struct against schema registry\n");
 
-    let mut schema_client = SchemaRegistryClient::new(&client).await?;
+    let schema_client = client.schema();
 
     // ACTUAL VALIDATION - This will fail at startup if struct doesn't match!
     let schema_version = validate_struct_against_registry(
-        &mut schema_client,
+        &schema_client,
         "my-app-events",
         &MyMessage {
             field1: "validation_test".to_string(),

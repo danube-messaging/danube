@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, ValueEnum};
-use danube_client::{DanubeClient, SchemaRegistryClient, SchemaType};
+use danube_client::{DanubeClient, SchemaType};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
@@ -82,17 +82,10 @@ pub struct ExtendedArgs {
     )]
     pub schema_min_version: Option<u32>,
 
-    #[arg(
-        long,
-        help = "Auto-register schema from file (requires --schema-type)"
-    )]
+    #[arg(long, help = "Auto-register schema from file (requires --schema-type)")]
     pub schema_file: Option<PathBuf>,
 
-    #[arg(
-        long,
-        value_enum,
-        help = "Schema type (required with --schema-file)"
-    )]
+    #[arg(long, value_enum, help = "Schema type (required with --schema-file)")]
     pub schema_type: Option<SchemaTypeArg>,
 
     #[arg(
@@ -255,20 +248,32 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         return Err(anyhow::anyhow!("--schema-type is required when using --schema-file").into());
     }
 
-    if produce.extended_args.schema_subject.is_some() && produce.extended_args.schema_file.is_some() {
-        return Err(anyhow::anyhow!("Cannot use both --schema-subject and --schema-file. Use one or the other.").into());
+    if produce.extended_args.schema_subject.is_some() && produce.extended_args.schema_file.is_some()
+    {
+        return Err(anyhow::anyhow!(
+            "Cannot use both --schema-subject and --schema-file. Use one or the other."
+        )
+        .into());
     }
 
-    if produce.extended_args.schema_version.is_some() && produce.extended_args.schema_subject.is_none() {
+    if produce.extended_args.schema_version.is_some()
+        && produce.extended_args.schema_subject.is_none()
+    {
         return Err(anyhow::anyhow!("--schema-version requires --schema-subject").into());
     }
 
-    if produce.extended_args.schema_min_version.is_some() && produce.extended_args.schema_subject.is_none() {
+    if produce.extended_args.schema_min_version.is_some()
+        && produce.extended_args.schema_subject.is_none()
+    {
         return Err(anyhow::anyhow!("--schema-min-version requires --schema-subject").into());
     }
 
-    if produce.extended_args.schema_version.is_some() && produce.extended_args.schema_min_version.is_some() {
-        return Err(anyhow::anyhow!("Cannot use both --schema-version and --schema-min-version").into());
+    if produce.extended_args.schema_version.is_some()
+        && produce.extended_args.schema_min_version.is_some()
+    {
+        return Err(
+            anyhow::anyhow!("Cannot use both --schema-version and --schema-min-version").into(),
+        );
     }
 
     let client = DanubeClient::builder()
@@ -278,19 +283,28 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     // Handle schema registration if --schema-file is provided
     let schema_subject = if let Some(schema_file) = &produce.extended_args.schema_file {
-        let schema_type = produce.extended_args.schema_type
+        let schema_type = produce
+            .extended_args
+            .schema_type
             .ok_or_else(|| anyhow::anyhow!("--schema-type is required with --schema-file"))?;
-        
+
         // Load and validate schema
         let schema_data = schema_helpers::load_schema_file(schema_file)?;
         schema_helpers::validate_schema_format(&schema_data, schema_type.into())?;
 
         // Auto-generate subject name from topic if not provided
-        let subject = produce.basic_args.topic.trim_start_matches('/').replace('/', "-");
-        
-        println!("📤 Auto-registering schema for subject '{}' (type: {:?})...", subject, schema_type);
-        
-        let mut schema_client = SchemaRegistryClient::new(&client).await?;
+        let subject = produce
+            .basic_args
+            .topic
+            .trim_start_matches('/')
+            .replace('/', "-");
+
+        println!(
+            "📤 Auto-registering schema for subject '{}' (type: {:?})...",
+            subject, schema_type
+        );
+
+        let schema_client = client.schema();
         let schema_id = schema_client
             .register_schema(&subject)
             .with_type(schema_type.into())
@@ -298,7 +312,7 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
             .execute()
             .await
             .context("Failed to register schema")?;
-        
+
         println!("✅ Schema registered with ID: {}", schema_id);
         Some(subject)
     } else {
@@ -310,15 +324,21 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         .new_producer()
         .with_topic(produce.basic_args.topic.clone())
         .with_name(produce.basic_args.producer_name.clone());
-    
+
     if let Some(subject) = schema_subject {
         // Apply version control if specified
         if let Some(version) = produce.extended_args.schema_version {
             producer_builder = producer_builder.with_schema_version(&subject, version);
-            println!("📋 Using schema subject: {} (pinned to version {})", subject, version);
+            println!(
+                "📋 Using schema subject: {} (pinned to version {})",
+                subject, version
+            );
         } else if let Some(min_version) = produce.extended_args.schema_min_version {
             producer_builder = producer_builder.with_schema_min_version(&subject, min_version);
-            println!("📋 Using schema subject: {} (minimum version {})", subject, min_version);
+            println!(
+                "📋 Using schema subject: {} (minimum version {})",
+                subject, min_version
+            );
         } else {
             producer_builder = producer_builder.with_schema_subject(&subject);
             println!("📋 Using schema subject: {} (latest version)", subject);
@@ -335,19 +355,25 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
 
     let mut producer = producer_builder.build()?;
 
-    producer.create().await
+    producer
+        .create()
+        .await
         .context("Failed to create producer")?;
-    
-    println!("✅ Producer '{}' created successfully", produce.basic_args.producer_name);
+
+    println!(
+        "✅ Producer '{}' created successfully",
+        produce.basic_args.producer_name
+    );
 
     // Use the provided file or message
     let encoded_data = if let Some(file_path) = &produce.basic_args.file {
-        std::fs::read(file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path))?
+        std::fs::read(file_path).with_context(|| format!("Failed to read file: {}", file_path))?
     } else if let Some(message) = &produce.basic_args.message {
         message.as_bytes().to_vec()
     } else {
-        return Err(anyhow::anyhow!("Either --message or --file must be provided"));
+        return Err(anyhow::anyhow!(
+            "Either --message or --file must be provided"
+        ));
     };
 
     let mut success_count = 0;
@@ -357,15 +383,25 @@ pub async fn handle_produce(produce: Produce) -> Result<()> {
         let cloned_attributes = produce.extended_args.attributes.clone();
         match producer.send(encoded_data.clone(), cloned_attributes).await {
             Ok(message_id) => {
-                println!("📤 Message {}/{} sent successfully (ID: {})", i + 1, produce.extended_args.count, message_id);
+                println!(
+                    "📤 Message {}/{} sent successfully (ID: {})",
+                    i + 1,
+                    produce.extended_args.count,
+                    message_id
+                );
                 success_count += 1;
             }
             Err(e) => {
-                eprintln!("❌ Failed to send message {}/{}: {}", i + 1, produce.extended_args.count, e);
+                eprintln!(
+                    "❌ Failed to send message {}/{}: {}",
+                    i + 1,
+                    produce.extended_args.count,
+                    e
+                );
                 error_count += 1;
             }
         }
-        
+
         if i < produce.extended_args.count - 1 {
             sleep(Duration::from_millis(produce.extended_args.interval)).await;
         }

@@ -21,7 +21,6 @@ mod topic_consumer;
 
 mod message_router;
 
-// New Schema Registry Client
 mod schema_registry_client;
 pub use schema_registry_client::{SchemaRegistrationBuilder, SchemaRegistryClient};
 
@@ -29,8 +28,8 @@ mod schema_types;
 pub use schema_types::{CompatibilityMode, SchemaInfo, SchemaType};
 
 // Re-export proto types for schema reference (advanced use)
-pub use danube_core::proto::SchemaReference;
 pub use danube_core::proto::schema_reference::VersionRef;
+pub use danube_core::proto::SchemaReference;
 
 mod lookup_service;
 
