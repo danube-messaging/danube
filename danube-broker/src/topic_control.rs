@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use metrics::gauge;
 use tonic::Status;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::danube_service::metrics_collector::MetricsCollector;
@@ -12,8 +12,12 @@ use crate::resources::BASE_TOPICS_PATH;
 use crate::schema::ValidationPolicy;
 use crate::utils::join_path;
 use crate::{
-    broker_metrics::BROKER_TOPICS_OWNED, consumer::Consumer, resources::Resources,
-    subscription::SubscriptionOptions, topic::Topic, topic_worker::TopicWorkerPool,
+    broker_metrics::BROKER_TOPICS_OWNED,
+    consumer::Consumer,
+    resources::Resources,
+    subscription::{SubscriptionOptions, SUBSCRIPTION_IDLE_GRACE},
+    topic::Topic,
+    topic_worker::TopicWorkerPool,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_persistent_storage::WalStorageFactory;
@@ -58,6 +62,37 @@ impl TopicManager {
             consumers,
             metrics_collector,
         }
+    }
+
+    /// Spawns a background task that periodically removes idle non-reliable subscriptions.
+    /// The check interval is half the grace period (worst-case delay = 1.5× grace).
+    /// Also cleans up ConsumerRegistry entries for removed consumers.
+    pub(crate) fn start_subscription_removal(&self) {
+        let topic_worker_pool = Arc::clone(&self.topic_worker_pool);
+        let consumer_registry = self.consumers.clone();
+        let interval = SUBSCRIPTION_IDLE_GRACE / 2;
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let topics = topic_worker_pool.all_non_reliable_topics();
+                for topic in topics {
+                    let removed = topic
+                        .remove_idle_subscriptions(SUBSCRIPTION_IDLE_GRACE)
+                        .await;
+                    for cid in removed {
+                        debug!(consumer_id = %cid, topic = %topic.topic_name, "reaper: removed stale consumer from registry");
+                        consumer_registry.remove(&cid);
+                    }
+                }
+            }
+        });
+
+        info!(
+            grace_secs = SUBSCRIPTION_IDLE_GRACE.as_secs(),
+            interval_secs = interval.as_secs(),
+            "subscription reaper started"
+        );
     }
 
     /// Ensures a topic exists locally by materializing it from Local Cache metadata.
@@ -126,7 +161,12 @@ impl TopicManager {
         // Load schema configuration from ETCD if it exists
         let schema_config = {
             let resources = self.resources.lock().await;
-            resources.topic.get_schema_config(topic_name).await.ok().flatten()
+            resources
+                .topic
+                .get_schema_config(topic_name)
+                .await
+                .ok()
+                .flatten()
         };
 
         if let Some(config) = schema_config {
@@ -136,7 +176,7 @@ impl TopicManager {
                 policy = ?config.validation_policy,
                 "loading persisted schema config for topic"
             );
-            
+
             // Apply schema configuration to the topic
             if let Err(e) = new_topic
                 .set_schema_ref(danube_core::proto::SchemaReference {
@@ -152,7 +192,7 @@ impl TopicManager {
                     "Failed to apply persisted schema subject to topic"
                 );
             }
-            
+
             new_topic
                 .configure_schema_validation(
                     config.validation_policy,
@@ -178,17 +218,20 @@ impl TopicManager {
 
         Ok((dispatch_strategy, schema_subject))
     }
-    
+
     /// Get schema information for logging (non-blocking, from LocalCache)
     pub(crate) async fn get_schema_info(&self, topic_name: &str) -> Option<(String, u64, String)> {
         let resources = self.resources.lock().await;
-        
+
         // Get schema subject from topic metadata
         let schema_subject = resources.topic.get_schema_subject(topic_name).await?;
-        
+
         // Get schema details from registry (reads from LocalCache - fast)
-        let schema_details = resources.schema.get_schema_by_subject(&schema_subject).await?;
-        
+        let schema_details = resources
+            .schema
+            .get_schema_by_subject(&schema_subject)
+            .await?;
+
         Some((
             schema_subject,
             schema_details.schema_id,
@@ -420,10 +463,12 @@ impl TopicManager {
             self.producers.insert(producer_id, topic_name.to_string());
 
             gauge!(TOPIC_ACTIVE_PRODUCERS.name, "topic" => topic_name.to_string()).increment(1);
-            
+
             // Dual-track producer count
             let producer_count = topic.get_producer_count().await;
-            self.metrics_collector.set_producer_count(topic_name, producer_count).await;
+            self.metrics_collector
+                .set_producer_count(topic_name, producer_count)
+                .await;
 
             {
                 let mut resources = self.resources.lock().await;
@@ -473,11 +518,13 @@ impl TopicManager {
             .insert(consumer_id, topic_name.clone(), sub_name_clone);
 
         gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
-        
+
         // Dual-track consumer count
         if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
             let consumer_count = topic.get_consumer_count().await;
-            self.metrics_collector.set_consumer_count(&topic_name, consumer_count).await;
+            self.metrics_collector
+                .set_consumer_count(&topic_name, consumer_count)
+                .await;
         }
 
         let sub_options = serde_json::to_value(&subscription_options)?;
@@ -600,7 +647,7 @@ impl TopicManager {
     // ===== Schema Configuration Operations (Admin) =====
 
     /// Configure schema settings for a topic (admin-only).
-    /// 
+    ///
     /// This allows administrators to assign or change a topic's schema subject
     /// and validation settings, overriding first producer's assignment.
     pub(crate) async fn configure_topic_schema(
@@ -657,10 +704,7 @@ impl TopicManager {
                 .store_schema_config(topic_name, &config)
                 .await
                 .map_err(|e| {
-                    Status::internal(format!(
-                        "Failed to persist schema config to ETCD: {}",
-                        e
-                    ))
+                    Status::internal(format!("Failed to persist schema config to ETCD: {}", e))
                 })?;
         }
 
@@ -680,7 +724,7 @@ impl TopicManager {
     }
 
     /// Update validation policy for a topic (admin-only).
-    /// 
+    ///
     /// This allows administrators to adjust validation strictness without
     /// changing the schema subject.
     pub(crate) async fn update_topic_validation_policy(
@@ -744,12 +788,16 @@ impl TopicManager {
         Ok(format!(
             "Validation policy updated to '{:?}', payload validation {}",
             validation_policy,
-            if enable_payload_validation { "enabled" } else { "disabled" }
+            if enable_payload_validation {
+                "enabled"
+            } else {
+                "disabled"
+            }
         ))
     }
 
     /// Get current schema configuration for a topic.
-    /// 
+    ///
     /// Returns the schema subject, validation policy, payload validation setting,
     /// and subject's schema_id (base ID for the subject, not version-specific).
     /// Note: Topics can have messages with multiple schema versions from the same subject.

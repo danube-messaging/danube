@@ -99,25 +99,28 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
 
     fn try_from(config: LoadConfiguration) -> Result<Self> {
         // Construct broker_addr from broker.host and broker.ports.client
-        let broker_addr: SocketAddr = format!("{}:{}", config.broker.host, config.broker.ports.client)
-            .parse()
-            .context("Failed to create broker_addr")?;
+        let broker_addr: SocketAddr =
+            format!("{}:{}", config.broker.host, config.broker.ports.client)
+                .parse()
+                .context("Failed to create broker_addr")?;
 
         // Construct admin_addr from broker.host and broker.ports.admin
-        let admin_addr: SocketAddr = format!("{}:{}", config.broker.host, config.broker.ports.admin)
-            .parse()
-            .context("Failed to create admin_addr")?;
+        let admin_addr: SocketAddr =
+            format!("{}:{}", config.broker.host, config.broker.ports.admin)
+                .parse()
+                .context("Failed to create admin_addr")?;
 
         // Construct prom_exporter from broker.host and broker.ports.prometheus if provided
-        let prom_exporter: Option<SocketAddr> = if let Some(prom_port) = config.broker.ports.prometheus {
-            Some(
-                format!("{}:{}", config.broker.host, prom_port)
-                    .parse()
-                    .context("Failed to create prom_exporter")?,
-            )
-        } else {
-            None
-        };
+        let prom_exporter: Option<SocketAddr> =
+            if let Some(prom_port) = config.broker.ports.prometheus {
+                Some(
+                    format!("{}:{}", config.broker.host, prom_port)
+                        .parse()
+                        .context("Failed to create prom_exporter")?,
+                )
+            } else {
+                None
+            };
 
         // Construct meta_store_addr from meta_store.host and meta_store.port
         let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);

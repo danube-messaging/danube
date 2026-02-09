@@ -362,6 +362,23 @@ impl TopicWorkerPool {
         self.workers[worker_id].topics.contains_key(topic_name)
     }
 
+    /// Returns all topics with NonReliable dispatch strategy across all workers.
+    /// Used by the subscription removal to find topics that need idle cleanup.
+    pub fn all_non_reliable_topics(&self) -> Vec<Arc<Topic>> {
+        let mut result = Vec::new();
+        for worker in &self.workers {
+            for entry in worker.topics.iter() {
+                if matches!(
+                    entry.value().dispatch_strategy,
+                    DispatchStrategy::NonReliable
+                ) {
+                    result.push(entry.value().clone());
+                }
+            }
+        }
+        result
+    }
+
     /// Verify that the requested dispatch strategy matches the topic's configured strategy.
     /// Returns None if the topic is not found; Some(true/false) otherwise.
     pub fn strategies_match(

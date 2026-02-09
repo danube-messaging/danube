@@ -18,7 +18,7 @@ use crate::{
         TOPIC_MESSAGE_SIZE_BYTES,
     },
     danube_service::metrics_collector::MetricsCollector,
-    dispatcher::DispatchStrategy,
+    dispatcher::{DispatchStrategy, Dispatcher},
     message::AckMessage,
     policies::Policies,
     producer::Producer,
@@ -293,42 +293,46 @@ impl Topic {
         }
     }
 
-    // Helper method for async subscription dispatch
+    // Helper method for async subscription dispatch (non-reliable only).
+    // Marks subscriptions idle on dispatch failure; never deletes subscriptions inline.
+    // Cleanup is handled by the background subscription removal.
+    //
+    // Uses a snapshot-dispatch-mark pattern so the subscriptions lock is NOT held
+    // during the actual channel round-trips, allowing subscribe/validate to proceed.
     async fn dispatch_to_subscriptions_async(&self, stream_message: StreamMessage) -> Result<()> {
-        // For now, we'll use a simpler approach without cloning subscriptions
-        // TODO: Implement proper concurrent dispatch with Arc<Subscription> or interior mutability
-        let subscription_names: Vec<String> = {
-            let subscriptions = self.subscriptions.lock().await;
-            subscriptions.keys().cloned().collect()
+        // Phase 1: snapshot dispatchers under lock (cheap clone — just channel handles)
+        let targets: Vec<(String, Dispatcher)> = {
+            let subs = self.subscriptions.lock().await;
+            subs.iter()
+                .filter_map(|(name, sub)| {
+                    sub.dispatcher.as_ref().map(|d| (name.clone(), d.clone()))
+                })
+                .collect()
         };
+        // lock dropped here
 
-        // For now, dispatch synchronously to avoid Arc<Subscription> issues
-        // TODO: Implement proper async concurrent dispatch
-        let mut subscriptions_to_remove = Vec::new();
-
-        for subscription_name in &subscription_names {
-            let subscriptions = self.subscriptions.lock().await;
-            if let Some(subscription) = subscriptions.get(subscription_name) {
-                let result = subscription
-                    .send_message_to_dispatcher(stream_message.clone())
-                    .await;
-                if let Err(err) = result {
-                    debug!(
-                        subscription = %subscription_name,
-                        topic = %self.topic_name,
-                        error = %err,
-                        "subscription has no active consumers"
-                    );
-                    subscriptions_to_remove.push(subscription_name.clone());
-                }
+        // Phase 2: dispatch without holding the lock
+        let mut idle_names: Vec<String> = Vec::new();
+        for (name, dispatcher) in &targets {
+            if let Err(err) = dispatcher.dispatch_message(stream_message.clone()).await {
+                debug!(
+                    subscription = %name,
+                    topic = %self.topic_name,
+                    error = %err,
+                    "dispatch failed, marking subscription idle"
+                );
+                idle_names.push(name.clone());
             }
         }
 
-        // Clean up failed subscriptions
-        for subscription_name in subscriptions_to_remove {
-            self.unsubscribe(&subscription_name).await;
-            // Best-effort delete from metadata store
-            self.delete_subscription_metadata(&subscription_name).await;
+        // Phase 3: re-lock only to mark failures idle
+        if !idle_names.is_empty() {
+            let mut subs = self.subscriptions.lock().await;
+            for name in &idle_names {
+                if let Some(sub) = subs.get_mut(name) {
+                    sub.mark_idle();
+                }
+            }
         }
 
         Ok(())
@@ -455,6 +459,7 @@ impl Topic {
         }
 
         let consumer_id = subscription.add_consumer(topic_name, options).await?;
+        subscription.mark_active();
 
         Ok(consumer_id)
     }
@@ -476,13 +481,56 @@ impl Topic {
             .await;
     }
 
+    // Remove non-reliable subscriptions that have been idle longer than `grace_period`.
+    // Returns consumer IDs removed (for ConsumerRegistry cleanup).
+    // Re-checks consumer status under lock before deleting to prevent race with reconnect.
+    pub(crate) async fn remove_idle_subscriptions(&self, grace_period: Duration) -> Vec<u64> {
+        let now = tokio::time::Instant::now();
+        let mut to_remove = Vec::new();
+        let mut removed_consumers = Vec::new();
+
+        {
+            let subs = self.subscriptions.lock().await;
+            for (name, sub) in subs.iter() {
+                if let Some(idle_since) = sub.idle_since {
+                    if now.duration_since(idle_since) > grace_period {
+                        // Re-check: if any consumer is now active, a reconnect happened
+                        // between mark_idle and this reap. Skip it.
+                        let mut has_active = false;
+                        for consumer in sub.consumers.values() {
+                            if consumer.get_status().await {
+                                has_active = true;
+                                break;
+                            }
+                        }
+                        if has_active {
+                            continue;
+                        }
+
+                        to_remove.push(name.clone());
+                        for &cid in sub.consumers.keys() {
+                            removed_consumers.push(cid);
+                        }
+                    }
+                }
+            }
+        }
+
+        for name in &to_remove {
+            self.unsubscribe(name).await;
+            self.delete_subscription_metadata(name).await;
+        }
+
+        removed_consumers
+    }
+
     pub(crate) async fn validate_consumer(
         &self,
         subscription_name: &str,
         consumer_name: &str,
     ) -> Option<u64> {
-        let sub_guard = self.subscriptions.lock().await;
-        let subscription = match sub_guard.get(subscription_name) {
+        let mut sub_guard = self.subscriptions.lock().await;
+        let subscription = match sub_guard.get_mut(subscription_name) {
             Some(subscr) => subscr,
             None => return None,
         };

@@ -42,7 +42,7 @@ use crate::consumer::Consumer;
 use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NonReliableExclusiveDispatcher {
     control_tx: mpsc::Sender<DispatcherCommand>,
     ready_rx: watch::Receiver<bool>,

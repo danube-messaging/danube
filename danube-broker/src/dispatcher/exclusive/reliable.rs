@@ -91,7 +91,7 @@ use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ReliableExclusiveDispatcher {
     control_tx: mpsc::Sender<DispatcherCommand>,
     ready_rx: watch::Receiver<bool>,

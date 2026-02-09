@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Ok, Result};
-use danube_core::message::StreamMessage;
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, Notify};
-use tracing::{trace, warn};
+use tokio::time::Instant;
+use tracing::trace;
 
 use crate::{
     broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
@@ -19,6 +19,10 @@ use crate::{
     utils::get_random_id,
 };
 
+// How long an idle non-reliable subscription is kept before removal (seconds).
+// Consumers that reconnect within this window reuse their identity.
+pub(crate) const SUBSCRIPTION_IDLE_GRACE: Duration = Duration::from_secs(60);
+
 // Subscriptions manage the consumers that are subscribed to them.
 // They also handle dispatchers that manage the distribution of messages to these consumers.
 #[derive(Debug)]
@@ -31,6 +35,8 @@ pub(crate) struct Subscription {
     pub(crate) consumers: HashMap<u64, Consumer>,
     // optional per-subscription dispatch limiter (messages/sec)
     pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
+    // When all consumers became inactive (non-reliable only). None = active.
+    pub(crate) idle_since: Option<Instant>,
 }
 
 // ConsumerInfo removed - Consumer now contains all necessary state via ConsumerSession
@@ -57,6 +63,7 @@ impl Subscription {
             dispatcher: None,
             consumers: HashMap::new(),
             dispatch_rate_limiter: None,
+            idle_since: None,
         }
     }
     // setter to install a limiter created by Topic based on policies
@@ -218,27 +225,6 @@ impl Subscription {
         Ok(notifier)
     }
 
-    pub(crate) async fn send_message_to_dispatcher(&self, message: StreamMessage) -> Result<()> {
-        // Non-reliable path uses this method. If a per-subscription limiter exists and denies,
-        // warn-only and proceed (do not drop) per request.
-        if let Some(lim) = &self.dispatch_rate_limiter {
-            if !lim.try_acquire(1).await {
-                warn!(
-                    subscription = %self.subscription_name,
-                    topic = %self.topic_name,
-                    "dispatch rate limit exceeded (warn-only)"
-                );
-            }
-        }
-        // Try to send the message
-        if let Some(dispatcher) = self.dispatcher.as_ref() {
-            dispatcher.dispatch_message(message).await?;
-        } else {
-            return Err(anyhow!("Dispatcher not initialized"));
-        }
-        Ok(())
-    }
-
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         if let Some(dispatcher) = self.dispatcher.as_ref() {
             dispatcher.ack_message(ack_msg).await?;
@@ -293,8 +279,22 @@ impl Subscription {
         Ok(consumers_id)
     }
 
+    // Mark subscription as idle (no active consumers). Called when dispatch fails.
+    // Only sets the timestamp on first call; subsequent calls are no-ops.
+    pub(crate) fn mark_idle(&mut self) {
+        if self.idle_since.is_none() {
+            self.idle_since = Some(Instant::now());
+        }
+    }
+
+    // Clear idle mark. Called on consumer subscribe or reconnect.
+    pub(crate) fn mark_active(&mut self) {
+        self.idle_since = None;
+    }
+
     // Validate Consumer - returns consumer ID
-    pub(crate) async fn validate_consumer(&self, consumer_name: &str) -> Option<u64> {
+    pub(crate) async fn validate_consumer(&mut self, consumer_name: &str) -> Option<u64> {
+        let mut found_id = None;
         for consumer in self.consumers.values() {
             if consumer.consumer_name == consumer_name {
                 // if consumer exist and its status is false, then the consumer has disconnected
@@ -303,10 +303,14 @@ impl Subscription {
                 if !consumer.get_status().await {
                     consumer.set_status_active().await;
                 }
-                return Some(consumer.consumer_id);
+                found_id = Some(consumer.consumer_id);
+                break;
             }
         }
-        None
+        if found_id.is_some() {
+            self.mark_active();
+        }
+        found_id
     }
 
     pub(crate) fn is_exclusive(&self) -> bool {

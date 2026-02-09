@@ -58,7 +58,7 @@ use crate::consumer::Consumer;
 use super::super::commands::DispatcherCommand;
 use super::super::shared::SharedConsumerState;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NonReliableSharedDispatcher {
     control_tx: mpsc::Sender<DispatcherCommand>,
     ready_rx: watch::Receiver<bool>,

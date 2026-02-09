@@ -77,6 +77,9 @@ impl BrokerService {
 
         let topic_cluster = TopicCluster::new(resources_arc.clone());
 
+        // Start background loop that removes idle non-reliable subscriptions
+        topic_manager.start_subscription_removal();
+
         BrokerService {
             broker_id,
             topic_worker_pool,
