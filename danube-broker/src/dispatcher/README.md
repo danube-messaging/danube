@@ -16,30 +16,25 @@ The dispatcher module is the **core message routing engine** for Danube broker s
                          │
                          v
 ┌──────────────────────────────────────────────────────────────┐
-│                     Dispatcher (Enum)                        │
-│  Facade that delegates to specific implementations           │
+│                   Dispatcher (Struct)                         │
+│  Single facade: { control_tx, ready_rx }                     │
+│  Factory constructors spawn the appropriate background task  │
 ├──────────────────────────────────────────────────────────────┤
-│  Variants:                                                   │
-│    - Exclusive(ExclusiveDispatcher)                         │
-│    - Shared(SharedDispatcher)                               │
-└────────────┬──────────────────────────┬──────────────────────┘
-             │                          │
-             v                          v
-┌────────────────────────┐   ┌────────────────────────┐
-│  ExclusiveDispatcher   │   │   SharedDispatcher     │
-│  (Single consumer)     │   │   (Multiple consumers) │
-├────────────────────────┤   ├────────────────────────┤
-│  Variants:             │   │  Variants:             │
-│   - NonReliable        │   │   - NonReliable        │
-│   - Reliable           │   │   - Reliable           │
-└────────┬───────────────┘   └────────┬───────────────┘
-         │                            │
-         v                            v
-┌─────────────────────────────────────────────────────────────┐
-│           Reliable Dispatchers use:                         │
-│             SubscriptionEngine                              │
-│  (stream management, progress tracking, lag detection)      │
-└─────────────────────────────────────────────────────────────┘
+│  Constructors:                                               │
+│    - Dispatcher::non_reliable_exclusive()                    │
+│    - Dispatcher::non_reliable_shared()                       │
+│    - Dispatcher::reliable_exclusive(engine)                  │
+│    - Dispatcher::reliable_shared(engine)                     │
+└────────────────────────┬─────────────────────────────────────┘
+                         │ spawns one of:
+          ┌──────────────┼──────────────────────┐
+          v              v                      v
+┌──────────────┐ ┌──────────────┐  ┌─────────────────────────┐
+│  exclusive/  │ │   shared/    │  │  Reliable variants use: │
+│  non_reliable│ │  non_reliable│  │   SubscriptionEngine    │
+│  reliable    │ │  reliable    │  │  (stream, progress,     │
+└──────────────┘ └──────────────┘  │   lag detection)        │
+                                   └─────────────────────────┘
 ```
 
 ## Key Concepts
@@ -108,13 +103,13 @@ The dispatcher module is the **core message routing engine** for Danube broker s
 
 ### When to Use Each Dispatcher Type
 
-| Subscription Type | Consumers | Delivery Guarantee | Dispatcher | Use Case |
-|-------------------|-----------|-------------------|------------|----------|
-| **Exclusive** | Single active | At-most-once | `ExclusiveDispatcher::NonReliable` | Real-time exclusive feeds, non-durable |
-| **Exclusive** | Single active | At-least-once | `ExclusiveDispatcher::Reliable` | Order processing, state machines, durable exclusive |
-| **Shared** | Multiple | At-most-once | `SharedDispatcher::NonReliable` | High-throughput workers, telemetry |
-| **Shared** | Multiple | At-least-once | `SharedDispatcher::Reliable` | Task queues, parallel processing, durable shared |
-| **Failover** | Multiple (1 active) | At-least-once | `ExclusiveDispatcher::Reliable` | HA setups, backup consumers |
+| Subscription Type | Consumers | Delivery Guarantee | Constructor | Use Case |
+|-------------------|-----------|-------------------|-------------|----------|
+| **Exclusive** | Single active | At-most-once | `Dispatcher::non_reliable_exclusive()` | Real-time exclusive feeds, non-durable |
+| **Exclusive** | Single active | At-least-once | `Dispatcher::reliable_exclusive(engine)` | Order processing, state machines, durable exclusive |
+| **Shared** | Multiple | At-most-once | `Dispatcher::non_reliable_shared()` | High-throughput workers, telemetry |
+| **Shared** | Multiple | At-least-once | `Dispatcher::reliable_shared(engine)` | Task queues, parallel processing, durable shared |
+| **Failover** | Multiple (1 active) | At-least-once | `Dispatcher::reliable_exclusive(engine)` | HA setups, backup consumers |
 
 ### Performance Characteristics
 

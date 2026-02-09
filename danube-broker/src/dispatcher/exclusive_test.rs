@@ -32,8 +32,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::{Consumer, ConsumerSession};
-use crate::dispatcher::exclusive::ExclusiveDispatcher;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
+use crate::dispatcher::Dispatcher;
 use crate::message::AckMessage;
 use crate::topic::TopicStore;
 
@@ -88,7 +88,7 @@ async fn reliable_single_ack_gating() {
 
     // Dispatcher with reliable engine (start: Latest)
     let engine = SubscriptionEngine::new("sub-a".to_string(), Arc::new(ts.clone()));
-    let dispatcher = ExclusiveDispatcher::new_reliable(engine);
+    let dispatcher = Dispatcher::reliable_exclusive(engine);
     let notifier = dispatcher.get_notifier();
 
     // Consumer wiring: use a channel to capture dispatched messages
@@ -158,7 +158,7 @@ async fn reliable_single_ack_gating() {
 #[tokio::test]
 async fn non_reliable_single_immediate_dispatch() {
     // Arrange dispatcher (non-reliable)
-    let dispatcher = ExclusiveDispatcher::new_non_reliable();
+    let dispatcher = Dispatcher::non_reliable_exclusive();
 
     // Consumer wiring
     let topic = "/default/exclusive_non_reliable";

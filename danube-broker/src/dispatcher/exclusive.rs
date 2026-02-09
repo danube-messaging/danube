@@ -3,22 +3,16 @@
 //! Routes messages to a single active consumer. If the active consumer fails,
 //! failover to the next available consumer.
 
-use anyhow::Result;
-use danube_core::message::StreamMessage;
-use std::sync::Arc;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, watch};
 
 use crate::consumer::Consumer;
-use crate::message::AckMessage;
 
+use super::commands::DispatcherCommand;
 use super::subscription_engine::SubscriptionEngine;
 
 // Import the specific implementations
-mod non_reliable;
-mod reliable;
-
-use non_reliable::NonReliableExclusiveDispatcher;
-use reliable::ReliableExclusiveDispatcher;
+pub(super) mod non_reliable;
+pub(super) mod reliable;
 
 /// Shared consumer state for exclusive dispatchers
 /// Manages the list of consumers and tracks which one is active
@@ -65,99 +59,24 @@ impl ExclusiveConsumerState {
     }
 }
 
-/// Main exclusive dispatcher enum
-#[derive(Debug, Clone)]
-pub(crate) enum ExclusiveDispatcher {
-    NonReliable(NonReliableExclusiveDispatcher),
-    Reliable(ReliableExclusiveDispatcher),
-}
+/// Thin namespace for spawning exclusive dispatcher background tasks.
+/// The actual Dispatcher struct lives in the parent module.
+pub(super) struct ExclusiveDispatcher;
 
 impl ExclusiveDispatcher {
-    /// Create a non-reliable exclusive dispatcher (fast fan-out, no acks)
-    pub(crate) fn new_non_reliable() -> Self {
-        Self::NonReliable(NonReliableExclusiveDispatcher::new())
+    /// Spawn the non-reliable exclusive background task.
+    pub(super) fn start_non_reliable(control_rx: mpsc::Receiver<DispatcherCommand>) {
+        non_reliable::start(control_rx);
     }
 
-    /// Create a reliable exclusive dispatcher (ack-gating with heartbeat)
-    pub(crate) fn new_reliable(engine: SubscriptionEngine) -> Self {
-        Self::Reliable(ReliableExclusiveDispatcher::new(engine))
-    }
-
-    /// Get notifier for reliable dispatcher (used by Topic to signal new messages)
-    /// Only reliable dispatchers support notifications
-    pub(crate) fn get_notifier(&self) -> Arc<Notify> {
-        match self {
-            Self::Reliable(d) => d.get_notifier(),
-            Self::NonReliable(_) => {
-                // This should never be called for non-reliable dispatchers
-                // subscription.rs only calls this for reliable mode
-                panic!("get_notifier called on non-reliable dispatcher")
-            }
-        }
-    }
-
-    /// Block until the dispatcher is ready
-    pub(crate) async fn ready(&self) {
-        match self {
-            Self::NonReliable(d) => d.ready().await,
-            Self::Reliable(d) => d.ready().await,
-        }
-    }
-
-    /// Dispatch a message to the active consumer (non-reliable only)
-    pub(crate) async fn dispatch_message(&self, msg: StreamMessage) -> Result<()> {
-        match self {
-            Self::NonReliable(d) => d.dispatch_message(msg).await,
-            Self::Reliable(d) => d.dispatch_message(msg).await,
-        }
-    }
-
-    /// Add a consumer to the dispatcher
-    pub(crate) async fn add_consumer(&self, consumer: Consumer) -> Result<()> {
-        match self {
-            Self::NonReliable(d) => d.add_consumer(consumer).await,
-            Self::Reliable(d) => d.add_consumer(consumer).await,
-        }
-    }
-
-    /// Remove a consumer from the dispatcher
-    pub(crate) async fn remove_consumer(&self, consumer_id: u64) -> Result<()> {
-        match self {
-            Self::NonReliable(d) => d.remove_consumer(consumer_id).await,
-            Self::Reliable(d) => d.remove_consumer(consumer_id).await,
-        }
-    }
-
-    /// Disconnect all consumers
-    pub(crate) async fn disconnect_all_consumers(&self) -> Result<()> {
-        match self {
-            Self::NonReliable(d) => d.disconnect_all_consumers().await,
-            Self::Reliable(d) => d.disconnect_all_consumers().await,
-        }
-    }
-
-    /// Acknowledge a message (reliable only)
-    pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
-        match self {
-            Self::NonReliable(_) => Ok(()), // Non-reliable ignores acks
-            Self::Reliable(d) => d.ack_message(ack_msg).await,
-        }
-    }
-
-    /// Reset pending state (reliable only)
-    pub(crate) async fn reset_pending(&self) -> Result<()> {
-        match self {
-            Self::NonReliable(_) => Ok(()), // Non-reliable has no pending state
-            Self::Reliable(d) => d.reset_pending().await,
-        }
-    }
-
-    /// Flush subscription progress (reliable only)
-    pub async fn flush_progress_now(&self) -> Result<()> {
-        match self {
-            Self::NonReliable(_) => Ok(()), // Non-reliable: no-op
-            Self::Reliable(d) => d.flush_progress_now().await,
-        }
+    /// Spawn the reliable exclusive background task.
+    pub(super) fn start_reliable(
+        engine: SubscriptionEngine,
+        control_rx: mpsc::Receiver<DispatcherCommand>,
+        control_tx: mpsc::Sender<DispatcherCommand>,
+        ready_tx: watch::Sender<bool>,
+    ) {
+        reliable::start(engine, control_rx, control_tx, ready_tx);
     }
 }
 
