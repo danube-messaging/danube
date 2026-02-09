@@ -73,352 +73,262 @@
 //! - Financial transactions, order processing
 //! - Any scenario where message loss is unacceptable
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch, Mutex, Notify};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::Duration;
 use tracing::{trace, warn};
 
 use crate::broker_metrics::{
     DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL, SUBSCRIPTION_LAG_MESSAGES,
 };
-use crate::consumer::Consumer;
 use crate::message::AckMessage;
 
 use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
 
-#[derive(Debug, Clone)]
-pub(crate) struct ReliableExclusiveDispatcher {
+/// Spawn the reliable exclusive dispatcher background task.
+pub(super) fn start(
+    engine: SubscriptionEngine,
+    control_rx: mpsc::Receiver<DispatcherCommand>,
     control_tx: mpsc::Sender<DispatcherCommand>,
-    ready_rx: watch::Receiver<bool>,
+    ready_tx: watch::Sender<bool>,
+) {
+    tokio::spawn(async move {
+        run_reliable_loop(engine, control_rx, control_tx, ready_tx).await;
+    });
 }
 
-impl ReliableExclusiveDispatcher {
-    pub fn new(engine: SubscriptionEngine) -> Self {
-        let (control_tx, control_rx) = mpsc::channel(32);
-        let (ready_tx, ready_rx) = watch::channel(false);
-        let control_tx_clone = control_tx.clone();
+async fn run_reliable_loop(
+    engine: SubscriptionEngine,
+    mut control_rx: mpsc::Receiver<DispatcherCommand>,
+    control_tx: mpsc::Sender<DispatcherCommand>,
+    ready_tx: watch::Sender<bool>,
+) {
+    let engine = Arc::new(Mutex::new(engine));
+    let mut state = ExclusiveConsumerState::new();
+    let mut pending = false;
+    let mut pending_message: Option<StreamMessage> = None;
 
-        tokio::spawn(async move {
-            Self::run_reliable_loop(engine, control_rx, control_tx_clone, ready_tx).await;
-        });
-
-        Self {
-            control_tx,
-            ready_rx,
-        }
-    }
-
-    async fn run_reliable_loop(
-        engine: SubscriptionEngine,
-        mut control_rx: mpsc::Receiver<DispatcherCommand>,
-        control_tx: mpsc::Sender<DispatcherCommand>,
-        ready_tx: watch::Sender<bool>,
-    ) {
-        let engine = Arc::new(Mutex::new(engine));
-        let mut state = ExclusiveConsumerState::new();
-        let mut pending = false;
-        let mut pending_message: Option<StreamMessage> = None;
-
-        // Initialize stream from persisted progress
+    // Initialize stream from persisted progress
+    {
+        if let Err(e) = engine
+            .lock()
+            .await
+            .init_stream_from_progress_or_latest()
+            .await
         {
-            if let Err(e) = engine
-                .lock()
-                .await
-                .init_stream_from_progress_or_latest()
-                .await
-            {
-                warn!(error = %e, "Reliable exclusive dispatcher failed to init stream");
-            }
-            let _ = ready_tx.send(true);
+            warn!(error = %e, "Reliable exclusive dispatcher failed to init stream");
         }
+        let _ = ready_tx.send(true);
+    }
 
-        // Heartbeat watchdog (500ms default)
-        let heartbeat_interval = Duration::from_millis(500);
-        let mut heartbeat = tokio::time::interval(heartbeat_interval);
-        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        heartbeat.tick().await; // Skip first immediate tick
+    // Heartbeat watchdog (500ms default)
+    let heartbeat_interval = Duration::from_millis(500);
+    let mut heartbeat = tokio::time::interval(heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    heartbeat.tick().await; // Skip first immediate tick
 
-        loop {
-            tokio::select! {
-                cmd_result = control_rx.recv() => {
-                    match cmd_result {
-                        Some(cmd) => {
-                            Self::handle_command(
-                                cmd,
-                                &mut state,
-                                &engine,
-                                &mut pending,
-                                &mut pending_message,
-                                &control_tx,
-                            ).await;
-                        }
-                        None => break, // Channel closed
+    loop {
+        tokio::select! {
+            cmd_result = control_rx.recv() => {
+                match cmd_result {
+                    Some(cmd) => {
+                        handle_command(
+                            cmd,
+                            &mut state,
+                            &engine,
+                            &mut pending,
+                            &mut pending_message,
+                            &control_tx,
+                        ).await;
                     }
+                    None => break, // Channel closed
                 }
+            }
 
-                _ = heartbeat.tick() => {
-                    Self::handle_heartbeat(
-                        &state,
-                        &engine,
-                        pending,
-                        &control_tx,
-                    ).await;
-                }
+            _ = heartbeat.tick() => {
+                handle_heartbeat(
+                    &state,
+                    &engine,
+                    pending,
+                    &control_tx,
+                ).await;
             }
         }
     }
+}
 
-    async fn handle_command(
-        cmd: DispatcherCommand,
-        state: &mut ExclusiveConsumerState,
-        engine: &Arc<Mutex<SubscriptionEngine>>,
-        pending: &mut bool,
-        pending_message: &mut Option<StreamMessage>,
-        control_tx: &mpsc::Sender<DispatcherCommand>,
-    ) {
-        match cmd {
-            DispatcherCommand::AddConsumer(c) => {
-                trace!(
-                    consumer_id = %c.consumer_id,
-                    "consumer added to reliable exclusive dispatcher"
-                );
-                state.add_consumer(c);
-                if !*pending {
-                    let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
-                }
-            }
-            DispatcherCommand::RemoveConsumer(id) => {
-                state.remove_consumer(id);
-            }
-            DispatcherCommand::DisconnectAllConsumers => {
-                if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
-                }
-                state.disconnect_all();
-            }
-            DispatcherCommand::MessageAcked(ack_msg) => {
-                Self::handle_ack(engine, ack_msg, pending, pending_message).await;
+async fn handle_command(
+    cmd: DispatcherCommand,
+    state: &mut ExclusiveConsumerState,
+    engine: &Arc<Mutex<SubscriptionEngine>>,
+    pending: &mut bool,
+    pending_message: &mut Option<StreamMessage>,
+    control_tx: &mpsc::Sender<DispatcherCommand>,
+) {
+    match cmd {
+        DispatcherCommand::AddConsumer(c) => {
+            trace!(
+                consumer_id = %c.consumer_id,
+                "consumer added to reliable exclusive dispatcher"
+            );
+            state.add_consumer(c);
+            if !*pending {
                 let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
             }
-            DispatcherCommand::DispatchMessage(_, response_tx) => {
-                let _ = response_tx.send(Err(anyhow!(
-                    "Reliable dispatcher is stream-driven, not push-per-message"
-                )));
-            }
-            DispatcherCommand::PollAndDispatch => {
-                // Increment notifier poll counter (fast path)
-                counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
-
-                Self::handle_poll_and_dispatch(state, engine, pending, pending_message).await;
-            }
-            DispatcherCommand::ResetPending => {
-                trace!("clearing pending flag to allow retry");
-                *pending = false;
-                let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
-            }
-            DispatcherCommand::FlushProgressNow => {
-                if let Err(e) = engine.lock().await.flush_progress_now().await {
-                    warn!(error = %e, "FlushProgressNow: failed to flush");
-                }
-            }
         }
-    }
-
-    async fn handle_ack(
-        engine: &Arc<Mutex<SubscriptionEngine>>,
-        ack_msg: AckMessage,
-        pending: &mut bool,
-        pending_message: &mut Option<StreamMessage>,
-    ) {
-        let acked_offset = ack_msg.msg_id.topic_offset;
-
-        if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
-            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
+        DispatcherCommand::RemoveConsumer(id) => {
+            state.remove_consumer(id);
         }
-
-        let should_clear = pending_message
-            .as_ref()
-            .map(|msg| msg.msg_id.topic_offset == acked_offset)
-            .unwrap_or(false);
-
-        if should_clear {
-            trace!(
-                request_id = %ack_msg.request_id,
-                offset = %acked_offset,
-                "ack received for pending message, clearing buffer"
-            );
-            *pending = false;
-            *pending_message = None;
-        } else {
-            trace!(
-                request_id = %ack_msg.request_id,
-                offset = %acked_offset,
-                "ignoring late ack (not the pending message)"
-            );
-        }
-    }
-
-    async fn handle_poll_and_dispatch(
-        state: &mut ExclusiveConsumerState,
-        engine: &Arc<Mutex<SubscriptionEngine>>,
-        pending: &mut bool,
-        pending_message: &mut Option<StreamMessage>,
-    ) {
-        if *pending {
-            return;
-        }
-
-        if let Some(cons) = state.active_consumer_mut() {
-            if !cons.get_status().await {
-                return;
+        DispatcherCommand::DisconnectAllConsumers => {
+            if let Err(e) = engine.lock().await.flush_progress_now().await {
+                warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
             }
-
-            // Get message: buffered (resend) or new from stream
-            let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
-                trace!(
-                    offset = %buffered_msg.msg_id.topic_offset,
-                    "resending buffered message"
-                );
-                Some(buffered_msg)
-            } else {
-                match engine.lock().await.poll_next().await {
-                    Ok(msg_opt) => msg_opt,
-                    Err(e) => {
-                        warn!(error = %e, "poll_next error");
-                        None
-                    }
-                }
-            };
-
-            if let Some(msg) = msg_to_send {
-                let offset = msg.msg_id.topic_offset;
-                *pending_message = Some(msg.clone());
-
-                if let Err(e) = cons.send_message(msg).await {
-                    warn!(
-                        offset = %offset,
-                        error = %e,
-                        "Failed to send message. Will retry on reconnect."
-                    );
-                } else {
-                    *pending = true;
-                }
-            }
+            state.disconnect_all();
         }
-    }
-
-    async fn handle_heartbeat(
-        state: &ExclusiveConsumerState,
-        engine: &Arc<Mutex<SubscriptionEngine>>,
-        pending: bool,
-        control_tx: &mpsc::Sender<DispatcherCommand>,
-    ) {
-        if !state.has_active_consumer() || pending {
-            return;
-        }
-
-        let lag_info = {
-            let engine_guard = engine.lock().await;
-            engine_guard.get_lag_info()
-        };
-
-        // Report lag gauge
-        gauge!(
-            SUBSCRIPTION_LAG_MESSAGES.name,
-            "subscription" => engine.lock().await._subscription_name.clone()
-        )
-        .set(lag_info.lag_messages as f64);
-
-        if lag_info.has_lag {
-            trace!(
-                lag_messages = %lag_info.lag_messages,
-                "heartbeat detected lag"
-            );
-            counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+        DispatcherCommand::MessageAcked(ack_msg) => {
+            handle_ack(engine, ack_msg, pending, pending_message).await;
             let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
         }
-    }
+        DispatcherCommand::DispatchMessage(_, response_tx) => {
+            let _ = response_tx.send(Err(anyhow!(
+                "Reliable dispatcher is stream-driven, not push-per-message"
+            )));
+        }
+        DispatcherCommand::PollAndDispatch => {
+            // Increment notifier poll counter (fast path)
+            counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
 
-    // Public API
-
-    /// Get notifier for signaling new messages from Topic
-    pub fn get_notifier(&self) -> Arc<Notify> {
-        let notify = Arc::new(Notify::new());
-        let tx = self.control_tx.clone();
-        let n = notify.clone();
-        tokio::spawn(async move {
-            loop {
-                n.notified().await;
-                // Count polls triggered by notifier (fast path)
-                counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
-                let _ = tx.send(DispatcherCommand::PollAndDispatch).await;
+            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+        }
+        DispatcherCommand::ResetPending => {
+            trace!("clearing pending flag to allow retry");
+            *pending = false;
+            let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
+        }
+        DispatcherCommand::FlushProgressNow => {
+            if let Err(e) = engine.lock().await.flush_progress_now().await {
+                warn!(error = %e, "FlushProgressNow: failed to flush");
             }
-        });
-        notify
+        }
+    }
+}
+
+async fn handle_ack(
+    engine: &Arc<Mutex<SubscriptionEngine>>,
+    ack_msg: AckMessage,
+    pending: &mut bool,
+    pending_message: &mut Option<StreamMessage>,
+) {
+    let acked_offset = ack_msg.msg_id.topic_offset;
+
+    if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
+        warn!(offset = %acked_offset, error = %e, "Ack handling failed");
     }
 
-    pub async fn ready(&self) {
-        if *self.ready_rx.borrow() {
+    let should_clear = pending_message
+        .as_ref()
+        .map(|msg| msg.msg_id.topic_offset == acked_offset)
+        .unwrap_or(false);
+
+    if should_clear {
+        trace!(
+            request_id = %ack_msg.request_id,
+            offset = %acked_offset,
+            "ack received for pending message, clearing buffer"
+        );
+        *pending = false;
+        *pending_message = None;
+    } else {
+        trace!(
+            request_id = %ack_msg.request_id,
+            offset = %acked_offset,
+            "ignoring late ack (not the pending message)"
+        );
+    }
+}
+
+async fn handle_poll_and_dispatch(
+    state: &mut ExclusiveConsumerState,
+    engine: &Arc<Mutex<SubscriptionEngine>>,
+    pending: &mut bool,
+    pending_message: &mut Option<StreamMessage>,
+) {
+    if *pending {
+        return;
+    }
+
+    if let Some(cons) = state.active_consumer_mut() {
+        if !cons.get_status().await {
             return;
         }
-        let mut rx = self.ready_rx.clone();
-        while rx.changed().await.is_ok() {
-            if *rx.borrow() {
-                break;
+
+        // Get message: buffered (resend) or new from stream
+        let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
+            trace!(
+                offset = %buffered_msg.msg_id.topic_offset,
+                "resending buffered message"
+            );
+            Some(buffered_msg)
+        } else {
+            match engine.lock().await.poll_next().await {
+                Ok(msg_opt) => msg_opt,
+                Err(e) => {
+                    warn!(error = %e, "poll_next error");
+                    None
+                }
+            }
+        };
+
+        if let Some(msg) = msg_to_send {
+            let offset = msg.msg_id.topic_offset;
+            *pending_message = Some(msg.clone());
+
+            if let Err(e) = cons.send_message(msg).await {
+                warn!(
+                    offset = %offset,
+                    error = %e,
+                    "Failed to send message. Will retry on reconnect."
+                );
+            } else {
+                *pending = true;
             }
         }
     }
+}
 
-    pub async fn dispatch_message(&self, _msg: StreamMessage) -> Result<()> {
-        Err(anyhow!(
-            "Reliable single dispatcher is stream-driven, not push-per-message"
-        ))
+async fn handle_heartbeat(
+    state: &ExclusiveConsumerState,
+    engine: &Arc<Mutex<SubscriptionEngine>>,
+    pending: bool,
+    control_tx: &mpsc::Sender<DispatcherCommand>,
+) {
+    if !state.has_active_consumer() || pending {
+        return;
     }
 
-    pub async fn add_consumer(&self, consumer: Consumer) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::AddConsumer(consumer))
-            .await
-            .map_err(|_| anyhow!("Failed to send add consumer command"))
-    }
+    let lag_info = {
+        let engine_guard = engine.lock().await;
+        engine_guard.get_lag_info()
+    };
 
-    pub async fn remove_consumer(&self, consumer_id: u64) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::RemoveConsumer(consumer_id))
-            .await
-            .map_err(|_| anyhow!("Failed to send remove consumer command"))
-    }
+    // Report lag gauge
+    gauge!(
+        SUBSCRIPTION_LAG_MESSAGES.name,
+        "subscription" => engine.lock().await._subscription_name.clone()
+    )
+    .set(lag_info.lag_messages as f64);
 
-    pub async fn disconnect_all_consumers(&self) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::DisconnectAllConsumers)
-            .await
-            .map_err(|_| anyhow!("Failed to send disconnect all command"))
-    }
-
-    pub async fn ack_message(&self, ack: AckMessage) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::MessageAcked(ack))
-            .await
-            .map_err(|_| anyhow!("Failed to send ack command"))
-    }
-
-    pub async fn reset_pending(&self) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::ResetPending)
-            .await
-            .map_err(|_| anyhow!("Failed to send reset pending command"))
-    }
-
-    pub async fn flush_progress_now(&self) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::FlushProgressNow)
-            .await
-            .map_err(|_| anyhow!("Failed to send flush progress command"))
+    if lag_info.has_lag {
+        trace!(
+            lag_messages = %lag_info.lag_messages,
+            "heartbeat detected lag"
+        );
+        counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+        let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
     }
 }

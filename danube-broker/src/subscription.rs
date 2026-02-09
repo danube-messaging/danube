@@ -11,7 +11,7 @@ use crate::{
     consumer::{Consumer, ConsumerSession},
     dispatcher::subscription_engine::SubscriptionEngine,
     dispatcher::DispatchStrategy,
-    dispatcher::{exclusive::ExclusiveDispatcher, shared::SharedDispatcher, Dispatcher},
+    dispatcher::Dispatcher,
     message::AckMessage,
     rate_limiter::RateLimiter,
     resources::TopicResources,
@@ -129,22 +129,13 @@ impl Subscription {
         let (new_dispatcher, notifier) = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
-                0 => (
-                    Dispatcher::Exclusive(ExclusiveDispatcher::new_non_reliable()),
-                    None,
-                ),
+                0 => (Dispatcher::non_reliable_exclusive(), None),
 
                 // Shared
-                1 => (
-                    Dispatcher::Shared(SharedDispatcher::new_non_reliable()),
-                    None,
-                ),
+                1 => (Dispatcher::non_reliable_shared(), None),
 
                 // Failover
-                2 => (
-                    Dispatcher::Exclusive(ExclusiveDispatcher::new_non_reliable()),
-                    None,
-                ),
+                2 => (Dispatcher::non_reliable_exclusive(), None),
 
                 _ => {
                     return Err(anyhow!("Should not get here"));
@@ -168,11 +159,10 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = ExclusiveDispatcher::new_reliable(engine);
-                        // Ensure reliable dispatcher is initialized before exposing notifier
-                        new_dispatcher.ready().await;
-                        let notifier = new_dispatcher.get_notifier();
-                        (Dispatcher::Exclusive(new_dispatcher), Some(notifier))
+                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        dispatcher.ready().await;
+                        let notifier = dispatcher.get_notifier();
+                        (dispatcher, Some(notifier))
                     }
 
                     // Shared
@@ -188,11 +178,10 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = SharedDispatcher::new_reliable(engine);
-                        // Ensure reliable dispatcher is initialized before exposing notifier
-                        new_dispatcher.ready().await;
-                        let notifier = new_dispatcher.get_notifier();
-                        (Dispatcher::Shared(new_dispatcher), Some(notifier))
+                        let dispatcher = Dispatcher::reliable_shared(engine);
+                        dispatcher.ready().await;
+                        let notifier = dispatcher.get_notifier();
+                        (dispatcher, Some(notifier))
                     }
 
                     // Failover (treat as single active consumer)
@@ -208,9 +197,9 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let new_dispatcher = ExclusiveDispatcher::new_reliable(engine);
-                        let notifier = new_dispatcher.get_notifier();
-                        (Dispatcher::Exclusive(new_dispatcher), Some(notifier))
+                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        let notifier = dispatcher.get_notifier();
+                        (dispatcher, Some(notifier))
                     }
 
                     _ => {

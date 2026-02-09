@@ -50,121 +50,57 @@ use anyhow::Result;
 use danube_core::message::StreamMessage;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::mpsc;
 use tracing::trace;
-
-use crate::consumer::Consumer;
 
 use super::super::commands::DispatcherCommand;
 use super::super::shared::SharedConsumerState;
 
-#[derive(Debug, Clone)]
-pub(crate) struct NonReliableSharedDispatcher {
-    control_tx: mpsc::Sender<DispatcherCommand>,
-    ready_rx: watch::Receiver<bool>,
+/// Spawn the non-reliable shared dispatcher background task.
+pub(super) fn start(mut control_rx: mpsc::Receiver<DispatcherCommand>) {
+    let rr_index = Arc::new(AtomicUsize::new(0));
+
+    tokio::spawn(async move {
+        let mut state = SharedConsumerState::new(rr_index);
+
+        while let Some(cmd) = control_rx.recv().await {
+            match cmd {
+                DispatcherCommand::AddConsumer(c) => {
+                    state.add_consumer(c);
+                }
+                DispatcherCommand::RemoveConsumer(consumer_id) => {
+                    state.remove_consumer(consumer_id);
+                }
+                DispatcherCommand::DisconnectAllConsumers => {
+                    state.disconnect_all();
+                }
+                DispatcherCommand::DispatchMessage(msg, response_tx) => {
+                    let result = dispatch_round_robin(&mut state, msg).await;
+                    let _ = response_tx.send(result);
+                }
+                _ => {}
+            }
+        }
+        trace!("Non-reliable shared dispatcher task exiting gracefully");
+    });
 }
 
-impl NonReliableSharedDispatcher {
-    pub fn new() -> Self {
-        let (control_tx, mut control_rx) = mpsc::channel(16);
-        let (_ready_tx, ready_rx) = watch::channel(true);
-        let rr_index = Arc::new(AtomicUsize::new(0));
-        let rr_task = rr_index.clone();
-
-        tokio::spawn(async move {
-            let mut state = SharedConsumerState::new(rr_task);
-
-            while let Some(cmd) = control_rx.recv().await {
-                match cmd {
-                    DispatcherCommand::AddConsumer(c) => {
-                        state.add_consumer(c);
-                    }
-                    DispatcherCommand::RemoveConsumer(consumer_id) => {
-                        state.remove_consumer(consumer_id);
-                    }
-                    DispatcherCommand::DisconnectAllConsumers => {
-                        state.disconnect_all();
-                    }
-                    DispatcherCommand::DispatchMessage(msg, response_tx) => {
-                        let result = Self::dispatch_round_robin(&mut state, msg).await;
-                        let _ = response_tx.send(result);
-                    }
-                    _ => {}
-                }
-            }
-            trace!("Non-reliable shared dispatcher task exiting gracefully");
-        });
-
-        Self {
-            control_tx,
-            ready_rx,
-        }
+async fn dispatch_round_robin(state: &mut SharedConsumerState, msg: StreamMessage) -> Result<()> {
+    let num_consumers = state.len();
+    if num_consumers == 0 {
+        return Err(anyhow::anyhow!("No consumers available"));
     }
 
-    async fn dispatch_round_robin(
-        state: &mut SharedConsumerState,
-        msg: StreamMessage,
-    ) -> Result<()> {
-        let num_consumers = state.len();
-        if num_consumers == 0 {
-            return Err(anyhow::anyhow!("No consumers available"));
-        }
-
-        for _ in 0..num_consumers {
-            if let Some(target) = state.next_consumer_mut() {
-                if !target.get_status().await {
-                    continue;
-                }
-                if target.send_message(msg.clone()).await.is_ok() {
-                    return Ok(());
-                }
+    for _ in 0..num_consumers {
+        if let Some(target) = state.next_consumer_mut() {
+            if !target.get_status().await {
+                continue;
             }
-        }
-
-        Err(anyhow::anyhow!("Failed to dispatch to any consumer"))
-    }
-
-    // Public API
-    pub async fn ready(&self) {
-        if *self.ready_rx.borrow() {
-            return;
-        }
-        let mut rx = self.ready_rx.clone();
-        while rx.changed().await.is_ok() {
-            if *rx.borrow() {
-                break;
+            if target.send_message(msg.clone()).await.is_ok() {
+                return Ok(());
             }
         }
     }
 
-    pub async fn dispatch_message(&self, msg: StreamMessage) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.control_tx
-            .send(DispatcherCommand::DispatchMessage(msg, tx))
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send dispatch command: {}", e))?;
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive dispatch response: {}", e))?
-    }
-
-    pub async fn add_consumer(&self, consumer: Consumer) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::AddConsumer(consumer))
-            .await
-            .map_err(|_| anyhow::anyhow!("Failed to send add consumer command"))
-    }
-
-    pub async fn remove_consumer(&self, consumer_id: u64) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::RemoveConsumer(consumer_id))
-            .await
-            .map_err(|_| anyhow::anyhow!("Failed to send remove consumer command"))
-    }
-
-    pub async fn disconnect_all_consumers(&self) -> Result<()> {
-        self.control_tx
-            .send(DispatcherCommand::DisconnectAllConsumers)
-            .await
-            .map_err(|_| anyhow::anyhow!("Failed to send disconnect all command"))
-    }
+    Err(anyhow::anyhow!("Failed to dispatch to any consumer"))
 }

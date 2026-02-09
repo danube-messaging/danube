@@ -35,8 +35,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use crate::consumer::{Consumer, ConsumerSession};
-use crate::dispatcher::shared::SharedDispatcher;
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
+use crate::dispatcher::Dispatcher;
 use crate::message::AckMessage;
 use crate::topic::TopicStore;
 
@@ -90,7 +90,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
     let ts = TopicStore::new(topic.to_string(), wal_storage);
 
     let engine = SubscriptionEngine::new("sub-shared".to_string(), Arc::new(ts.clone()));
-    let dispatcher = SharedDispatcher::new_reliable(engine);
+    let dispatcher = Dispatcher::reliable_shared(engine);
     let notifier = dispatcher.get_notifier();
 
     // Two consumers capture messages
@@ -180,7 +180,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 #[tokio::test]
 async fn non_reliable_multiple_round_robin() {
     // Arrange non-reliable dispatcher
-    let dispatcher = SharedDispatcher::new_non_reliable();
+    let dispatcher = Dispatcher::non_reliable_shared();
 
     let topic = "/default/shared_non_reliable";
 
