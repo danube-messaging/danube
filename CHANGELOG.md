@@ -1,3 +1,25 @@
+<!-- v0.7.2 START -->
+## v0.7.2 - 2026-02-09
+
+### 🏗️ Broker Internals
+
+* **Dispatcher refactor** (#194) - Consolidated the 3-layer enum hierarchy (`Dispatcher` → `ExclusiveDispatcher`/`SharedDispatcher` → leaf variants) into a single flat `Dispatcher` struct with four factory constructors. Eliminates ~300 lines of duplicated facade methods and match delegation. Pure structural change with no behavior change. by @danrusei in fbab80d
+
+* **Background subscription cleanup** (#193) - Moved expired subscription removal to a background task instead of performing it inline during packet dispatch, reducing latency on the hot path. by @danrusei in 6df5816
+
+### 📦 Client Improvements
+
+* **Builders return Result instead of panicking** (#190) - `DanubeClient`, `ProducerBuilder`, and `ConsumerBuilder` now return `Result` from `.build()` instead of panicking on misconfiguration. by @danrusei in 7affa8c
+
+* **Centralized retry/backoff logic** (#190) - Unified retry strategy across producers and consumers, replacing scattered inline retry loops. by @danrusei in 7affa8c
+
+* **State machines for TopicConsumer/TopicProducer** (#190) - Refactored connection lifecycle into explicit state machines for clearer error handling and reconnection behavior. by @danrusei in 7affa8c
+
+* **Schema registry ergonomics** (#190, #191) - Consolidated schema registry operations within the Danube client and removed references to `ErrorType`/`ErrorMessage` in favor of idiomatic error handling. by @danrusei in 7affa8c, 8c5df69
+
+* **Client resilience fixes** (#192) - Resolve operations now return errors instead of panicking; consumers read the `stop_signal` field from health checks for graceful shutdown. by @danrusei in c6c9f8c
+<!-- v0.7.2 END -->
+
 <!-- v0.7.1 START -->
 ## v0.7.1 - 2026-02-02
 
