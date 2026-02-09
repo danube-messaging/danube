@@ -159,13 +159,17 @@ async fn multiple_valid_payloads() -> Result<()> {
 async fn schema_evolution_consumer_compatibility() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/evolution");
+    let schema_subject = format!(
+        "evolution-schema-{}",
+        topic.split('-').last().unwrap_or("0")
+    );
     let schema_client = client.schema();
 
     // V1: Basic schema
     let schema_v1 =
         r#"{"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}"#;
     schema_client
-        .register_schema("evolution-schema")
+        .register_schema(&schema_subject)
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(schema_v1.as_bytes())
         .execute()
@@ -176,7 +180,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_v1")
-        .with_schema_subject("evolution-schema")
+        .with_schema_subject(&schema_subject)
         .build()?;
     producer1.create().await?;
 
@@ -200,7 +204,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
     // V2: Add optional field
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["id"]}"#;
     schema_client
-        .register_schema("evolution-schema")
+        .register_schema(&schema_subject)
         .with_type(SchemaType::JsonSchema)
         .with_schema_data(schema_v2.as_bytes())
         .execute()
@@ -211,7 +215,7 @@ async fn schema_evolution_consumer_compatibility() -> Result<()> {
         .new_producer()
         .with_topic(&topic)
         .with_name("producer_v2")
-        .with_schema_subject("evolution-schema")
+        .with_schema_subject(&schema_subject)
         .build()?;
     producer2.create().await?;
 

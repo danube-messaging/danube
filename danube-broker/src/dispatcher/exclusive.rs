@@ -66,7 +66,7 @@ impl ExclusiveConsumerState {
 }
 
 /// Main exclusive dispatcher enum
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ExclusiveDispatcher {
     NonReliable(NonReliableExclusiveDispatcher),
     Reliable(ReliableExclusiveDispatcher),

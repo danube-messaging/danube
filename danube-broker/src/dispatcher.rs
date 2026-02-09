@@ -21,7 +21,7 @@ pub(crate) enum DispatchStrategy {
 }
 
 /// Main dispatcher enum - routes to specific dispatcher implementations
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Dispatcher {
     Exclusive(ExclusiveDispatcher),
     Shared(SharedDispatcher),

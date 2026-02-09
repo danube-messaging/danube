@@ -70,7 +70,7 @@ impl SharedConsumerState {
 }
 
 /// Main shared dispatcher enum
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum SharedDispatcher {
     NonReliable(NonReliableSharedDispatcher),
     Reliable(ReliableSharedDispatcher),
