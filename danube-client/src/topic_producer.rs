@@ -55,8 +55,12 @@ pub(crate) struct TopicProducer {
     producer_options: ProducerOptions,
     // connection state: Disconnected or Ready with stream_client + producer_id
     state: ProducerState,
-    // the broker URI this producer is connected to (avoids mutating shared client)
+    // the internal broker identity URI (used for routing metadata and MessageID)
     pub(crate) broker_addr: Uri,
+    // the client-facing connect URI (may be proxy)
+    pub(crate) connect_url: Uri,
+    // whether connection goes through a proxy
+    pub(crate) proxy: bool,
     // stop_signal received from broker, should close the producer
     stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
@@ -79,6 +83,7 @@ impl TopicProducer {
         );
 
         let broker_addr = client.uri.clone();
+        let connect_url = broker_addr.clone();
 
         TopicProducer {
             client,
@@ -92,6 +97,8 @@ impl TopicProducer {
             producer_options,
             state: ProducerState::Disconnected,
             broker_addr,
+            connect_url,
+            proxy: false,
             stop_signal: Arc::new(AtomicBool::new(false)),
             retry_manager,
         }
@@ -136,7 +143,8 @@ impl TopicProducer {
         };
 
         let mut request = tonic::Request::new(producer_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = stream_client
             .create_producer(request)
@@ -155,7 +163,7 @@ impl TopicProducer {
             .client
             .health_check_service
             .start_health_check(
-                &self.broker_addr,
+                &self.connect_url,
                 ClientType::Producer,
                 response.producer_id,
                 stop_signal,
@@ -189,13 +197,15 @@ impl TopicProducer {
 
     /// Look up the current broker for this topic and update the connection target.
     async fn lookup_new_broker(&mut self) {
-        if let Ok(new_addr) = self
+        if let Ok(broker_address) = self
             .client
             .lookup_service
-            .handle_lookup(&self.broker_addr, &self.topic)
+            .handle_lookup(&self.connect_url, &self.topic)
             .await
         {
-            self.broker_addr = new_addr;
+            self.broker_addr = broker_address.broker_url;
+            self.connect_url = broker_address.connect_url;
+            self.proxy = broker_address.proxy;
         }
     }
 
@@ -243,7 +253,8 @@ impl TopicProducer {
 
         let req: ProtoStreamMessage = send_message.into();
         let mut request = tonic::Request::new(req);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = stream_client
             .clone()
@@ -257,7 +268,7 @@ impl TopicProducer {
         let grpc_cnx = self
             .client
             .cnx_manager
-            .get_connection(&self.broker_addr, &self.broker_addr)
+            .get_connection(&self.broker_addr, &self.connect_url)
             .await?;
         Ok(ProducerServiceClient::new(grpc_cnx.grpc_cnx.clone()))
     }

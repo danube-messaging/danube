@@ -157,16 +157,25 @@ impl ClusterResources {
         }
     }
 
-    pub(crate) fn get_broker_addr(&self, broker_id: &str) -> Option<String> {
+    /// Returns (broker_url, connect_url) for a registered broker.
+    /// broker_url is the internal identity, connect_url is the client-facing address.
+    pub(crate) fn get_broker_urls(&self, broker_id: &str) -> Option<(String, String)> {
         let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
         let value = self.local_cache.get(&path)?;
 
         match value {
-            Value::String(broker_addr) => Some(broker_addr),
-            Value::Object(map) => map
-                .get("broker_addr")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
+            Value::Object(map) => {
+                let broker_url = map
+                    .get("broker_url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())?;
+                let connect_url = map
+                    .get("connect_url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| broker_url.clone());
+                Some((broker_url, connect_url))
+            }
             _ => None,
         }
     }
@@ -205,10 +214,10 @@ impl ClusterResources {
                 broker_role = "Cluster_Follower".to_string();
             }
         };
-        // Read registration JSON and construct BrokerInfo. No legacy fallback.
+        // Read registration JSON and construct BrokerInfo.
         let map = self.get_broker_register_info(broker_id)?;
         let broker_addr = map
-            .get("broker_addr")
+            .get("broker_url")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())?;
         let admin_addr = map

@@ -9,7 +9,8 @@ use crate::utils::join_path;
 pub(crate) async fn register_broker(
     store: MetadataStorage,
     broker_id: &str,
-    broker_addr: &str,
+    broker_url: &str,
+    connect_url: &str,
     admin_addr: &str,
     metrics_addr: Option<&str>,
     ttl: i64,
@@ -23,19 +24,20 @@ pub(crate) async fn register_broker(
             let lease_id = lease.id();
             let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
             let scheme = if is_secure { "https" } else { "http" };
-            let broker_uri = format!("{}://{}", scheme, broker_addr);
+            let broker_url_uri = format!("{}://{}", scheme, broker_url);
+            let connect_url_uri = format!("{}://{}", scheme, connect_url);
             let admin_uri = format!("{}://{}", scheme, admin_addr);
             let payload = if let Some(m) = metrics_addr {
                 serde_json::json!({
-                    "broker_addr": broker_uri,
-                    "advertised_addr": broker_addr,
+                    "broker_url": broker_url_uri,
+                    "connect_url": connect_url_uri,
                     "admin_addr": admin_uri,
                     "prom_exporter": m,
                 })
             } else {
                 serde_json::json!({
-                    "broker_addr": broker_uri,
-                    "advertised_addr": broker_addr,
+                    "broker_url": broker_url_uri,
+                    "connect_url": connect_url_uri,
                     "admin_addr": admin_uri,
                 })
             };
@@ -43,7 +45,8 @@ pub(crate) async fn register_broker(
             store.put_with_lease(&path, payload, lease_id).await?;
             info!(
                 broker_id = %broker_id,
-                broker_addr = %broker_addr,
+                broker_url = %broker_url,
+                connect_url = %connect_url,
                 "broker registered in the cluster"
             );
 

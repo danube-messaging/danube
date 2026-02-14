@@ -49,8 +49,12 @@ pub(crate) struct TopicConsumer {
     request_id: AtomicU64,
     // connection state: Disconnected or Ready with stream_client + consumer_id
     state: ConsumerState,
-    // the broker URI this consumer is connected to (avoids mutating shared client)
+    // the internal broker identity URI (used for routing metadata)
     broker_addr: Uri,
+    // the client-facing connect URI (may be proxy)
+    connect_url: Uri,
+    // whether connection goes through a proxy
+    proxy: bool,
     // stop_signal received from broker, should close the consumer
     pub(crate) stop_signal: Arc<AtomicBool>,
     // unified reconnection manager
@@ -75,6 +79,7 @@ impl TopicConsumer {
         );
 
         let broker_addr = client.uri.clone();
+        let connect_url = broker_addr.clone();
 
         TopicConsumer {
             client,
@@ -86,6 +91,8 @@ impl TopicConsumer {
             request_id: AtomicU64::new(0),
             state: ConsumerState::Disconnected,
             broker_addr,
+            connect_url,
+            proxy: false,
             stop_signal: Arc::new(AtomicBool::new(false)),
             retry_manager,
         }
@@ -130,7 +137,8 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(consumer_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = stream_client
             .subscribe(request)
@@ -149,7 +157,7 @@ impl TopicConsumer {
             .client
             .health_check_service
             .start_health_check(
-                &self.broker_addr,
+                &self.connect_url,
                 ClientType::Consumer,
                 response.consumer_id,
                 stop_signal,
@@ -167,13 +175,15 @@ impl TopicConsumer {
 
     /// Look up the current broker for this topic and update the connection target.
     async fn lookup_new_broker(&mut self) {
-        if let Ok(new_addr) = self
+        if let Ok(broker_address) = self
             .client
             .lookup_service
-            .handle_lookup(&self.broker_addr, &self.topic_name)
+            .handle_lookup(&self.connect_url, &self.topic_name)
             .await
         {
-            self.broker_addr = new_addr;
+            self.broker_addr = broker_address.broker_url;
+            self.connect_url = broker_address.connect_url;
+            self.proxy = broker_address.proxy;
         }
     }
 
@@ -199,7 +209,8 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(receive_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = match stream_client.receive_messages(request).await {
             Ok(response) => response,
@@ -232,7 +243,8 @@ impl TopicConsumer {
         };
 
         let mut request = tonic::Request::new(ack_request);
-        RetryManager::insert_auth_token(&self.client, &mut request, &self.broker_addr).await?;
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = match stream_client.ack(request).await {
             Ok(response) => response,
@@ -251,7 +263,7 @@ impl TopicConsumer {
         let grpc_cnx = self
             .client
             .cnx_manager
-            .get_connection(&self.broker_addr, &self.broker_addr)
+            .get_connection(&self.broker_addr, &self.connect_url)
             .await?;
         Ok(ConsumerServiceClient::new(grpc_cnx.grpc_cnx.clone()))
     }

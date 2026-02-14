@@ -40,10 +40,14 @@ pub(crate) struct LoadConfiguration {
 pub(crate) struct ServiceConfiguration {
     /// Danube cluster name
     pub(crate) cluster_name: String,
-    /// Broker Service address for serving gRPC requests.
+    /// Broker Service address for serving gRPC requests (bind address).
     pub(crate) broker_addr: std::net::SocketAddr,
-    /// Broker Advertised address, used for kubernetes deployment
-    pub(crate) advertised_addr: Option<String>,
+    /// Internal broker identity (how other brokers find this broker)
+    pub(crate) broker_url: String,
+    /// External connect address (how clients reach this broker, may go through proxy)
+    pub(crate) connect_url: String,
+    /// Whether proxy mode is enabled (connect_url != broker_url)
+    pub(crate) proxy_enabled: bool,
     /// Admin API address
     pub(crate) admin_addr: std::net::SocketAddr,
     /// Prometheus exporter address
@@ -71,6 +75,18 @@ pub(crate) struct BrokerConfig {
     pub(crate) host: String,
     /// Port configuration for broker services
     pub(crate) ports: BrokerPorts,
+    /// Optional advertised addresses for proxy/k8s mode
+    #[serde(default)]
+    pub(crate) advertised_listeners: Option<AdvertisedListeners>,
+}
+
+/// Optional advertised addresses for proxy/k8s mode
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct AdvertisedListeners {
+    /// Internal identity: reachable inside the cluster (inter-broker, topic ownership)
+    pub(crate) broker_url: String,
+    /// External: where clients connect (proxy/ingress address)
+    pub(crate) connect_url: String,
 }
 
 /// Broker port configuration
@@ -125,11 +141,23 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
         // Construct meta_store_addr from meta_store.host and meta_store.port
         let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);
 
+        // Derive broker_url and connect_url from advertised_listeners or bind address
+        let broker_addr_str = broker_addr.to_string();
+        let (broker_url, connect_url) =
+            if let Some(ref listeners) = config.broker.advertised_listeners {
+                (listeners.broker_url.clone(), listeners.connect_url.clone())
+            } else {
+                (broker_addr_str.clone(), broker_addr_str.clone())
+            };
+        let proxy_enabled = broker_url != connect_url;
+
         // Return the successfully created ServiceConfiguration
         Ok(ServiceConfiguration {
             cluster_name: config.cluster_name,
             broker_addr,
-            advertised_addr: None,
+            broker_url,
+            connect_url,
+            proxy_enabled,
             admin_addr,
             prom_exporter,
             meta_store_addr,

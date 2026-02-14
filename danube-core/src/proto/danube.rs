@@ -213,7 +213,11 @@ pub struct TopicLookupResponse {
     #[prost(enumeration = "topic_lookup_response::LookupType", tag = "4")]
     pub response_type: i32,
     #[prost(string, tag = "5")]
-    pub broker_service_url: ::prost::alloc::string::String,
+    pub connect_url: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub broker_url: ::prost::alloc::string::String,
+    #[prost(bool, tag = "7")]
+    pub proxy: bool,
 }
 /// Nested message and enum types in `TopicLookupResponse`.
 pub mod topic_lookup_response {

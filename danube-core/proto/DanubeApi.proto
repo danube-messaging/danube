@@ -160,7 +160,9 @@ message TopicLookupResponse {
     }
     uint64 request_id = 3;
     LookupType response_type = 4;
-    string brokerServiceUrl = 5;
+    string connect_url = 5;
+    string broker_url = 6;
+    bool proxy = 7;
 }
 
 message TopicPartitionsResponse {

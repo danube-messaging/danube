@@ -136,11 +136,8 @@ impl DanubeService {
             .await;
 
         // register the local broker to cluster
-        let advertised_addr = if let Some(advertised_addr) = &self.service_config.advertised_addr {
-            advertised_addr.to_string()
-        } else {
-            self.service_config.broker_addr.clone().to_string()
-        };
+        let broker_url = &self.service_config.broker_url;
+        let connect_url = &self.service_config.connect_url;
 
         //check it is a secure connection
         let is_secure = self.service_config.auth.mode == AuthMode::Tls
@@ -157,7 +154,8 @@ impl DanubeService {
         register_broker(
             self.meta_store.clone(),
             &self.broker_id.to_string(),
-            &advertised_addr,
+            broker_url,
+            connect_url,
             &admin_addr,
             metrics_addr.as_deref(),
             ttl,
@@ -228,6 +226,9 @@ impl DanubeService {
             self.broker.clone(),
             schema_registry.clone(),
             self.service_config.broker_addr.clone(),
+            self.service_config.broker_url.clone(),
+            self.service_config.connect_url.clone(),
+            self.service_config.proxy_enabled,
             self.service_config.auth.clone(),
         );
 
