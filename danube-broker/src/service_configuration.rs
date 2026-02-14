@@ -1,5 +1,6 @@
+use crate::auth::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
-use crate::{auth::AuthConfig, policies::Policies};
+use crate::policies::Policies;
 
 use anyhow::{Context, Result};
 // Legacy StorageConfig removed in Phase D
@@ -142,12 +143,20 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
         let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);
 
         // Derive broker_url and connect_url from advertised_listeners or bind address
+        let scheme = match config.auth.mode {
+            AuthMode::Tls | AuthMode::TlsWithJwt => "https",
+            _ => "http",
+        };
         let broker_addr_str = broker_addr.to_string();
         let (broker_url, connect_url) =
             if let Some(ref listeners) = config.broker.advertised_listeners {
-                (listeners.broker_url.clone(), listeners.connect_url.clone())
+                (
+                    ensure_scheme(&listeners.broker_url, scheme),
+                    ensure_scheme(&listeners.connect_url, scheme),
+                )
             } else {
-                (broker_addr_str.clone(), broker_addr_str.clone())
+                let url = format!("{}://{}", scheme, broker_addr_str);
+                (url.clone(), url)
             };
         let proxy_enabled = broker_url != connect_url;
 
@@ -376,5 +385,14 @@ impl From<&CloudConfig> for BackendConfig {
                 }
             }
         }
+    }
+}
+
+/// Ensures a URL string has a scheme prefix. If it already contains "://", returns as-is.
+fn ensure_scheme(url: &str, default_scheme: &str) -> String {
+    if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("{}://{}", default_scheme, url)
     }
 }

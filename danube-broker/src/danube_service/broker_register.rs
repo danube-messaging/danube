@@ -24,20 +24,19 @@ pub(crate) async fn register_broker(
             let lease_id = lease.id();
             let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
             let scheme = if is_secure { "https" } else { "http" };
-            let broker_url_uri = format!("{}://{}", scheme, broker_url);
-            let connect_url_uri = format!("{}://{}", scheme, connect_url);
+            // broker_url and connect_url already include scheme from ServiceConfiguration
             let admin_uri = format!("{}://{}", scheme, admin_addr);
             let payload = if let Some(m) = metrics_addr {
                 serde_json::json!({
-                    "broker_url": broker_url_uri,
-                    "connect_url": connect_url_uri,
+                    "broker_url": broker_url,
+                    "connect_url": connect_url,
                     "admin_addr": admin_uri,
                     "prom_exporter": m,
                 })
             } else {
                 serde_json::json!({
-                    "broker_url": broker_url_uri,
-                    "connect_url": connect_url_uri,
+                    "broker_url": broker_url,
+                    "connect_url": connect_url,
                     "admin_addr": admin_uri,
                 })
             };
