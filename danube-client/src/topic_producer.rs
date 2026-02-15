@@ -104,6 +104,11 @@ impl TopicProducer {
         }
     }
     pub(crate) async fn create(&mut self) -> Result<u64> {
+        // Perform an initial topic lookup to discover the owning broker.
+        // This sets broker_url, connect_url, and proxy flag so that
+        // proxy routing headers are present from the very first RPC.
+        self.lookup_new_broker().await;
+
         let mut attempts = 0;
 
         loop {
