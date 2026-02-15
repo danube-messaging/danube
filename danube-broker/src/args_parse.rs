@@ -7,6 +7,7 @@ pub(crate) struct Args {
     pub(crate) admin_addr: Option<String>,
     pub(crate) prom_exporter: Option<String>,
     pub(crate) advertised_addr: Option<String>,
+    pub(crate) connect_url: Option<String>,
 }
 
 impl Args {
@@ -17,6 +18,7 @@ impl Args {
         println!("  --admin-addr         Danube Broker Admin address");
         println!("  --prom-exporter      Prometheus Exporter http address");
         println!("  --advertised-addr    Advertised address (fqdn)");
+        println!("  --connect-url        External proxy/ingress address for clients");
     }
     pub(crate) fn parse() -> Result<Self> {
         let args: Vec<String> = env::args().collect();
@@ -31,6 +33,7 @@ impl Args {
         let mut admin_addr = None;
         let mut prom_exporter = None;
         let mut advertised_addr = None;
+        let mut connect_url = None;
 
         let mut args_iter = args.iter().skip(1);
         while let Some(arg) = args_iter.next() {
@@ -50,6 +53,9 @@ impl Args {
                 "--advertised-addr" => {
                     advertised_addr = args_iter.next().map(|s| s.to_string());
                 }
+                "--connect-url" => {
+                    connect_url = args_iter.next().map(|s| s.to_string());
+                }
                 _ => return Err(anyhow::anyhow!("Unknown argument: {}", arg)),
             }
         }
@@ -61,6 +67,7 @@ impl Args {
             admin_addr,
             prom_exporter,
             advertised_addr,
+            connect_url,
         })
     }
 }

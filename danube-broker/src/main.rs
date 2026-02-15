@@ -98,6 +98,23 @@ async fn main() -> Result<()> {
         service_config.proxy_enabled = false;
     }
 
+    // If "connect_url" is provided, override connect_url only (proxy/ingress mode).
+    // When connect_url differs from broker_url, proxy mode is enabled.
+    if let Some(connect_url) = args.connect_url {
+        let scheme = if service_config.broker_url.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        let url = if connect_url.contains("://") {
+            connect_url
+        } else {
+            format!("{}://{}", scheme, connect_url)
+        };
+        service_config.proxy_enabled = service_config.broker_url != url;
+        service_config.connect_url = url;
+    }
+
     // If `admin_addr` is provided via command-line args, override the value from the config file
     if let Some(admin_addr) = args.admin_addr {
         let admin_address: SocketAddr = admin_addr.parse().context(format!(
