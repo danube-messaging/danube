@@ -1,3 +1,11 @@
+<!-- v0.7.3 START -->
+## v0.7.3 - 2026-02-15
+
+### What's Changed
+
+* **Proxy-mode connectivity** (#195) - Brokers now advertise separate `broker_url` (internal identity) and `connect_url` (client-facing proxy address) via the new `advertised_listeners` config section. When a gRPC proxy or Kubernetes ingress sits in front of the cluster, the client automatically inserts an `x-danube-broker-url` metadata header on every RPC so the proxy can route to the correct backend broker. by @danrusei in 807317a
+<!-- v0.7.3 END -->
+
 <!-- v0.7.2 START -->
 ## v0.7.2 - 2026-02-09
 
@@ -61,10 +69,12 @@ Danube now integrates with AI assistants via Model Context Protocol (MCP), enabl
 
 <!-- v0.6.2 START -->
 ## v0.6.2 - 2026-01-22
+
 ### What's Changed
+
 * eliminate pending, final copy of the cloud object (#178) by @danrusei in 81d3b6f
 * [BUG] reliable topic move to another broker (#177) by @danrusei in 7b1e9cc
-* [BUG] delete partitioned topics across brokers (#176) by @danrusei in e6b65ef 
+* [BUG] delete partitioned topics across brokers (#176) by @danrusei in e6b65ef
 * [BUG] allow to create either partitioned topic or normal topic against the same base. (#176) by @danrusei in e6b65ef
 * standardize tracing usage and the logging structure (#175) by @danrusei in 5d7dea2
 <!-- v0.6.2 END -->
@@ -110,7 +120,9 @@ This release introduces the **Schema Registry** with full compatibility checking
 
 <!-- v0.5.2 START -->
 ## v0.5.2 - 2025-11-22
+
 ### What's Changed
+
 * include danube-admin-gateway in the release by @danrusei in 19a7c90
 * get topic lists from admin grpc instead scrapping from prom (#157) by @danrusei in ea6340f
 * reorder the list of topics to broker by @danrusei in a631895
@@ -124,7 +136,9 @@ This release introduces the **Schema Registry** with full compatibility checking
 
 <!-- v0.5.1 START -->
 ## v0.5.1 - 2025-11-04
+
 ### What's Changed
+
 * Updated dependencies (#148) by @Dan Rusei in dfe51dc
 * Extended metrics (#147) by @Dan Rusei in e831577
 * Implemented producer and subscriptions policies (#145) by @Dan Rusei in 772d3cf
@@ -136,7 +150,9 @@ This release introduces the **Schema Registry** with full compatibility checking
 <!-- v0.5.1 END -->
 
 <!-- v0.5.0 START -->
-## v0.5.0 
+## v0.5.0
+
 ### What's Changed
+
 * The major release, implemented the danube persistance layer
 <!-- v0.5.0 END -->
