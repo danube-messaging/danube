@@ -158,6 +158,8 @@ impl TopicConsumer {
             .health_check_service
             .start_health_check(
                 &self.connect_url,
+                &self.broker_addr,
+                self.proxy,
                 ClientType::Consumer,
                 response.consumer_id,
                 stop_signal,

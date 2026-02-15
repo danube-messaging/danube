@@ -2,6 +2,7 @@ use crate::{
     auth_service::AuthService,
     connection_manager::{ConnectionManager, RpcConnection},
     errors::{DanubeError, Result},
+    retry_manager::RetryManager,
 };
 
 use danube_core::proto::{
@@ -39,16 +40,22 @@ impl HealthCheckService {
 
     pub(crate) async fn start_health_check(
         &self,
-        addr: &Uri,
+        connect_url: &Uri,
+        broker_addr: &Uri,
+        proxy: bool,
         client_type: ClientType,
         client_id: u64,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<()> {
-        let grpc_cnx = self.cnx_manager.get_connection(addr, addr).await?;
+        let grpc_cnx = self
+            .cnx_manager
+            .get_connection(connect_url, connect_url)
+            .await?;
         let stop_signal = Arc::clone(&stop_signal);
         let request_id = Arc::clone(&self.request_id);
         let api_key = self.cnx_manager.connection_options.api_key.clone();
-        let addr = addr.clone();
+        let connect_url = connect_url.clone();
+        let broker_addr = broker_addr.clone();
         let auth_service = self.auth_service.clone();
         tokio::spawn(async move {
             loop {
@@ -65,7 +72,9 @@ impl HealthCheckService {
                     client_id,
                     stop_signal_clone,
                     api_key.as_deref(),
-                    &addr,
+                    &connect_url,
+                    &broker_addr,
+                    proxy,
                     auth_service.clone(),
                 )
                 .await
@@ -86,7 +95,9 @@ impl HealthCheckService {
         client_id: u64,
         stop_signal: Arc<AtomicBool>,
         api_key: Option<&str>,
-        addr: &Uri,
+        connect_url: &Uri,
+        broker_addr: &Uri,
+        proxy: bool,
         auth_service: AuthService,
     ) -> Result<()> {
         let health_request = HealthCheckRequest {
@@ -98,8 +109,9 @@ impl HealthCheckService {
         let mut request = tonic::Request::new(health_request);
 
         auth_service
-            .insert_token_if_needed(api_key, &mut request, addr)
+            .insert_token_if_needed(api_key, &mut request, connect_url)
             .await?;
+        RetryManager::insert_proxy_header(&mut request, broker_addr, proxy);
 
         let mut client = HealthCheckClient::new(grpc_cnx.grpc_cnx.clone());
 

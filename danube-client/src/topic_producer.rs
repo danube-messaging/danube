@@ -164,6 +164,8 @@ impl TopicProducer {
             .health_check_service
             .start_health_check(
                 &self.connect_url,
+                &self.broker_addr,
+                self.proxy,
                 ClientType::Producer,
                 response.producer_id,
                 stop_signal,

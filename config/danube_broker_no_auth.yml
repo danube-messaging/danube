@@ -12,6 +12,13 @@ broker:
     admin: 50051
     # Prometheus metrics exporter
     prometheus: 9040
+  # Optional: advertised addresses for proxy/k8s mode
+  # If omitted, bind address (host:ports.client) is used for both broker_url and connect_url
+  # advertised_listeners:
+  #   # Internal: address reachable inside the cluster (broker identity, inter-broker)
+  #   broker_url: "broker-0.danube-broker-headless:6650"
+  #   # External: address reachable by external clients via gRPC proxy
+  #   connect_url: "danube-proxy.example.com:6650"
 
 # Metadata Store Configuration (etcd)
 meta_store:
