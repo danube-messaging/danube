@@ -247,18 +247,18 @@ impl BrokerService {
     // =====================================================================
     // Lookups and partitions
     // =====================================================================
-    /// Looks up the broker serving `topic_name`. Returns (is_local, addr).
-    pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String)> {
+    /// Looks up the broker serving `topic_name`. Returns (is_local, broker_url, connect_url).
+    pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String, String)> {
         // Served locally
         if self.topic_worker_pool.contains_topic(topic_name) {
-            return Some((true, String::new()));
+            return Some((true, String::new(), String::new()));
         }
 
         // Ask cluster for serving broker address
         self.topic_cluster
             .find_serving_broker(topic_name)
             .await
-            .map(|addr| (false, addr))
+            .map(|(broker_url, connect_url)| (false, broker_url, connect_url))
     }
 
     /// Returns the broker_id that currently serves the topic, if any.

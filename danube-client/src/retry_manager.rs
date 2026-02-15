@@ -65,6 +65,16 @@ impl RetryManager {
             .await
     }
 
+    /// Insert proxy routing header into request when proxy mode is active.
+    /// The proxy uses this header to route the gRPC call to the correct broker.
+    pub fn insert_proxy_header<T>(request: &mut tonic::Request<T>, broker_url: &Uri, proxy: bool) {
+        if proxy {
+            if let Ok(value) = broker_url.to_string().parse() {
+                request.metadata_mut().insert("x-danube-broker-url", value);
+            }
+        }
+    }
+
     /// Check if an error is retryable based on gRPC status codes.
     ///
     /// Retryable codes:

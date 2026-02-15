@@ -1,6 +1,6 @@
 use crate::{
     auth_service::AuthService,
-    connection_manager::ConnectionManager,
+    connection_manager::{BrokerAddress, ConnectionManager},
     errors::{DanubeError, Result},
 };
 
@@ -18,8 +18,12 @@ use tracing::warn;
 pub struct LookupResult {
     /// The lookup response type (0 = Redirect, 1 = Connect, 2 = Failed)
     pub response_type: i32,
-    /// The broker address returned by the lookup
-    pub addr: Uri,
+    /// The internal broker identity address
+    pub broker_url: Uri,
+    /// The client-facing connect address (may be proxy)
+    pub connect_url: Uri,
+    /// Whether connection goes through a proxy
+    pub proxy: bool,
 }
 
 impl LookupResult {
@@ -33,9 +37,9 @@ impl LookupResult {
         self.response_type == 1 // LookupType::Connect
     }
 
-    /// Returns the broker address to connect to
+    /// Returns the broker address (internal identity)
     pub fn broker_addr(&self) -> &Uri {
-        &self.addr
+        &self.broker_url
     }
 }
 
@@ -86,10 +90,11 @@ impl LookupService {
         match response {
             Ok(resp) => {
                 let lookup_resp = resp.into_inner();
-                let addr_to_uri = lookup_resp.broker_service_url.parse::<Uri>()?;
 
                 lookup_result.response_type = lookup_resp.response_type;
-                lookup_result.addr = addr_to_uri;
+                lookup_result.broker_url = lookup_resp.broker_url.parse::<Uri>()?;
+                lookup_result.connect_url = lookup_resp.connect_url.parse::<Uri>()?;
+                lookup_result.proxy = lookup_resp.proxy;
             }
             // maybe some checks on the status, if anything can be handled by server
             Err(status) => {
@@ -141,11 +146,14 @@ impl LookupService {
 
     // for SERVICE_NOT_READY error received from broker retry the topic_lookup request
     // as the topic may be in process to be assigned to a broker in cluster
-    pub(crate) async fn handle_lookup(&self, addr: &Uri, topic: &str) -> Result<Uri> {
+    pub(crate) async fn handle_lookup(&self, addr: &Uri, topic: &str) -> Result<BrokerAddress> {
         match self.lookup_topic(&addr, topic).await {
             Ok(lookup_result) => match lookup_type_from_i32(lookup_result.response_type) {
-                Some(LookupType::Redirect) => Ok(lookup_result.addr),
-                Some(LookupType::Connect) => Ok(addr.to_owned()),
+                Some(LookupType::Redirect) | Some(LookupType::Connect) => Ok(BrokerAddress {
+                    connect_url: lookup_result.connect_url,
+                    broker_url: lookup_result.broker_url,
+                    proxy: lookup_result.proxy,
+                }),
                 Some(LookupType::Failed) => Err(DanubeError::Unrecoverable(
                     "Topic lookup failed: topic may not exist or cluster is unavailable"
                         .to_string(),

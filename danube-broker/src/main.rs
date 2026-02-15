@@ -66,11 +66,36 @@ async fn main() -> Result<()> {
             broker_addr
         ))?;
         service_config.broker_addr = broker_address;
+        // When no advertised_listeners configured, broker_url/connect_url must follow broker_addr
+        if !service_config.proxy_enabled {
+            // Preserve the scheme already set by TryFrom (based on auth mode)
+            let scheme = if service_config.broker_url.starts_with("https://") {
+                "https"
+            } else {
+                "http"
+            };
+            let url = format!("{}://{}", scheme, broker_address);
+            service_config.broker_url = url.clone();
+            service_config.connect_url = url;
+        }
     }
 
-    // If "advertised_addr" is provided via command-line args
+    // If "advertised_addr" is provided via command-line args, override broker_url and connect_url
+    // (simple K8s case: sets both to the same value, no proxy)
     if let Some(advertised_addr) = args.advertised_addr {
-        service_config.advertised_addr = Some(advertised_addr)
+        let scheme = if service_config.broker_url.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        let url = if advertised_addr.contains("://") {
+            advertised_addr
+        } else {
+            format!("{}://{}", scheme, advertised_addr)
+        };
+        service_config.broker_url = url.clone();
+        service_config.connect_url = url;
+        service_config.proxy_enabled = false;
     }
 
     // If `admin_addr` is provided via command-line args, override the value from the config file

@@ -30,6 +30,9 @@ pub(crate) struct DanubeServerImpl {
     service: Arc<BrokerService>,
     schema_registry: Arc<SchemaRegistryService>,
     broker_addr: SocketAddr,
+    broker_url: String,
+    connect_url: String,
+    proxy_enabled: bool,
     auth: AuthConfig,
     // the api key is used to authenticate the user for JWT auth
     valid_api_keys: Vec<String>,
@@ -40,12 +43,18 @@ impl DanubeServerImpl {
         service: Arc<BrokerService>,
         schema_registry: Arc<SchemaRegistryService>,
         broker_addr: SocketAddr,
+        broker_url: String,
+        connect_url: String,
+        proxy_enabled: bool,
         auth: AuthConfig,
     ) -> Self {
         DanubeServerImpl {
             service,
             schema_registry,
             broker_addr,
+            broker_url,
+            connect_url,
+            proxy_enabled,
             auth,
             valid_api_keys: Vec::new(),
         }

@@ -335,15 +335,15 @@ impl TopicCluster {
         resources.namespace.check_if_topic_exist(ns, topic_name)
     }
 
-    /// Resolves the socket address of the broker currently serving `topic_name`.
-    /// Returns `None` if the topic is unknown or no broker is assigned.
-    pub(crate) async fn find_serving_broker(&self, topic_name: &str) -> Option<String> {
+    /// Resolves the addresses of the broker currently serving `topic_name`.
+    /// Returns (broker_url, connect_url) or `None` if the topic is unknown or no broker is assigned.
+    pub(crate) async fn find_serving_broker(&self, topic_name: &str) -> Option<(String, String)> {
         let broker_id = {
             let resources = self.resources.lock().await;
             resources.cluster.get_broker_for_topic(topic_name).await
         }?;
         let resources = self.resources.lock().await;
-        resources.cluster.get_broker_addr(&broker_id)
+        resources.cluster.get_broker_urls(&broker_id)
     }
 }
 

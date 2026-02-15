@@ -31,36 +31,47 @@ impl Discovery for DanubeServerImpl {
 
         let service = self.service.as_ref();
 
-        let result = match service.lookup_topic(&req.topic).await {
-            Some((true, _)) => {
-                trace!(
-                    topic = %req.topic,
-                    broker_addr = %self.broker_addr,
-                    "topic lookup response: served by this broker"
-                );
-                (self.broker_addr.to_string(), LookupType::Connect)
-            }
-            Some((false, addr)) => {
-                trace!(
-                    topic = %req.topic,
-                    broker_addr = %addr,
-                    "topic lookup response: served by other broker"
-                );
-                (addr, LookupType::Redirect)
-            }
-            None => {
-                debug!(topic = %req.topic, "topic lookup failed");
-                return Err(Status::not_found(format!(
-                    "Unable to find the requested topic: {}",
-                    &req.topic
-                )));
-            }
-        };
+        let (broker_url, connect_url, proxy, lookup_type) =
+            match service.lookup_topic(&req.topic).await {
+                Some((true, _, _)) => {
+                    trace!(
+                        topic = %req.topic,
+                        broker_url = %self.broker_url,
+                        connect_url = %self.connect_url,
+                        "topic lookup response: served by this broker"
+                    );
+                    (
+                        self.broker_url.clone(),
+                        self.connect_url.clone(),
+                        self.proxy_enabled,
+                        LookupType::Connect,
+                    )
+                }
+                Some((false, broker_url, connect_url)) => {
+                    let proxy = broker_url != connect_url;
+                    trace!(
+                        topic = %req.topic,
+                        broker_url = %broker_url,
+                        connect_url = %connect_url,
+                        "topic lookup response: served by other broker"
+                    );
+                    (broker_url, connect_url, proxy, LookupType::Redirect)
+                }
+                None => {
+                    debug!(topic = %req.topic, "topic lookup failed");
+                    return Err(Status::not_found(format!(
+                        "Unable to find the requested topic: {}",
+                        &req.topic
+                    )));
+                }
+            };
 
         let response = TopicLookupResponse {
             request_id: req.request_id,
-            response_type: result.1.into(),
-            broker_service_url: result.0,
+            response_type: lookup_type.into(),
+            connect_url,
+            broker_url,
+            proxy,
         };
 
         Ok(tonic::Response::new(response))

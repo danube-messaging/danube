@@ -201,14 +201,16 @@ impl Producer {
         let mut producers = self.producers.lock().await;
         let producer = &mut producers[partition];
 
-        let new_addr = producer
+        let broker_address = producer
             .client
             .lookup_service
-            .handle_lookup(&producer.broker_addr, &producer.topic)
+            .handle_lookup(&producer.connect_url, &producer.topic)
             .await
             .map_err(|_| original_error)?;
 
-        producer.broker_addr = new_addr;
+        producer.broker_addr = broker_address.broker_url;
+        producer.connect_url = broker_address.connect_url;
+        producer.proxy = broker_address.proxy;
         producer.create().await?;
         info!("broker lookup and producer recreation successful");
         Ok(())
