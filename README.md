@@ -1,8 +1,8 @@
 # 🌊 Danube Messaging
 
-**A lightweight and scalable Cloud-Native Messaging Platform with Cloud Object Storage (S3/GCS/Azure)**
+**A lightweight and scalable Cloud-Native Messaging / Streaming Platform**
 
-Danube is an open-source distributed messaging broker platform inspired by Apache Pulsar, designed to be cloud-native and cost-effective. Built with a Write-Ahead Log (WAL) architecture and persistent object storage integration, Danube delivers sub-second dispatch with cloud economics.
+Danube is an open-source distributed messaging broker platform, designed to be cloud-native and cost-effective. Built with a Write-Ahead Log (WAL) architecture and persistent object storage integration, Danube delivers sub-second dispatch with cloud economics.
 
 [![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
@@ -22,7 +22,7 @@ mkdir danube-docker && cd danube-docker
 Download the docker-compose and broker configuration file:
 
 ```bash
-curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/docker-compose.yml
+curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/quickstart/docker-compose.yml
 
 curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/danube_broker.yml
 ```
@@ -34,17 +34,18 @@ docker-compose up -d
 ```
 
 This launches a complete Danube cluster with:
+
 - **2 High-Availability Brokers** for topics failover
 - **ETCD** for distributed metadata management  
-- **MinIO S3-Compatible Storage** for cloud-ready persistence
-- **Automatic bucket creation** and configuration
+- **Prometheus** for monitoring
+- **danube-cli** to produce and consume messages
 
 **Test the setup:**
 
 ### Produce messages with reliable delivery
 
 ```bash
-docker exec -it danube-cli danube-cli produce \
+docker-compose run -it danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --count 100 \
@@ -55,58 +56,58 @@ docker exec -it danube-cli danube-cli produce \
 ### Consume messages from the topic
 
 ```bash
-docker exec -it danube-cli danube-cli consume \
+docker-compose run -it danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --subscription "persistent-sub" \
   --sub-type exclusive
 ```
 
-📦 Run with Docker (choose one):
-- **Minimal stack (brokers + dependencies)**: [docker/README.md](docker/README.md)
-- **Stack with Admin UI (UI + gateway + Prometheus)**: [docker/danube_with_ui/README.md](docker/danube_with_ui/README.md)
-
 📖 **[Complete Docker Setup Guide →](docker/README.md)**
 
 ## Architecture
 
 ### 🏗️ **Cluster & Broker Characteristics**
+
 - **Stateless brokers**: Metadata in ETCD and data in WAL/Object Storage
 - **Horizontal scaling**: Add brokers in seconds with zero-downtime expansion
 - **Intelligent load balancing**: Automatic topic placement and rebalancing across brokers
-- **Rolling upgrades**: Restart or replace brokers with minimal disruption
 - **Security-ready**: TLS/mTLS support in Admin and data paths
 - **Leader election & HA**: Automatic failover and coordination via ETCD
 - **Multi-tenancy**: Isolated namespaces with policy controls
 
 ### 🌩️ **Write-Ahead Log + Cloud Persistence**
+
 - **Cloud-Native by Design** - Danube's architecture separates compute from storage
 - **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
 - **Hot path optimization**: Messages served from in-memory WAL cache
 - **Stream per subscription**: WAL + cloud storage from selected offset
 - **Asynchronous background uploads** to S3/GCS/Azure object storage
-- **Infinite retention** without local disk constraints
 
 ### 🎯 **Intelligent Load Management**
+
 - **Automated rebalancing**: Detects cluster imbalances and redistributes topics automatically
 - **Smart topic assignment**: Places new topics on least-loaded brokers using configurable strategies
 - **Resource monitoring**: Tracks CPU, memory, throughput, and backlog per broker in real-time
 - **Configurable policies**: Conservative, balanced, or aggressive rebalancing based on workload
-- **Graceful topic migration**: Moves topics between brokers without downtime
+- **Graceful topic migration**: Moves topics between brokers
 
 ## Core Capabilities
 
 ### 📨 **Message Delivery**
+
 - **[Topics](https://danube-docs.dev-state.com/architecture/topics/)**: Partitioned and non-partitioned with automatic load balancing
 - **[Reliable Dispatch](https://danube-docs.dev-state.com/architecture/dispatch_strategy/)**: At-least-once delivery with configurable storage backends
 - **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
 
 ### 🔄 **Subscription Models**
+
 - **[Exclusive](https://danube-docs.dev-state.com/architecture/subscriptions/)**: Single consumer per subscription
 - **Shared**: Load-balanced message distribution across consumers
 - **Failover**: Automatic consumer failover with ordered delivery
 
 ### 📋 **Schema Registry**
+
 - **Centralized schema management**: Single source of truth for message schemas across all topics
 - **Schema versioning**: Automatic version tracking with compatibility enforcement
 - **Multiple formats**: Bytes, String, Number, JSON Schema, Avro, Protobuf
@@ -117,7 +118,7 @@ docker exec -it danube-cli danube-cli consume \
 Danube features **the AI-native messaging platform administration** through the Model Context Protocol (MCP):
 
 - **Natural language cluster management**: Manage your cluster by talking to AI assistants (Claude, Cursor, Windsurf)
-- **32 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
+- **40 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
 - **Automated troubleshooting**: AI-guided workflows for consumer lag analysis, health checks, and performance optimization
 - **Multiple interfaces**: CLI commands, Web UI, or AI conversation - your choice
 
@@ -125,12 +126,16 @@ Danube features **the AI-native messaging platform administration** through the 
 
 ## Community & Clients
 
-### Official Clients
-- **[Rust Client](https://crates.io/crates/danube-client)** - Full-featured async client with [examples](danube-client/examples/)
-- **[Go Client](https://pkg.go.dev/github.com/danrusei/danube-go)** - Production-ready client with [examples](https://github.com/danrusei/danube-go/tree/main/examples)
+### [Official Clients](https://danube-docs.dev-state.com/client_libraries/clients/)
+
+- **[Rust Client](https://crates.io/crates/danube-client)** - learn more Rust [examples](danube-client/examples/)
+- **[Go Client](https://pkg.go.dev/github.com/danrusei/danube-go)** - learn more Go [examples](https://github.com/danube-messaging/danube-go/tree/main/examples)
+- **[Java Client](https://central.sonatype.com/namespace/com.danube-messaging)** - learn more Java [examples](https://github.com/danube-messaging/danube-java/tree/main/examples)
+- **[Python Client](https://pypi.org/project/danube-client/)** - learn more Python [examples](https://github.com/danube-messaging/danube-py/tree/main/examples)
 
 ### Community Contributions
-Contributions in **Python**, **Java**, **JavaScript**, and other languages are welcome! Join our growing ecosystem.
+
+Contributions in **NodeJs**, **C / C++ / C#**, **Ruby**, and other languages are welcome! Join our growing ecosystem.
 
 ## Development & Contribution
 
@@ -139,6 +144,7 @@ Contributions in **Python**, **Java**, **JavaScript**, and other languages are w
 **[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** | **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** | **[📖 Development Guide](https://danube-docs.dev-state.com/development/dev_environment/)**
 
 ### Project Structure
+
 - **[danube-broker](danube-broker/)** - Core messaging platform
 - **[danube-persistent-storage](danube-persistent-storage/)** - WAL and cloud storage integration
 - **[danube-client](danube-client/)** - Async Rust client library  
