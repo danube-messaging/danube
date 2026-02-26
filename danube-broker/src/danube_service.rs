@@ -84,6 +84,7 @@ pub(crate) struct DanubeService {
     load_manager: LoadManager,
     raft: Raft<danube_raft::typ::TypeConfig>,
     leadership: LeadershipHandle,
+    raft_addr: std::net::SocketAddr,
 }
 
 impl std::fmt::Debug for DanubeService {
@@ -109,6 +110,7 @@ impl DanubeService {
         load_manager: LoadManager,
         raft: Raft<danube_raft::typ::TypeConfig>,
         leadership: LeadershipHandle,
+        raft_addr: std::net::SocketAddr,
     ) -> Self {
         DanubeService {
             broker_id,
@@ -122,6 +124,7 @@ impl DanubeService {
             load_manager,
             raft,
             leadership,
+            raft_addr,
         }
     }
 
@@ -384,6 +387,7 @@ impl DanubeService {
             self.load_manager.clone(),
             self.raft.clone(),
             self.leadership.clone(),
+            self.raft_addr,
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;

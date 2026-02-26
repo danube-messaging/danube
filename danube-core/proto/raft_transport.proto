@@ -8,6 +8,12 @@ service RaftTransport {
   rpc AppendEntries(RaftRequest) returns (RaftReply);
   rpc Vote(RaftRequest) returns (RaftReply);
   rpc InstallSnapshot(RaftRequest) returns (RaftReply);
+  // Lightweight discovery RPC — returns this node's stable identity.
+  // Used during cluster bootstrap so seed peers can exchange node_ids.
+  rpc GetNodeInfo(Empty) returns (NodeInfoReply);
+  // Forward a client write to the current leader.
+  // Followers use this to proxy proposals they cannot handle locally.
+  rpc ClientWrite(ClientWriteRequest) returns (ClientWriteReply);
 }
 
 message RaftRequest {
@@ -17,4 +23,20 @@ message RaftRequest {
 message RaftReply {
   bytes data = 1;
   string error = 2;
+}
+
+message Empty {}
+
+message NodeInfoReply {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+}
+
+message ClientWriteRequest {
+  bytes data = 1;   // bincode-serialized RaftCommand
+}
+
+message ClientWriteReply {
+  bytes data = 1;   // bincode-serialized RaftResponse
+  string error = 2; // non-empty on failure
 }

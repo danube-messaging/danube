@@ -14,8 +14,10 @@ use std::time::Duration;
 use rand::Rng;
 
 use openraft::{BasicNode, Config, Raft};
-use tonic::transport::Server;
+use tonic::transport::{Endpoint, Server};
 use tracing::{info, warn};
+
+use danube_core::raft_proto::raft_transport_client::RaftTransportClient;
 
 use danube_core::raft_proto::raft_transport_server::RaftTransportServer;
 
@@ -107,7 +109,7 @@ impl RaftNode {
         let raft = Raft::new(node_id, raft_config, DanubeNetworkFactory, log_store, sm).await?;
 
         // 5. Start gRPC server for Raft transport
-        let handler = RaftTransportHandler::new(raft.clone());
+        let handler = RaftTransportHandler::new(raft.clone(), node_id, cfg.raft_addr.to_string());
         let grpc_addr = cfg.raft_addr;
         let grpc_handle = tokio::spawn(async move {
             info!(%grpc_addr, "starting Raft gRPC transport");
@@ -178,6 +180,158 @@ impl RaftNode {
         self.raft.change_membership(members, false).await?;
         info!("membership changed");
         Ok(())
+    }
+
+    /// Bootstrap the Raft cluster based on seed node configuration.
+    ///
+    /// - **Empty `seed_nodes`**: single-node auto-init (development mode).
+    /// - **Non-empty `seed_nodes`**: multi-node mode. Contacts each seed peer
+    ///   via `GetNodeInfo` RPC to discover `(node_id, raft_addr)` pairs.
+    ///   The peer with the **lowest `node_id`** calls `raft.initialize()`.
+    ///   Others simply wait — they receive membership via Raft replication.
+    ///
+    /// Idempotent: if the cluster is already initialized (persisted state), returns Ok.
+    pub async fn bootstrap_cluster(
+        &self,
+        self_addr: &str,
+        seed_nodes: &[String],
+    ) -> anyhow::Result<()> {
+        // Check if already initialized (persisted membership from a previous run).
+        let metrics = self.raft.metrics().borrow().clone();
+        if let Some(membership) = metrics
+            .membership_config
+            .membership()
+            .get_joint_config()
+            .first()
+        {
+            if !membership.is_empty() {
+                info!(
+                    node_id = self.node_id,
+                    "cluster already initialized (from persisted state)"
+                );
+                return Ok(());
+            }
+        }
+
+        if seed_nodes.is_empty() {
+            // Single-node auto-init
+            info!(
+                node_id = self.node_id,
+                "no seed_nodes configured — auto-initializing single-node cluster"
+            );
+            self.init_cluster(self_addr).await?;
+            return Ok(());
+        }
+
+        // Multi-node: discover all seed peers
+        info!(
+            node_id = self.node_id,
+            seed_count = seed_nodes.len(),
+            "discovering seed peers for cluster formation..."
+        );
+
+        let mut members: BTreeMap<u64, BasicNode> = BTreeMap::new();
+
+        // Add self
+        members.insert(
+            self.node_id,
+            BasicNode {
+                addr: self_addr.to_string(),
+            },
+        );
+
+        // Poll all seed peers until they respond
+        for seed_addr in seed_nodes {
+            // Skip self
+            if seed_addr == self_addr {
+                continue;
+            }
+
+            let endpoint_url = format!("http://{}", seed_addr);
+            let mut attempts = 0u32;
+            loop {
+                attempts += 1;
+                match Self::discover_peer(&endpoint_url).await {
+                    Ok((peer_id, peer_addr)) => {
+                        info!(
+                            peer_node_id = peer_id,
+                            peer_addr = %peer_addr,
+                            seed = %seed_addr,
+                            "discovered seed peer"
+                        );
+                        members.insert(peer_id, BasicNode { addr: peer_addr });
+                        break;
+                    }
+                    Err(e) => {
+                        if attempts % 10 == 1 {
+                            warn!(
+                                seed = %seed_addr,
+                                attempt = attempts,
+                                error = %e,
+                                "waiting for seed peer to become reachable..."
+                            );
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
+
+        info!(
+            node_id = self.node_id,
+            member_count = members.len(),
+            "all seed peers discovered"
+        );
+
+        // The node with the lowest node_id performs the initialization
+        let lowest_id = *members.keys().next().unwrap();
+        if self.node_id == lowest_id {
+            info!(
+                node_id = self.node_id,
+                "this node has the lowest ID — initializing cluster"
+            );
+            self.raft.initialize(members).await?;
+            info!(
+                node_id = self.node_id,
+                "multi-node cluster initialized, waiting for leader election..."
+            );
+            // Fall through to the leader-wait loop below
+        } else {
+            info!(
+                node_id = self.node_id,
+                initializer = lowest_id,
+                "waiting for node {} to initialize the cluster...",
+                lowest_id
+            );
+        }
+
+        // Wait until a leader is established (applies to both initializer and followers)
+        loop {
+            let m = self.raft.metrics().borrow().clone();
+            if m.current_leader.is_some() {
+                info!(
+                    node_id = self.node_id,
+                    leader = ?m.current_leader,
+                    "cluster leader established"
+                );
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Contact a peer's Raft transport to get its node_id and raft_addr.
+    async fn discover_peer(endpoint_url: &str) -> anyhow::Result<(u64, String)> {
+        let channel = Endpoint::from_shared(endpoint_url.to_string())?
+            .connect_timeout(Duration::from_secs(3))
+            .connect()
+            .await?;
+        let mut client = RaftTransportClient::new(channel);
+        let resp = client
+            .get_node_info(danube_core::raft_proto::Empty {})
+            .await?;
+        let info = resp.into_inner();
+        Ok((info.node_id, info.raft_addr))
     }
 
     /// Create a lightweight handle for querying leadership status.

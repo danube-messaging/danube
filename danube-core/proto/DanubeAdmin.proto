@@ -276,9 +276,16 @@ message ProposedMove {
 
 // ─── Cluster Admin messages ─────────────────────────────────────────────────
 
+// A node's identity for cluster initialization
+message ClusterNodeInfo {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+}
+
 message ClusterInitRequest {
-  // Raft transport addresses of all initial nodes, e.g. ["broker1:7650", "broker2:7650"]
-  repeated string nodes = 1;
+  // All initial nodes with their node_id and Raft transport address.
+  // Populated by the CLI after discovering each node via ClusterStatus.
+  repeated ClusterNodeInfo nodes = 1;
 }
 
 message ClusterInitResponse {
@@ -305,6 +312,8 @@ message ClusterStatusResponse {
   repeated uint64 learners = 5;
   // This node's own ID
   uint64 self_node_id = 6;
+  // This node's Raft transport address
+  string raft_addr = 7;
 }
 
 message AddNodeRequest {

@@ -32,6 +32,10 @@ enum Commands {
     #[command(display_order = 1)]
     Serve(server::ServerArgs),
 
+    /// [CLI] Manage Raft cluster membership
+    #[command(display_order = 9)]
+    Cluster(cli::cluster::Cluster),
+
     /// [CLI] Manage brokers in the cluster
     #[command(display_order = 10)]
     Brokers(cli::brokers::Brokers),
@@ -67,6 +71,7 @@ async fn main() -> Result<()> {
             tracing::info!("Starting danube-admin server");
             server::run(args).await
         }
+        Commands::Cluster(cmd) => cli::cluster::handle(cmd, &cli.endpoint).await,
         Commands::Brokers(cmd) => cli::brokers::handle(cmd, &cli.endpoint).await,
         Commands::Namespaces(cmd) => cli::namespaces::handle(cmd, &cli.endpoint).await,
         Commands::Topics(cmd) => cli::topics::handle(cmd, &cli.endpoint).await,

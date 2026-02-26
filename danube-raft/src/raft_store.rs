@@ -6,13 +6,18 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use openraft::error::{ClientWriteError, RaftError};
 use openraft::Raft;
 use serde_json::Value;
 use tokio::sync::broadcast;
+use tonic::transport::Endpoint;
+use tracing::debug;
 
 use danube_core::metadata::{
     KeyValueVersion, MetaOptions, MetadataError, MetadataStore, WatchStream,
 };
+use danube_core::raft_proto::raft_transport_client::RaftTransportClient;
+use danube_core::raft_proto::ClientWriteRequest;
 
 type Result<T> = std::result::Result<T, MetadataError>;
 
@@ -36,13 +41,65 @@ impl RaftMetadataStore {
     }
 
     /// Propose a command through Raft and return the response.
+    ///
+    /// If this node is not the leader, the write is transparently forwarded
+    /// to the current leader via the `ClientWrite` gRPC RPC.
     async fn propose(&self, cmd: RaftCommand) -> Result<RaftResponse> {
-        let resp = self
-            .raft
-            .client_write(cmd)
+        match self.raft.client_write(cmd.clone()).await {
+            Ok(resp) => Ok(resp.data),
+            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(fwd))) => {
+                if let Some(leader_node) = &fwd.leader_node {
+                    debug!(
+                        leader_addr = %leader_node.addr,
+                        "forwarding write to leader"
+                    );
+                    self.forward_to_leader(&leader_node.addr, cmd).await
+                } else {
+                    // Leader unknown
+                    Err(MetadataError::Unknown(
+                        "raft propose failed: leader unknown (election in progress?)".into(),
+                    ))
+                }
+            }
+            Err(e) => Err(MetadataError::Unknown(format!(
+                "raft propose failed: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Forward a write command to the leader via the ClientWrite gRPC RPC.
+    async fn forward_to_leader(&self, leader_addr: &str, cmd: RaftCommand) -> Result<RaftResponse> {
+        let endpoint_url = format!("http://{}", leader_addr);
+        let channel = Endpoint::from_shared(endpoint_url)
+            .map_err(|e| MetadataError::Unknown(format!("invalid leader endpoint: {}", e)))?
+            .connect_timeout(Duration::from_secs(5))
+            .connect()
             .await
-            .map_err(|e| MetadataError::Unknown(format!("raft propose failed: {}", e)))?;
-        Ok(resp.data)
+            .map_err(|e| MetadataError::Unknown(format!("connect to leader failed: {}", e)))?;
+
+        let mut client = RaftTransportClient::new(channel);
+        let data = bincode::serialize(&cmd)
+            .map_err(|e| MetadataError::Unknown(format!("serialize command failed: {}", e)))?;
+
+        let resp = client
+            .client_write(ClientWriteRequest { data })
+            .await
+            .map_err(|e| {
+                MetadataError::Unknown(format!("leader client_write RPC failed: {}", e))
+            })?;
+
+        let reply = resp.into_inner();
+        if !reply.error.is_empty() {
+            return Err(MetadataError::Unknown(format!(
+                "leader returned error: {}",
+                reply.error
+            )));
+        }
+
+        let raft_resp: RaftResponse = bincode::deserialize(&reply.data)
+            .map_err(|e| MetadataError::Unknown(format!("deserialize response failed: {}", e)))?;
+        Ok(raft_resp)
     }
 }
 

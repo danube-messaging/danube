@@ -118,6 +118,11 @@ pub(crate) struct BrokerPorts {
 pub(crate) struct MetaStoreConfig {
     /// Directory for Raft log store, snapshots, and auto-generated node_id.
     pub(crate) data_dir: String,
+    /// Seed node Raft transport addresses for cluster formation.
+    /// Empty (default) = single-node auto-init.
+    /// Non-empty = multi-node: peers discover each other and auto-bootstrap.
+    #[serde(default)]
+    pub(crate) seed_nodes: Vec<String>,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration

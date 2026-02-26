@@ -4,6 +4,7 @@ use danube_core::admin_proto::{
     ClusterInitResponse, ClusterStatusResponse, Empty, PromoteNodeRequest, PromoteNodeResponse,
     RemoveNodeRequest, RemoveNodeResponse,
 };
+// ClusterNodeInfo is used inside ClusterInitRequest
 use danube_raft::BasicNode;
 use std::collections::BTreeMap;
 use tonic::{Request, Response, Status};
@@ -13,19 +14,17 @@ use tracing::{info, warn};
 impl ClusterAdmin for DanubeAdminImpl {
     /// Bootstrap a multi-node cluster.
     ///
-    /// For each address in `nodes`, the node is expected to already be running
-    /// its Raft gRPC transport. This implementation uses the current node's
-    /// `raft.initialize()` which requires all node_ids to be known upfront.
+    /// The CLI discovers each node's `(node_id, raft_addr)` via `ClusterStatus`,
+    /// then sends the full membership here. This node calls `raft.initialize()`
+    /// with all members as voters at once.
     ///
-    /// In the single-node case the broker's `main.rs` already calls
-    /// `init_cluster` at startup. This RPC is for the multi-node bootstrap
-    /// path invoked by `danube-admin cluster init --nodes ...`.
+    /// Idempotent: returns `already_initialized=true` if membership already exists.
     async fn cluster_init(
         &self,
         request: Request<ClusterInitRequest>,
     ) -> Result<Response<ClusterInitResponse>, Status> {
         let req = request.into_inner();
-        info!(nodes = ?req.nodes, "cluster init request");
+        info!(node_count = req.nodes.len(), "cluster init request");
 
         // Check if the cluster is already initialized by looking at membership.
         let metrics = self.raft.metrics().borrow().clone();
@@ -48,27 +47,31 @@ impl ClusterAdmin for DanubeAdminImpl {
         }
 
         if req.nodes.is_empty() {
-            return Err(Status::invalid_argument(
-                "at least one node address is required",
-            ));
+            return Err(Status::invalid_argument("at least one node is required"));
         }
 
-        // For now, we initialize with the current node and add others as learners.
-        // A full multi-node init would discover node_ids from each address.
-        // This simplified version initializes the local node, then adds the rest.
-        let self_id = self.leadership.node_id();
-        let self_addr = req
-            .nodes
-            .first()
-            .ok_or_else(|| Status::invalid_argument("empty nodes list"))?;
-
+        // Build the full membership map from the discovered node info.
         let mut members = BTreeMap::new();
-        members.insert(
-            self_id,
-            BasicNode {
-                addr: self_addr.clone(),
-            },
-        );
+        for node_info in &req.nodes {
+            if node_info.node_id == 0 {
+                return Err(Status::invalid_argument(
+                    "node_id must be non-zero for all nodes",
+                ));
+            }
+            if node_info.raft_addr.is_empty() {
+                return Err(Status::invalid_argument(
+                    "raft_addr must be non-empty for all nodes",
+                ));
+            }
+            members.insert(
+                node_info.node_id,
+                BasicNode {
+                    addr: node_info.raft_addr.clone(),
+                },
+            );
+        }
+
+        info!(?members, "initializing Raft cluster with all members");
 
         self.raft
             .initialize(members)
@@ -76,7 +79,7 @@ impl ClusterAdmin for DanubeAdminImpl {
             .map_err(|e| Status::internal(format!("failed to initialize cluster: {}", e)))?;
 
         // Wait briefly for leader election
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
         let metrics = self.raft.metrics().borrow().clone();
         let voter_count = metrics
@@ -134,6 +137,7 @@ impl ClusterAdmin for DanubeAdminImpl {
             voters,
             learners,
             self_node_id: self.leadership.node_id(),
+            raft_addr: self.raft_addr.to_string(),
         }))
     }
 

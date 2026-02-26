@@ -136,6 +136,28 @@ async fn main() -> Result<()> {
         service_config.prom_exporter = Some(prom_address);
     }
 
+    // If `data_dir` is provided via command-line args, override meta_store.data_dir
+    if let Some(data_dir) = args.data_dir {
+        service_config.meta_store.data_dir = data_dir;
+    }
+
+    // If `seed_nodes` is provided via command-line args, override meta_store.seed_nodes
+    if let Some(seed_nodes_str) = args.seed_nodes {
+        service_config.meta_store.seed_nodes = seed_nodes_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+
+    // If `raft_addr` is provided via command-line args, override the value from the config file
+    if let Some(raft_addr_arg) = args.raft_addr {
+        let addr: SocketAddr = raft_addr_arg
+            .parse()
+            .context(format!("Failed to parse --raft-addr: {}", raft_addr_arg))?;
+        service_config.raft_port = addr.port() as usize;
+    }
+
     // initialize the Raft metadata storage layer
     // node_id is auto-generated on first boot and persisted in {data_dir}/node_id
     let meta_cfg = &service_config.meta_store;
@@ -157,11 +179,13 @@ async fn main() -> Result<()> {
     let node_id = raft_node.node_id;
     info!(node_id, %raft_addr, "Raft metadata store initialized");
 
-    // Bootstrap single-node cluster on first start (idempotent).
+    // Bootstrap the cluster (config-driven, NATS-style):
+    //   - seed_nodes empty  → single-node auto-init (zero config)
+    //   - seed_nodes present → discovers peers, lowest node_id initializes
     let addr_str = raft_addr.to_string();
-    if let Err(e) = raft_node.init_cluster(&addr_str).await {
-        info!(?e, "cluster already initialized (or join as learner)");
-    }
+    raft_node
+        .bootstrap_cluster(&addr_str, &service_config.meta_store.seed_nodes)
+        .await?;
 
     let raft_handle = raft_node.raft.clone();
     let leadership_handle = raft_node.leadership_handle();
@@ -315,6 +339,7 @@ async fn main() -> Result<()> {
         load_manager,
         raft_handle,
         leadership_handle,
+        raft_addr,
     );
 
     danube

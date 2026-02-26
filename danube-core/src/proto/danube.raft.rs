@@ -11,6 +11,30 @@ pub struct RaftReply {
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Empty {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NodeInfoReply {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+    #[prost(string, tag = "2")]
+    pub raft_addr: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClientWriteRequest {
+    /// bincode-serialized RaftCommand
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClientWriteReply {
+    /// bincode-serialized RaftResponse
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    /// non-empty on failure
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
+}
 /// Generated client implementations.
 pub mod raft_transport_client {
     #![allow(
@@ -165,6 +189,55 @@ pub mod raft_transport_client {
                 .insert(GrpcMethod::new("danube.raft.RaftTransport", "InstallSnapshot"));
             self.inner.unary(req, path, codec).await
         }
+        /// Lightweight discovery RPC — returns this node's stable identity.
+        /// Used during cluster bootstrap so seed peers can exchange node_ids.
+        pub async fn get_node_info(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::NodeInfoReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.raft.RaftTransport/GetNodeInfo",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.raft.RaftTransport", "GetNodeInfo"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Forward a client write to the current leader.
+        /// Followers use this to proxy proposals they cannot handle locally.
+        pub async fn client_write(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ClientWriteRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClientWriteReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.raft.RaftTransport/ClientWrite",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.raft.RaftTransport", "ClientWrite"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -192,6 +265,21 @@ pub mod raft_transport_server {
             &self,
             request: tonic::Request<super::RaftRequest>,
         ) -> std::result::Result<tonic::Response<super::RaftReply>, tonic::Status>;
+        /// Lightweight discovery RPC — returns this node's stable identity.
+        /// Used during cluster bootstrap so seed peers can exchange node_ids.
+        async fn get_node_info(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::NodeInfoReply>, tonic::Status>;
+        /// Forward a client write to the current leader.
+        /// Followers use this to proxy proposals they cannot handle locally.
+        async fn client_write(
+            &self,
+            request: tonic::Request<super::ClientWriteRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClientWriteReply>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct RaftTransportServer<T> {
@@ -389,6 +477,94 @@ pub mod raft_transport_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = InstallSnapshotSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.raft.RaftTransport/GetNodeInfo" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetNodeInfoSvc<T: RaftTransport>(pub Arc<T>);
+                    impl<T: RaftTransport> tonic::server::UnaryService<super::Empty>
+                    for GetNodeInfoSvc<T> {
+                        type Response = super::NodeInfoReply;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftTransport>::get_node_info(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetNodeInfoSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.raft.RaftTransport/ClientWrite" => {
+                    #[allow(non_camel_case_types)]
+                    struct ClientWriteSvc<T: RaftTransport>(pub Arc<T>);
+                    impl<
+                        T: RaftTransport,
+                    > tonic::server::UnaryService<super::ClientWriteRequest>
+                    for ClientWriteSvc<T> {
+                        type Response = super::ClientWriteReply;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ClientWriteRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftTransport>::client_write(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ClientWriteSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

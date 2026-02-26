@@ -301,11 +301,20 @@ pub struct ProposedMove {
     #[prost(string, tag = "5")]
     pub reason: ::prost::alloc::string::String,
 }
+/// A node's identity for cluster initialization
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterNodeInfo {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+    #[prost(string, tag = "2")]
+    pub raft_addr: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClusterInitRequest {
-    /// Raft transport addresses of all initial nodes, e.g. \["broker1:7650", "broker2:7650"\]
-    #[prost(string, repeated, tag = "1")]
-    pub nodes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// All initial nodes with their node_id and Raft transport address.
+    /// Populated by the CLI after discovering each node via ClusterStatus.
+    #[prost(message, repeated, tag = "1")]
+    pub nodes: ::prost::alloc::vec::Vec<ClusterNodeInfo>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClusterInitResponse {
@@ -343,6 +352,9 @@ pub struct ClusterStatusResponse {
     /// This node's own ID
     #[prost(uint64, tag = "6")]
     pub self_node_id: u64,
+    /// This node's Raft transport address
+    #[prost(string, tag = "7")]
+    pub raft_addr: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddNodeRequest {

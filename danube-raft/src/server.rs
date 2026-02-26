@@ -8,18 +8,28 @@ use openraft::Raft;
 use tonic::{Request, Response, Status};
 
 use danube_core::raft_proto::raft_transport_server::RaftTransport;
-use danube_core::raft_proto::{RaftReply, RaftRequest};
+use danube_core::raft_proto::{
+    ClientWriteReply, ClientWriteRequest, NodeInfoReply, RaftReply, RaftRequest,
+};
+
+use crate::commands::RaftCommand;
 
 use crate::typ::TypeConfig;
 
 /// Server-side handler for incoming Raft RPCs from peers.
 pub struct RaftTransportHandler {
     raft: Raft<TypeConfig>,
+    node_id: u64,
+    raft_addr: String,
 }
 
 impl RaftTransportHandler {
-    pub fn new(raft: Raft<TypeConfig>) -> Self {
-        Self { raft }
+    pub fn new(raft: Raft<TypeConfig>, node_id: u64, raft_addr: String) -> Self {
+        Self {
+            raft,
+            node_id,
+            raft_addr,
+        }
     }
 }
 
@@ -86,6 +96,38 @@ impl RaftTransport for RaftTransportHandler {
             .map_err(|e| Status::internal(format!("serialize failed: {}", e)))?;
 
         Ok(Response::new(RaftReply {
+            data,
+            error: String::new(),
+        }))
+    }
+
+    async fn get_node_info(
+        &self,
+        _request: Request<danube_core::raft_proto::Empty>,
+    ) -> Result<Response<NodeInfoReply>, Status> {
+        Ok(Response::new(NodeInfoReply {
+            node_id: self.node_id,
+            raft_addr: self.raft_addr.clone(),
+        }))
+    }
+
+    async fn client_write(
+        &self,
+        request: Request<ClientWriteRequest>,
+    ) -> Result<Response<ClientWriteReply>, Status> {
+        let cmd: RaftCommand = bincode::deserialize(&request.into_inner().data)
+            .map_err(|e| Status::invalid_argument(format!("deserialize command failed: {}", e)))?;
+
+        let resp = self
+            .raft
+            .client_write(cmd)
+            .await
+            .map_err(|e| Status::internal(format!("client_write failed: {}", e)))?;
+
+        let data = bincode::serialize(&resp.data)
+            .map_err(|e| Status::internal(format!("serialize response failed: {}", e)))?;
+
+        Ok(Response::new(ClientWriteReply {
             data,
             error: String::new(),
         }))
