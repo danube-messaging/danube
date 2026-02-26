@@ -10,6 +10,8 @@ broker:
     client: 6650
     # Admin API
     admin: 50051
+    # Raft inter-node gRPC transport
+    raft: 7650
     # Prometheus metrics exporter
     prometheus: 9040
   # Optional: advertised addresses for proxy/k8s mode
@@ -20,10 +22,10 @@ broker:
   #   # External: address reachable by external clients via gRPC proxy
   #   connect_url: "danube-proxy.example.com:6650"
 
-# Metadata Store Configuration (etcd)
+# Metadata Store Configuration (Raft — embedded, no external dependency)
+# node_id is auto-generated on first boot and persisted in {data_dir}/node_id
 meta_store:
-  host: "127.0.0.1"
-  port: 2379
+  data_dir: "./danube-data/raft"
 
 # Namespaces to be created on boot
 bootstrap_namespaces:

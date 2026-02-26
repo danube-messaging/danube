@@ -10,12 +10,13 @@ broker:
   ports:
     client: 6650
     admin: 50051
+    raft: 7650
     prometheus: 9040
 
-# Metadata Store Configuration (etcd)
+# Metadata Store Configuration (Raft — embedded, no external dependency)
+# node_id is auto-generated on first boot and persisted in {data_dir}/node_id
 meta_store:
-  host: "127.0.0.1"
-  port: 2379
+  data_dir: "./danube-data/raft"
 
 # Namespaces to be created on boot
 bootstrap_namespaces:
