@@ -19,6 +19,8 @@ pub(crate) use syncronizer::Syncronizer;
 use anyhow::Result;
 use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
+use danube_raft::leadership::LeadershipHandle;
+use danube_raft::Raft;
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
@@ -70,7 +72,6 @@ use crate::{
 // Resource Quotas:
 // Implement and enforce resource quotas to ensure fair usage of resources among different namespaces.
 // This includes limiting the number of topics, message rates, and storage usage.
-#[derive(Debug)]
 pub(crate) struct DanubeService {
     broker_id: u64,
     broker: Arc<BrokerService>,
@@ -81,6 +82,17 @@ pub(crate) struct DanubeService {
     leader_election: LeaderElection,
     syncronizer: Syncronizer,
     load_manager: LoadManager,
+    raft: Raft<danube_raft::typ::TypeConfig>,
+    leadership: LeadershipHandle,
+}
+
+impl std::fmt::Debug for DanubeService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DanubeService")
+            .field("broker_id", &self.broker_id)
+            .field("leadership", &self.leadership)
+            .finish_non_exhaustive()
+    }
 }
 
 // DanubeService act as a a coordinator for managing clusters, including storage and brokers.
@@ -95,6 +107,8 @@ impl DanubeService {
         leader_election: LeaderElection,
         syncronizer: Syncronizer,
         load_manager: LoadManager,
+        raft: Raft<danube_raft::typ::TypeConfig>,
+        leadership: LeadershipHandle,
     ) -> Self {
         DanubeService {
             broker_id,
@@ -106,6 +120,8 @@ impl DanubeService {
             leader_election,
             syncronizer,
             load_manager,
+            raft,
+            leadership,
         }
     }
 
@@ -366,6 +382,8 @@ impl DanubeService {
             self.service_config.auth.clone(),
             schema_registry,
             self.load_manager.clone(),
+            self.raft.clone(),
+            self.leadership.clone(),
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;

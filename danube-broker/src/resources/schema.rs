@@ -1,15 +1,13 @@
 use crate::metadata_storage::MetadataStorage;
-use anyhow::{anyhow, Result};
-use danube_core::metadata::{MetaOptions, MetadataStore};
-use serde_json::Value;
-use tracing::debug;
-
 use crate::{
     resources::BASE_SCHEMAS_PATH,
     schema::metadata::{SchemaMetadata, SchemaVersion},
     utils::join_path,
     LocalCache,
 };
+use anyhow::{anyhow, Result};
+use danube_core::metadata::{MetaOptions, MetadataStore};
+use serde_json::Value;
 
 /// SchemaResources manages schema metadata in ETCD
 /// Following the Danube pattern:
@@ -77,74 +75,30 @@ impl SchemaResources {
             .and_then(|v| v.get("mode").and_then(|m| m.as_str().map(String::from)))
     }
 
-    // ========== Schema ID Generation (ETCD-based) ==========
+    // ========== Schema ID Generation (Raft-atomic) ==========
 
-    /// Get global schema ID counter from ETCD
-    /// Initializes to 1 if not present
-    pub(crate) async fn get_global_schema_id_counter(&self) -> Result<u64> {
+    /// Atomically allocate the next schema ID through Raft consensus.
+    ///
+    /// This replaces the old racy get+put pattern with a single atomic
+    /// `AllocateMonotonicId` Raft command, eliminating the race condition
+    /// window that existed when multiple brokers registered schemas
+    /// concurrently.
+    pub(crate) async fn allocate_next_schema_id(&self) -> Result<u64> {
         const COUNTER_KEY: &str = "/schemas/_global/next_schema_id";
-        
-        match self.store.get(COUNTER_KEY, MetaOptions::None).await? {
-            Some(value) => {
-                let counter = value.as_u64()
-                    .ok_or_else(|| anyhow!("Invalid schema ID counter value"))?;
-                Ok(counter)
-            }
-            None => {
-                // Initialize counter to 1
-                let init_value = serde_json::json!(1);
-                self.store.put(COUNTER_KEY, init_value, MetaOptions::None).await?;
-                Ok(1)
-            }
-        }
-    }
-
-    /// Increment schema ID counter using get+put (optimistic concurrency)
-    /// Returns Ok if successful, Err if another broker updated it
-    /// 
-    /// NOTE: This is a temporary implementation. Ideally, MetadataStore should
-    /// expose a proper compare-and-swap operation using ETCD's version field.
-    /// For now, we use get+put with verification, which works but has a small
-    /// race condition window.
-    pub(crate) async fn increment_schema_id_counter(
-        &self,
-        expected_current: u64,
-        next_value: u64,
-    ) -> Result<()> {
-        const COUNTER_KEY: &str = "/schemas/_global/next_schema_id";
-        
-        // Get current value again to verify it hasn't changed
-        let actual_current = self.store.get(COUNTER_KEY, MetaOptions::None).await?
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow!("Counter disappeared during increment"))?;
-        
-        if actual_current != expected_current {
-            // Another broker updated the counter
-            debug!("Schema ID counter changed: expected {}, got {}", expected_current, actual_current);
-            return Err(anyhow!("Counter was updated by another broker"));
-        }
-        
-        // Update to next value
-        let next_data = serde_json::json!(next_value);
-        self.store.put(COUNTER_KEY, next_data, MetaOptions::None).await?;
-        
-        Ok(())
+        let id = self.store.allocate_monotonic_id(COUNTER_KEY).await?;
+        Ok(id)
     }
 
     // ========== Reverse Index (schema_id -> subject) ==========
 
     /// Store reverse index mapping schema_id to subject
-    pub(crate) async fn store_schema_id_index(
-        &self,
-        schema_id: u64,
-        subject: &str,
-    ) -> Result<()> {
+    pub(crate) async fn store_schema_id_index(&self, schema_id: u64, subject: &str) -> Result<()> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
         let data = serde_json::json!({
             "subject": subject,
             "schema_id": schema_id
         });
-        
+
         self.store.put(&path, data, MetaOptions::None).await?;
         Ok(())
     }
@@ -152,28 +106,33 @@ impl SchemaResources {
     /// Get subject name from ETCD if not in cache
     pub(crate) async fn fetch_subject_by_schema_id(&self, schema_id: u64) -> Result<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
-        
-        let value = self.store.get(&path, MetaOptions::None).await?
+
+        let value = self
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
             .ok_or_else(|| anyhow!("No subject found for schema_id {}", schema_id))?;
-        
-        value.get("subject")
+
+        value
+            .get("subject")
             .and_then(|s| s.as_str())
             .map(String::from)
             .ok_or_else(|| anyhow!("Invalid index data for schema_id {}", schema_id))
     }
-    
+
     /// Get subject name by schema_id (tries LocalCache first, then ETCD)
     /// This is the preferred method for fast lookups during message validation
     pub(crate) fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
-        
+
         // Try LocalCache first (fast path)
         if let Some(value) = self.local_cache.get(&path) {
-            return value.get("subject")
+            return value
+                .get("subject")
                 .and_then(|s| s.as_str())
                 .map(String::from);
         }
-        
+
         // Not in cache - caller should use fetch_subject_by_schema_id for async lookup
         None
     }

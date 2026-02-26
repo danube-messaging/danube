@@ -53,7 +53,9 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_addr: std::net::SocketAddr,
     /// Prometheus exporter address
     pub(crate) prom_exporter: Option<std::net::SocketAddr>,
-    /// Metadata store configuration (etcd or raft).
+    /// Raft inter-node gRPC transport port (from broker.ports.raft).
+    pub(crate) raft_port: usize,
+    /// Metadata store configuration (Raft data directory).
     pub(crate) meta_store: MetaStoreConfig,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
@@ -97,25 +99,24 @@ pub(crate) struct BrokerPorts {
     pub(crate) client: usize,
     /// Admin API port
     pub(crate) admin: usize,
+    /// Raft inter-node gRPC transport port
+    pub(crate) raft: usize,
     /// Prometheus metrics exporter port (optional)
     pub(crate) prometheus: Option<usize>,
 }
 
 /// Metadata store configuration (Raft-only, ETCD removed).
 ///
+/// The `node_id` is auto-generated on first boot and persisted in `{data_dir}/node_id`.
+/// The Raft transport port is in `broker.ports.raft`.
+///
 /// ```yaml
 /// meta_store:
-///   node_id: 1
-///   raft_port: 7650
 ///   data_dir: "./danube-data/raft"
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MetaStoreConfig {
-    /// Unique Raft node ID for this broker.
-    pub(crate) node_id: u64,
-    /// Port for Raft inter-node gRPC transport.
-    pub(crate) raft_port: usize,
-    /// Directory for Raft log store and snapshots.
+    /// Directory for Raft log store, snapshots, and auto-generated node_id.
     pub(crate) data_dir: String,
 }
 
@@ -175,6 +176,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             proxy_enabled,
             admin_addr,
             prom_exporter,
+            raft_port: config.broker.ports.raft,
             meta_store: config.meta_store,
             bootstrap_namespaces: config.bootstrap_namespaces,
             auto_create_topics: config.auto_create_topics.unwrap_or(true),

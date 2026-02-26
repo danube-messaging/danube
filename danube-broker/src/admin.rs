@@ -1,4 +1,5 @@
 mod brokers_admin;
+mod cluster_admin;
 mod namespace_admin;
 mod topics_admin;
 
@@ -10,16 +11,18 @@ use crate::{
     resources::Resources,
 };
 use danube_core::admin_proto::{
-    broker_admin_server::BrokerAdminServer, namespace_admin_server::NamespaceAdminServer,
-    topic_admin_server::TopicAdminServer,
+    broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
+    namespace_admin_server::NamespaceAdminServer, topic_admin_server::TopicAdminServer,
 };
 use danube_core::proto::danube_schema::schema_registry_server::SchemaRegistryServer;
+use danube_raft::leadership::LeadershipHandle;
+use danube_raft::Raft;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct DanubeAdminImpl {
     admin_addr: SocketAddr,
     broker_service: Arc<BrokerService>,
@@ -27,6 +30,19 @@ pub(crate) struct DanubeAdminImpl {
     auth: AuthConfig,
     schema_registry: Arc<SchemaRegistryService>,
     load_manager: LoadManager,
+    /// Raft handle for cluster membership operations.
+    pub(crate) raft: Raft<danube_raft::typ::TypeConfig>,
+    /// Leadership handle for querying current leader.
+    pub(crate) leadership: LeadershipHandle,
+}
+
+impl std::fmt::Debug for DanubeAdminImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DanubeAdminImpl")
+            .field("admin_addr", &self.admin_addr)
+            .field("leadership", &self.leadership)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DanubeAdminImpl {
@@ -37,6 +53,8 @@ impl DanubeAdminImpl {
         auth: AuthConfig,
         schema_registry: Arc<SchemaRegistryService>,
         load_manager: LoadManager,
+        raft: Raft<danube_raft::typ::TypeConfig>,
+        leadership: LeadershipHandle,
     ) -> Self {
         DanubeAdminImpl {
             admin_addr,
@@ -45,6 +63,8 @@ impl DanubeAdminImpl {
             auth,
             schema_registry,
             load_manager,
+            raft,
+            leadership,
         }
     }
     pub(crate) async fn start(self) -> JoinHandle<()> {
@@ -56,10 +76,12 @@ impl DanubeAdminImpl {
         }
 
         // Get schema registry service
-        let schema_registry_service = SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
+        let schema_registry_service =
+            SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
         let server = server_builder
             .add_service(BrokerAdminServer::new(self.clone()))
+            .add_service(ClusterAdminServer::new(self.clone()))
             .add_service(NamespaceAdminServer::new(self.clone()))
             .add_service(TopicAdminServer::new(self.clone()))
             .add_service(schema_registry_service)

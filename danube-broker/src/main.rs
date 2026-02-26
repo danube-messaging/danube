@@ -137,28 +137,34 @@ async fn main() -> Result<()> {
     }
 
     // initialize the Raft metadata storage layer
+    // node_id is auto-generated on first boot and persisted in {data_dir}/node_id
     let meta_cfg = &service_config.meta_store;
-    let raft_addr: SocketAddr =
-        format!("{}:{}", service_config.broker_addr.ip(), meta_cfg.raft_port)
-            .parse()
-            .context("Failed to parse raft_addr")?;
+    let raft_addr: SocketAddr = format!(
+        "{}:{}",
+        service_config.broker_addr.ip(),
+        service_config.raft_port
+    )
+    .parse()
+    .context("Failed to parse raft_addr")?;
 
-    info!(node_id = meta_cfg.node_id, %raft_addr, "initializing Raft metadata store");
     let raft_node = RaftNode::start(RaftNodeConfig {
-        node_id: meta_cfg.node_id,
         data_dir: (&meta_cfg.data_dir).into(),
         raft_addr,
         ttl_check_interval: std::time::Duration::from_secs(5),
     })
     .await?;
 
+    let node_id = raft_node.node_id;
+    info!(node_id, %raft_addr, "Raft metadata store initialized");
+
     // Bootstrap single-node cluster on first start (idempotent).
     let addr_str = raft_addr.to_string();
-    if let Err(e) = raft_node.init_cluster(meta_cfg.node_id, &addr_str).await {
+    if let Err(e) = raft_node.init_cluster(&addr_str).await {
         info!(?e, "cluster already initialized (or join as learner)");
     }
 
-    let leadership_handle = raft_node.leadership_handle(meta_cfg.node_id);
+    let raft_handle = raft_node.raft.clone();
+    let leadership_handle = raft_node.leadership_handle();
     let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
     // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
@@ -233,19 +239,26 @@ async fn main() -> Result<()> {
 
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
-    let resources = Resources::new(local_cache.clone(), metadata_store.clone());
+    let resources = Resources::new(
+        local_cache.clone(),
+        metadata_store.clone(),
+        Some(leadership_handle.clone()),
+    );
 
     // The synchronizer ensures that metadata & configuration settings across different brokers remains consistent.
     // using the client Producers to distribute metadata updates across brokers.
     let syncroniser = Syncronizer::new();
 
+    // The broker_id IS the Raft node_id — a single stable identity.
+    let broker_id = node_id;
+
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
     let broker_service = BrokerService::new(
+        broker_id,
         resources.clone(),
         wal_factory,
         service_config.auto_create_topics,
     );
-    let broker_id = broker_service.broker_id;
 
     // Init metrics with or without prometheus exporter
     if let Some(prometheus_exporter) = service_config.prom_exporter.clone() {
@@ -256,10 +269,10 @@ async fn main() -> Result<()> {
 
     // Raft-based leader election: the Raft leader is the cluster leader.
     let leader_election_service = LeaderElection::new(
-        leadership_handle,
+        leadership_handle.clone(),
         metadata_store.clone(),
         LEADER_ELECTION_PATH,
-        broker_service.broker_id,
+        broker_id,
     );
 
     // Load Manager, monitor and distribute load across brokers.
@@ -274,7 +287,7 @@ async fn main() -> Result<()> {
         };
 
     let load_manager = LoadManager::with_config(
-        broker_service.broker_id,
+        broker_id,
         metadata_store.clone(),
         assignment_strategy,
         rebalancing_config,
@@ -300,6 +313,8 @@ async fn main() -> Result<()> {
         leader_election_service,
         syncroniser,
         load_manager,
+        raft_handle,
+        leadership_handle,
     );
 
     danube

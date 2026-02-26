@@ -29,7 +29,6 @@ pub async fn start_cluster() -> (RaftNode, TempDir) {
     let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
     let node = RaftNode::start(RaftNodeConfig {
-        node_id: 1,
         data_dir: tmp.path().to_path_buf(),
         raft_addr: addr,
         ttl_check_interval: Duration::from_millis(200),
@@ -37,7 +36,7 @@ pub async fn start_cluster() -> (RaftNode, TempDir) {
     .await
     .expect("start raft node");
 
-    node.init_cluster(1, &addr.to_string())
+    node.init_cluster(&addr.to_string())
         .await
         .expect("bootstrap cluster");
 

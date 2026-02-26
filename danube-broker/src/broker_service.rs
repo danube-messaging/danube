@@ -19,7 +19,6 @@ use crate::{
     topic_cluster::TopicCluster,
     topic_control::{ConsumerRegistry, ProducerRegistry, TopicManager},
     topic_worker::TopicWorkerPool,
-    utils::get_random_id,
 };
 
 /// BrokerService is the broker API surface.
@@ -52,13 +51,15 @@ pub(crate) struct BrokerService {
 
 impl BrokerService {
     /// Constructs a new BrokerService and wires its delegates (TopicManager, WorkerPool, Resources).
+    ///
+    /// `broker_id` is the stable Raft node ID (auto-generated on first boot and
+    /// persisted in `{data_dir}/node_id`), so the broker identity survives restarts.
     pub(crate) fn new(
+        broker_id: u64,
         resources: Resources,
         wal_factory: WalStorageFactory,
         auto_create_topics: bool,
     ) -> Self {
-        let broker_id = get_random_id();
-
         let producers = ProducerRegistry::new();
         let consumers = ConsumerRegistry::new();
         let topic_worker_pool = Arc::new(TopicWorkerPool::new(None));

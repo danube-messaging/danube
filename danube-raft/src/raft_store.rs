@@ -134,6 +134,21 @@ impl MetadataStore for RaftMetadataStore {
         }
     }
 
+    async fn allocate_monotonic_id(&self, counter_key: &str) -> Result<u64> {
+        let resp = self
+            .propose(RaftCommand::AllocateMonotonicId {
+                counter_key: counter_key.to_string(),
+            })
+            .await?;
+        match resp {
+            RaftResponse::AllocatedId(id) => Ok(id),
+            other => Err(MetadataError::Unknown(format!(
+                "unexpected response: {:?}",
+                other
+            ))),
+        }
+    }
+
     async fn get_bulk(&self, prefix: &str) -> Result<Vec<KeyValueVersion>> {
         let d = self.data.read().await;
         Ok(d.kv

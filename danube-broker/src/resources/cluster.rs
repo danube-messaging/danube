@@ -2,10 +2,11 @@ use crate::metadata_storage::MetadataStorage;
 use anyhow::Result;
 use danube_core::admin_proto::BrokerInfo;
 use danube_core::metadata::{MetaOptions, MetadataStore};
+use danube_raft::leadership::LeadershipHandle;
 use serde_json::Value;
 
 use crate::{
-    resources::{BASE_BROKER_PATH, BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH, LEADER_ELECTION_PATH},
+    resources::{BASE_BROKER_PATH, BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH},
     utils::join_path,
     LocalCache,
 };
@@ -16,11 +17,20 @@ use super::{BASE_REGISTER_PATH, BASE_UNASSIGNED_PATH};
 pub(crate) struct ClusterResources {
     local_cache: LocalCache,
     store: MetadataStorage,
+    leadership: Option<LeadershipHandle>,
 }
 
 impl ClusterResources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
-        ClusterResources { local_cache, store }
+    pub(crate) fn new(
+        local_cache: LocalCache,
+        store: MetadataStorage,
+        leadership: Option<LeadershipHandle>,
+    ) -> Self {
+        ClusterResources {
+            local_cache,
+            store,
+            leadership,
+        }
     }
 
     pub(crate) async fn create(&mut self, path: &str, data: Value) -> Result<()> {
@@ -194,13 +204,10 @@ impl ClusterResources {
         }
     }
 
+    /// Returns the current Raft leader's node_id by querying the Raft runtime
+    /// directly, rather than reading a stale metadata key from LocalCache.
     pub(crate) fn get_cluster_leader(&self) -> Option<u64> {
-        let value = self.local_cache.get(LEADER_ELECTION_PATH)?;
-
-        match value {
-            Value::Number(broker_addr) => broker_addr.as_u64(),
-            _ => None,
-        }
+        self.leadership.as_ref().and_then(|h| h.current_leader())
     }
 
     /// Returns the full registration JSON object stored under /cluster/register/{broker_id}

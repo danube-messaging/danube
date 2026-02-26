@@ -166,6 +166,15 @@ impl MetadataStore for MemoryStore {
         self.put(key, value, MetaOptions::None).await
     }
 
+    async fn allocate_monotonic_id(&self, counter_key: &str) -> Result<u64> {
+        // Simple atomic-ish increment for testing. Real atomicity comes from Raft.
+        let current = self.get(counter_key, MetaOptions::None).await?;
+        let next = current.and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+        self.put(counter_key, serde_json::json!(next), MetaOptions::None)
+            .await?;
+        Ok(next)
+    }
+
     async fn get_bulk(&self, prefix: &str) -> Result<Vec<KeyValueVersion>> {
         let map_parts: Vec<&str> = prefix.split('/').take(3).collect();
         if map_parts.len() < 3 {

@@ -1,4 +1,5 @@
 use crate::metadata_storage::MetadataStorage;
+use danube_raft::leadership::LeadershipHandle;
 
 use crate::LocalCache;
 
@@ -61,10 +62,14 @@ pub(crate) struct Resources {
 
 // A wrapper for interacting with Metadata Storage
 impl Resources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
+    pub(crate) fn new(
+        local_cache: LocalCache,
+        store: MetadataStorage,
+        leadership: Option<LeadershipHandle>,
+    ) -> Self {
         Resources {
             store: store.clone(),
-            cluster: ClusterResources::new(local_cache.clone(), store.clone()),
+            cluster: ClusterResources::new(local_cache.clone(), store.clone(), leadership),
             namespace: NamespaceResources::new(local_cache.clone(), store.clone()),
             topic: TopicResources::new(local_cache.clone(), store.clone()),
             schema: SchemaResources::new(local_cache, store),

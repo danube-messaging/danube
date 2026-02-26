@@ -301,6 +301,91 @@ pub struct ProposedMove {
     #[prost(string, tag = "5")]
     pub reason: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterInitRequest {
+    /// Raft transport addresses of all initial nodes, e.g. \["broker1:7650", "broker2:7650"\]
+    #[prost(string, repeated, tag = "1")]
+    pub nodes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterInitResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    /// true if the cluster was already initialized (idempotent no-op)
+    #[prost(bool, tag = "2")]
+    pub already_initialized: bool,
+    /// node_id of the elected leader (may be 0 if election is still in progress)
+    #[prost(uint64, tag = "3")]
+    pub leader_id: u64,
+    /// number of voters in the initialized cluster
+    #[prost(uint32, tag = "4")]
+    pub voter_count: u32,
+    #[prost(string, tag = "5")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterStatusResponse {
+    /// Current Raft leader node_id (0 if no leader)
+    #[prost(uint64, tag = "1")]
+    pub leader_id: u64,
+    /// Current Raft term
+    #[prost(uint64, tag = "2")]
+    pub current_term: u64,
+    /// Last applied log index
+    #[prost(uint64, tag = "3")]
+    pub last_applied: u64,
+    /// Node IDs of current voters
+    #[prost(uint64, repeated, tag = "4")]
+    pub voters: ::prost::alloc::vec::Vec<u64>,
+    /// Node IDs of current learners (non-voting)
+    #[prost(uint64, repeated, tag = "5")]
+    pub learners: ::prost::alloc::vec::Vec<u64>,
+    /// This node's own ID
+    #[prost(uint64, tag = "6")]
+    pub self_node_id: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AddNodeRequest {
+    /// Raft transport address of the new node, e.g. "broker4:7650"
+    #[prost(string, tag = "1")]
+    pub addr: ::prost::alloc::string::String,
+    /// Optional: provide the node_id directly (discovered via transport if omitted)
+    #[prost(uint64, tag = "2")]
+    pub node_id: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AddNodeResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(uint64, tag = "2")]
+    pub node_id: u64,
+    #[prost(string, tag = "3")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PromoteNodeRequest {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PromoteNodeResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RemoveNodeRequest {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RemoveNodeResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1075,6 +1160,622 @@ pub mod broker_admin_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "danube_admin.BrokerAdmin";
     impl<T> tonic::server::NamedService for BrokerAdminServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Generated client implementations.
+pub mod cluster_admin_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Raft cluster membership management.
+    /// These RPCs are forwarded to the Raft leader internally.
+    #[derive(Debug, Clone)]
+    pub struct ClusterAdminClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl ClusterAdminClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> ClusterAdminClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ClusterAdminClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ClusterAdminClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Bootstrap a new multi-node cluster (like `cockroach init`).
+        /// Contacts each listed address, discovers node_ids, calls raft::initialize.
+        /// Idempotent: returns AlreadyInitialized if membership already exists.
+        pub async fn cluster_init(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ClusterInitRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterInitResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ClusterInit",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "ClusterInit"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Show Raft cluster state: leader, term, log index, voter/learner sets.
+        pub async fn cluster_status(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ClusterStatus",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "ClusterStatus"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Add a node as a Raft learner (non-voting). It will receive snapshots + log.
+        pub async fn add_node(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AddNodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AddNodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/AddNode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "AddNode"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Promote a learner to a full voting member.
+        pub async fn promote_node(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PromoteNodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PromoteNodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/PromoteNode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "PromoteNode"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Remove a node from the Raft voter/learner set.
+        pub async fn remove_node(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RemoveNodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveNodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/RemoveNode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "RemoveNode"));
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+pub mod cluster_admin_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with ClusterAdminServer.
+    #[async_trait]
+    pub trait ClusterAdmin: std::marker::Send + std::marker::Sync + 'static {
+        /// Bootstrap a new multi-node cluster (like `cockroach init`).
+        /// Contacts each listed address, discovers node_ids, calls raft::initialize.
+        /// Idempotent: returns AlreadyInitialized if membership already exists.
+        async fn cluster_init(
+            &self,
+            request: tonic::Request<super::ClusterInitRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterInitResponse>,
+            tonic::Status,
+        >;
+        /// Show Raft cluster state: leader, term, log index, voter/learner sets.
+        async fn cluster_status(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClusterStatusResponse>,
+            tonic::Status,
+        >;
+        /// Add a node as a Raft learner (non-voting). It will receive snapshots + log.
+        async fn add_node(
+            &self,
+            request: tonic::Request<super::AddNodeRequest>,
+        ) -> std::result::Result<tonic::Response<super::AddNodeResponse>, tonic::Status>;
+        /// Promote a learner to a full voting member.
+        async fn promote_node(
+            &self,
+            request: tonic::Request<super::PromoteNodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PromoteNodeResponse>,
+            tonic::Status,
+        >;
+        /// Remove a node from the Raft voter/learner set.
+        async fn remove_node(
+            &self,
+            request: tonic::Request<super::RemoveNodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveNodeResponse>,
+            tonic::Status,
+        >;
+    }
+    /// Raft cluster membership management.
+    /// These RPCs are forwarded to the Raft leader internally.
+    #[derive(Debug)]
+    pub struct ClusterAdminServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> ClusterAdminServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for ClusterAdminServer<T>
+    where
+        T: ClusterAdmin,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/danube_admin.ClusterAdmin/ClusterInit" => {
+                    #[allow(non_camel_case_types)]
+                    struct ClusterInitSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ClusterInitRequest>
+                    for ClusterInitSvc<T> {
+                        type Response = super::ClusterInitResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ClusterInitRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::cluster_init(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ClusterInitSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ClusterStatus" => {
+                    #[allow(non_camel_case_types)]
+                    struct ClusterStatusSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<T: ClusterAdmin> tonic::server::UnaryService<super::Empty>
+                    for ClusterStatusSvc<T> {
+                        type Response = super::ClusterStatusResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::cluster_status(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ClusterStatusSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/AddNode" => {
+                    #[allow(non_camel_case_types)]
+                    struct AddNodeSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::AddNodeRequest>
+                    for AddNodeSvc<T> {
+                        type Response = super::AddNodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AddNodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::add_node(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AddNodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/PromoteNode" => {
+                    #[allow(non_camel_case_types)]
+                    struct PromoteNodeSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::PromoteNodeRequest>
+                    for PromoteNodeSvc<T> {
+                        type Response = super::PromoteNodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PromoteNodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::promote_node(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PromoteNodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/RemoveNode" => {
+                    #[allow(non_camel_case_types)]
+                    struct RemoveNodeSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::RemoveNodeRequest>
+                    for RemoveNodeSvc<T> {
+                        type Response = super::RemoveNodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RemoveNodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::remove_node(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RemoveNodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for ClusterAdminServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "danube_admin.ClusterAdmin";
+    impl<T> tonic::server::NamedService for ClusterAdminServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

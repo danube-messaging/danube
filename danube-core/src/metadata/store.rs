@@ -36,4 +36,10 @@ pub trait MetadataStore: Send + Sync + 'static {
 
     /// Retrieve all key-value pairs under a given prefix.
     async fn get_bulk(&self, prefix: &str) -> Result<Vec<KeyValueVersion>>;
+
+    /// Atomically increment and return a monotonic counter stored at `counter_key`.
+    ///
+    /// Used for schema ID allocation — eliminates the read-modify-write race
+    /// by going through Raft consensus as a single atomic command.
+    async fn allocate_monotonic_id(&self, counter_key: &str) -> Result<u64>;
 }

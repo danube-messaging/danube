@@ -5,10 +5,13 @@
 //! gRPC server) and returns a `RaftMetadataStore` ready for use by the broker.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use rand::Rng;
 
 use openraft::{BasicNode, Config, Raft};
 use tonic::transport::Server;
@@ -27,9 +30,8 @@ use crate::typ::TypeConfig;
 
 /// Configuration for starting a Raft node.
 pub struct RaftNodeConfig {
-    /// Unique node ID. Persisted in `{data_dir}/node_id`.
-    pub node_id: u64,
     /// Directory for redb log store and node metadata.
+    /// A stable `node_id` file is auto-generated here on first boot.
     pub data_dir: PathBuf,
     /// Address this node listens on for Raft gRPC transport.
     pub raft_addr: SocketAddr,
@@ -43,6 +45,8 @@ pub struct RaftNode {
     pub store: RaftMetadataStore,
     /// Handle to the Raft instance (for admin operations like add_learner, change_membership).
     pub raft: Raft<TypeConfig>,
+    /// Auto-generated stable node identity (persisted in `{data_dir}/node_id`).
+    pub node_id: u64,
     /// gRPC server join handle.
     _grpc_handle: tokio::task::JoinHandle<()>,
     /// TTL worker join handle.
@@ -50,10 +54,39 @@ pub struct RaftNode {
 }
 
 impl RaftNode {
+    /// Read or generate the stable node identity.
+    ///
+    /// On first boot a random `u64` is generated and written to `{data_dir}/node_id`.
+    /// On subsequent boots the persisted value is read back, giving the node a
+    /// stable identity across restarts — identical to the pattern used by
+    /// CockroachDB, TiKV, and Consul.
+    fn resolve_node_id(data_dir: &PathBuf) -> anyhow::Result<u64> {
+        let id_path = data_dir.join("node_id");
+        if id_path.exists() {
+            let contents = fs::read_to_string(&id_path)?;
+            let id: u64 = contents
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid node_id file: {}", e))?;
+            Ok(id)
+        } else {
+            let id: u64 = rand::rng().random();
+            fs::create_dir_all(data_dir)?;
+            fs::write(&id_path, id.to_string())?;
+            info!(node_id = id, path = %id_path.display(), "generated new stable node_id");
+            Ok(id)
+        }
+    }
+
     /// Create and start a new Raft node.
     ///
+    /// The node ID is auto-resolved from `{data_dir}/node_id` (generated on first boot).
     /// This does NOT bootstrap the cluster — call `init_cluster` on the first node.
     pub async fn start(cfg: RaftNodeConfig) -> anyhow::Result<Self> {
+        // 0. Resolve stable node identity
+        fs::create_dir_all(&cfg.data_dir)?;
+        let node_id = Self::resolve_node_id(&cfg.data_dir)?;
+
         // 1. Create openraft config
         let raft_config = Config {
             snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(1000),
@@ -68,18 +101,10 @@ impl RaftNode {
 
         // 3. Create persistent log store
         let db_path = cfg.data_dir.join("raft-log.redb");
-        std::fs::create_dir_all(&cfg.data_dir)?;
         let log_store = RedbLogStore::new(&db_path)?;
 
         // 4. Create Raft instance (takes ownership of SM)
-        let raft = Raft::new(
-            cfg.node_id,
-            raft_config,
-            DanubeNetworkFactory,
-            log_store,
-            sm,
-        )
-        .await?;
+        let raft = Raft::new(node_id, raft_config, DanubeNetworkFactory, log_store, sm).await?;
 
         // 5. Start gRPC server for Raft transport
         let handler = RaftTransportHandler::new(raft.clone());
@@ -102,11 +127,12 @@ impl RaftNode {
         // 7. Build the MetadataStore wrapper
         let store = RaftMetadataStore::new(raft.clone(), shared_data);
 
-        info!(node_id = cfg.node_id, "Raft node started");
+        info!(node_id, "Raft node started");
 
         Ok(Self {
             store,
             raft,
+            node_id,
             _grpc_handle: grpc_handle,
             _ttl_handle: ttl_handle,
         })
@@ -114,17 +140,20 @@ impl RaftNode {
 
     /// Bootstrap a single-node cluster. Call this only on the **first** node
     /// during initial cluster creation. After this, the node becomes the leader.
-    pub async fn init_cluster(&self, node_id: u64, addr: &str) -> anyhow::Result<()> {
+    pub async fn init_cluster(&self, addr: &str) -> anyhow::Result<()> {
         let mut members = BTreeMap::new();
         members.insert(
-            node_id,
+            self.node_id,
             BasicNode {
                 addr: addr.to_string(),
             },
         );
 
         self.raft.initialize(members).await?;
-        info!(node_id, "Raft cluster initialized (single-node)");
+        info!(
+            node_id = self.node_id,
+            "Raft cluster initialized (single-node)"
+        );
         Ok(())
     }
 
@@ -152,7 +181,7 @@ impl RaftNode {
     }
 
     /// Create a lightweight handle for querying leadership status.
-    pub fn leadership_handle(&self, node_id: u64) -> LeadershipHandle {
-        LeadershipHandle::new(self.raft.clone(), node_id)
+    pub fn leadership_handle(&self) -> LeadershipHandle {
+        LeadershipHandle::new(self.raft.clone(), self.node_id)
     }
 }

@@ -29,11 +29,11 @@ use serde_json::Value;
 #[tokio::test]
 async fn single_node_becomes_leader_after_bootstrap() {
     let (node, _tmp) = common::start_cluster().await;
-    let handle: LeadershipHandle = node.leadership_handle(1);
+    let handle: LeadershipHandle = node.leadership_handle();
 
     assert!(handle.is_leader(), "single-node should be leader");
-    assert_eq!(handle.current_leader(), Some(1));
-    assert_eq!(handle.node_id(), 1);
+    assert_eq!(handle.current_leader(), Some(node.node_id));
+    assert_eq!(handle.node_id(), node.node_id);
 }
 
 /// **What**: Verify the Raft-based leader election publishing pattern used
@@ -53,12 +53,12 @@ async fn single_node_becomes_leader_after_bootstrap() {
 async fn leader_publishes_id_to_metadata_store() {
     let (node, _tmp) = common::start_cluster().await;
     let store = &node.store;
-    let handle = node.leadership_handle(1);
+    let handle = node.leadership_handle();
 
     assert!(handle.is_leader());
 
     // Publish leader ID (like LeaderElection::check_leader does).
-    let broker_id: u64 = 1;
+    let broker_id: u64 = node.node_id;
     let payload = Value::Number(serde_json::Number::from(broker_id));
     store
         .put("/cluster/leader", payload, MetaOptions::None)
@@ -71,5 +71,5 @@ async fn leader_publishes_id_to_metadata_store() {
         .await
         .unwrap()
         .expect("leader key should exist");
-    assert_eq!(val.as_u64(), Some(1));
+    assert_eq!(val.as_u64(), Some(broker_id));
 }

@@ -89,4 +89,11 @@ impl MetadataStore for MetadataStorage {
             Self::InMemory(s) => s.get_bulk(prefix).await,
         }
     }
+
+    async fn allocate_monotonic_id(&self, counter_key: &str) -> Result<u64> {
+        match self {
+            Self::Raft(s) => s.allocate_monotonic_id(counter_key).await,
+            Self::InMemory(s) => s.allocate_monotonic_id(counter_key).await,
+        }
+    }
 }

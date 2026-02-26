@@ -29,35 +29,15 @@ impl SchemaRegistry {
         }
     }
 
-    /// Generate globally unique schema ID using ETCD atomic counter
-    /// 
-    /// This uses ETCD's compare-and-swap to ensure uniqueness across all brokers.
-    /// Since schema registration is infrequent, the network round-trip is acceptable.
+    /// Generate globally unique schema ID using atomic Raft counter.
+    ///
+    /// This uses the `AllocateMonotonicId` Raft command to atomically
+    /// increment and return a monotonic counter, eliminating the race
+    /// condition that existed with the old get+put pattern.
     async fn generate_schema_id(&self) -> Result<u64> {
-        const MAX_RETRIES: u32 = 10;
-        let mut retries = 0;
-        
-        loop {
-            // Get current counter value (or initialize)
-            let current = self.storage.get_global_schema_id_counter().await?;
-            let next_id = current + 1;
-            
-            // Atomic compare-and-swap
-            match self.storage.increment_schema_id_counter(current, next_id).await {
-                Ok(_) => {
-                    info!(schema_id = %current, "generated new schema_id for new subject");
-                    return Ok(current);
-                }
-                Err(_) => {
-                    // Another broker updated the counter, retry
-                    retries += 1;
-                    if retries >= MAX_RETRIES {
-                        return Err(anyhow!("Failed to generate schema ID after {} retries", MAX_RETRIES));
-                    }
-                    continue;
-                }
-            }
-        }
+        let id = self.storage.allocate_next_schema_id().await?;
+        info!(schema_id = %id, "generated new schema_id for new subject");
+        Ok(id)
     }
 
     /// Register a new schema or return existing schema ID if identical schema exists
@@ -92,7 +72,8 @@ impl SchemaRegistry {
             // Check compatibility
             let compatibility_mode = metadata.compatibility_mode;
             if !matches!(compatibility_mode, CompatibilityMode::None) {
-                let compat_result = self.check_compatibility_internal(&metadata, &schema_def, compatibility_mode)
+                let compat_result = self
+                    .check_compatibility_internal(&metadata, &schema_def, compatibility_mode)
                     .await?;
                 if !compat_result.is_compatible {
                     return Err(anyhow!(
@@ -151,9 +132,11 @@ impl SchemaRegistry {
                 .store_schema_version(subject, &first_version)
                 .await?;
             self.storage.store_schema_metadata(&metadata).await?;
-            
+
             // Store reverse index (schema_id -> subject)
-            self.storage.store_schema_id_index(schema_id, subject).await?;
+            self.storage
+                .store_schema_id_index(schema_id, subject)
+                .await?;
 
             info!(subject = %subject, schema_id = %schema_id, "registered new subject");
 
@@ -170,13 +153,13 @@ impl SchemaRegistry {
     ) -> Result<(String, SchemaVersion)> {
         // Look up subject using reverse index
         let subject = self.storage.fetch_subject_by_schema_id(schema_id).await?;
-        
+
         // Get the requested version or latest
         let schema_version = match version {
             Some(v) => self.get_schema_version(&subject, v).await?,
             None => self.get_latest_schema(&subject).await?,
         };
-        
+
         Ok((subject, schema_version))
     }
 

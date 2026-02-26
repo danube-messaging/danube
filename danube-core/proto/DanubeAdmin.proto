@@ -23,6 +23,27 @@ service BrokerAdmin {
   rpc TriggerRebalance(RebalanceRequest) returns (RebalanceResponse);
 }
 
+// Raft cluster membership management.
+// These RPCs are forwarded to the Raft leader internally.
+service ClusterAdmin {
+  // Bootstrap a new multi-node cluster (like `cockroach init`).
+  // Contacts each listed address, discovers node_ids, calls raft::initialize.
+  // Idempotent: returns AlreadyInitialized if membership already exists.
+  rpc ClusterInit(ClusterInitRequest) returns (ClusterInitResponse);
+
+  // Show Raft cluster state: leader, term, log index, voter/learner sets.
+  rpc ClusterStatus(Empty) returns (ClusterStatusResponse);
+
+  // Add a node as a Raft learner (non-voting). It will receive snapshots + log.
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+
+  // Promote a learner to a full voting member.
+  rpc PromoteNode(PromoteNodeRequest) returns (PromoteNodeResponse);
+
+  // Remove a node from the Raft voter/learner set.
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+}
+
 service NamespaceAdmin {
   // Namespace related RPCs
   rpc GetNamespaceTopics(NamespaceRequest) returns (TopicListResponse);
@@ -251,4 +272,68 @@ message ProposedMove {
   uint64 to_broker = 3;
   double estimated_load = 4;
   string reason = 5;
+}
+
+// ─── Cluster Admin messages ─────────────────────────────────────────────────
+
+message ClusterInitRequest {
+  // Raft transport addresses of all initial nodes, e.g. ["broker1:7650", "broker2:7650"]
+  repeated string nodes = 1;
+}
+
+message ClusterInitResponse {
+  bool success = 1;
+  // true if the cluster was already initialized (idempotent no-op)
+  bool already_initialized = 2;
+  // node_id of the elected leader (may be 0 if election is still in progress)
+  uint64 leader_id = 3;
+  // number of voters in the initialized cluster
+  uint32 voter_count = 4;
+  string message = 5;
+}
+
+message ClusterStatusResponse {
+  // Current Raft leader node_id (0 if no leader)
+  uint64 leader_id = 1;
+  // Current Raft term
+  uint64 current_term = 2;
+  // Last applied log index
+  uint64 last_applied = 3;
+  // Node IDs of current voters
+  repeated uint64 voters = 4;
+  // Node IDs of current learners (non-voting)
+  repeated uint64 learners = 5;
+  // This node's own ID
+  uint64 self_node_id = 6;
+}
+
+message AddNodeRequest {
+  // Raft transport address of the new node, e.g. "broker4:7650"
+  string addr = 1;
+  // Optional: provide the node_id directly (discovered via transport if omitted)
+  uint64 node_id = 2;
+}
+
+message AddNodeResponse {
+  bool success = 1;
+  uint64 node_id = 2;
+  string message = 3;
+}
+
+message PromoteNodeRequest {
+  uint64 node_id = 1;
+}
+
+message PromoteNodeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RemoveNodeRequest {
+  uint64 node_id = 1;
+}
+
+message RemoveNodeResponse {
+  bool success = 1;
+  string message = 2;
 }
