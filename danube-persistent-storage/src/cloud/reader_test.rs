@@ -7,11 +7,11 @@ mod tests {
     use crate::checkpoint::CheckpointStore;
     use crate::wal::{Wal, WalConfig};
     use crate::{
-        BackendConfig, CloudReader, CloudStore, EtcdMetadata, LocalBackend, Uploader,
+        BackendConfig, CloudReader, CloudStore, LocalBackend, StorageMetadata, Uploader,
         UploaderConfig,
     };
     use danube_core::message::{MessageID, StreamMessage};
-    use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
+    use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
     use tempfile::TempDir;
 
@@ -76,10 +76,8 @@ mod tests {
         .expect("cloud store mem");
 
         let mem = MemoryStore::new().await.expect("memory meta store");
-        let meta = EtcdMetadata::new(
-            MetadataStorage::InMemory(mem.clone()),
-            "/danube".to_string(),
-        );
+        let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem.clone());
+        let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
 
         let up_cfg = UploaderConfig {
             interval_seconds: 1,
@@ -179,10 +177,8 @@ mod tests {
 
         // Metadata store
         let mem = MemoryStore::new().await.expect("memory meta store");
-        let meta = EtcdMetadata::new(
-            MetadataStorage::InMemory(mem.clone()),
-            "/danube".to_string(),
-        );
+        let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem.clone());
+        let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
 
         // Uploader
         let up_cfg = UploaderConfig {
@@ -198,7 +194,7 @@ mod tests {
 
         // Wait for an object to appear deterministically
         async fn wait_for_objects(
-            mem: danube_metadata_store::MemoryStore,
+            mem: MemoryStore,
             prefix: &str,
             timeout_ms: u64,
             interval_ms: u64,

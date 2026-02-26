@@ -1,16 +1,16 @@
+use crate::persistent_metrics::CLOUD_UPLOAD_OBJECTS_TOTAL;
 use danube_core::storage::PersistentStorageError;
+use metrics::counter;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use metrics::counter;
-use crate::persistent_metrics::CLOUD_UPLOAD_OBJECTS_TOTAL;
 
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::uploader_stream;
 use crate::cloud::CloudStore;
-use crate::etcd_metadata::{EtcdMetadata, ObjectDescriptor};
+use crate::etcd_metadata::{ObjectDescriptor, StorageMetadata};
 use crate::wal::UploaderCheckpoint;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
@@ -20,7 +20,7 @@ use crate::wal::UploaderCheckpoint;
 pub struct Uploader {
     cfg: UploaderConfig,
     cloud: CloudStore,
-    etcd: EtcdMetadata,
+    etcd: StorageMetadata,
     last_uploaded_offset: AtomicU64,
     ckpt_store: Option<Arc<CheckpointStore>>,
 }
@@ -30,7 +30,7 @@ impl Uploader {
     pub fn new(
         cfg: UploaderConfig,
         cloud: CloudStore,
-        etcd: EtcdMetadata,
+        etcd: StorageMetadata,
         ckpt_store: Option<Arc<CheckpointStore>>,
     ) -> Result<Self, PersistentStorageError> {
         Ok(Self {

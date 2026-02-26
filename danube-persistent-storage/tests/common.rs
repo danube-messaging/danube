@@ -1,5 +1,5 @@
 use danube_core::message::{MessageID, StreamMessage};
-use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
@@ -51,6 +51,7 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
         d
     };
 
+    let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
     let factory = WalStorageFactory::new(
         WalConfig {
             dir: Some(unique_dir),
@@ -61,7 +62,7 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
             backend: LocalBackend::Memory,
             root: "integration-test".to_string(),
         },
-        MetadataStorage::InMemory((*memory_store).clone()),
+        store_arc,
         "/danube",
         UploaderBaseConfig {
             interval_seconds: 1,
@@ -128,7 +129,7 @@ pub async fn get_latest_object_descriptor(
             format!("{}/{}", prefix, latest)
         };
         let desc_value = memory_store
-            .get(&object_key, danube_metadata_store::MetaOptions::None)
+            .get(&object_key, MetaOptions::None)
             .await
             .ok()??;
 

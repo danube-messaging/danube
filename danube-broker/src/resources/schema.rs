@@ -1,5 +1,6 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde_json::Value;
 use tracing::debug;
 

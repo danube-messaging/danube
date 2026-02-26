@@ -1,0 +1,20 @@
+syntax = "proto3";
+package danube.raft;
+
+// Minimal Raft transport — openraft request/response types are
+// serialized with bincode and sent as opaque bytes.
+
+service RaftTransport {
+  rpc AppendEntries(RaftRequest) returns (RaftReply);
+  rpc Vote(RaftRequest) returns (RaftReply);
+  rpc InstallSnapshot(RaftRequest) returns (RaftReply);
+}
+
+message RaftRequest {
+  bytes data = 1;
+}
+
+message RaftReply {
+  bytes data = 1;
+  string error = 2;
+}

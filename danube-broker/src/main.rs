@@ -9,6 +9,7 @@ mod consumer;
 mod danube_service;
 mod dispatcher;
 mod message;
+mod metadata_storage;
 mod policies;
 mod producer;
 mod rate_limiter;
@@ -35,11 +36,13 @@ use crate::{
 };
 
 use anyhow::{Context, Result};
-use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
+use danube_raft::node::{RaftNode, RaftNodeConfig};
 use std::net::SocketAddr;
+
+use crate::metadata_storage::MetadataStorage;
 
 use tracing::info;
 use tracing_subscriber;
@@ -133,10 +136,30 @@ async fn main() -> Result<()> {
         service_config.prom_exporter = Some(prom_address);
     }
 
-    // initialize the metadata storage layer for Danube Broker
-    info!("initializing ETCD as metadata persistent store");
-    let metadata_store: MetadataStorage =
-        MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
+    // initialize the Raft metadata storage layer
+    let meta_cfg = &service_config.meta_store;
+    let raft_addr: SocketAddr =
+        format!("{}:{}", service_config.broker_addr.ip(), meta_cfg.raft_port)
+            .parse()
+            .context("Failed to parse raft_addr")?;
+
+    info!(node_id = meta_cfg.node_id, %raft_addr, "initializing Raft metadata store");
+    let raft_node = RaftNode::start(RaftNodeConfig {
+        node_id: meta_cfg.node_id,
+        data_dir: (&meta_cfg.data_dir).into(),
+        raft_addr,
+        ttl_check_interval: std::time::Duration::from_secs(5),
+    })
+    .await?;
+
+    // Bootstrap single-node cluster on first start (idempotent).
+    let addr_str = raft_addr.to_string();
+    if let Err(e) = raft_node.init_cluster(meta_cfg.node_id, &addr_str).await {
+        info!(?e, "cluster already initialized (or join as learner)");
+    }
+
+    let leadership_handle = raft_node.leadership_handle(meta_cfg.node_id);
+    let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
     // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
     let wal_cfg = service_config
@@ -191,10 +214,11 @@ async fn main() -> Result<()> {
     };
 
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
+    let store_arc: Arc<dyn danube_core::metadata::MetadataStore> = Arc::new(metadata_store.clone());
     let wal_factory = WalStorageFactory::new(
         wal_base_cfg,
         cloud_backend,
-        metadata_store.clone(),
+        store_arc,
         wal_cfg
             .uploader
             .root_prefix
@@ -230,8 +254,9 @@ async fn main() -> Result<()> {
         init_metrics(None, broker_id);
     }
 
-    // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.
+    // Raft-based leader election: the Raft leader is the cluster leader.
     let leader_election_service = LeaderElection::new(
+        leadership_handle,
         metadata_store.clone(),
         LEADER_ELECTION_PATH,
         broker_service.broker_id,

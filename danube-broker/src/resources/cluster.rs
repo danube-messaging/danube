@@ -1,6 +1,7 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::Result;
 use danube_core::admin_proto::BrokerInfo;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde_json::Value;
 
 use crate::{

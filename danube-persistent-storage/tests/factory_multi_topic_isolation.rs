@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use danube_core::message::{MessageID, StreamMessage};
+use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::PersistentStorage;
-use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::{Wal, WalConfig};
@@ -48,7 +48,7 @@ async fn test_factory_multi_topic_wal_isolation() {
         root: "mem-prefix".to_string(),
     };
     let meta = MemoryStore::new().await.expect("memory meta");
-    let metadata_store = MetadataStorage::InMemory(meta);
+    let metadata_store: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(meta);
 
     let factory = WalStorageFactory::new(
         WalConfig {
@@ -176,10 +176,8 @@ async fn test_multi_topic_uploader_isolation() {
     })
     .expect("cloud");
     let mem = MemoryStore::new().await.expect("meta mem");
-    let meta = danube_persistent_storage::EtcdMetadata::new(
-        MetadataStorage::InMemory(mem.clone()),
-        "/danube".to_string(),
-    );
+    let mem_arc: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(mem.clone());
+    let meta = danube_persistent_storage::StorageMetadata::new(mem_arc, "/danube".to_string());
 
     // Start two uploaders with short intervals
     let up_a = Uploader::new(

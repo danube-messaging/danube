@@ -284,7 +284,8 @@ mod tests {
         load_manager::LoadManager,
         load_report::{LoadReport, ResourceType, SystemLoad, TopicLoad},
     };
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use crate::metadata_storage::MetadataStorage;
+    use danube_core::metadata::MemoryStore;
 
     fn create_load_report(cpu_usage: f64, memory_usage: f64, topics_len: usize) -> LoadReport {
         LoadReport {

@@ -11,8 +11,8 @@ members = [
     # -- Danube messaging core types and traits
     "danube-core", 
 
-    # -- Danube Metadata Store lib
-    "danube-metadata-store", 
+    # -- Danube Raft consensus layer (replaces ETCD)
+    "danube-raft",
 
     # -- Danube persistent storage
     "danube-persistent-storage",

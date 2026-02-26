@@ -1,14 +1,15 @@
+use crate::metadata_storage::MetadataStorage;
 mod trie;
 pub(crate) use trie::Trie;
 
 use anyhow::Result;
-use danube_metadata_store::{MetadataStorage, MetadataStore, WatchEvent, WatchStream};
+use danube_core::metadata::{MetadataError, MetadataStore, WatchEvent, WatchStream};
 use dashmap::DashMap;
 use futures::StreamExt;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::resources::{
     BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH, BASE_SCHEMAS_PATH, BASE_SUBSCRIPTIONS_PATH,
@@ -134,6 +135,33 @@ impl LocalCache {
         Ok(WatchStream::new(combined_stream))
     }
 
+    /// Re-populate the cache from the metadata store. Called on initial start and
+    /// after a watch lag event to recover missed updates.
+    async fn resync_from_store(&self) {
+        let prefixes = vec![
+            BASE_CLUSTER_PATH,
+            BASE_NAMESPACES_PATH,
+            BASE_TOPICS_PATH,
+            BASE_SUBSCRIPTIONS_PATH,
+            BASE_SCHEMAS_PATH,
+        ];
+
+        for prefix in &prefixes {
+            match self.metadata_store.get_bulk(prefix).await {
+                Ok(kvs) => {
+                    for kv in kvs {
+                        self.update_cache(&kv.key, kv.version, Some(&kv.value))
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    error!(prefix = %prefix, error = %e, "failed to resync cache from store");
+                }
+            }
+        }
+        info!("local cache resync complete");
+    }
+
     pub(crate) async fn process_event(&self, mut watch_stream: WatchStream) {
         while let Some(result) = watch_stream.next().await {
             match result {
@@ -165,6 +193,10 @@ impl LocalCache {
                         self.update_cache(key_str, version.unwrap_or(0), None).await;
                     }
                 },
+                Err(MetadataError::WatchError(msg)) if msg.contains("lagged") => {
+                    warn!("watch stream lagged — resyncing local cache from store");
+                    self.resync_from_store().await;
+                }
                 Err(e) => {
                     error!(error = %e, "Error receiving watch event");
                 }

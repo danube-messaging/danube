@@ -1,11 +1,21 @@
+use std::sync::Arc;
+
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use danube_core::storage::PersistentStorageError;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
-pub struct EtcdMetadata {
-    store: MetadataStorage,
+#[derive(Clone)]
+pub struct StorageMetadata {
+    store: Arc<dyn MetadataStore>,
     root: String,
+}
+
+impl std::fmt::Debug for StorageMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageMetadata")
+            .field("root", &self.root)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +41,8 @@ pub struct StorageStateSealed {
     pub timestamp: u64,
 }
 
-impl EtcdMetadata {
-    pub fn new(store: MetadataStorage, root: String) -> Self {
+impl StorageMetadata {
+    pub fn new(store: Arc<dyn MetadataStore>, root: String) -> Self {
         Self { store, root }
     }
 

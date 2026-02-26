@@ -53,8 +53,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_addr: std::net::SocketAddr,
     /// Prometheus exporter address
     pub(crate) prom_exporter: Option<std::net::SocketAddr>,
-    /// Metadata Persistent Store (etcd) address
-    pub(crate) meta_store_addr: String,
+    /// Metadata store configuration (etcd or raft).
+    pub(crate) meta_store: MetaStoreConfig,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Allow producers to auto-create topics when missing
@@ -101,13 +101,22 @@ pub(crate) struct BrokerPorts {
     pub(crate) prometheus: Option<usize>,
 }
 
-/// Metadata store configuration
-#[derive(Debug, Serialize, Deserialize)]
+/// Metadata store configuration (Raft-only, ETCD removed).
+///
+/// ```yaml
+/// meta_store:
+///   node_id: 1
+///   raft_port: 7650
+///   data_dir: "./danube-data/raft"
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MetaStoreConfig {
-    /// Hostname or IP address of metadata store (etcd)
-    pub(crate) host: String,
-    /// Port for metadata store
-    pub(crate) port: usize,
+    /// Unique Raft node ID for this broker.
+    pub(crate) node_id: u64,
+    /// Port for Raft inter-node gRPC transport.
+    pub(crate) raft_port: usize,
+    /// Directory for Raft log store and snapshots.
+    pub(crate) data_dir: String,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -139,9 +148,6 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
                 None
             };
 
-        // Construct meta_store_addr from meta_store.host and meta_store.port
-        let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);
-
         // Derive broker_url and connect_url from advertised_listeners or bind address
         let scheme = match config.auth.mode {
             AuthMode::Tls | AuthMode::TlsWithJwt => "https",
@@ -169,7 +175,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             proxy_enabled,
             admin_addr,
             prom_exporter,
-            meta_store_addr,
+            meta_store: config.meta_store,
             bootstrap_namespaces: config.bootstrap_namespaces,
             auto_create_topics: config.auto_create_topics.unwrap_or(true),
             policies: config.policies,

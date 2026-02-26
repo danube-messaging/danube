@@ -6,12 +6,12 @@ use futures::{StreamExt, TryStreamExt};
 use tokio::time::timeout;
 
 use danube_core::message::{MessageID, StreamMessage};
+use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::{PersistentStorage, StartPosition};
-use danube_metadata_store::{MemoryStore, MetadataStorage, MetadataStore};
 use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::{
-    BackendConfig, CloudStore, EtcdMetadata, LocalBackend, Uploader, UploaderConfig, WalStorage,
+    BackendConfig, CloudStore, LocalBackend, StorageMetadata, Uploader, UploaderConfig, WalStorage,
 };
 
 // Use shared helpers to align integration test setup
@@ -275,10 +275,8 @@ async fn chaining_stream_handoff_memory() {
     .expect("cloud store mem");
 
     let mem = MemoryStore::new().await.expect("memory meta store");
-    let meta = EtcdMetadata::new(
-        MetadataStorage::InMemory(mem.clone()),
-        "/danube".to_string(),
-    );
+    let mem_arc: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(mem.clone());
+    let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
 
     let up_cfg = UploaderConfig {
         interval_seconds: 1,

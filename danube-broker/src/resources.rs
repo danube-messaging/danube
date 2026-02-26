@@ -1,4 +1,4 @@
-use danube_metadata_store::MetadataStorage;
+use crate::metadata_storage::MetadataStorage;
 
 use crate::LocalCache;
 

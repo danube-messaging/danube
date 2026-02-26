@@ -1,5 +1,6 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
-use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde_json::Value;
 
 use crate::{policies::Policies, resources::BASE_NAMESPACES_PATH, utils::join_path, LocalCache};

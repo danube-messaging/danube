@@ -21,11 +21,10 @@ mod tests {
     use super::wait_for_condition;
     use crate::checkpoint::CheckpointStore;
     use crate::wal::{UploaderCheckpoint, Wal, WalConfig};
-    use crate::{BackendConfig, CloudStore, EtcdMetadata, LocalBackend};
+    use crate::{BackendConfig, CloudStore, LocalBackend, StorageMetadata};
     use crate::{Uploader, UploaderConfig};
     use danube_core::message::{MessageID, StreamMessage};
-    use danube_metadata_store::MetadataStore; // bring trait into scope for MemoryStore methods
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -53,7 +52,7 @@ mod tests {
     async fn create_test_setup() -> (
         Wal,
         CloudStore,
-        EtcdMetadata,
+        StorageMetadata,
         MemoryStore,
         Arc<CheckpointStore>,
         TempDir,
@@ -85,10 +84,8 @@ mod tests {
         .expect("cloud store");
 
         let mem = MemoryStore::new().await.expect("memory store");
-        let meta = EtcdMetadata::new(
-            MetadataStorage::InMemory(mem.clone()),
-            "/danube".to_string(),
-        );
+        let mem_arc: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(mem.clone());
+        let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
 
         (wal, cloud, meta, mem, store, temp)
     }
@@ -216,7 +213,7 @@ mod tests {
         // Get the first object and basic checks
         let object_key = &objects[0];
         let desc_value = mem
-            .get(object_key, danube_metadata_store::MetaOptions::None)
+            .get(object_key, MetaOptions::None)
             .await
             .expect("get descriptor")
             .expect("descriptor should exist");
@@ -430,7 +427,7 @@ mod tests {
             .collect();
         let object_key = &objects[0];
         let desc_value = mem
-            .get(object_key, danube_metadata_store::MetaOptions::None)
+            .get(object_key, MetaOptions::None)
             .await
             .expect("get descriptor")
             .expect("descriptor should exist");

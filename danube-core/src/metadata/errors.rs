@@ -20,9 +20,6 @@ pub enum MetadataError {
     #[error("Watch channel closed")]
     WatchChannelClosed,
 
-    #[error("Lease keepalive error: {0}")]
-    LeaseKeepAliveError(String),
-
     #[error("Invalid arguments: {0}")]
     InvalidArguments(String),
 
@@ -40,17 +37,4 @@ pub enum MetadataError {
 
     #[error("Unknown error occurred: {0}")]
     Unknown(String),
-}
-
-// Convenience impl for etcd errors
-impl From<etcd_client::Error> for MetadataError {
-    fn from(err: etcd_client::Error) -> Self {
-        match err {
-            etcd_client::Error::WatchError(msg) => MetadataError::WatchError(msg),
-            etcd_client::Error::LeaseKeepAliveError(msg) => MetadataError::LeaseKeepAliveError(msg),
-            etcd_client::Error::TransportError(e) => MetadataError::TransportError(e.to_string()),
-            etcd_client::Error::InvalidArgs(msg) => MetadataError::InvalidArguments(msg),
-            err => MetadataError::StorageError(Box::new(err)),
-        }
-    }
 }

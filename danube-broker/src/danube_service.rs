@@ -1,3 +1,4 @@
+use crate::metadata_storage::MetadataStorage;
 mod broker_register;
 mod broker_watcher;
 mod leader_election;
@@ -17,7 +18,7 @@ pub(crate) use syncronizer::Syncronizer;
 
 use anyhow::Result;
 use danube_client::DanubeClient;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};

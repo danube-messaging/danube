@@ -20,10 +20,11 @@ broker:
   #   # External: address reachable by external clients via gRPC proxy
   #   connect_url: "danube-proxy.example.com:6650"
 
-# Metadata Store Configuration (etcd)
+# Metadata Store Configuration (Raft — embedded, no external dependency)
 meta_store:
-  host: "127.0.0.1"
-  port: 2379
+  node_id: 1
+  raft_port: 7650
+  data_dir: "./danube-data/raft"
 
 # Namespaces to be created on boot
 bootstrap_namespaces:

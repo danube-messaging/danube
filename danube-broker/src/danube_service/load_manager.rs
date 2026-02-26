@@ -8,9 +8,9 @@ mod rebalancing_test;
 
 use crate::broker_metrics::BROKER_ASSIGNMENTS_TOTAL;
 use crate::danube_service::load_report::{LoadReport, TopicLoad};
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
-use danube_metadata_store::EtcdGetOptions;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent, WatchStream};
+use danube_core::metadata::{MetaOptions, MetadataError, MetadataStore, WatchEvent, WatchStream};
 use futures::stream::StreamExt;
 use metrics::counter;
 use rebalancing::{ImbalanceMetrics, RebalancingMove};
@@ -156,10 +156,7 @@ impl LoadManager {
         // Query all broker load reports from metadata store
         let response = self
             .meta_store
-            .get(
-                BASE_BROKER_LOAD_PATH,
-                MetaOptions::EtcdGet(EtcdGetOptions::new().with_prefix()),
-            )
+            .get(BASE_BROKER_LOAD_PATH, MetaOptions::WithPrefix)
             .await?;
 
         if let Some(Value::Object(map)) = response {
@@ -191,10 +188,7 @@ impl LoadManager {
     async fn fetch_registered_brokers(&self) -> Result<()> {
         let response = self
             .meta_store
-            .get(
-                BASE_REGISTER_PATH,
-                MetaOptions::EtcdGet(EtcdGetOptions::new().with_prefix()),
-            )
+            .get(BASE_REGISTER_PATH, MetaOptions::WithPrefix)
             .await?;
 
         if let Some(Value::Object(map)) = response {
@@ -289,6 +283,15 @@ impl LoadManager {
                                 }
                             }
                         }
+                    }
+                }
+                Err(MetadataError::WatchError(msg)) if msg.contains("lagged") => {
+                    warn!("watch stream lagged — resyncing load manager state");
+                    if let Err(e) = self.fetch_initial_load().await {
+                        error!(error = %e, "failed to resync load reports after lag");
+                    }
+                    if let Err(e) = self.fetch_registered_brokers().await {
+                        error!(error = %e, "failed to resync registered brokers after lag");
                     }
                 }
                 Err(e) => {

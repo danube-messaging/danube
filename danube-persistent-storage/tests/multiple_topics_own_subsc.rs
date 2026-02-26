@@ -1,8 +1,8 @@
 mod common;
 
 use common::{count_cloud_objects, create_test_factory, make_test_message, wait_for_condition};
+use danube_core::metadata::MetadataStore;
 use danube_core::storage::{PersistentStorage, StartPosition};
-use danube_metadata_store::MetadataStore;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio_stream::StreamExt;

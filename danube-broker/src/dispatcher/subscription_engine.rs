@@ -500,9 +500,10 @@ pub(crate) struct LagInfo {
 mod tests {
     use super::*;
     use crate::danube_service::LocalCache;
+    use crate::metadata_storage::MetadataStorage;
     use crate::resources::TopicResources;
     use danube_core::message::MessageID;
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use danube_core::metadata::MemoryStore;
     use danube_persistent_storage::wal::{Wal, WalConfig};
     use danube_persistent_storage::WalStorage;
     use tokio::time::{sleep, Duration};

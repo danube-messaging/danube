@@ -1,12 +1,13 @@
-use etcd_client::{EventType, WatchStream as EtcdWatchStream};
 use futures::stream::Stream;
 use futures::StreamExt;
 use std::task::{Context, Poll};
 use std::{fmt, pin::Pin};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
-use crate::errors::{MetadataError, Result};
+use super::errors::{MetadataError, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WatchEvent {
     Put {
         key: Vec<u8>,
@@ -39,38 +40,20 @@ impl WatchStream {
             inner: Box::pin(stream),
         }
     }
-    pub(crate) fn from_etcd(stream: EtcdWatchStream) -> Self {
-        let stream = stream.flat_map(|result| {
-            futures::stream::iter(
-                result
-                    .map_err(MetadataError::from)
-                    .and_then(|watch_response| {
-                        Ok(watch_response
-                            .events()
-                            .iter()
-                            .map(|event| {
-                                let key_value = event.kv().unwrap();
-                                match event.event_type() {
-                                    EventType::Put => Ok(WatchEvent::Put {
-                                        key: key_value.key().to_vec(),
-                                        value: key_value.value().to_vec(),
-                                        mod_revision: Some(key_value.mod_revision()),
-                                        version: Some(key_value.version()),
-                                    }),
-                                    EventType::Delete => Ok(WatchEvent::Delete {
-                                        key: key_value.key().to_vec(),
-                                        mod_revision: Some(key_value.mod_revision()),
-                                        version: Some(key_value.version()),
-                                    }),
-                                }
-                            })
-                            .collect::<Vec<_>>())
-                    })
-                    .into_iter()
-                    .flatten(),
-            )
+    /// Create a WatchStream from a `tokio::sync::broadcast::Receiver`.
+    /// Broadcast lag (slow consumer) is surfaced as `MetadataError::WatchError`.
+    pub fn from_broadcast(rx: broadcast::Receiver<WatchEvent>) -> Self {
+        let stream = BroadcastStream::new(rx).filter_map(|result| {
+            futures::future::ready(match result {
+                Ok(event) => Some(Ok(event)),
+                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                    Some(Err(MetadataError::WatchError(format!(
+                        "watch lagged by {} events — consumer should resync",
+                        n
+                    ))))
+                }
+            })
         });
-
         Self {
             inner: Box::pin(stream),
         }

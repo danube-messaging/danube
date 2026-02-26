@@ -1,6 +1,7 @@
+use crate::metadata_storage::MetadataStorage;
 use std::sync::Arc;
 
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent};
+use danube_core::metadata::{MetaOptions, MetadataError, MetadataStore, WatchEvent};
 use futures::StreamExt;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, trace, warn};
@@ -59,6 +60,12 @@ pub(crate) async fn watch_events_for_broker(
                                     .await;
                                 }
                             }
+                        }
+                        Err(MetadataError::WatchError(msg)) if msg.contains("lagged") => {
+                            warn!(
+                                broker_id = %broker_id,
+                                "broker watcher stream lagged — some topic assignments may have been missed; LoadManager will retry"
+                            );
                         }
                         Err(e) => {
                             warn!(error = %e, "Error receiving watch event");
@@ -215,7 +222,7 @@ async fn handle_delete_event(
     // Auto-transition to drained when broker is draining and has no topics left
     let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
     let is_draining = match meta_store
-        .get(&state_path, danube_metadata_store::MetaOptions::None)
+        .get(&state_path, danube_core::metadata::MetaOptions::None)
         .await
     {
         Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()) == Some("draining"),
@@ -232,7 +239,7 @@ async fn handle_delete_event(
                 .put(
                     &state_path,
                     drained,
-                    danube_metadata_store::MetaOptions::None,
+                    danube_core::metadata::MetaOptions::None,
                 )
                 .await
             {
@@ -250,7 +257,7 @@ async fn handle_delete_event(
 async fn is_broker_active(meta_store: &MetadataStorage, broker_id: u64) -> bool {
     let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
     match meta_store
-        .get(&state_path, danube_metadata_store::MetaOptions::None)
+        .get(&state_path, danube_core::metadata::MetaOptions::None)
         .await
     {
         Ok(Some(val)) => val
@@ -284,7 +291,7 @@ async fn bounce_if_not_active(
         .put(
             &unassigned_path,
             marker,
-            danube_metadata_store::MetaOptions::None,
+            danube_core::metadata::MetaOptions::None,
         )
         .await
     {

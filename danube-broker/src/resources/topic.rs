@@ -1,6 +1,7 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
