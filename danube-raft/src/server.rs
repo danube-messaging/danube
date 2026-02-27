@@ -40,7 +40,7 @@ impl RaftTransport for RaftTransportHandler {
         request: Request<RaftRequest>,
     ) -> Result<Response<RaftReply>, Status> {
         let req: openraft::raft::AppendEntriesRequest<TypeConfig> =
-            bincode::deserialize(&request.into_inner().data)
+            serde_json::from_slice(&request.into_inner().data)
                 .map_err(|e| Status::invalid_argument(format!("deserialize failed: {}", e)))?;
 
         let resp = self
@@ -49,7 +49,7 @@ impl RaftTransport for RaftTransportHandler {
             .await
             .map_err(|e| Status::internal(format!("append_entries failed: {}", e)))?;
 
-        let data = bincode::serialize(&resp)
+        let data = serde_json::to_vec(&resp)
             .map_err(|e| Status::internal(format!("serialize failed: {}", e)))?;
 
         Ok(Response::new(RaftReply {
@@ -60,7 +60,7 @@ impl RaftTransport for RaftTransportHandler {
 
     async fn vote(&self, request: Request<RaftRequest>) -> Result<Response<RaftReply>, Status> {
         let req: openraft::raft::VoteRequest<u64> =
-            bincode::deserialize(&request.into_inner().data)
+            serde_json::from_slice(&request.into_inner().data)
                 .map_err(|e| Status::invalid_argument(format!("deserialize failed: {}", e)))?;
 
         let resp = self
@@ -69,7 +69,7 @@ impl RaftTransport for RaftTransportHandler {
             .await
             .map_err(|e| Status::internal(format!("vote failed: {}", e)))?;
 
-        let data = bincode::serialize(&resp)
+        let data = serde_json::to_vec(&resp)
             .map_err(|e| Status::internal(format!("serialize failed: {}", e)))?;
 
         Ok(Response::new(RaftReply {
@@ -83,7 +83,7 @@ impl RaftTransport for RaftTransportHandler {
         request: Request<RaftRequest>,
     ) -> Result<Response<RaftReply>, Status> {
         let req: openraft::raft::InstallSnapshotRequest<TypeConfig> =
-            bincode::deserialize(&request.into_inner().data)
+            serde_json::from_slice(&request.into_inner().data)
                 .map_err(|e| Status::invalid_argument(format!("deserialize failed: {}", e)))?;
 
         let resp = self
@@ -92,7 +92,7 @@ impl RaftTransport for RaftTransportHandler {
             .await
             .map_err(|e| Status::internal(format!("install_snapshot failed: {}", e)))?;
 
-        let data = bincode::serialize(&resp)
+        let data = serde_json::to_vec(&resp)
             .map_err(|e| Status::internal(format!("serialize failed: {}", e)))?;
 
         Ok(Response::new(RaftReply {
@@ -115,7 +115,7 @@ impl RaftTransport for RaftTransportHandler {
         &self,
         request: Request<ClientWriteRequest>,
     ) -> Result<Response<ClientWriteReply>, Status> {
-        let cmd: RaftCommand = bincode::deserialize(&request.into_inner().data)
+        let cmd: RaftCommand = serde_json::from_slice(&request.into_inner().data)
             .map_err(|e| Status::invalid_argument(format!("deserialize command failed: {}", e)))?;
 
         let resp = self
@@ -124,7 +124,7 @@ impl RaftTransport for RaftTransportHandler {
             .await
             .map_err(|e| Status::internal(format!("client_write failed: {}", e)))?;
 
-        let data = bincode::serialize(&resp.data)
+        let data = serde_json::to_vec(&resp.data)
             .map_err(|e| Status::internal(format!("serialize response failed: {}", e)))?;
 
         Ok(Response::new(ClientWriteReply {

@@ -1,7 +1,7 @@
 //! gRPC Raft network transport.
 //!
 //! Implements `RaftNetworkFactory` and `RaftNetwork` using the proto-generated
-//! `RaftTransportClient`. Each openraft request/response is bincode-serialized
+//! `RaftTransportClient`. Each openraft request/response is JSON-serialized
 //! and sent as opaque bytes over gRPC.
 
 use std::future::Future;
@@ -76,7 +76,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let data = bincode::serialize(&rpc).map_err(|e| net_err(&e.to_string()))?;
+        let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
         let client = self
             .ensure_client()
             .await
@@ -94,7 +94,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         if !reply.error.is_empty() {
             return Err(net_err(&reply.error));
         }
-        bincode::deserialize(&reply.data).map_err(|e| net_err(&e.to_string()))
+        serde_json::from_slice(&reply.data).map_err(|e| net_err(&e.to_string()))
     }
 
     async fn vote(
@@ -102,7 +102,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         rpc: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let data = bincode::serialize(&rpc).map_err(|e| net_err(&e.to_string()))?;
+        let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
         let client = self
             .ensure_client()
             .await
@@ -117,7 +117,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         if !reply.error.is_empty() {
             return Err(net_err(&reply.error));
         }
-        bincode::deserialize(&reply.data).map_err(|e| net_err(&e.to_string()))
+        serde_json::from_slice(&reply.data).map_err(|e| net_err(&e.to_string()))
     }
 
     async fn full_snapshot(
@@ -158,7 +158,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        let data = bincode::serialize(&rpc).map_err(|e| net_err(&e.to_string()))?;
+        let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
         let client = self
             .ensure_client()
             .await
@@ -176,7 +176,7 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         if !reply.error.is_empty() {
             return Err(net_err(&reply.error));
         }
-        bincode::deserialize(&reply.data).map_err(|e| net_err(&e.to_string()))
+        serde_json::from_slice(&reply.data).map_err(|e| net_err(&e.to_string()))
     }
 }
 

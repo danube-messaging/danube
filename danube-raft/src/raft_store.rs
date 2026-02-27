@@ -79,7 +79,7 @@ impl RaftMetadataStore {
             .map_err(|e| MetadataError::Unknown(format!("connect to leader failed: {}", e)))?;
 
         let mut client = RaftTransportClient::new(channel);
-        let data = bincode::serialize(&cmd)
+        let data = serde_json::to_vec(&cmd)
             .map_err(|e| MetadataError::Unknown(format!("serialize command failed: {}", e)))?;
 
         let resp = client
@@ -97,7 +97,7 @@ impl RaftMetadataStore {
             )));
         }
 
-        let raft_resp: RaftResponse = bincode::deserialize(&reply.data)
+        let raft_resp: RaftResponse = serde_json::from_slice(&reply.data)
             .map_err(|e| MetadataError::Unknown(format!("deserialize response failed: {}", e)))?;
         Ok(raft_resp)
     }
