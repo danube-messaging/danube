@@ -4,7 +4,7 @@ Choose the right setup for your use case:
 
 | Setup | Services | Backend | Use Case |
 |-------|----------|---------|----------|
-| **[quickstart](#quickstart)** | ETCD + 2 Brokers + CLI + Prometheus | Filesystem | Quick testing, learning, MCP development |
+| **[quickstart](#quickstart)** | 3 Brokers + CLI + Prometheus | Filesystem | Quick testing, learning, MCP development |
 | **[with-ui](#with-ui)** | + Admin Server + Web UI | Filesystem | Cluster monitoring, visual exploration |
 | **[with-cloud-storage](#with-cloud-storage)** | + MinIO + MC | S3/MinIO | Cloud storage testing, durability testing |
 | **[local-development](#local-development)** | All above (builds from source) | Filesystem | Development, testing local changes |
@@ -21,9 +21,9 @@ Choose the right setup for your use case:
 
 **Minimal setup with filesystem backend** - Perfect for quick testing and MCP tools development.
 
-**Services:** ETCD, 2 Brokers, CLI, Prometheus  
+**Services:** 3 Brokers (Raft consensus), CLI, Prometheus  
 **Storage:** Filesystem (no MinIO overhead)  
-**Ports:** 2379-2380 (ETCD), 6650-6651 (Brokers), 50051-50052 (Admin), 9040-9041 (Metrics), 9090 (Prometheus)
+**Ports:** 6650-6652 (Brokers), 50051-50053 (Admin), 9040-9042 (Metrics), 9090 (Prometheus)
 
 ### Start
 
@@ -43,14 +43,14 @@ docker-compose ps
 
 ```bash
 # Produce messages
-docker exec danube-cli produce \
+docker exec danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/test" \
   --count 100 \
   --message "Hello Danube!"
 
 # Consume messages
-docker exec -it danube-cli consume \
+docker exec -it danube-cli danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/test" \
   --subscription "my-sub"
@@ -114,7 +114,7 @@ docker-compose down -v
 
 **S3/MinIO backend for testing cloud-native storage** - Perfect for durability and cloud migration testing.
 
-**Services:** ETCD, MinIO, MC, 2 Brokers, CLI, Prometheus  
+**Services:** MinIO, MC, 3 Brokers (Raft consensus), CLI, Prometheus  
 **Storage:** MinIO (S3-compatible)  
 **Additional Ports:** 9000 (MinIO API), 9001 (MinIO Console)
 
@@ -178,8 +178,8 @@ docker-compose up -d --build
 
 ```bash
 # Rebuild specific services
-docker-compose build broker1 broker2 danube-admin
-docker-compose up -d --no-deps broker1 broker2 danube-admin
+docker-compose build broker1 broker2 broker3 danube-admin
+docker-compose up -d --no-deps broker1 broker2 broker3 danube-admin
 
 # Or rebuild everything
 docker-compose up -d --build
@@ -215,16 +215,6 @@ curl http://localhost:9041/metrics  # broker2
 
 # Prometheus UI
 open http://localhost:9090
-```
-
-### ETCD Inspection
-
-```bash
-# List all keys
-docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 get --prefix ""
-
-# Watch for changes
-docker exec danube-etcd etcdctl --endpoints=http://127.0.0.1:2379 watch --prefix ""
 ```
 
 ### Admin Operations
@@ -341,7 +331,7 @@ For production deployment:
 2. **Security:** Enable TLS/mTLS in broker config (`auth: tls`)
 3. **Resources:** Configure CPU/memory limits in compose file
 4. **Monitoring:** Add Grafana dashboards for Prometheus
-5. **Backup:** Implement ETCD backup strategy
+5. **Backup:** Back up Raft data directories (`danube-data/raft`) for state recovery
 6. **Orchestration:** Use Kubernetes for scaling and HA
 
 ### AWS S3 Migration
@@ -376,6 +366,8 @@ docker/
     └── docker-compose.yml
 ```
 
-Config files referenced from `../config/`:
+Config files referenced from `docker/`:
 - `danube_broker.yml` - Filesystem backend (default)
 - `danube_broker_cloud.yml` - S3/MinIO backend
+
+Metadata is managed by embedded Raft consensus (no external dependencies like etcd).

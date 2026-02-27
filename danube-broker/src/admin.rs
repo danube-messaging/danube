@@ -34,8 +34,8 @@ pub(crate) struct DanubeAdminImpl {
     pub(crate) raft: Raft<danube_raft::typ::TypeConfig>,
     /// Leadership handle for querying current leader.
     pub(crate) leadership: LeadershipHandle,
-    /// This node's Raft transport address (for ClusterStatus discovery).
-    pub(crate) raft_addr: SocketAddr,
+    /// This node's advertised Raft transport address (for ClusterStatus discovery).
+    pub(crate) raft_addr: String,
 }
 
 impl std::fmt::Debug for DanubeAdminImpl {
@@ -57,7 +57,7 @@ impl DanubeAdminImpl {
         load_manager: LoadManager,
         raft: Raft<danube_raft::typ::TypeConfig>,
         leadership: LeadershipHandle,
-        raft_addr: SocketAddr,
+        raft_addr: String,
     ) -> Self {
         DanubeAdminImpl {
             admin_addr,

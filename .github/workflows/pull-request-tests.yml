@@ -7,16 +7,6 @@ jobs:
   build_and_test:
     runs-on: ubuntu-latest
 
-    services:
-      etcd:
-        image: quay.io/coreos/etcd:v3.5.22
-        ports:
-          - 2379:2379
-        env:
-          ETCD_NAME: etcd-danube
-          ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,21 +24,6 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Wait for etcd to be Ready
-        run: |
-          for i in {1..10}; do
-            if nc -zv 127.0.0.1 2379; then
-              echo "etcd is ready."
-              break
-            elif [ $i -eq 10 ]; then
-              echo "etcd failed to start."
-              docker logs etcd-danube
-              exit 1
-            fi
-            echo "Waiting for etcd to start..."
-            sleep 5
-          done
-
       - name: Create certificate files
         run: |
           mkdir -p ./cert
@@ -64,14 +39,19 @@ jobs:
 
       - name: Start 3 Brokers in background
         env:
-          RUST_LOG: info
+          RUST_LOG: info,openraft=warn
         run: |
           mkdir -p temp
           mkdir -p danube-data/cloud-storage
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
+
           ./target/release/danube-broker \
             --config-file config/danube_broker.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/raft-1 \
+            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3000 \
             > temp/broker_6650.log 2>&1 &
 
@@ -79,6 +59,9 @@ jobs:
             --config-file config/danube_broker.yml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
+            --raft-addr 0.0.0.0:7651 \
+            --data-dir ./danube-data/raft-2 \
+            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3001 \
             > temp/broker_6651.log 2>&1 &
 
@@ -86,9 +69,12 @@ jobs:
             --config-file config/danube_broker.yml \
             --broker-addr 0.0.0.0:6652 \
             --admin-addr 0.0.0.0:50053 \
+            --raft-addr 0.0.0.0:7652 \
+            --data-dir ./danube-data/raft-3 \
+            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3002 \
             > temp/broker_6652.log 2>&1 &
-          sleep 5
+          sleep 10
 
       - name: Wait for Brokers to be Ready
         run: |
@@ -112,11 +98,13 @@ jobs:
         run: |
           # Run broker integration tests serially to avoid flakiness in timing-sensitive tests
           cargo test --release -p danube-broker --tests -- --test-threads=1 --nocapture
+          # Run danube-raft integration tests
+          cargo test -p danube-raft --tests -- --nocapture
           # Run danube-persistent-storage integration tests
           cargo test -p danube-persistent-storage --tests -- --nocapture
           # Run library unit tests
           cargo test --lib -p danube-client
-          cargo test --lib -p danube-metadata-store
+          cargo test --lib -p danube-raft
           cargo test --lib -p danube-persistent-storage
 
       - name: Print broker logs on failure

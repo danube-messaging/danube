@@ -199,7 +199,6 @@ pub(crate) struct WalCloudConfig {
     pub(crate) wal: WalNode,
     pub(crate) uploader: UploaderNode,
     pub(crate) cloud: CloudConfig,
-    pub(crate) metadata: MetadataNode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -286,13 +285,6 @@ pub(crate) enum CloudConfig {
         account_name: Option<String>,
         account_key: Option<String>,
     },
-}
-
-/// Metadata configuration node
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct MetadataNode {
-    pub(crate) etcd_endpoint: Option<String>,
-    pub(crate) in_memory: Option<bool>,
 }
 
 // Provide a conversion from broker CloudConfig to storage BackendConfig

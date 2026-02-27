@@ -169,9 +169,30 @@ async fn main() -> Result<()> {
     .parse()
     .context("Failed to parse raft_addr")?;
 
+    // Derive the advertised Raft address from the broker's advertised hostname.
+    // In Docker, broker_url is e.g. "http://broker1:6650" → advertised raft addr = "broker1:7650".
+    // On localhost (0.0.0.0), this stays None and falls back to raft_addr.
+    let advertised_raft_addr = {
+        let url = &service_config.broker_url;
+        if let Some(rest) = url
+            .strip_prefix("http://")
+            .or_else(|| url.strip_prefix("https://"))
+        {
+            let host = rest.split(':').next().unwrap_or("");
+            if !host.is_empty() && host != "0.0.0.0" && host != "127.0.0.1" {
+                Some(format!("{}:{}", host, service_config.raft_port))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     let raft_node = RaftNode::start(RaftNodeConfig {
         data_dir: (&meta_cfg.data_dir).into(),
         raft_addr,
+        advertised_addr: advertised_raft_addr,
         ttl_check_interval: std::time::Duration::from_secs(5),
     })
     .await?;
@@ -182,13 +203,16 @@ async fn main() -> Result<()> {
     // Bootstrap the cluster (config-driven, NATS-style):
     //   - seed_nodes empty  → single-node auto-init (zero config)
     //   - seed_nodes present → discovers peers, lowest node_id initializes
-    let addr_str = raft_addr.to_string();
     raft_node
-        .bootstrap_cluster(&addr_str, &service_config.meta_store.seed_nodes)
+        .bootstrap_cluster(
+            &raft_node.advertised_addr,
+            &service_config.meta_store.seed_nodes,
+        )
         .await?;
 
     let raft_handle = raft_node.raft.clone();
     let leadership_handle = raft_node.leadership_handle();
+    let advertised_raft_addr_str = raft_node.advertised_addr.clone();
     let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
     // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
@@ -339,7 +363,7 @@ async fn main() -> Result<()> {
         load_manager,
         raft_handle,
         leadership_handle,
-        raft_addr,
+        advertised_raft_addr_str,
     );
 
     danube

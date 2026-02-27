@@ -68,7 +68,7 @@ load_manager:
   assignment_strategy: "balanced"
 
   # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
-  # - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+  # - Lower values (5-10s): Faster response, more metadata traffic, better for testing
   # - Higher values (30-60s): Less overhead, suitable for stable production clusters
   # Default: 30 seconds
   load_report_interval_seconds: 30
@@ -172,7 +172,7 @@ wal_cloud:
     # Testing: 30s. Production: 300s (5 min). High-durability: 60s (1 min)
     interval_seconds: 30
 
-    # ETCD metadata root prefix (change only for multiple independent clusters)
+    # Metadata root prefix (change only for multiple independent clusters)
     root_prefix: "/danube-data"
 
     # Max cloud object size (MB) - optimal for S3/GCS multipart uploads
@@ -190,14 +190,6 @@ wal_cloud:
     root: "mem-prefix"
 
     # Backend-specific options - see commented examples below
-
-  # Metadata Store: ETCD for cloud object descriptors and indexes
-  metadata:
-    # ETCD endpoint (should match broker's meta_store for consistency)
-    etcd_endpoint: "127.0.0.1:2379"
-
-    # In-memory metadata (testing only, no durability)
-    in_memory: false
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

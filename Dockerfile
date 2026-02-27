@@ -27,7 +27,7 @@ RUN cargo build --release
 FROM base AS broker
 
 # Install protobuf-compiler in the final image as well
-RUN apt-get update && apt-get install -y protobuf-compiler
+RUN apt-get update && apt-get install -y protobuf-compiler curl
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /app/target/release/danube-broker /usr/local/bin/danube-broker
@@ -35,12 +35,12 @@ COPY --from=builder /app/target/release/danube-broker /usr/local/bin/danube-brok
 # Copy the configuration file into the container (adjust the path if needed)
 COPY config/danube_broker.yml /etc/danube_broker.yml
 
-# Expose the ports your broker listens on
-EXPOSE 6650 6651
+# Expose the ports: client, admin, Raft transport, Prometheus
+EXPOSE 6650 50051 7650 9040
 
 # Define entrypoint and default command
 ENTRYPOINT ["/usr/local/bin/danube-broker"]
-CMD ["--config-file", "/etc/danube_broker.yml", "--broker-addr", "0.0.0.0:6650", "--advertised-addr", "0.0.0.0:6650"]
+CMD ["--config-file", "/etc/danube_broker.yml"]
 
 # CLI stage: use the same base image as the build stage
 FROM base AS cli

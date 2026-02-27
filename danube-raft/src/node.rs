@@ -37,6 +37,9 @@ pub struct RaftNodeConfig {
     pub data_dir: PathBuf,
     /// Address this node listens on for Raft gRPC transport.
     pub raft_addr: SocketAddr,
+    /// Advertised address other nodes use to reach this node's Raft transport.
+    /// If `None`, falls back to `raft_addr` (works on localhost, NOT in Docker).
+    pub advertised_addr: Option<String>,
     /// TTL expiration check interval.
     pub ttl_check_interval: Duration,
 }
@@ -49,6 +52,8 @@ pub struct RaftNode {
     pub raft: Raft<TypeConfig>,
     /// Auto-generated stable node identity (persisted in `{data_dir}/node_id`).
     pub node_id: u64,
+    /// The address this node advertises to peers (used in cluster membership).
+    pub advertised_addr: String,
     /// gRPC server join handle.
     _grpc_handle: tokio::task::JoinHandle<()>,
     /// TTL worker join handle.
@@ -113,7 +118,11 @@ impl RaftNode {
         let raft = Raft::new(node_id, raft_config, DanubeNetworkFactory, log_store, sm).await?;
 
         // 5. Start gRPC server for Raft transport
-        let handler = RaftTransportHandler::new(raft.clone(), node_id, cfg.raft_addr.to_string());
+        let advertised_addr = cfg
+            .advertised_addr
+            .clone()
+            .unwrap_or_else(|| cfg.raft_addr.to_string());
+        let handler = RaftTransportHandler::new(raft.clone(), node_id, advertised_addr.clone());
         let grpc_addr = cfg.raft_addr;
         let grpc_handle = tokio::spawn(async move {
             info!(%grpc_addr, "starting Raft gRPC transport");
@@ -139,6 +148,7 @@ impl RaftNode {
             store,
             raft,
             node_id,
+            advertised_addr,
             _grpc_handle: grpc_handle,
             _ttl_handle: ttl_handle,
         })

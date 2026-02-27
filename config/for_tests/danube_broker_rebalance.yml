@@ -86,10 +86,6 @@ wal_cloud:
     backend: "fs"
     root: "./danube-data/cloud-storage"
 
-  metadata:
-    etcd_endpoint: "127.0.0.1:2379"
-    in_memory: false
-
 # Broker policies
 policies:
   max_producers_per_topic: 0
