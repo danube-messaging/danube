@@ -14,7 +14,7 @@ use tracing::info;
 /// Core schema registry managing all schemas in the cluster
 #[derive(Debug)]
 pub struct SchemaRegistry {
-    /// Storage backend using Resources pattern (LocalCache + ETCD)
+    /// Storage backend using Resources pattern (Raft state machine + LocalCache)
     storage: Arc<SchemaResources>,
 
     /// Compatibility checker
