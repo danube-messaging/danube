@@ -91,7 +91,7 @@ impl TopicManager {
         info!(
             grace_secs = SUBSCRIPTION_IDLE_GRACE.as_secs(),
             interval_secs = interval.as_secs(),
-            "subscription reaper started"
+            "subscription idle removal service started"
         );
     }
 

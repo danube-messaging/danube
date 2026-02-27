@@ -106,7 +106,7 @@ async fn handle_put_event(
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!(path = %key_str, "Invalid topic path format in Put event");
+        trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);
@@ -182,7 +182,7 @@ async fn handle_delete_event(
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!(path = %key_str, "Invalid topic path format in Delete event");
+        trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);

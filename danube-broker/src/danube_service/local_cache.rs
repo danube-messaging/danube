@@ -16,18 +16,25 @@ use crate::resources::{
     BASE_TOPICS_PATH,
 };
 
+// TODO: This layer is a candidate for removal.
+//
+// LocalCache was originally introduced to avoid network round-trips to a remote etcd
+// metadata store. Now that metadata lives in the Raft state machine (SharedStateMachineData),
+// which is already an in-memory BTreeMap on every broker, LocalCache is a redundant second
+// copy of the same data in the same process. Removing it would involve refactoring the
+// `resources/*.rs` layer (TopicResources, SchemaResources, etc.) to read directly from
+// SharedStateMachineData, and dropping the watch-based sync loop since Raft apply() already
+// updates the authoritative in-memory state.
+//
 // It caches various types of metadata required by Danube brokers, such as topic and namespace data,
 // which are frequently accessed during message production and consumption.
-// This reduces the need for frequent queries to the central metadata store: ETCD.
 //
-// The docs/internal_resources.md document describe how the resources are organized in Metadata Store
+// The docs/internal_resources.md document describes how the resources are organized in the Metadata Store.
 //
-// By updating the local cache based on the events,
-// brokers ensure they have the latest metadata without repeatedly querying the central store.
+// By updating the local cache based on watch events from the Raft state machine,
+// brokers keep a secondary read-optimized (DashMap) view of the metadata.
 //
-// The updates/events are received via the metadata event synchronizer and/or the Watch events.
-//
-// Note: The instance can be safety Cloned as all it's fields ar wrapped in Arc<>,
+// Note: The instance can be safely cloned as all its fields are wrapped in Arc<>,
 // allowing the LocalCache struct to be cloned without deep copying the underlying data.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalCache {
@@ -104,8 +111,8 @@ impl LocalCache {
         }
     }
 
-    // Function to populate cache with initial data from etcd
-    // It fetches the data from the etcd store and updates the local cache
+    // Populate the cache with initial data from the metadata store
+    // and return a combined watch stream for ongoing updates.
     pub(crate) async fn populate_start_local_cache(&self) -> Result<WatchStream> {
         let prefixes = vec![
             BASE_CLUSTER_PATH,

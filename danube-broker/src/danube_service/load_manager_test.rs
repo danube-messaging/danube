@@ -856,11 +856,6 @@ async fn test_start_rebalancing_loop_basic() {
     // Full integration testing requires a complete cluster setup
 
     let lm = create_test_load_manager().await;
-    let meta_store = MetadataStorage::InMemory(
-        MemoryStore::new()
-            .await
-            .expect("Failed to create memory store"),
-    );
 
     let leader_election = super::super::leader_election::LeaderElection::new_standalone(1);
 

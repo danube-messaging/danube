@@ -13,7 +13,7 @@ PROM_CONFIG := $(PWD)/scripts/prometheus.yml
 NUM_BROKERS := 3
 
 # Path to configuration file
-CONFIG_FILE := ./config/danube_broker_no_auth.yml
+CONFIG_FILE := ./config/danube_broker.yml
 
 # Base data directory (each broker gets its own sub-directory)
 BASE_DATA_DIR := ./danube-data
@@ -35,7 +35,8 @@ no_target_specified:
 all: brokers
 
 # Set log level based on RUST_LOG value (if provided)
-LOG_LEVEL = $(if $(RUST_LOG),$(RUST_LOG),info)
+LOG_LEVEL = $(if $(RUST_LOG),$(RUST_LOG),info$(comma)openraft=warn)
+comma := ,
 
 # Build the seed_nodes string: "0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 SEED_NODES := $(shell for i in $$(seq 0 $$(echo $(NUM_BROKERS) - 1 | bc)); do \

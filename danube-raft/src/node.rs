@@ -91,6 +91,10 @@ impl RaftNode {
 
         // 1. Create openraft config
         let raft_config = Config {
+            heartbeat_interval: 500,
+            election_timeout_min: 1500,
+            election_timeout_max: 3000,
+            install_snapshot_timeout: 2000,
             snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(1000),
             max_in_snapshot_log_to_keep: 100,
             ..Config::default()
