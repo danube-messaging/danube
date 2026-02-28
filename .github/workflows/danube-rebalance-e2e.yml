@@ -37,19 +37,17 @@ jobs:
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
-      - name: Start Broker 1
+      - name: Start Broker 1 (single-node cluster)
         env:
           RUST_LOG: info,openraft=warn
         run: |
           mkdir -p danube-data
-          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
           nohup ./target/release/danube-broker \
             --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
             --data-dir ./danube-data/raft-1 \
-            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:9040 \
             > broker-1.log 2>&1 &
 
@@ -66,64 +64,91 @@ jobs:
             sleep 3
           done
 
-      - name: Start Broker 2
+      - name: Start Brokers 2 and 3 with --join
         env:
           RUST_LOG: info,openraft=warn
         run: |
-          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
+          # Start Broker 2 in --join mode
           nohup ./target/release/danube-broker \
             --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
             --raft-addr 0.0.0.0:7651 \
             --data-dir ./danube-data/raft-2 \
-            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:9041 \
+            --join \
             > broker-2.log 2>&1 &
 
-          for i in {1..15}; do
-            if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then
-              echo "Broker 2 is ready."
-              break
-            elif [ $i -eq 15 ]; then
-              echo "Broker 2 failed to start."
-              cat broker-2.log
-              exit 1
-            fi
-            echo "Waiting for Broker 2 to start... ($i/15)"
-            sleep 3
-          done
-
-      - name: Start Broker 3
-        env:
-          RUST_LOG: info,openraft=warn
-        run: |
-          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
+          # Start Broker 3 in --join mode
           nohup ./target/release/danube-broker \
             --config-file ./config/for_tests/danube_broker_rebalance.yml \
             --broker-addr 0.0.0.0:6652 \
             --admin-addr 0.0.0.0:50053 \
             --raft-addr 0.0.0.0:7652 \
             --data-dir ./danube-data/raft-3 \
-            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:9042 \
+            --join \
             > broker-3.log 2>&1 &
 
-          for i in {1..15}; do
-            if nc -zv 127.0.0.1 50053 && nc -zv 127.0.0.1 6652; then
-              echo "Broker 3 is ready."
-              break
-            elif [ $i -eq 15 ]; then
-              echo "Broker 3 failed to start."
-              cat broker-3.log
-              exit 1
-            fi
-            echo "Waiting for Broker 3 to start... ($i/15)"
-            sleep 3
+          # Wait for admin ports on both joining brokers
+          for port in 50052 50053; do
+            for i in {1..15}; do
+              if nc -zv 127.0.0.1 $port; then
+                echo "Admin port $port is ready."
+                break
+              elif [ $i -eq 15 ]; then
+                echo "Admin port $port failed to start."
+                cat broker-2.log broker-3.log
+                exit 1
+              fi
+              echo "Waiting for admin port $port... ($i/15)"
+              sleep 3
+            done
           done
 
-          # Give brokers time to discover each other
-          echo "Waiting for cluster discovery..."
+      - name: Add Brokers 2 and 3 to cluster via admin CLI
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          # Discover node IDs from each broker's admin endpoint
+          BROKER_2_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
+            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_3_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50053 \
+            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          echo "Broker 2 node_id: $BROKER_2_NODE_ID"
+          echo "Broker 3 node_id: $BROKER_3_NODE_ID"
+
+          # Add both as learners
+          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50052
+          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50053
+          sleep 2
+
+          # Promote both to voters
+          ./target/release/danube-admin cluster promote-node --node-id $BROKER_2_NODE_ID
+          ./target/release/danube-admin cluster promote-node --node-id $BROKER_3_NODE_ID
+
+          # Wait for broker ports on both joining brokers (they start after membership)
+          for port in 6651 6652; do
+            for i in {1..15}; do
+              if nc -zv 127.0.0.1 $port; then
+                echo "Broker port $port is ready."
+                break
+              elif [ $i -eq 15 ]; then
+                echo "Broker port $port failed to start."
+                cat broker-2.log broker-3.log
+                exit 1
+              fi
+              echo "Waiting for broker port $port... ($i/15)"
+              sleep 3
+            done
+          done
+
+          # Activate both brokers so they can receive topics
+          ./target/release/danube-admin brokers activate --broker-id $BROKER_2_NODE_ID --reason "rebalance-test"
+          ./target/release/danube-admin brokers activate --broker-id $BROKER_3_NODE_ID --reason "rebalance-test"
+          echo "✓ Brokers 2 and 3 added, promoted, and activated"
+
+          # Give cluster time to sync load reports
           sleep 10
 
       - name: "Phase 1: Cluster Setup & Validate Balanced State"

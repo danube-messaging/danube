@@ -11,6 +11,7 @@ pub(crate) struct Args {
     pub(crate) raft_addr: Option<String>,
     pub(crate) data_dir: Option<String>,
     pub(crate) seed_nodes: Option<String>,
+    pub(crate) join: bool,
 }
 
 impl Args {
@@ -25,6 +26,7 @@ impl Args {
         println!("  --raft-addr          Raft inter-node transport address (overrides config)");
         println!("  --data-dir           Raft data directory (overrides meta_store.data_dir)");
         println!("  --seed-nodes         Comma-separated Raft seed addresses (overrides meta_store.seed_nodes)");
+        println!("  --join               Join an existing cluster (skip bootstrap, wait to be added via admin CLI)");
     }
     pub(crate) fn parse() -> Result<Self> {
         let args: Vec<String> = env::args().collect();
@@ -43,6 +45,7 @@ impl Args {
         let mut raft_addr = None;
         let mut data_dir = None;
         let mut seed_nodes = None;
+        let mut join = false;
 
         let mut args_iter = args.iter().skip(1);
         while let Some(arg) = args_iter.next() {
@@ -74,6 +77,9 @@ impl Args {
                 "--seed-nodes" => {
                     seed_nodes = args_iter.next().map(|s| s.to_string());
                 }
+                "--join" => {
+                    join = true;
+                }
                 _ => return Err(anyhow::anyhow!("Unknown argument: {}", arg)),
             }
         }
@@ -89,6 +95,7 @@ impl Args {
             raft_addr,
             data_dir,
             seed_nodes,
+            join,
         })
     }
 }

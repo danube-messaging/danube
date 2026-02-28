@@ -52,7 +52,6 @@ jobs:
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
             --data-dir ./danube-data/raft-1 \
-            --seed-nodes 0.0.0.0:7650 \
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
 

@@ -87,6 +87,7 @@ brokers-clean:
 	else \
 		echo "No Danube broker instances found."; \
 	fi
+	@$(MAKE) data-clean
 
 data-clean:
 	@echo "Removing Raft data directories..."
