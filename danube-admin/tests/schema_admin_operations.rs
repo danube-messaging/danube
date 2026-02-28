@@ -73,7 +73,10 @@ fn schema_admin_operations() {
 }"#;
 
     let temp_dir = std::env::temp_dir();
-    let schema_file = temp_dir.join(format!("admin_test_schema_{}.json", rand::rng().random::<u32>()));
+    let schema_file = temp_dir.join(format!(
+        "admin_test_schema_{}.json",
+        rand::rng().random::<u32>()
+    ));
     fs::write(&schema_file, schema_content).expect("write schema file");
 
     // Register initial schema
@@ -129,11 +132,7 @@ fn schema_admin_operations() {
     // Verify the change
     let mut verify_compat_cmd = cli();
     verify_compat_cmd
-        .args([
-            "schemas",
-            "get-compatibility",
-            schema_subject,
-        ])
+        .args(["schemas", "get-compatibility", schema_subject])
         .assert()
         .success()
         .stdout(predicates::str::contains("FULL"));
@@ -147,6 +146,9 @@ fn schema_admin_operations() {
         .args(["topics", "create", &topic])
         .assert()
         .success();
+
+    // Allow Raft propagation and Load Manager topic assignment
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let mut configure_cmd = cli();
     configure_cmd
@@ -173,13 +175,7 @@ fn schema_admin_operations() {
     // ============================================================================
     let mut get_config_cmd = cli();
     let config_output = get_config_cmd
-        .args([
-            "topics",
-            "get-schema-config",
-            &topic,
-            "--output",
-            "json",
-        ])
+        .args(["topics", "get-schema-config", &topic, "--output", "json"])
         .output()
         .expect("get schema config");
 
@@ -213,13 +209,7 @@ fn schema_admin_operations() {
     // Verify the policy change
     let mut verify_policy_cmd = cli();
     let verify_output = verify_policy_cmd
-        .args([
-            "topics",
-            "get-schema-config",
-            &topic,
-            "--output",
-            "json",
-        ])
+        .args(["topics", "get-schema-config", &topic, "--output", "json"])
         .output()
         .expect("verify policy");
 
@@ -237,6 +227,9 @@ fn schema_admin_operations() {
         .args(["topics", "create", &topic2])
         .assert()
         .success();
+
+    // Allow Raft propagation and Load Manager topic assignment
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let mut configure2_cmd = cli();
     configure2_cmd
@@ -275,7 +268,10 @@ fn schema_admin_operations() {
   }
 }"#;
 
-    let schema_v2_file = temp_dir.join(format!("admin_test_schema_v2_{}.json", rand::rng().random::<u32>()));
+    let schema_v2_file = temp_dir.join(format!(
+        "admin_test_schema_v2_{}.json",
+        rand::rng().random::<u32>()
+    ));
     fs::write(&schema_v2_file, schema_v2).expect("write schema v2 file");
 
     let mut register_v2_cmd = cli();
@@ -314,13 +310,7 @@ fn schema_admin_operations() {
     // ============================================================================
     let mut delete_no_confirm_cmd = cli();
     delete_no_confirm_cmd
-        .args([
-            "schemas",
-            "delete",
-            schema_subject,
-            "--version",
-            "1",
-        ])
+        .args(["schemas", "delete", schema_subject, "--version", "1"])
         .assert()
         .failure(); // Should fail without --confirm
 

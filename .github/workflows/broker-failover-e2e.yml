@@ -143,9 +143,25 @@ jobs:
           # Give brokers time to sync
           sleep 5
 
-      - name: Simulate Broker A failure
+      - name: Simulate Broker A failure (graceful removal + kill)
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          echo "Killing Broker A to simulate failure..."
+          # A 2-node Raft cluster has no fault tolerance (needs 2/2 for quorum).
+          # To simulate failover, first remove Broker A from Raft membership so
+          # Broker B becomes a single-node cluster that can self-elect as leader.
+          
+          # Get Broker A's node_id
+          BROKER_A_NODE_ID=$(./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          echo "Broker A node_id: $BROKER_A_NODE_ID"
+          
+          # Remove Broker A from Raft cluster
+          ./target/release/danube-admin cluster remove-node --node-id $BROKER_A_NODE_ID
+          echo "✓ Broker A removed from Raft membership"
+          sleep 3
+          
+          # Kill Broker A process
+          echo "Killing Broker A process..."
           if [ -f broker-a.pid ]; then
             BROKER_A_PID=$(cat broker-a.pid)
             kill $BROKER_A_PID || echo "Broker A process may have already exited"
