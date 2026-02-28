@@ -152,6 +152,7 @@ impl DanubeService {
             Arc::clone(&self.broker),
             self.resources.clone(),
             self.service_config.auth.clone(),
+            self.service_config.admin_tls,
             schema_registry.clone(),
             self.load_manager.clone(),
             self.raft.clone(),

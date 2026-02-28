@@ -30,6 +30,9 @@ pub(crate) struct LoadConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Enable TLS on admin API (default: false, for remote management set to true)
+    #[serde(default)]
+    pub(crate) admin_tls: bool,
     /// Load Manager configuration
     #[serde(default)]
     pub(crate) load_manager: Option<LoadManagerConfig>,
@@ -67,6 +70,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Enable TLS on admin API (default: false, for remote management set to true)
+    pub(crate) admin_tls: bool,
     /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
 }
@@ -188,6 +193,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             policies: config.policies,
             wal_cloud: config.wal_cloud,
             auth: config.auth,
+            admin_tls: config.admin_tls,
             load_manager: config.load_manager,
         })
     }

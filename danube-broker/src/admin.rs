@@ -4,11 +4,8 @@ mod namespace_admin;
 mod topics_admin;
 
 use crate::{
-    auth::{AuthConfig, AuthMode},
-    broker_server::SchemaRegistryService,
-    broker_service::BrokerService,
-    danube_service::LoadManager,
-    resources::Resources,
+    auth::AuthConfig, broker_server::SchemaRegistryService, broker_service::BrokerService,
+    danube_service::LoadManager, resources::Resources,
 };
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
@@ -28,6 +25,7 @@ pub(crate) struct DanubeAdminImpl {
     broker_service: Arc<BrokerService>,
     resources: Resources,
     auth: AuthConfig,
+    admin_tls: bool,
     schema_registry: Arc<SchemaRegistryService>,
     load_manager: LoadManager,
     /// Raft handle for cluster membership operations.
@@ -53,6 +51,7 @@ impl DanubeAdminImpl {
         broker_service: Arc<BrokerService>,
         resources: Resources,
         auth: AuthConfig,
+        admin_tls: bool,
         schema_registry: Arc<SchemaRegistryService>,
         load_manager: LoadManager,
         raft: Raft<danube_raft::typ::TypeConfig>,
@@ -64,6 +63,7 @@ impl DanubeAdminImpl {
             broker_service,
             resources,
             auth,
+            admin_tls,
             schema_registry,
             load_manager,
             raft,
@@ -75,7 +75,7 @@ impl DanubeAdminImpl {
         let socket_addr = self.admin_addr.clone();
         let mut server_builder = Server::builder();
 
-        if let AuthMode::Tls | AuthMode::TlsWithJwt = self.auth.mode {
+        if self.admin_tls {
             server_builder = self.configure_tls(server_builder).await;
         }
 

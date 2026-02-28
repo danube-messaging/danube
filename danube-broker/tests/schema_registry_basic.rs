@@ -199,6 +199,9 @@ async fn schema_versioning_evolution() -> Result<()> {
         .execute()
         .await?;
 
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     // In this schema registry, versions of same subject share the schema_id
     // Versions are tracked separately
     assert_eq!(id_v1, id_v2, "Same subject should have same schema_id");

@@ -41,6 +41,11 @@ bootstrap_namespaces:
 # Allow producers to auto-create topics when missing
 auto_create_topics: true
 
+# Enable TLS on the admin API (default: false).
+# Set to true for remote cluster management over untrusted networks.
+# When true, uses the same cert/key from auth.tls below.
+# admin_tls: false
+
 # Security Configuration
 auth:
   mode: tls # Options: none, tls, tlswithjwt
