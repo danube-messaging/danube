@@ -8,11 +8,17 @@ broker:
   ports:
     client: 6650
     admin: 50051
+    # Raft inter-node gRPC transport
+    raft: 7650
     prometheus: 9040
 
+# Metadata Store Configuration (Raft — embedded, no external dependency)
 meta_store:
-  host: "etcd"
-  port: 2379
+  data_dir: "./danube-data/raft"
+  seed_nodes:
+    - "broker1:7650"
+    - "broker2:7650"
+    - "broker3:7650"
 
 bootstrap_namespaces:
   - "default"
@@ -65,10 +71,6 @@ wal_cloud:
     secret_key: "minioadmin123"
     anonymous: false
     virtual_host_style: false
-
-  metadata:
-    etcd_endpoint: "etcd:2379"
-    in_memory: false
 
 policies:
   max_producers_per_topic: 0

@@ -39,6 +39,9 @@ async fn backward_compatibility_add_optional_field() -> Result<()> {
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
 
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     // Version 2: Add optional field (BACKWARD COMPATIBLE)
     let schema_v2 = r#"{"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}, "required": ["name"]}"#;
     let result = schema_client
@@ -80,6 +83,9 @@ async fn backward_compatibility_remove_required_field_fails() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
+
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Version 2: Remove required field (NOT BACKWARD COMPATIBLE)
     let schema_v2 =
@@ -123,6 +129,9 @@ async fn forward_compatibility_remove_optional_field() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Forward)
         .await?;
+
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Version 2: Remove optional field (FORWARD COMPATIBLE)
     let schema_v2 =
@@ -168,6 +177,9 @@ async fn forward_compatibility_add_required_field_fails() -> Result<()> {
         .set_compatibility_mode(subject, CompatibilityMode::Forward)
         .await?;
 
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     // Version 2: Add required field (NOT FORWARD COMPATIBLE)
     let schema_v2 = r#"{"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}, "required": ["name", "email"]}"#;
     let result = schema_client
@@ -209,6 +221,9 @@ async fn full_compatibility_strict_evolution() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Full)
         .await?;
+
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Version 2: Add optional field (both backward and forward compatible)
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}, "description": {"type": "string"}}, "required": ["id", "name"]}"#;
@@ -266,6 +281,9 @@ async fn compatibility_none_allows_breaking_changes() -> Result<()> {
         .set_compatibility_mode(subject, CompatibilityMode::None)
         .await?;
 
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     // Version 2: Completely different schema (allowed with NONE mode)
     let schema_v2 =
         r#"{"type": "object", "properties": {"age": {"type": "integer"}}, "required": ["age"]}"#;
@@ -310,6 +328,9 @@ async fn avro_backward_compatibility() -> Result<()> {
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
 
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     // Version 2: Add field with default (BACKWARD COMPATIBLE in Avro)
     let avro_v2 = r#"{"type": "record", "name": "User", "fields": [{"name": "name", "type": "string"}, {"name": "age", "type": "int", "default": 0}]}"#;
     let result = schema_client
@@ -352,6 +373,9 @@ async fn check_compatibility_before_registration() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
+
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Check compatibility of proposed schema WITHOUT registering
     let proposed_schema = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["id"]}"#;
@@ -416,6 +440,9 @@ async fn multiple_versions_evolution() -> Result<()> {
     schema_client
         .set_compatibility_mode(subject, CompatibilityMode::Backward)
         .await?;
+
+    // Allow Raft write to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // V2: {{id, name?}}
     let schema_v2 = r#"{"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["id"]}"#;

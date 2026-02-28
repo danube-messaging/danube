@@ -35,8 +35,7 @@ docker-compose up -d
 
 This launches a complete Danube cluster with:
 
-- **2 High-Availability Brokers** for topics failover
-- **ETCD** for distributed metadata management  
+- **3 High-Availability Brokers** for topics failover
 - **Prometheus** for monitoring
 - **danube-cli** to produce and consume messages
 
@@ -45,7 +44,7 @@ This launches a complete Danube cluster with:
 ### Produce messages with reliable delivery
 
 ```bash
-docker-compose run -it danube-cli produce \
+docker-compose exec -it danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --count 100 \
@@ -56,7 +55,7 @@ docker-compose run -it danube-cli produce \
 ### Consume messages from the topic
 
 ```bash
-docker-compose run -it danube-cli consume \
+docker-compose exec -it danube-cli danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent-topic" \
   --subscription "persistent-sub" \

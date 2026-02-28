@@ -10,16 +10,6 @@ jobs:
   build_and_test:
     runs-on: ubuntu-latest
 
-    services:
-      etcd:
-        image: quay.io/coreos/etcd:v3.5.22
-        ports:
-          - 2379:2379
-        env:
-          ETCD_NAME: etcd-danube
-          ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,21 +23,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Wait for etcd to be ready
-        run: |
-          for i in {1..10}; do
-            if nc -zv 127.0.0.1 2379; then
-              echo "etcd is ready."
-              break
-            elif [ $i -eq 10 ]; then
-              echo "etcd failed to start."
-              docker logs etcd-danube
-              exit 1
-            fi
-            echo "Waiting for etcd to start..."
-            sleep 5
-          done
-
       - name: Create certificate files
         run: |
           mkdir -p ./cert
@@ -58,19 +33,22 @@ jobs:
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
-      - name: Start Broker A (background)
+      - name: Start Broker A (single-node cluster)
         env:
-          RUST_LOG: info
+          RUST_LOG: info,openraft=warn
         run: |
+          mkdir -p danube-data
           nohup ./target/release/danube-broker \
             --config-file ./config/danube_broker.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/raft-1 \
             --prom-exporter 0.0.0.0:9040 \
             > broker-a.log 2>&1 &
           echo $! > broker-a.pid
           
-          # Wait for Broker A admin and discovery ports to be ready
+          # Wait for Broker A admin and broker ports to be ready
           for i in {1..15}; do
             if nc -zv 127.0.0.1 50051 && nc -zv 127.0.0.1 6650; then
               echo "Broker A is ready."
@@ -98,38 +76,92 @@ jobs:
           }
           echo "✓ Topic successfully created"
 
-      - name: Start Broker B (background)
+      - name: Start Broker B with --join (background)
         env:
-          RUST_LOG: info
+          RUST_LOG: info,openraft=warn
         run: |
           nohup ./target/release/danube-broker \
             --config-file ./config/danube_broker.yml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
+            --raft-addr 0.0.0.0:7651 \
+            --data-dir ./danube-data/raft-2 \
             --prom-exporter 0.0.0.0:9041 \
+            --join \
             > broker-b.log 2>&1 &
           echo $! > broker-b.pid
           
-          # Wait for Broker B to be ready
+          # Wait for Broker B admin port to be ready (admin starts before cluster join)
           for i in {1..15}; do
-            if nc -zv 127.0.0.1 50052 && nc -zv 127.0.0.1 6651; then
-              echo "Broker B is ready."
+            if nc -zv 127.0.0.1 50052; then
+              echo "Broker B admin port is ready."
               break
             elif [ $i -eq 15 ]; then
-              echo "Broker B failed to start."
+              echo "Broker B admin port failed to start."
               cat broker-b.log
               exit 1
             fi
-            echo "Waiting for Broker B to start... ($i/15)"
+            echo "Waiting for Broker B admin port... ($i/15)"
+            sleep 3
+          done
+
+      - name: Add Broker B to cluster via admin CLI
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          # Add Broker B as a Raft learner
+          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50052
+          sleep 2
+          
+          # Discover Broker B's node_id from its own admin endpoint
+          BROKER_B_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
+            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          echo "Broker B node_id: $BROKER_B_NODE_ID"
+          
+          # Promote Broker B to voter
+          ./target/release/danube-admin cluster promote-node --node-id $BROKER_B_NODE_ID
+          
+          # Wait for Broker B broker port to come up (it starts after joining cluster)
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 6651; then
+              echo "Broker B is fully ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker B broker port failed to start after joining."
+              cat broker-b.log
+              exit 1
+            fi
+            echo "Waiting for Broker B broker port... ($i/15)"
             sleep 3
           done
           
-          # Give brokers time to discover each other
-          sleep 10
+          # Activate Broker B so it can receive topics
+          # First get Broker B's broker_id (same as node_id)
+          ./target/release/danube-admin brokers activate --broker-id $BROKER_B_NODE_ID --reason "failover-test"
+          echo "✓ Broker B added to cluster, promoted, and activated"
+          
+          # Give brokers time to sync
+          sleep 5
 
-      - name: Simulate Broker A failure
+      - name: Simulate Broker A failure (graceful removal + kill)
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          echo "Killing Broker A to simulate failure..."
+          # A 2-node Raft cluster has no fault tolerance (needs 2/2 for quorum).
+          # To simulate failover, first remove Broker A from Raft membership so
+          # Broker B becomes a single-node cluster that can self-elect as leader.
+          
+          # Get Broker A's node_id
+          BROKER_A_NODE_ID=$(./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          echo "Broker A node_id: $BROKER_A_NODE_ID"
+          
+          # Remove Broker A from Raft cluster
+          ./target/release/danube-admin cluster remove-node --node-id $BROKER_A_NODE_ID
+          echo "✓ Broker A removed from Raft membership"
+          sleep 3
+          
+          # Kill Broker A process
+          echo "Killing Broker A process..."
           if [ -f broker-a.pid ]; then
             BROKER_A_PID=$(cat broker-a.pid)
             kill $BROKER_A_PID || echo "Broker A process may have already exited"
@@ -189,13 +221,6 @@ jobs:
           }
           
           echo "✓ Broker B is operational and serving the failover topic"
-
-      - name: Collect etcd state for debugging
-        if: failure()
-        run: |
-          echo "=== ETCD State Dump ==="
-          docker exec etcd-danube etcdctl get --prefix "" || echo "Failed to dump etcd state"
-          echo "=== End ETCD State ==="
 
       - name: Upload logs on failure
         if: failure()

@@ -1,5 +1,6 @@
 pub mod dispatch_strategy;
 pub mod message;
+pub mod metadata;
 pub mod storage;
 
 pub mod proto {
@@ -13,4 +14,8 @@ pub mod proto {
 
 pub mod admin_proto {
     include!("proto/danube_admin.rs");
+}
+
+pub mod raft_proto {
+    include!("proto/danube.raft.rs");
 }

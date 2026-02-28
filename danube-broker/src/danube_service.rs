@@ -1,9 +1,9 @@
+use crate::metadata_storage::MetadataStorage;
 mod broker_register;
 mod broker_watcher;
 mod leader_election;
 pub(crate) mod load_manager;
 pub(crate) mod load_report;
-mod local_cache;
 pub(crate) mod metrics_collector;
 mod resource_monitor;
 mod syncronizer;
@@ -12,12 +12,13 @@ pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
-pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
 
 use anyhow::Result;
 use danube_client::DanubeClient;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
+use danube_raft::leadership::LeadershipHandle;
+use danube_raft::Raft;
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
@@ -69,17 +70,30 @@ use crate::{
 // Resource Quotas:
 // Implement and enforce resource quotas to ensure fair usage of resources among different namespaces.
 // This includes limiting the number of topics, message rates, and storage usage.
-#[derive(Debug)]
 pub(crate) struct DanubeService {
     broker_id: u64,
     broker: Arc<BrokerService>,
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
-    local_cache: LocalCache,
     resources: Resources,
     leader_election: LeaderElection,
     syncronizer: Syncronizer,
     load_manager: LoadManager,
+    raft: Raft<danube_raft::typ::TypeConfig>,
+    leadership: LeadershipHandle,
+    raft_addr: String,
+    /// When true, the broker was started with --join and should wait
+    /// for cluster membership before registering. Joins as Drained.
+    join_cluster: bool,
+}
+
+impl std::fmt::Debug for DanubeService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DanubeService")
+            .field("broker_id", &self.broker_id)
+            .field("leadership", &self.leadership)
+            .finish_non_exhaustive()
+    }
 }
 
 // DanubeService act as a a coordinator for managing clusters, including storage and brokers.
@@ -89,22 +103,28 @@ impl DanubeService {
         broker: Arc<BrokerService>,
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
-        local_cache: LocalCache,
         resources: Resources,
         leader_election: LeaderElection,
         syncronizer: Syncronizer,
         load_manager: LoadManager,
+        raft: Raft<danube_raft::typ::TypeConfig>,
+        leadership: LeadershipHandle,
+        raft_addr: String,
+        join_cluster: bool,
     ) -> Self {
         DanubeService {
             broker_id,
             broker,
             service_config,
             meta_store,
-            local_cache,
             resources,
             leader_election,
             syncronizer,
             load_manager,
+            raft,
+            leadership,
+            raft_addr,
+            join_cluster,
         }
     }
 
@@ -115,17 +135,63 @@ impl DanubeService {
             "initializing Danube cluster"
         );
 
-        // Start the Local Cache
+        // Initialize Schema Registry Service (needed by both admin and broker gRPC)
+        let schema_registry = Arc::new(SchemaRegistryService::new(
+            self.meta_store.clone(),
+            self.broker.topic_manager.clone(),
+        ));
+        info!("schema registry service initialized");
+
+        // Start the Danube Admin GRPC server early
         //==========================================================================
+        // Admin server must be available before cluster membership so that
+        // `danube-admin cluster add-node` can discover this node via ClusterStatus.
 
-        // Fetch initial data, populate cache & watch for Events to update local cache
+        let admin_server = DanubeAdminImpl::new(
+            self.service_config.admin_addr.clone(),
+            Arc::clone(&self.broker),
+            self.resources.clone(),
+            self.service_config.auth.clone(),
+            self.service_config.admin_tls,
+            schema_registry.clone(),
+            self.load_manager.clone(),
+            self.raft.clone(),
+            self.leadership.clone(),
+            self.raft_addr.clone(),
+        );
 
-        let local_cache_cloned = self.local_cache.clone();
-        let watch_stream = self.local_cache.populate_start_local_cache().await?;
-        // Process the ETCD Watch events
-        tokio::spawn(async move { local_cache_cloned.process_event(watch_stream).await });
+        let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
 
-        info!("local cache service initialized and ready");
+        info!(
+            admin_addr = %self.service_config.admin_addr,
+            broker_id = %self.broker_id,
+            "admin gRPC server listening"
+        );
+
+        // --join mode: wait for Raft cluster membership
+        //==========================================================================
+        // When started with --join, this node is not yet part of any cluster.
+        // The admin must run `danube-admin cluster add-node` + `promote-node`
+        // to add this node. We poll Raft metrics until we detect a leader,
+        // which means we've been added and replication has started.
+        if self.join_cluster {
+            info!(
+                broker_id = %self.broker_id,
+                "waiting for cluster membership (use `danube-admin cluster add-node` to add this node)..."
+            );
+            loop {
+                let metrics = self.raft.metrics().borrow().clone();
+                if metrics.current_leader.is_some() {
+                    info!(
+                        broker_id = %self.broker_id,
+                        leader = ?metrics.current_leader,
+                        "cluster membership detected — node has joined the cluster"
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
 
         // Cluster metadata setup
         //==========================================================================
@@ -163,14 +229,31 @@ impl DanubeService {
         )
         .await?;
 
-        // Initialize broker state to active
-        if let Err(e) = self
-            .resources
-            .cluster
-            .set_broker_state(&self.broker_id.to_string(), "active", Some("boot"))
-            .await
-        {
-            warn!("Failed to set initial broker state to active: {}", e);
+        // Set initial broker state:
+        //   --join mode → "drained" (no topics until admin activates)
+        //   normal mode → "active"
+        if self.join_cluster {
+            if let Err(e) = self
+                .resources
+                .cluster
+                .set_broker_state(&self.broker_id.to_string(), "drained", Some("join"))
+                .await
+            {
+                warn!("Failed to set initial broker state to drained: {}", e);
+            }
+            info!(
+                broker_id = %self.broker_id,
+                "broker registered as drained (use `danube-admin brokers activate` to enable topic assignment)"
+            );
+        } else {
+            if let Err(e) = self
+                .resources
+                .cluster
+                .set_broker_state(&self.broker_id.to_string(), "active", Some("boot"))
+                .await
+            {
+                warn!("Failed to set initial broker state to active: {}", e);
+            }
         }
 
         //create the default Namespace
@@ -212,15 +295,6 @@ impl DanubeService {
 
         // Start the Broker GRPC server
         //==========================================================================
-
-        // Initialize Schema Registry Service
-        let schema_registry = Arc::new(SchemaRegistryService::new(
-            self.local_cache.clone(),
-            self.meta_store.clone(),
-            self.broker.topic_manager.clone(),
-        ));
-
-        info!("schema registry service initialized");
 
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
@@ -353,33 +427,10 @@ impl DanubeService {
         )
         .await;
 
-        // Start the Danube Admin GRPC server
+        // Wait for server tasks to complete
         //==========================================================================
-
-        let broker_service_cloned = Arc::clone(&self.broker);
-
-        let admin_server = DanubeAdminImpl::new(
-            self.service_config.admin_addr.clone(),
-            broker_service_cloned,
-            self.resources.clone(),
-            self.service_config.auth.clone(),
-            schema_registry,
-            self.load_manager.clone(),
-        );
-
-        let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
-
-        info!(
-            admin_addr = %self.service_config.admin_addr,
-            broker_id = %self.broker_id,
-            "admin gRPC server listening"
-        );
-
-        // Wait for the server task to complete
-        // Await both tasks concurrently
         let (result_server, result_admin) = tokio::join!(server_handle, admin_handle);
 
-        // Handle the results
         if let Err(e) = result_server {
             eprintln!("Broker Server failed: {:?}", e);
         }

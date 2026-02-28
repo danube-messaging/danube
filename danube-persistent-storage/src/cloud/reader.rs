@@ -2,7 +2,7 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
 use crate::cloud::{CloudRangeReader, CloudStore};
-use crate::etcd_metadata::EtcdMetadata;
+use crate::etcd_metadata::StorageMetadata;
 use crate::frames::FRAME_HEADER_SIZE;
 use crate::persistent_metrics::{
     CLOUD_OBJECTS_READ_TOTAL, CLOUD_READER_ERRORS_TOTAL, CLOUD_READ_BYTES_TOTAL,
@@ -22,7 +22,7 @@ use tracing::error;
 #[derive(Clone, Debug)]
 pub struct CloudReader {
     cloud: CloudStore,
-    etcd: EtcdMetadata,
+    etcd: StorageMetadata,
     topic_path: String,
 }
 
@@ -31,7 +31,7 @@ impl CloudReader {
     ///
     /// `topic_path` should be the logical topic identifier used in metadata
     /// (e.g., "ns/topic").
-    pub fn new(cloud: CloudStore, etcd: EtcdMetadata, topic_path: String) -> Self {
+    pub fn new(cloud: CloudStore, etcd: StorageMetadata, topic_path: String) -> Self {
         Self {
             cloud,
             etcd,
@@ -45,7 +45,7 @@ impl CloudReader {
     }
 
     /// Expose the underlying Etcd metadata helper (primarily for tests).
-    pub fn etcd(&self) -> &EtcdMetadata {
+    pub fn etcd(&self) -> &StorageMetadata {
         &self.etcd
     }
 

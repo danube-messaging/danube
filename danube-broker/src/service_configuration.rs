@@ -30,6 +30,9 @@ pub(crate) struct LoadConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Enable TLS on admin API (default: false, for remote management set to true)
+    #[serde(default)]
+    pub(crate) admin_tls: bool,
     /// Load Manager configuration
     #[serde(default)]
     pub(crate) load_manager: Option<LoadManagerConfig>,
@@ -53,8 +56,10 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_addr: std::net::SocketAddr,
     /// Prometheus exporter address
     pub(crate) prom_exporter: Option<std::net::SocketAddr>,
-    /// Metadata Persistent Store (etcd) address
-    pub(crate) meta_store_addr: String,
+    /// Raft inter-node gRPC transport port (from broker.ports.raft).
+    pub(crate) raft_port: usize,
+    /// Metadata store configuration (Raft data directory).
+    pub(crate) meta_store: MetaStoreConfig,
     /// User Namespaces to be created on boot
     pub(crate) bootstrap_namespaces: Vec<String>,
     /// Allow producers to auto-create topics when missing
@@ -65,6 +70,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) wal_cloud: Option<WalCloudConfig>,
     /// Authentication configuration
     pub(crate) auth: AuthConfig,
+    /// Enable TLS on admin API (default: false, for remote management set to true)
+    pub(crate) admin_tls: bool,
     /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
 }
@@ -97,17 +104,30 @@ pub(crate) struct BrokerPorts {
     pub(crate) client: usize,
     /// Admin API port
     pub(crate) admin: usize,
+    /// Raft inter-node gRPC transport port
+    pub(crate) raft: usize,
     /// Prometheus metrics exporter port (optional)
     pub(crate) prometheus: Option<usize>,
 }
 
-/// Metadata store configuration
-#[derive(Debug, Serialize, Deserialize)]
+/// Metadata store configuration (Raft-only, ETCD removed).
+///
+/// The `node_id` is auto-generated on first boot and persisted in `{data_dir}/node_id`.
+/// The Raft transport port is in `broker.ports.raft`.
+///
+/// ```yaml
+/// meta_store:
+///   data_dir: "./danube-data/raft"
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MetaStoreConfig {
-    /// Hostname or IP address of metadata store (etcd)
-    pub(crate) host: String,
-    /// Port for metadata store
-    pub(crate) port: usize,
+    /// Directory for Raft log store, snapshots, and auto-generated node_id.
+    pub(crate) data_dir: String,
+    /// Seed node Raft transport addresses for cluster formation.
+    /// Empty (default) = single-node auto-init.
+    /// Non-empty = multi-node: peers discover each other and auto-bootstrap.
+    #[serde(default)]
+    pub(crate) seed_nodes: Vec<String>,
 }
 
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
@@ -139,9 +159,6 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
                 None
             };
 
-        // Construct meta_store_addr from meta_store.host and meta_store.port
-        let meta_store_addr = format!("{}:{}", config.meta_store.host, config.meta_store.port);
-
         // Derive broker_url and connect_url from advertised_listeners or bind address
         let scheme = match config.auth.mode {
             AuthMode::Tls | AuthMode::TlsWithJwt => "https",
@@ -169,12 +186,14 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             proxy_enabled,
             admin_addr,
             prom_exporter,
-            meta_store_addr,
+            raft_port: config.broker.ports.raft,
+            meta_store: config.meta_store,
             bootstrap_namespaces: config.bootstrap_namespaces,
             auto_create_topics: config.auto_create_topics.unwrap_or(true),
             policies: config.policies,
             wal_cloud: config.wal_cloud,
             auth: config.auth,
+            admin_tls: config.admin_tls,
             load_manager: config.load_manager,
         })
     }
@@ -186,7 +205,6 @@ pub(crate) struct WalCloudConfig {
     pub(crate) wal: WalNode,
     pub(crate) uploader: UploaderNode,
     pub(crate) cloud: CloudConfig,
-    pub(crate) metadata: MetadataNode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -273,13 +291,6 @@ pub(crate) enum CloudConfig {
         account_name: Option<String>,
         account_key: Option<String>,
     },
-}
-
-/// Metadata configuration node
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct MetadataNode {
-    pub(crate) etcd_endpoint: Option<String>,
-    pub(crate) in_memory: Option<bool>,
 }
 
 // Provide a conversion from broker CloudConfig to storage BackendConfig

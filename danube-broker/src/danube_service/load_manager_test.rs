@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::danube_service::load_report;
-use danube_metadata_store::{EtcdGetOptions, MemoryStore, MetaOptions, MetadataStorage};
+use danube_core::metadata::{MemoryStore, MetaOptions};
 use serde_json::Value;
 
 /// Helper function to create a test LoadManager with in-memory metadata store
@@ -737,13 +737,7 @@ async fn test_assign_topic_respects_rebalance_hint() {
 
     // Verify topic was assigned to broker 2 (the hint), NOT broker 1 (least loaded)
     let assignment_path = format!("{}/2/default/test-topic", BASE_BROKER_PATH);
-    let result = lm
-        .meta_store
-        .get(
-            &assignment_path,
-            MetaOptions::EtcdGet(EtcdGetOptions::default()),
-        )
-        .await;
+    let result = lm.meta_store.get(&assignment_path, MetaOptions::None).await;
 
     assert!(result.is_ok());
     assert!(
@@ -753,10 +747,7 @@ async fn test_assign_topic_respects_rebalance_hint() {
 
     // Verify it was NOT assigned to broker 1
     let wrong_path = format!("{}/1/default/test-topic", BASE_BROKER_PATH);
-    let wrong_result = lm
-        .meta_store
-        .get(&wrong_path, MetaOptions::EtcdGet(EtcdGetOptions::default()))
-        .await;
+    let wrong_result = lm.meta_store.get(&wrong_path, MetaOptions::None).await;
     assert!(
         wrong_result.unwrap().is_none(),
         "topic should NOT be assigned to broker 1"
@@ -829,13 +820,7 @@ async fn test_assign_topic_unload_marker_still_works() {
 
     // Verify topic was assigned to broker 2 (NOT broker 1, which is excluded)
     let assignment_path = format!("{}/2/default/unload-topic", BASE_BROKER_PATH);
-    let result = lm
-        .meta_store
-        .get(
-            &assignment_path,
-            MetaOptions::EtcdGet(EtcdGetOptions::default()),
-        )
-        .await;
+    let result = lm.meta_store.get(&assignment_path, MetaOptions::None).await;
 
     assert!(
         result.is_ok() && result.unwrap().is_some(),
@@ -844,10 +829,7 @@ async fn test_assign_topic_unload_marker_still_works() {
 
     // Verify it was NOT assigned back to broker 1
     let wrong_path = format!("{}/1/default/unload-topic", BASE_BROKER_PATH);
-    let wrong_result = lm
-        .meta_store
-        .get(&wrong_path, MetaOptions::EtcdGet(EtcdGetOptions::default()))
-        .await;
+    let wrong_result = lm.meta_store.get(&wrong_path, MetaOptions::None).await;
     assert!(
         wrong_result.unwrap().is_none(),
         "topic should NOT be reassigned to source broker 1"
@@ -874,17 +856,8 @@ async fn test_start_rebalancing_loop_basic() {
     // Full integration testing requires a complete cluster setup
 
     let lm = create_test_load_manager().await;
-    let meta_store = MetadataStorage::InMemory(
-        MemoryStore::new()
-            .await
-            .expect("Failed to create memory store"),
-    );
 
-    let leader_election = super::super::leader_election::LeaderElection::new(
-        meta_store.clone(),
-        "/cluster/leader",
-        1,
-    );
+    let leader_election = super::super::leader_election::LeaderElection::new_standalone(1);
 
     let config = config::RebalancingConfig {
         enabled: true,

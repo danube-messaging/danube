@@ -1,21 +1,21 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
-use danube_metadata_store::{MetaOptions, MetadataStore, MetadataStorage};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde_json::Value;
 
-use crate::{policies::Policies, resources::BASE_NAMESPACES_PATH, utils::join_path, LocalCache};
+use crate::{policies::Policies, resources::BASE_NAMESPACES_PATH, utils::join_path};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NamespaceResources {
-    local_cache: LocalCache,
     store: MetadataStorage,
 }
 
 impl NamespaceResources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
-        NamespaceResources { local_cache, store }
+    pub(crate) fn new(store: MetadataStorage) -> Self {
+        NamespaceResources { store }
     }
 
-    pub(crate) async fn namespace_exist(&mut self, namespace_name: &str) -> Result<bool> {
+    pub(crate) async fn namespace_exist(&self, namespace_name: &str) -> Result<bool> {
         let path = join_path(&[BASE_NAMESPACES_PATH, namespace_name, "policy"]);
         let value = self.store.get(&path, MetaOptions::None).await?;
         if value.is_none() {
@@ -25,7 +25,7 @@ impl NamespaceResources {
     }
 
     pub(crate) async fn create_namespace(
-        &mut self,
+        &self,
         ns_name: &str,
         policies: Option<&Policies>,
     ) -> Result<()> {
@@ -36,7 +36,7 @@ impl NamespaceResources {
         Ok(())
     }
 
-    pub(crate) async fn delete_namespace(&mut self, ns_name: &str) -> Result<()> {
+    pub(crate) async fn delete_namespace(&self, ns_name: &str) -> Result<()> {
         let exist = self.namespace_exist(ns_name).await?;
 
         match exist {
@@ -59,7 +59,7 @@ impl NamespaceResources {
     }
 
     pub(crate) async fn create_policies(
-        &mut self,
+        &self,
         namespace_name: &str,
         policies: &Policies,
     ) -> Result<()> {
@@ -69,40 +69,35 @@ impl NamespaceResources {
         Ok(())
     }
 
-    pub(crate) fn get_policies(&self, namespace_name: &str) -> Result<Policies> {
+    pub(crate) async fn get_policies(&self, namespace_name: &str) -> Result<Policies> {
         let path = join_path(&[BASE_NAMESPACES_PATH, namespace_name, "policy"]);
-        let result = self.local_cache.get(&path);
-        let value = if let Some(value) = result {
-            value
-        } else {
-            return Err(anyhow!("Unable to retrieve the policies for the namespace"));
-        };
+        let value = self
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
+            .ok_or_else(|| anyhow!("Unable to retrieve the policies for the namespace"))?;
 
         let policies: Policies = serde_json::from_value(value)?;
 
         Ok(policies)
     }
 
-    pub(crate) async fn create(&mut self, path: &str, data: Value) -> Result<()> {
+    pub(crate) async fn create(&self, path: &str, data: Value) -> Result<()> {
         self.store.put(path, data, MetaOptions::None).await?;
         Ok(())
     }
 
-    pub(crate) async fn delete(&mut self, path: &str) -> Result<()> {
+    pub(crate) async fn delete(&self, path: &str) -> Result<()> {
         let _prev_value = self.store.delete(path).await?;
         Ok(())
     }
 
-    pub(crate) fn check_if_topic_exist(&self, ns_name: &str, topic_name: &str) -> bool {
+    pub(crate) async fn check_if_topic_exist(&self, ns_name: &str, topic_name: &str) -> bool {
         let path = join_path(&[BASE_NAMESPACES_PATH, ns_name, "topics", topic_name]);
-
-        match self.local_cache.get(&path) {
-            Some(_) => return true,
-            None => return false,
-        }
+        matches!(self.store.get(&path, MetaOptions::None).await, Ok(Some(_)))
     }
 
-    pub(crate) async fn create_new_topic(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn create_new_topic(&self, topic_name: &str) -> Result<()> {
         let parts: Vec<_> = topic_name.split("/").collect();
         let ns_name = parts[1];
         let path = join_path(&[BASE_NAMESPACES_PATH, ns_name, "topics", topic_name]);
@@ -112,7 +107,7 @@ impl NamespaceResources {
         Ok(())
     }
 
-    pub(crate) async fn delete_topic(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_topic(&self, topic_name: &str) -> Result<()> {
         let parts: Vec<_> = topic_name.split("/").collect();
         let ns_name = parts[1];
         let path = join_path(&[BASE_NAMESPACES_PATH, ns_name, "topics", topic_name]);
@@ -125,7 +120,7 @@ impl NamespaceResources {
     pub(crate) async fn get_topics_for_namespace(&self, ns_name: &str) -> Vec<String> {
         let path = join_path(&[BASE_NAMESPACES_PATH, ns_name]);
 
-        let keys = self.local_cache.get_keys_with_prefix(&path).await;
+        let keys = self.store.get_childrens(&path).await.unwrap_or_default();
 
         let mut topics = Vec::new();
 
@@ -148,7 +143,7 @@ impl NamespaceResources {
     ) -> Vec<String> {
         let path = join_path(&[BASE_NAMESPACES_PATH, ns_name, "topics", topic_name]);
 
-        let keys = self.local_cache.get_keys_with_prefix(&path).await;
+        let keys = self.store.get_childrens(&path).await.unwrap_or_default();
 
         let mut topics = Vec::new();
 

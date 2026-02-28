@@ -3,41 +3,6 @@
 # Perfect for: Developing broker/admin code, testing local changes
 
 services:
-  # ETCD service for metadata storage
-  etcd:
-    container_name: "danube-etcd"
-    image: quay.io/coreos/etcd:v3.5.9
-    environment:
-      - ETCDCTL_API=3
-      - ETCD_NAME=danube-etcd
-      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_INITIAL_CLUSTER=danube-etcd=http://etcd:2380
-      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
-      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380
-      - ETCD_INITIAL_CLUSTER_STATE=new
-      - ETCD_INITIAL_CLUSTER_TOKEN=danube-cluster
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    networks:
-      - danube_net
-    volumes:
-      - etcd_data:/etcd-data
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "etcdctl",
-          "--endpoints=http://127.0.0.1:2379",
-          "endpoint",
-          "health",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
   # Danube Broker 1 (built from local source)
   broker1:
     container_name: "danube-broker1"
@@ -46,11 +11,8 @@ services:
       dockerfile: Dockerfile
       target: broker
     restart: on-failure
-    depends_on:
-      etcd:
-        condition: service_healthy
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
     volumes:
       - ../danube_broker.yml:/etc/danube_broker.yml:ro
       - broker1_data:/danube-data
@@ -68,6 +30,8 @@ services:
         "0.0.0.0:6650",
         "--admin-addr",
         "0.0.0.0:50051",
+        "--raft-addr",
+        "0.0.0.0:7650",
         "--prom-exporter",
         "0.0.0.0:9040",
         "--advertised-addr",
@@ -88,11 +52,8 @@ services:
       dockerfile: Dockerfile
       target: broker
     restart: on-failure
-    depends_on:
-      etcd:
-        condition: service_healthy
     environment:
-      - RUST_LOG=danube_broker=info,danube_core=info
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
     volumes:
       - ../danube_broker.yml:/etc/danube_broker.yml:ro
       - broker2_data:/danube-data
@@ -110,10 +71,53 @@ services:
         "0.0.0.0:6650",
         "--admin-addr",
         "0.0.0.0:50051",
+        "--raft-addr",
+        "0.0.0.0:7650",
         "--prom-exporter",
         "0.0.0.0:9040",
         "--advertised-addr",
         "broker2:6650",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Danube Broker 3 (built from local source)
+  broker3:
+    container_name: "danube-broker3"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
+    restart: on-failure
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
+    volumes:
+      - ../danube_broker.yml:/etc/danube_broker.yml:ro
+      - broker3_data:/danube-data
+    networks:
+      - danube_net
+    ports:
+      - "6652:6650" # Broker gRPC
+      - "50053:50051" # Admin API
+      - "9042:9040" # Prometheus metrics
+    command:
+      [
+        "--config-file",
+        "/etc/danube_broker.yml",
+        "--broker-addr",
+        "0.0.0.0:6650",
+        "--admin-addr",
+        "0.0.0.0:50051",
+        "--raft-addr",
+        "0.0.0.0:7650",
+        "--prom-exporter",
+        "0.0.0.0:9040",
+        "--advertised-addr",
+        "broker3:6650",
       ]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
@@ -134,10 +138,13 @@ services:
         condition: service_started
       broker2:
         condition: service_started
+      broker3:
+        condition: service_started
     networks:
       - danube_net
     stdin_open: true
     tty: true
+    entrypoint: []
     command: ["sleep", "infinity"]
 
   # Prometheus for metrics collection
@@ -148,6 +155,8 @@ services:
       broker1:
         condition: service_started
       broker2:
+        condition: service_started
+      broker3:
         condition: service_started
     networks:
       - danube_net
@@ -209,9 +218,9 @@ networks:
     driver: bridge
 
 volumes:
-  etcd_data:
-    name: danube_etcd_data
   broker1_data:
     name: danube_broker1_data
   broker2_data:
     name: danube_broker2_data
+  broker3_data:
+    name: danube_broker3_data

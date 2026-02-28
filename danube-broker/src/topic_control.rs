@@ -21,8 +21,6 @@ use crate::{
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_persistent_storage::WalStorageFactory;
-use tokio::sync::Mutex;
-
 /// Manages topics and their associated producers and consumers.
 #[derive(Debug, Clone)]
 pub(crate) struct TopicManager {
@@ -32,8 +30,8 @@ pub(crate) struct TopicManager {
     pub(crate) topic_worker_pool: Arc<TopicWorkerPool>,
     /// Factory for building per-topic WAL storage (reliable mode).
     pub(crate) wal_factory: WalStorageFactory,
-    /// Shared access to Local Cache-backed resources.
-    pub(crate) resources: Arc<Mutex<Resources>>,
+    /// Shared access to metadata resources (Raft state machine).
+    pub(crate) resources: Arc<Resources>,
     /// Index of producer_id -> topic_name.
     pub(crate) producers: ProducerRegistry,
     /// Index of consumer_id -> (topic_name, subscription_name).
@@ -48,7 +46,7 @@ impl TopicManager {
         broker_id: u64,
         topic_worker_pool: Arc<TopicWorkerPool>,
         wal_factory: WalStorageFactory,
-        resources: Arc<Mutex<Resources>>,
+        resources: Arc<Resources>,
         producers: ProducerRegistry,
         consumers: ConsumerRegistry,
         metrics_collector: Arc<MetricsCollector>,
@@ -91,21 +89,18 @@ impl TopicManager {
         info!(
             grace_secs = SUBSCRIPTION_IDLE_GRACE.as_secs(),
             interval_secs = interval.as_secs(),
-            "subscription reaper started"
+            "subscription idle removal service started"
         );
     }
 
-    /// Ensures a topic exists locally by materializing it from Local Cache metadata.
+    /// Ensures a topic exists locally by materializing it from metadata store.
     /// Returns the configured dispatch strategy and optional schema subject.
     pub(crate) async fn ensure_local(
         &self,
         topic_name: &str,
     ) -> Result<(ConfigDispatchStrategy, Option<String>)> {
-        //get retention strategy from local_cache
-        let dispatch_strategy = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_dispatch_strategy(topic_name)
-        };
+        //get retention strategy from store
+        let dispatch_strategy = self.resources.topic.get_dispatch_strategy(topic_name).await;
         if dispatch_strategy.is_none() {
             return Err(anyhow!(
                 "Unable to create topic without a valid dispatch strategy"
@@ -125,22 +120,13 @@ impl TopicManager {
             topic_name,
             dispatch_strategy.clone(),
             wal_storage,
-            {
-                let resources = self.resources.lock().await;
-                resources.topic.clone()
-            },
-            {
-                let resources = self.resources.lock().await;
-                resources.schema.clone()
-            },
+            self.resources.topic.clone(),
+            self.resources.schema.clone(),
             self.metrics_collector.clone(),
         );
 
-        // get policies from local_cache
-        let policies = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_policies(topic_name)
-        };
+        // get policies from store
+        let policies = self.resources.topic.get_policies(topic_name).await;
 
         if let Some(with_policies) = policies {
             let _ = new_topic.policies_update(with_policies);
@@ -149,25 +135,20 @@ impl TopicManager {
             let parts: Vec<_> = topic_name.split('/').collect();
             let ns_name = format!("/{}", parts[1]);
 
-            let ns_policies = {
-                let resources = self.resources.lock().await;
-                resources.namespace.get_policies(&ns_name)
-            };
+            let ns_policies = self.resources.namespace.get_policies(&ns_name).await;
             if let Ok(ns_policies) = ns_policies {
                 let _ = new_topic.policies_update(ns_policies);
             }
         }
 
-        // Load schema configuration from ETCD if it exists
-        let schema_config = {
-            let resources = self.resources.lock().await;
-            resources
-                .topic
-                .get_schema_config(topic_name)
-                .await
-                .ok()
-                .flatten()
-        };
+        // Load schema configuration if it exists
+        let schema_config = self
+            .resources
+            .topic
+            .get_schema_config(topic_name)
+            .await
+            .ok()
+            .flatten();
 
         if let Some(config) = schema_config {
             info!(
@@ -211,23 +192,19 @@ impl TopicManager {
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
         // Get schema subject from metadata if topic has one
-        let schema_subject = {
-            let resources = self.resources.lock().await;
-            resources.topic.get_schema_subject(topic_name).await
-        };
+        let schema_subject = self.resources.topic.get_schema_subject(topic_name).await;
 
         Ok((dispatch_strategy, schema_subject))
     }
 
-    /// Get schema information for logging (non-blocking, from LocalCache)
+    /// Get schema information for logging (from Raft state machine)
     pub(crate) async fn get_schema_info(&self, topic_name: &str) -> Option<(String, u64, String)> {
-        let resources = self.resources.lock().await;
-
         // Get schema subject from topic metadata
-        let schema_subject = resources.topic.get_schema_subject(topic_name).await?;
+        let schema_subject = self.resources.topic.get_schema_subject(topic_name).await?;
 
-        // Get schema details from registry (reads from LocalCache - fast)
-        let schema_details = resources
+        // Get schema details from registry
+        let schema_details = self
+            .resources
             .schema
             .get_schema_by_subject(&schema_subject)
             .await?;
@@ -273,14 +250,13 @@ impl TopicManager {
         }
 
         // If reliable, ensure persistent storage is sealed and storage metadata removed
-        let is_reliable = {
-            let resources = self.resources.lock().await;
-            resources
-                .topic
-                .get_dispatch_strategy(topic_name)
-                .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
-                .unwrap_or(false)
-        };
+        let is_reliable = self
+            .resources
+            .topic
+            .get_dispatch_strategy(topic_name)
+            .await
+            .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
+            .unwrap_or(false);
         if is_reliable {
             if let Err(e) = self.flush_and_seal(topic_name).await {
                 error!(
@@ -298,11 +274,11 @@ impl TopicManager {
             }
 
             // Remove subscription cursors under /topics/<ns>/<topic>/subscriptions/*/cursor
-            let subs = {
-                let resources = self.resources.lock().await;
-                resources.topic.get_subscription_for_topic(topic_name).await
-            };
-            let mut resources = self.resources.lock().await;
+            let subs = self
+                .resources
+                .topic
+                .get_subscription_for_topic(topic_name)
+                .await;
             // Build correct path: /topics/<ns>/<topic>/subscriptions/<sub>/cursor
             let trimmed = topic_name.trim_start_matches('/');
             let mut parts = trimmed.split('/');
@@ -311,7 +287,7 @@ impl TopicManager {
             for sub in subs {
                 let cursor_path =
                     join_path(&[BASE_TOPICS_PATH, ns, topic, "subscriptions", &sub, "cursor"]);
-                if let Err(e) = resources.topic.delete(&cursor_path).await {
+                if let Err(e) = self.resources.topic.delete(&cursor_path).await {
                     warn!(
                         namespace = %ns,
                         topic = %topic,
@@ -357,14 +333,13 @@ impl TopicManager {
             ));
         }
 
-        let is_reliable = {
-            let resources = self.resources.lock().await;
-            resources
-                .topic
-                .get_dispatch_strategy(topic_name)
-                .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
-                .unwrap_or(false)
-        };
+        let is_reliable = self
+            .resources
+            .topic
+            .get_dispatch_strategy(topic_name)
+            .await
+            .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
+            .unwrap_or(false);
 
         if is_reliable {
             self.unload_reliable_topic(topic_name).await
@@ -392,11 +367,12 @@ impl TopicManager {
         }
 
         // Delete producer metadata; keep delivery/schema/namespace; optionally cleanup subscriptions
-        {
-            let mut resources = self.resources.lock().await;
-            let _ = resources.topic.delete_all_producers(topic_name).await;
-            let _ = resources.topic.delete_all_subscriptions(topic_name).await;
-        }
+        let _ = self.resources.topic.delete_all_producers(topic_name).await;
+        let _ = self
+            .resources
+            .topic
+            .delete_all_subscriptions(topic_name)
+            .await;
 
         gauge!(BROKER_TOPICS_OWNED.name).decrement(1);
         Ok(())
@@ -424,10 +400,7 @@ impl TopicManager {
         }
 
         // Delete only producer metadata
-        {
-            let mut resources = self.resources.lock().await;
-            let _ = resources.topic.delete_all_producers(topic_name).await;
-        }
+        let _ = self.resources.topic.delete_all_producers(topic_name).await;
 
         gauge!(BROKER_TOPICS_OWNED.name).decrement(1);
         Ok(())
@@ -470,13 +443,10 @@ impl TopicManager {
                 .set_producer_count(topic_name, producer_count)
                 .await;
 
-            {
-                let mut resources = self.resources.lock().await;
-                resources
-                    .topic
-                    .create_producer(producer_id, topic_name, producer_config)
-                    .await?;
-            }
+            self.resources
+                .topic
+                .create_producer(producer_id, topic_name, producer_config)
+                .await?;
         } else {
             return Err(anyhow!("Unable to find the topic: {}", topic_name));
         }
@@ -528,17 +498,14 @@ impl TopicManager {
         }
 
         let sub_options = serde_json::to_value(&subscription_options)?;
-        {
-            let mut resources = self.resources.lock().await;
-            resources
-                .topic
-                .create_subscription(
-                    &subscription_options.subscription_name,
-                    &topic_name,
-                    sub_options,
-                )
-                .await?;
-        }
+        self.resources
+            .topic
+            .create_subscription(
+                &subscription_options.subscription_name,
+                &topic_name,
+                sub_options,
+            )
+            .await?;
 
         Ok(consumer_id)
     }
@@ -626,13 +593,11 @@ impl TopicManager {
             if let Some(value) = topic.check_subscription(subscription_name).await {
                 if value == false {
                     topic.unsubscribe(subscription_name).await;
-                    let _ = {
-                        let mut resources = self.resources.lock().await;
-                        resources
-                            .topic
-                            .delete_subscription(subscription_name, topic_name)
-                            .await
-                    };
+                    let _ = self
+                        .resources
+                        .topic
+                        .delete_subscription(subscription_name, topic_name)
+                        .await;
                     return Ok(());
                 }
             }
@@ -691,22 +656,17 @@ impl TopicManager {
             .configure_schema_validation(validation_policy, enable_payload_validation)
             .await;
 
-        // Persist configuration to ETCD
-        {
-            let mut resources = self.resources.lock().await;
-            let config = crate::resources::TopicSchemaConfig {
-                subject: schema_subject.clone(),
-                validation_policy,
-                enable_payload_validation,
-            };
-            resources
-                .topic
-                .store_schema_config(topic_name, &config)
-                .await
-                .map_err(|e| {
-                    Status::internal(format!("Failed to persist schema config to ETCD: {}", e))
-                })?;
-        }
+        // Persist configuration to store
+        let config = crate::resources::TopicSchemaConfig {
+            subject: schema_subject.clone(),
+            validation_policy,
+            enable_payload_validation,
+        };
+        self.resources
+            .topic
+            .store_schema_config(topic_name, &config)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to persist schema config: {}", e)))?;
 
         info!(
             topic = %topic_name,
@@ -760,25 +720,17 @@ impl TopicManager {
             ))
         })?;
 
-        // Persist updated configuration to ETCD
-        {
-            let mut resources = self.resources.lock().await;
-            let config = crate::resources::TopicSchemaConfig {
-                subject: schema_subject,
-                validation_policy,
-                enable_payload_validation,
-            };
-            resources
-                .topic
-                .store_schema_config(topic_name, &config)
-                .await
-                .map_err(|e| {
-                    Status::internal(format!(
-                        "Failed to persist validation policy to ETCD: {}",
-                        e
-                    ))
-                })?;
-        }
+        // Persist updated configuration to store
+        let config = crate::resources::TopicSchemaConfig {
+            subject: schema_subject,
+            validation_policy,
+            enable_payload_validation,
+        };
+        self.resources
+            .topic
+            .store_schema_config(topic_name, &config)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to persist validation policy: {}", e)))?;
 
         info!(
             topic = %topic_name,

@@ -7,9 +7,7 @@ use danube_core::admin_proto::{
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::proto::{
-    DispatchStrategy as CoreDispatchStrategy,
-    SchemaReference,
-    schema_reference::VersionRef,
+    schema_reference::VersionRef, DispatchStrategy as CoreDispatchStrategy, SchemaReference,
 };
 
 use tonic::{Request, Response, Status};
@@ -45,7 +43,7 @@ impl TopicAdmin for DanubeAdminImpl {
                 .await
                 .unwrap_or_default();
             let lookup = normalized.trim_start_matches('/');
-            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup).await {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -77,7 +75,7 @@ impl TopicAdmin for DanubeAdminImpl {
         let mut topics: Vec<TopicInfo> = Vec::with_capacity(names.len());
         for name in names.into_iter() {
             let lookup = name.trim_start_matches('/');
-            let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
+            let delivery = match self.resources.topic.get_dispatch_strategy(lookup).await {
                 Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
                 Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
                 None => "NonReliable".to_string(),
@@ -277,7 +275,7 @@ impl TopicAdmin for DanubeAdminImpl {
 
         // Delivery
         let lookup = req.name.trim_start_matches('/');
-        let delivery = match self.resources.topic.get_dispatch_strategy(lookup) {
+        let delivery = match self.resources.topic.get_dispatch_strategy(lookup).await {
             Some(ConfigDispatchStrategy::Reliable) => "Reliable".to_string(),
             Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
             None => "NonReliable".to_string(),
@@ -340,7 +338,13 @@ impl DanubeAdminImpl {
     async fn get_topic_schema_info(
         &self,
         topic_name: &str,
-    ) -> (Option<String>, Option<u64>, Option<u32>, Option<String>, Option<String>) {
+    ) -> (
+        Option<String>,
+        Option<u64>,
+        Option<u32>,
+        Option<String>,
+        Option<String>,
+    ) {
         // Get topic's schema subject from metadata
         let schema_subject = match self.resources.topic.get_schema_subject(topic_name).await {
             Some(subject) => subject,
@@ -349,7 +353,10 @@ impl DanubeAdminImpl {
 
         // Get schema details from schema registry
         let resources = self.resources.clone();
-        let schema_details = resources.schema.get_schema_by_subject(&schema_subject).await;
+        let schema_details = resources
+            .schema
+            .get_schema_by_subject(&schema_subject)
+            .await;
 
         match schema_details {
             Some(details) => {

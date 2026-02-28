@@ -10,6 +10,8 @@ broker:
     client: 6650
     # Admin API
     admin: 50051
+    # Raft inter-node gRPC transport
+    raft: 7650
     # Prometheus metrics exporter
     prometheus: 9040
   # Optional: advertised addresses for proxy/k8s mode
@@ -20,10 +22,17 @@ broker:
   #   # External: address reachable by external clients via gRPC proxy
   #   connect_url: "danube-proxy.example.com:6650"
 
-# Metadata Store Configuration (etcd)
+# Metadata Store Configuration (Raft — embedded, no external dependency)
+# node_id is auto-generated on first boot and persisted in {data_dir}/node_id
 meta_store:
-  host: "127.0.0.1"
-  port: 2379
+  data_dir: "./danube-data/raft"
+  # Seed nodes for cluster formation (Raft transport addresses).
+  # Empty or omitted = single-node cluster (auto-init, zero config).
+  # For multi-node: list ALL initial peers (including this node's raft addr).
+  # seed_nodes:
+  #   - "0.0.0.0:7650"
+  #   - "0.0.0.0:7651"
+  #   - "0.0.0.0:7652"
 
 # Namespaces to be created on boot
 bootstrap_namespaces:
@@ -31,6 +40,11 @@ bootstrap_namespaces:
 
 # Allow producers to auto-create topics when missing
 auto_create_topics: true
+
+# Enable TLS on the admin API (default: false).
+# Set to true for remote cluster management over untrusted networks.
+# When true, uses the same cert/key from auth.tls below.
+# admin_tls: false
 
 # Security Configuration
 auth:
@@ -59,7 +73,7 @@ load_manager:
   assignment_strategy: "fair"
 
   # LoadReport Publishing Interval: How often brokers publish load reports (seconds)
-  # - Lower values (5-10s): Faster response, more etcd traffic, better for testing
+  # - Lower values (5-10s): Faster response, more metadata traffic, better for testing
   # - Higher values (30-60s): Less overhead, suitable for stable production clusters
   # Default: 30 seconds
   load_report_interval_seconds: 30
@@ -163,7 +177,7 @@ wal_cloud:
     # Testing: 30s. Production: 300s (5 min). High-durability: 60s (1 min)
     interval_seconds: 30
 
-    # ETCD metadata root prefix (change only for multiple independent clusters)
+    # Metadata root prefix (change only for multiple independent clusters)
     root_prefix: "/danube-data"
 
     # Max cloud object size (MB) - optimal for S3/GCS multipart uploads
@@ -181,14 +195,6 @@ wal_cloud:
     root: "./danube-data/cloud-storage"
 
     # Backend-specific options - see commented examples below
-
-  # Metadata Store: ETCD for cloud object descriptors and indexes
-  metadata:
-    # ETCD endpoint (should match broker's meta_store for consistency)
-    etcd_endpoint: "127.0.0.1:2379"
-
-    # In-memory metadata (testing only, no durability)
-    in_memory: false
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

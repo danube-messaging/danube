@@ -137,6 +137,47 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    // ===== CLUSTER ADMIN METHODS =====
+
+    pub async fn cluster_init(
+        &self,
+        req: admin::ClusterInitRequest,
+    ) -> Result<admin::ClusterInitResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let fut = async move { client.cluster_init(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn cluster_status(&self) -> Result<admin::ClusterStatusResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let fut = async move { client.cluster_status(admin::Empty {}).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn add_node(&self, req: admin::AddNodeRequest) -> Result<admin::AddNodeResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let fut = async move { client.add_node(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn promote_node(
+        &self,
+        req: admin::PromoteNodeRequest,
+    ) -> Result<admin::PromoteNodeResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let fut = async move { client.promote_node(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn remove_node(
+        &self,
+        req: admin::RemoveNodeRequest,
+    ) -> Result<admin::RemoveNodeResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let fut = async move { client.remove_node(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     // ===== NAMESPACE ADMIN METHODS =====
 
     pub async fn list_namespaces(&self) -> Result<admin::NamespaceListResponse> {

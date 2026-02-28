@@ -9,14 +9,14 @@ use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use crate::cloud::{CloudReader, CloudStore};
-use crate::etcd_metadata::EtcdMetadata;
+use crate::etcd_metadata::StorageMetadata;
 use crate::wal::Wal;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
     wal: Wal,
     cloud: Option<CloudStore>,
-    etcd: Option<EtcdMetadata>,
+    etcd: Option<StorageMetadata>,
     topic_path: Option<String>,
 }
 
@@ -31,8 +31,13 @@ impl WalStorage {
         }
     }
 
-    /// Enable cloud historical reads by wiring CloudStore + EtcdMetadata and logical topic path.
-    pub fn with_cloud(mut self, cloud: CloudStore, etcd: EtcdMetadata, topic_path: String) -> Self {
+    /// Enable cloud historical reads by wiring CloudStore + StorageMetadata and logical topic path.
+    pub fn with_cloud(
+        mut self,
+        cloud: CloudStore,
+        etcd: StorageMetadata,
+        topic_path: String,
+    ) -> Self {
         self.cloud = Some(cloud);
         self.etcd = Some(etcd);
         self.topic_path = Some(topic_path);

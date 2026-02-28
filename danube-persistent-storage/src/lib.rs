@@ -38,7 +38,7 @@ pub mod uploader_stream {
 mod frames;
 
 mod etcd_metadata;
-pub use etcd_metadata::{EtcdMetadata, ObjectDescriptor};
+pub use etcd_metadata::{ObjectDescriptor, StorageMetadata};
 
 // WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
 mod wal_factory;

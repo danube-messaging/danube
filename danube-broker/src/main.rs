@@ -9,6 +9,7 @@ mod consumer;
 mod danube_service;
 mod dispatcher;
 mod message;
+mod metadata_storage;
 mod policies;
 mod producer;
 mod rate_limiter;
@@ -29,17 +30,19 @@ use crate::{
     args_parse::Args,
     broker_metrics::init_metrics,
     broker_service::BrokerService,
-    danube_service::{DanubeService, LeaderElection, LoadManager, LocalCache, Syncronizer},
+    danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
 };
 
 use anyhow::{Context, Result};
-use danube_metadata_store::{EtcdStore, MetadataStorage};
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
+use danube_raft::node::{RaftNode, RaftNodeConfig};
 use std::net::SocketAddr;
+
+use crate::metadata_storage::MetadataStorage;
 
 use tracing::info;
 use tracing_subscriber;
@@ -133,10 +136,93 @@ async fn main() -> Result<()> {
         service_config.prom_exporter = Some(prom_address);
     }
 
-    // initialize the metadata storage layer for Danube Broker
-    info!("initializing ETCD as metadata persistent store");
-    let metadata_store: MetadataStorage =
-        MetadataStorage::Etcd(EtcdStore::new(service_config.meta_store_addr.clone()).await?);
+    // If `data_dir` is provided via command-line args, override meta_store.data_dir
+    if let Some(data_dir) = args.data_dir {
+        service_config.meta_store.data_dir = data_dir;
+    }
+
+    // If `seed_nodes` is provided via command-line args, override meta_store.seed_nodes
+    if let Some(seed_nodes_str) = args.seed_nodes {
+        service_config.meta_store.seed_nodes = seed_nodes_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+
+    // If `raft_addr` is provided via command-line args, override the value from the config file
+    if let Some(raft_addr_arg) = args.raft_addr {
+        let addr: SocketAddr = raft_addr_arg
+            .parse()
+            .context(format!("Failed to parse --raft-addr: {}", raft_addr_arg))?;
+        service_config.raft_port = addr.port() as usize;
+    }
+
+    // initialize the Raft metadata storage layer
+    // node_id is auto-generated on first boot and persisted in {data_dir}/node_id
+    let meta_cfg = &service_config.meta_store;
+    let raft_addr: SocketAddr = format!(
+        "{}:{}",
+        service_config.broker_addr.ip(),
+        service_config.raft_port
+    )
+    .parse()
+    .context("Failed to parse raft_addr")?;
+
+    // Derive the advertised Raft address from the broker's advertised hostname.
+    // In Docker, broker_url is e.g. "http://broker1:6650" → advertised raft addr = "broker1:7650".
+    // On localhost (0.0.0.0), this stays None and falls back to raft_addr.
+    let advertised_raft_addr = {
+        let url = &service_config.broker_url;
+        if let Some(rest) = url
+            .strip_prefix("http://")
+            .or_else(|| url.strip_prefix("https://"))
+        {
+            let host = rest.split(':').next().unwrap_or("");
+            if !host.is_empty() && host != "0.0.0.0" && host != "127.0.0.1" {
+                Some(format!("{}:{}", host, service_config.raft_port))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let raft_node = RaftNode::start(RaftNodeConfig {
+        data_dir: (&meta_cfg.data_dir).into(),
+        raft_addr,
+        advertised_addr: advertised_raft_addr,
+        ttl_check_interval: std::time::Duration::from_secs(5),
+    })
+    .await?;
+
+    let node_id = raft_node.node_id;
+    info!(node_id, %raft_addr, "Raft metadata store initialized");
+
+    if args.join {
+        // --join mode: skip bootstrap, node will be added to an existing cluster
+        // via `danube-admin cluster add-node` + `promote-node`
+        info!(
+            node_id,
+            "starting in --join mode (waiting to be added to cluster via admin CLI)"
+        );
+    } else {
+        // Bootstrap the cluster (config-driven, NATS-style):
+        //   - seed_nodes empty  → single-node auto-init (zero config)
+        //   - seed_nodes present → discovers peers, lowest node_id initializes
+        raft_node
+            .bootstrap_cluster(
+                &raft_node.advertised_addr,
+                &service_config.meta_store.seed_nodes,
+            )
+            .await?;
+    }
+
+    let raft_handle = raft_node.raft.clone();
+    let leadership_handle = raft_node.leadership_handle();
+    let advertised_raft_addr_str = raft_node.advertised_addr.clone();
+    let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
     // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
     let wal_cfg = service_config
@@ -191,10 +277,11 @@ async fn main() -> Result<()> {
     };
 
     // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
+    let store_arc: Arc<dyn danube_core::metadata::MetadataStore> = Arc::new(metadata_store.clone());
     let wal_factory = WalStorageFactory::new(
         wal_base_cfg,
         cloud_backend,
-        metadata_store.clone(),
+        store_arc,
         wal_cfg
             .uploader
             .root_prefix
@@ -204,24 +291,24 @@ async fn main() -> Result<()> {
         deleter_cfg,
     );
 
-    // caching metadata locally to reduce the number of remote calls to Metadata Store
-    let local_cache = LocalCache::new(metadata_store.clone());
-
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
-    let resources = Resources::new(local_cache.clone(), metadata_store.clone());
+    let resources = Resources::new(metadata_store.clone(), Some(leadership_handle.clone()));
 
     // The synchronizer ensures that metadata & configuration settings across different brokers remains consistent.
     // using the client Producers to distribute metadata updates across brokers.
     let syncroniser = Syncronizer::new();
 
+    // The broker_id IS the Raft node_id — a single stable identity.
+    let broker_id = node_id;
+
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
     let broker_service = BrokerService::new(
+        broker_id,
         resources.clone(),
         wal_factory,
         service_config.auto_create_topics,
     );
-    let broker_id = broker_service.broker_id;
 
     // Init metrics with or without prometheus exporter
     if let Some(prometheus_exporter) = service_config.prom_exporter.clone() {
@@ -230,11 +317,12 @@ async fn main() -> Result<()> {
         init_metrics(None, broker_id);
     }
 
-    // the service selects one broker per cluster to be the leader to coordinate and take assignment decision.
+    // Raft-based leader election: the Raft leader is the cluster leader.
     let leader_election_service = LeaderElection::new(
+        leadership_handle.clone(),
         metadata_store.clone(),
         LEADER_ELECTION_PATH,
-        broker_service.broker_id,
+        broker_id,
     );
 
     // Load Manager, monitor and distribute load across brokers.
@@ -249,7 +337,7 @@ async fn main() -> Result<()> {
         };
 
     let load_manager = LoadManager::with_config(
-        broker_service.broker_id,
+        broker_id,
         metadata_store.clone(),
         assignment_strategy,
         rebalancing_config,
@@ -270,11 +358,14 @@ async fn main() -> Result<()> {
         Arc::clone(&broker),
         service_config,
         metadata_store,
-        local_cache,
         resources,
         leader_election_service,
         syncroniser,
         load_manager,
+        raft_handle,
+        leadership_handle,
+        advertised_raft_addr_str,
+        args.join,
     );
 
     danube

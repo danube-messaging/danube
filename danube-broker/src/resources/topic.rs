@@ -1,30 +1,25 @@
+use crate::metadata_storage::MetadataStorage;
 use anyhow::{anyhow, Result};
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    policies::Policies, 
-    resources::BASE_TOPICS_PATH, 
-    schema::types::ValidationPolicy,
-    utils::join_path, 
-    LocalCache
+    policies::Policies, resources::BASE_TOPICS_PATH, schema::types::ValidationPolicy,
+    utils::join_path,
 };
-// Phase 6: Old schema API import removed
-// use crate::schema::Schema;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TopicResources {
-    local_cache: LocalCache,
     store: MetadataStorage,
 }
 
 impl TopicResources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
-        TopicResources { local_cache, store }
+    pub(crate) fn new(store: MetadataStorage) -> Self {
+        TopicResources { store }
     }
-    pub(crate) async fn topic_exists(&mut self, topic_name: &str) -> Result<bool> {
+    pub(crate) async fn topic_exists(&self, topic_name: &str) -> Result<bool> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name]);
         let topic = self.store.get(&path, MetaOptions::None).await?;
         if topic.is_none() {
@@ -34,18 +29,18 @@ impl TopicResources {
         Ok(true)
     }
 
-    pub(crate) async fn create(&mut self, path: &str, data: Value) -> Result<()> {
+    pub(crate) async fn create(&self, path: &str, data: Value) -> Result<()> {
         self.store.put(path, data, MetaOptions::None).await?;
         Ok(())
     }
 
-    pub(crate) async fn delete(&mut self, path: &str) -> Result<()> {
+    pub(crate) async fn delete(&self, path: &str) -> Result<()> {
         let _prev_value = self.store.delete(path).await?;
         Ok(())
     }
 
     pub(crate) async fn add_topic_policy(
-        &mut self,
+        &self,
         topic_name: &str,
         policies: Policies,
     ) -> Result<()> {
@@ -57,7 +52,7 @@ impl TopicResources {
     }
 
     pub(crate) async fn add_topic_delivery(
-        &mut self,
+        &self,
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
     ) -> Result<()> {
@@ -68,28 +63,28 @@ impl TopicResources {
         Ok(())
     }
 
-    pub(crate) async fn delete_topic_schema(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_topic_schema(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
         self.delete(&path).await?;
 
         Ok(())
     }
 
-    pub(crate) async fn delete_topic_delivery(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_topic_delivery(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "delivery"]);
         self.delete(&path).await?;
         Ok(())
     }
 
-    pub(crate) async fn delete_topic_policy(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_topic_policy(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "policy"]);
         self.delete(&path).await?;
         Ok(())
     }
 
-    pub(crate) async fn delete_all_producers(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_all_producers(&self, topic_name: &str) -> Result<()> {
         let prefix = join_path(&[BASE_TOPICS_PATH, topic_name, "producers"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
         for key in keys {
             // delete each producer key
             self.delete(&key).await?;
@@ -99,9 +94,9 @@ impl TopicResources {
         Ok(())
     }
 
-    pub(crate) async fn delete_all_subscriptions(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_all_subscriptions(&self, topic_name: &str) -> Result<()> {
         let prefix = join_path(&[BASE_TOPICS_PATH, topic_name, "subscriptions"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
         for key in keys {
             self.delete(&key).await?;
         }
@@ -109,17 +104,13 @@ impl TopicResources {
         Ok(())
     }
 
-    pub(crate) async fn delete_topic_root(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn delete_topic_root(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name]);
         self.delete(&path).await?;
         Ok(())
     }
 
-    pub(crate) async fn create_topic(
-        &mut self,
-        topic_name: &str,
-        num_partitions: usize,
-    ) -> Result<()> {
+    pub(crate) async fn create_topic(&self, topic_name: &str, num_partitions: usize) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name]);
 
         //TODO! figure out how to support the partitions
@@ -129,7 +120,7 @@ impl TopicResources {
     }
 
     pub(crate) async fn create_producer(
-        &mut self,
+        &self,
         producer_id: u64,
         topic_name: &str,
         producer_config: Value,
@@ -147,7 +138,7 @@ impl TopicResources {
     }
 
     pub(crate) async fn create_subscription(
-        &mut self,
+        &self,
         subscription_name: &str,
         topic_name: &str,
         sub_options: Value,
@@ -165,7 +156,7 @@ impl TopicResources {
     }
 
     pub(crate) async fn delete_subscription(
-        &mut self,
+        &self,
         subscription_name: &str,
         topic_name: &str,
     ) -> Result<()> {
@@ -181,25 +172,19 @@ impl TopicResources {
         Ok(())
     }
 
-    pub(crate) fn get_dispatch_strategy(&self, topic_name: &str) -> Option<ConfigDispatchStrategy> {
+    pub(crate) async fn get_dispatch_strategy(
+        &self,
+        topic_name: &str,
+    ) -> Option<ConfigDispatchStrategy> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "delivery"]);
-        let result = self.local_cache.get(&path);
-        if let Some(value) = result {
-            let dispatch_strategy: Option<ConfigDispatchStrategy> =
-                serde_json::from_value(value).ok();
-            return dispatch_strategy;
-        }
-        None
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        serde_json::from_value(value).ok()
     }
 
-    pub(crate) fn get_policies(&self, topic_name: &str) -> Option<Policies> {
+    pub(crate) async fn get_policies(&self, topic_name: &str) -> Option<Policies> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "policy"]);
-        let result = self.local_cache.get(&path);
-        if let Some(value) = result {
-            let policies: Option<Policies> = serde_json::from_value(value).ok();
-            return policies;
-        }
-        None
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        serde_json::from_value(value).ok()
     }
 
     //return the list of subscriptions and their respective type
@@ -208,7 +193,7 @@ impl TopicResources {
 
         let mut subscriptions = Vec::new();
 
-        let paths = self.local_cache.get_keys_with_prefix(&path).await;
+        let paths = self.store.get_childrens(&path).await.unwrap_or_default();
 
         for path in paths {
             let parts: Vec<&str> = path.split('/').collect();
@@ -223,7 +208,7 @@ impl TopicResources {
 
     // Cursor helpers
     pub(crate) async fn set_subscription_cursor(
-        &mut self,
+        &self,
         subscription_name: &str,
         topic_name: &str,
         offset: u64,
@@ -240,7 +225,7 @@ impl TopicResources {
     }
 
     pub(crate) async fn get_subscription_cursor(
-        &mut self,
+        &self,
         subscription_name: &str,
         topic_name: &str,
     ) -> Result<Option<u64>> {
@@ -262,7 +247,7 @@ impl TopicResources {
 
     /// Store schema subject reference for a topic
     pub(crate) async fn add_topic_schema_subject(
-        &mut self,
+        &self,
         topic_name: &str,
         schema_subject: &str,
     ) -> Result<()> {
@@ -275,18 +260,15 @@ impl TopicResources {
     /// Get schema subject for a topic
     pub(crate) async fn get_schema_subject(&self, topic_name: &str) -> Option<String> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_subject"]);
-        let result = self.local_cache.get(&path);
-        if let Some(value) = result {
-            return serde_json::from_value(value).ok();
-        }
-        None
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        serde_json::from_value(value).ok()
     }
 
     // ========== Topic Schema Configuration (New) ==========
 
     /// Store topic schema configuration (subject + validation settings)
     pub(crate) async fn store_schema_config(
-        &mut self,
+        &self,
         topic_name: &str,
         config: &TopicSchemaConfig,
     ) -> Result<()> {
@@ -302,8 +284,8 @@ impl TopicResources {
         topic_name: &str,
     ) -> Result<Option<TopicSchemaConfig>> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema_config"]);
-        
-        match self.local_cache.get(&path) {
+
+        match self.store.get(&path, MetaOptions::None).await? {
             Some(value) => {
                 let config: TopicSchemaConfig = serde_json::from_value(value)
                     .map_err(|e| anyhow!("Failed to deserialize schema config: {}", e))?;

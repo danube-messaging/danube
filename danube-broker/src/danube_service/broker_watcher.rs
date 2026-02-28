@@ -1,6 +1,7 @@
+use crate::metadata_storage::MetadataStorage;
 use std::sync::Arc;
 
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore, WatchEvent};
+use danube_core::metadata::{MetaOptions, MetadataError, MetadataStore, WatchEvent};
 use futures::StreamExt;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, trace, warn};
@@ -60,6 +61,12 @@ pub(crate) async fn watch_events_for_broker(
                                 }
                             }
                         }
+                        Err(MetadataError::WatchError(msg)) if msg.contains("lagged") => {
+                            warn!(
+                                broker_id = %broker_id,
+                                "broker watcher stream lagged — some topic assignments may have been missed; LoadManager will retry"
+                            );
+                        }
                         Err(e) => {
                             warn!(error = %e, "Error receiving watch event");
                         }
@@ -82,7 +89,7 @@ pub(crate) async fn watch_events_for_broker(
 /// - Processes a topic assignment directed to this broker.
 /// - Bounces the assignment if the broker is not active (draining/drained) by deleting the
 ///   assignment and posting an `unassigned` marker with reason `drain_redirect`.
-/// - Verifies LocalCache readiness (dispatch/schema/policies) before ensuring the topic locally.
+/// - Verifies metadata readiness (dispatch/schema/policies) before ensuring the topic locally.
 async fn handle_put_event(
     meta_store: &MetadataStorage,
     broker_service: &Arc<BrokerService>,
@@ -99,7 +106,7 @@ async fn handle_put_event(
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!(path = %key_str, "Invalid topic path format in Put event");
+        trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);
@@ -129,7 +136,7 @@ async fn handle_put_event(
     let manager = broker_service.topic_manager.clone();
     match manager.ensure_local(&topic_name).await {
         Ok((disp_strategy, _schema_subject)) => {
-            // Get full schema info for logging (fast LocalCache read)
+            // Get full schema info for logging
             let schema_info = match manager.get_schema_info(&topic_name).await {
                 Some((subject, schema_id, schema_type)) => {
                     format!(
@@ -175,7 +182,7 @@ async fn handle_delete_event(
 
     let parts: Vec<_> = key_str.split('/').collect();
     if parts.len() < 6 {
-        warn!(path = %key_str, "Invalid topic path format in Delete event");
+        trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
     let topic_name = format!("/{}/{}", parts[4], parts[5]);
@@ -215,7 +222,7 @@ async fn handle_delete_event(
     // Auto-transition to drained when broker is draining and has no topics left
     let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
     let is_draining = match meta_store
-        .get(&state_path, danube_metadata_store::MetaOptions::None)
+        .get(&state_path, danube_core::metadata::MetaOptions::None)
         .await
     {
         Ok(Some(val)) => val.get("mode").and_then(|m| m.as_str()) == Some("draining"),
@@ -232,7 +239,7 @@ async fn handle_delete_event(
                 .put(
                     &state_path,
                     drained,
-                    danube_metadata_store::MetaOptions::None,
+                    danube_core::metadata::MetaOptions::None,
                 )
                 .await
             {
@@ -250,7 +257,7 @@ async fn handle_delete_event(
 async fn is_broker_active(meta_store: &MetadataStorage, broker_id: u64) -> bool {
     let state_path = join_path(&[BASE_BROKER_PATH, &broker_id.to_string(), "state"]);
     match meta_store
-        .get(&state_path, danube_metadata_store::MetaOptions::None)
+        .get(&state_path, danube_core::metadata::MetaOptions::None)
         .await
     {
         Ok(Some(val)) => val
@@ -284,7 +291,7 @@ async fn bounce_if_not_active(
         .put(
             &unassigned_path,
             marker,
-            danube_metadata_store::MetaOptions::None,
+            danube_core::metadata::MetaOptions::None,
         )
         .await
     {
@@ -293,8 +300,8 @@ async fn bounce_if_not_active(
     true
 }
 
-// Cache readiness verification with retry and fallback
-// Verifies that required metadata (policy/schema/dispatch config) is available in LocalCache
+// Metadata readiness verification with retry and fallback
+// Verifies that required metadata (policy/schema/dispatch config) is available in store
 // before calling create_topic_locally() to avoid watcher ordering races
 async fn verify_cache_readiness_with_retry(
     broker_service: &Arc<BrokerService>,
@@ -303,11 +310,18 @@ async fn verify_cache_readiness_with_retry(
     retry_delay: Duration,
 ) -> anyhow::Result<()> {
     for attempt in 0..max_retries {
-        // Check if required metadata is available in LocalCache
+        // Check if required metadata is available in store
         let (has_dispatch, has_policies) = {
-            let resources = broker_service.resources.lock().await;
-            let dispatch_strategy = resources.topic.get_dispatch_strategy(topic_name);
-            let policies = resources.topic.get_policies(topic_name);
+            let dispatch_strategy = broker_service
+                .resources
+                .topic
+                .get_dispatch_strategy(topic_name)
+                .await;
+            let policies = broker_service
+                .resources
+                .topic
+                .get_policies(topic_name)
+                .await;
 
             (dispatch_strategy.is_some(), policies.is_some())
         };
@@ -339,7 +353,7 @@ async fn verify_cache_readiness_with_retry(
         "Cache readiness verification failed"
     );
     Err(anyhow::anyhow!(
-        "Required metadata not available in LocalCache after {} retries",
+        "Required metadata not available in store after {} retries",
         max_retries
     ))
 }

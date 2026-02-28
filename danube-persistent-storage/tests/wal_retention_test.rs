@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::{PersistentStorage, StartPosition};
-use danube_metadata_store::{MemoryStore, MetadataStorage};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{
@@ -313,7 +313,7 @@ async fn test_stateful_reader_after_retention() {
     let factory = WalStorageFactory::new(
         wal_cfg.clone(),
         backend.clone(),
-        MetadataStorage::InMemory((*memory_store).clone()),
+        memory_store.clone() as Arc<dyn MetadataStore>,
         "/danube".to_string(),
         UploaderBaseConfig {
             interval_seconds: 1,

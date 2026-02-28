@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use tokio::sync::Mutex;
 use tonic::Status;
 
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
@@ -18,12 +17,12 @@ use crate::{broker_service::validate_topic_format, policies::Policies, resources
 /// - Provide lightweight read helpers used by `BrokerService`.
 #[derive(Debug)]
 pub(crate) struct TopicCluster {
-    resources: Arc<Mutex<Resources>>,
+    resources: Arc<Resources>,
 }
 
 impl TopicCluster {
     /// Constructs a new `TopicCluster` bound to shared `Resources`.
-    pub(crate) fn new(resources: Arc<Mutex<Resources>>) -> Self {
+    pub(crate) fn new(resources: Arc<Resources>) -> Self {
         Self { resources }
     }
 
@@ -53,10 +52,7 @@ impl TopicCluster {
 
         let ns_name = get_nsname_from_topic(topic_name);
 
-        if let Ok(false) = {
-            let mut resources = self.resources.lock().await;
-            resources.namespace.namespace_exist(ns_name).await
-        } {
+        if let Ok(false) = self.resources.namespace.namespace_exist(ns_name).await {
             let status = Status::unavailable(&format!(
                 "Unable to find the namespace {}, the topic can be created only for an exisiting namespace",
                 ns_name
@@ -65,17 +61,16 @@ impl TopicCluster {
         }
 
         // Check if topic already exists (prevent duplicate creation)
+        if self
+            .resources
+            .namespace
+            .check_if_topic_exist(ns_name, topic_name)
+            .await
         {
-            let resources = self.resources.lock().await;
-            if resources
-                .namespace
-                .check_if_topic_exist(ns_name, topic_name)
-            {
-                return Err(Status::already_exists(format!(
-                    "Topic '{}' already exists",
-                    topic_name
-                )));
-            }
+            return Err(Status::already_exists(format!(
+                "Topic '{}' already exists",
+                topic_name
+            )));
         }
 
         // Validation: prevent creating both normal and partitioned topics with the same base name
@@ -86,10 +81,11 @@ impl TopicCluster {
                 let base_topic = base_name.0;
 
                 // Check if a non-partitioned topic with this base name exists
-                let resources = self.resources.lock().await;
-                if resources
+                if self
+                    .resources
                     .namespace
                     .check_if_topic_exist(ns_name, base_topic)
+                    .await
                 {
                     return Err(Status::already_exists(format!(
                         "Cannot create partitioned topic '{}': a non-partitioned topic '{}' already exists. Delete the non-partitioned topic first.",
@@ -100,8 +96,8 @@ impl TopicCluster {
         } else {
             // This is a normal (non-partitioned) topic
             // Check if any partitioned topics with this base name exist
-            let resources = self.resources.lock().await;
-            let partitions = resources
+            let partitions = self
+                .resources
                 .namespace
                 .get_topic_partitions(ns_name, topic_name)
                 .await;
@@ -132,27 +128,31 @@ impl TopicCluster {
         schema_ref: Option<SchemaReference>,
         policies: Option<Policies>,
     ) -> Result<()> {
-        let mut resources = self.resources.lock().await;
-
         // 1) add to unassigned
-        resources.cluster.new_unassigned_topic(topic_name).await?;
+        self.resources
+            .cluster
+            .new_unassigned_topic(topic_name)
+            .await?;
 
         // 2) add to namespace topics
-        resources.namespace.create_new_topic(topic_name).await?;
+        self.resources
+            .namespace
+            .create_new_topic(topic_name)
+            .await?;
 
         // 3) add delivery/retention strategy
         let dispatch_strategy: ConfigDispatchStrategy = match dispatch_strategy {
             ProtoDispatchStrategy::NonReliable => ConfigDispatchStrategy::NonReliable,
             ProtoDispatchStrategy::Reliable => ConfigDispatchStrategy::Reliable,
         };
-        resources
+        self.resources
             .topic
             .add_topic_delivery(topic_name, dispatch_strategy)
             .await?;
 
         // 4) add topic policies if any
         if let Some(policies) = policies {
-            resources
+            self.resources
                 .topic
                 .add_topic_policy(topic_name, policies)
                 .await?;
@@ -160,7 +160,7 @@ impl TopicCluster {
 
         // 5) add schema subject if provided
         if let Some(schema_ref) = schema_ref {
-            resources
+            self.resources
                 .topic
                 .add_topic_schema_subject(topic_name, &schema_ref.subject)
                 .await?;
@@ -178,8 +178,6 @@ impl TopicCluster {
         // find the broker owning the topic
         let broker_id = match self
             .resources
-            .lock()
-            .await
             .cluster
             .get_broker_for_topic(topic_name)
             .await
@@ -189,26 +187,19 @@ impl TopicCluster {
         };
 
         // 1) create unload marker under /cluster/unassigned/{topic}
-        {
-            let mut resources = self.resources.lock().await;
-            // broker_id is stored as string in metadata; try to parse to u64
-            let from_broker_num = broker_id
-                .parse::<u64>()
-                .map_err(|_| anyhow!("Invalid broker id format: {}", broker_id))?;
-            resources
-                .cluster
-                .mark_topic_for_unload(topic_name, from_broker_num)
-                .await?;
-        }
+        let from_broker_num = broker_id
+            .parse::<u64>()
+            .map_err(|_| anyhow!("Invalid broker id format: {}", broker_id))?;
+        self.resources
+            .cluster
+            .mark_topic_for_unload(topic_name, from_broker_num)
+            .await?;
 
         // 2) schedule deletion at assigned broker (triggers local unload via watch)
-        {
-            let mut resources = self.resources.lock().await;
-            resources
-                .cluster
-                .schedule_topic_deletion(&broker_id, topic_name)
-                .await?;
-        }
+        self.resources
+            .cluster
+            .schedule_topic_deletion(&broker_id, topic_name)
+            .await?;
 
         Ok(())
     }
@@ -233,13 +224,11 @@ impl TopicCluster {
         let ns_name = get_nsname_from_topic(topic_name);
 
         // Check if this is a partitioned topic (has partitions)
-        let all_topics = {
-            let resources = self.resources.lock().await;
-            resources
-                .namespace
-                .get_topic_partitions(ns_name, topic_name)
-                .await
-        };
+        let all_topics = self
+            .resources
+            .namespace
+            .get_topic_partitions(ns_name, topic_name)
+            .await;
 
         // Filter to get only actual partitions (exclude the base topic itself)
         let partitions: Vec<String> = all_topics
@@ -288,8 +277,6 @@ impl TopicCluster {
         // Find the broker owning the topic
         let broker_id = match self
             .resources
-            .lock()
-            .await
             .cluster
             .get_broker_for_topic(topic_name)
             .await
@@ -299,31 +286,26 @@ impl TopicCluster {
         };
 
         // 1) Schedule delete at assigned broker (triggers watch)
-        {
-            let mut resources = self.resources.lock().await;
-            resources
-                .cluster
-                .schedule_topic_deletion(&broker_id, topic_name)
-                .await?;
-        }
+        self.resources
+            .cluster
+            .schedule_topic_deletion(&broker_id, topic_name)
+            .await?;
 
         // 2) Delete from namespace
-        {
-            let mut resources = self.resources.lock().await;
-            resources.namespace.delete_topic(topic_name).await?;
-        }
+        self.resources.namespace.delete_topic(topic_name).await?;
 
         // 3) Delete topic metadata: producers, subscriptions, delivery, policy, schema, root
-        {
-            let mut resources = self.resources.lock().await;
-            // Best-effort cleanup; continue even if individual steps fail
-            let _ = resources.topic.delete_all_producers(topic_name).await;
-            let _ = resources.topic.delete_all_subscriptions(topic_name).await;
-            let _ = resources.topic.delete_topic_delivery(topic_name).await;
-            let _ = resources.topic.delete_topic_policy(topic_name).await;
-            let _ = resources.topic.delete_topic_schema(topic_name).await;
-            let _ = resources.topic.delete_topic_root(topic_name).await;
-        }
+        // Best-effort cleanup; continue even if individual steps fail
+        let _ = self.resources.topic.delete_all_producers(topic_name).await;
+        let _ = self
+            .resources
+            .topic
+            .delete_all_subscriptions(topic_name)
+            .await;
+        let _ = self.resources.topic.delete_topic_delivery(topic_name).await;
+        let _ = self.resources.topic.delete_topic_policy(topic_name).await;
+        let _ = self.resources.topic.delete_topic_schema(topic_name).await;
+        let _ = self.resources.topic.delete_topic_root(topic_name).await;
 
         Ok(())
     }
@@ -331,19 +313,21 @@ impl TopicCluster {
     /// Returns true if the topic exists in the namespace topic list.
     pub(crate) async fn exists_topic_in_namespace(&self, topic_name: &str) -> bool {
         let ns = get_nsname_from_topic(topic_name);
-        let resources = self.resources.lock().await;
-        resources.namespace.check_if_topic_exist(ns, topic_name)
+        self.resources
+            .namespace
+            .check_if_topic_exist(ns, topic_name)
+            .await
     }
 
     /// Resolves the addresses of the broker currently serving `topic_name`.
     /// Returns (broker_url, connect_url) or `None` if the topic is unknown or no broker is assigned.
     pub(crate) async fn find_serving_broker(&self, topic_name: &str) -> Option<(String, String)> {
-        let broker_id = {
-            let resources = self.resources.lock().await;
-            resources.cluster.get_broker_for_topic(topic_name).await
-        }?;
-        let resources = self.resources.lock().await;
-        resources.cluster.get_broker_urls(&broker_id)
+        let broker_id = self
+            .resources
+            .cluster
+            .get_broker_for_topic(topic_name)
+            .await?;
+        self.resources.cluster.get_broker_urls(&broker_id).await
     }
 }
 

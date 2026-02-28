@@ -82,7 +82,7 @@ pub(crate) struct SubscriptionEngine {
 
     /// Metadata store for persisting subscription progress (cursor)
     /// Used by durable subscriptions to survive broker restarts
-    pub(crate) progress_resources: Option<tokio::sync::Mutex<TopicResources>>,
+    pub(crate) progress_resources: Option<TopicResources>,
 
     /// Last acknowledged offset (consumer confirmed delivery)
     /// This is the subscription's "cursor" - used for lag detection and persistence
@@ -164,7 +164,7 @@ impl SubscriptionEngine {
     ) -> Self {
         let mut s = Self::new(subscription_name, topic_store);
         s.topic_name = Some(topic_name);
-        s.progress_resources = Some(tokio::sync::Mutex::new(progress_resources));
+        s.progress_resources = Some(progress_resources);
         s.sub_progress_flush_interval = sub_progress_flush_interval;
         s.dispatch_rate_limiter = limiter;
         s
@@ -200,10 +200,9 @@ impl SubscriptionEngine {
     ///
     /// `Ok(())` on successful stream creation, `Err` if TopicStore or metadata access fails.
     pub(crate) async fn init_stream_from_progress_or_latest(&mut self) -> Result<()> {
-        if let (Some(topic), Some(res_mx)) =
+        if let (Some(topic), Some(res)) =
             (self.topic_name.as_deref(), self.progress_resources.as_ref())
         {
-            let mut res = res_mx.lock().await;
             if let Ok(Some(cursor)) = res
                 .get_subscription_cursor(&self._subscription_name, topic)
                 .await
@@ -307,13 +306,12 @@ impl SubscriptionEngine {
         self.dirty = true;
 
         // Debounced flush: persist at most every `flush_interval`
-        if let Some(res_mx) = &self.progress_resources {
+        if let Some(res) = &self.progress_resources {
             let now = Instant::now();
             if self.dirty
                 && now.duration_since(self.last_flush_at) >= self.sub_progress_flush_interval
             {
                 if let Some(off) = self.last_acked {
-                    let mut res = res_mx.lock().await;
                     // Best-effort; if it fails, keep dirty=true to retry on next ack
                     if res
                         .set_subscription_cursor(
@@ -352,12 +350,11 @@ impl SubscriptionEngine {
     ///
     /// Always returns `Ok(())`.
     pub(crate) async fn flush_progress_now(&mut self) -> Result<()> {
-        if let (Some(off), Some(res_mx), Some(topic)) = (
+        if let (Some(off), Some(res), Some(topic)) = (
             self.last_acked,
             self.progress_resources.as_ref(),
             self.topic_name.clone(),
         ) {
-            let mut res = res_mx.lock().await;
             let _ = res
                 .set_subscription_cursor(&self._subscription_name, &topic, off)
                 .await;
@@ -499,10 +496,10 @@ pub(crate) struct LagInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::danube_service::LocalCache;
+    use crate::metadata_storage::MetadataStorage;
     use crate::resources::TopicResources;
     use danube_core::message::MessageID;
-    use danube_metadata_store::{MemoryStore, MetadataStorage};
+    use danube_core::metadata::MemoryStore;
     use danube_persistent_storage::wal::{Wal, WalConfig};
     use danube_persistent_storage::WalStorage;
     use tokio::time::{sleep, Duration};
@@ -513,7 +510,7 @@ mod tests {
     ///   after an acknowledgment, when the debounce window (`sub_progress_flush_interval`) elapsed.
     ///
     /// Inputs / Setup
-    /// - In-memory `MetadataStorage::InMemory` with `LocalCache`, wrapped by `TopicResources`.
+    /// - In-memory `MetadataStorage::InMemory` wrapped by `TopicResources`.
     /// - `SubscriptionEngine::new_with_progress(...)` configured for subscription `sub-a` on topic `/ns/topic-a`.
     /// - `sub_progress_flush_interval` set to 50ms (short for test).
     /// - A `MessageID` with `topic_offset = 5` to simulate an acked WAL offset.
@@ -528,11 +525,10 @@ mod tests {
     /// - Confirms the cursor was written once the debounce interval elapsed.
     #[tokio::test]
     async fn persists_cursor_after_debounce() {
-        // In-memory metadata store and local cache
+        // In-memory metadata store
         let mem = MemoryStore::new().await.expect("init memory store");
         let store = MetadataStorage::InMemory(mem);
-        let local_cache = LocalCache::new(store.clone());
-        let topic_resources = TopicResources::new(local_cache, store.clone());
+        let topic_resources = TopicResources::new(store.clone());
         let topic_resources_reader = topic_resources.clone();
 
         // Engine with short debounce interval (50ms). TopicStore not used here, but must be provided.
@@ -566,7 +562,7 @@ mod tests {
         engine.on_acked(msg_id.clone()).await.unwrap();
 
         // Validate cursor persisted
-        let mut reader = topic_resources_reader;
+        let reader = topic_resources_reader;
         let got = reader
             .get_subscription_cursor("sub-a", "/ns/topic-a")
             .await

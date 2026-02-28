@@ -1,63 +1,55 @@
-use anyhow::{anyhow, Result};
-use danube_metadata_store::{MetaOptions, MetadataStorage, MetadataStore};
-use serde_json::Value;
-use tracing::debug;
-
+use crate::metadata_storage::MetadataStorage;
 use crate::{
     resources::BASE_SCHEMAS_PATH,
     schema::metadata::{SchemaMetadata, SchemaVersion},
     utils::join_path,
-    LocalCache,
 };
+use anyhow::{anyhow, Result};
+use danube_core::metadata::{MetaOptions, MetadataStore};
+use serde_json::Value;
 
-/// SchemaResources manages schema metadata in ETCD
-/// Following the Danube pattern:
-/// - Writes go to ETCD (which triggers LocalCache updates via watch)
-/// - Reads use LocalCache for fast access
+/// SchemaResources manages schema metadata in the Raft-backed metadata store.
+///
+/// All reads and writes go through the Raft state machine (in-memory BTreeMap
+/// on every broker). No separate cache layer is needed.
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaResources {
-    local_cache: LocalCache,
     store: MetadataStorage,
 }
 
 impl SchemaResources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
-        SchemaResources { local_cache, store }
+    pub(crate) fn new(store: MetadataStorage) -> Self {
+        SchemaResources { store }
     }
 
-    /// Check if a schema subject exists (reads from LocalCache)
+    /// Check if a schema subject exists.
+    /// Reads from the Raft state machine for read-after-write consistency.
     pub(crate) async fn subject_exists(&self, subject: &str) -> Result<bool> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "metadata"]);
-        // Check if metadata exists AND can be deserialized
-        match self.local_cache.get(&path) {
-            Some(value) => {
-                // Verify it's valid SchemaMetadata
-                Ok(serde_json::from_value::<SchemaMetadata>(value).is_ok())
-            }
+        match self.store.get(&path, MetaOptions::None).await? {
+            Some(value) => Ok(serde_json::from_value::<SchemaMetadata>(value).is_ok()),
             None => Ok(false),
         }
     }
 
-    /// Get schema metadata from LocalCache (fast read)
+    /// Get schema metadata (fast read from Raft state machine)
     /// Returns (schema_id, metadata) tuple
-    pub(crate) fn get_cached_metadata(&self, subject: &str) -> Option<(u64, Value)> {
+    pub(crate) async fn get_cached_metadata(&self, subject: &str) -> Option<(u64, Value)> {
         let path = format!("/schemas/{}/metadata", subject);
-        self.local_cache.get(&path).map(|metadata| {
-            // Extract schema_id from metadata
-            let schema_id = metadata
-                .get("schema_id")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            (schema_id, metadata)
-        })
+        let metadata = self.store.get(&path, MetaOptions::None).await.ok()??;
+        let schema_id = metadata
+            .get("schema_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Some((schema_id, metadata))
     }
 
-    /// Get schema ID from LocalCache
-    pub(crate) fn get_schema_id(&self, subject: &str) -> Option<u64> {
-        self.get_cached_metadata(subject).map(|(id, _)| id)
+    /// Get schema ID from store
+    pub(crate) async fn get_schema_id(&self, subject: &str) -> Option<u64> {
+        self.get_cached_metadata(subject).await.map(|(id, _)| id)
     }
 
-    /// Store compatibility mode in ETCD
+    /// Store compatibility mode in the metadata store
     /// Path: /schemas/{subject}/compatibility
     pub(crate) async fn store_compatibility_mode(&self, subject: &str, mode: &str) -> Result<()> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "compatibility"]);
@@ -66,125 +58,80 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Get compatibility mode from LocalCache
+    /// Get compatibility mode from store
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
-    pub(crate) fn get_compatibility_mode(&self, subject: &str) -> Option<String> {
+    pub(crate) async fn get_compatibility_mode(&self, subject: &str) -> Option<String> {
         let path = format!("/schemas/{}/compatibility", subject);
-        self.local_cache
-            .get(&path)
-            .and_then(|v| v.get("mode").and_then(|m| m.as_str().map(String::from)))
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        value.get("mode").and_then(|m| m.as_str().map(String::from))
     }
 
-    // ========== Schema ID Generation (ETCD-based) ==========
+    // ========== Schema ID Generation (Raft-atomic) ==========
 
-    /// Get global schema ID counter from ETCD
-    /// Initializes to 1 if not present
-    pub(crate) async fn get_global_schema_id_counter(&self) -> Result<u64> {
+    /// Atomically allocate the next schema ID through Raft consensus.
+    ///
+    /// This replaces the old racy get+put pattern with a single atomic
+    /// `AllocateMonotonicId` Raft command, eliminating the race condition
+    /// window that existed when multiple brokers registered schemas
+    /// concurrently.
+    pub(crate) async fn allocate_next_schema_id(&self) -> Result<u64> {
         const COUNTER_KEY: &str = "/schemas/_global/next_schema_id";
-        
-        match self.store.get(COUNTER_KEY, MetaOptions::None).await? {
-            Some(value) => {
-                let counter = value.as_u64()
-                    .ok_or_else(|| anyhow!("Invalid schema ID counter value"))?;
-                Ok(counter)
-            }
-            None => {
-                // Initialize counter to 1
-                let init_value = serde_json::json!(1);
-                self.store.put(COUNTER_KEY, init_value, MetaOptions::None).await?;
-                Ok(1)
-            }
-        }
-    }
-
-    /// Increment schema ID counter using get+put (optimistic concurrency)
-    /// Returns Ok if successful, Err if another broker updated it
-    /// 
-    /// NOTE: This is a temporary implementation. Ideally, MetadataStore should
-    /// expose a proper compare-and-swap operation using ETCD's version field.
-    /// For now, we use get+put with verification, which works but has a small
-    /// race condition window.
-    pub(crate) async fn increment_schema_id_counter(
-        &self,
-        expected_current: u64,
-        next_value: u64,
-    ) -> Result<()> {
-        const COUNTER_KEY: &str = "/schemas/_global/next_schema_id";
-        
-        // Get current value again to verify it hasn't changed
-        let actual_current = self.store.get(COUNTER_KEY, MetaOptions::None).await?
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow!("Counter disappeared during increment"))?;
-        
-        if actual_current != expected_current {
-            // Another broker updated the counter
-            debug!("Schema ID counter changed: expected {}, got {}", expected_current, actual_current);
-            return Err(anyhow!("Counter was updated by another broker"));
-        }
-        
-        // Update to next value
-        let next_data = serde_json::json!(next_value);
-        self.store.put(COUNTER_KEY, next_data, MetaOptions::None).await?;
-        
-        Ok(())
+        let id = self.store.allocate_monotonic_id(COUNTER_KEY).await?;
+        Ok(id)
     }
 
     // ========== Reverse Index (schema_id -> subject) ==========
 
     /// Store reverse index mapping schema_id to subject
-    pub(crate) async fn store_schema_id_index(
-        &self,
-        schema_id: u64,
-        subject: &str,
-    ) -> Result<()> {
+    pub(crate) async fn store_schema_id_index(&self, schema_id: u64, subject: &str) -> Result<()> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
         let data = serde_json::json!({
             "subject": subject,
             "schema_id": schema_id
         });
-        
+
         self.store.put(&path, data, MetaOptions::None).await?;
         Ok(())
     }
 
-    /// Get subject name from ETCD if not in cache
+    /// Get subject name from the metadata store if not in cache
     pub(crate) async fn fetch_subject_by_schema_id(&self, schema_id: u64) -> Result<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
-        
-        let value = self.store.get(&path, MetaOptions::None).await?
+
+        let value = self
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
             .ok_or_else(|| anyhow!("No subject found for schema_id {}", schema_id))?;
-        
-        value.get("subject")
+
+        value
+            .get("subject")
             .and_then(|s| s.as_str())
             .map(String::from)
             .ok_or_else(|| anyhow!("Invalid index data for schema_id {}", schema_id))
     }
-    
-    /// Get subject name by schema_id (tries LocalCache first, then ETCD)
+
+    /// Get subject name by schema_id from the Raft state machine
     /// This is the preferred method for fast lookups during message validation
-    pub(crate) fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
+    pub(crate) async fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
-        
-        // Try LocalCache first (fast path)
-        if let Some(value) = self.local_cache.get(&path) {
-            return value.get("subject")
-                .and_then(|s| s.as_str())
-                .map(String::from);
-        }
-        
-        // Not in cache - caller should use fetch_subject_by_schema_id for async lookup
-        None
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        value
+            .get("subject")
+            .and_then(|s| s.as_str())
+            .map(String::from)
     }
 
     // Additional methods for SchemaStorage compatibility
 
-    /// Get schema metadata from LocalCache (fast read)
+    /// Get schema metadata.
+    /// Reads from the Raft state machine for read-after-write consistency.
     pub(crate) async fn get_metadata(&self, subject: &str) -> Result<SchemaMetadata> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "metadata"]);
         let value = self
-            .local_cache
-            .get(&path)
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
             .ok_or_else(|| anyhow!("Schema metadata not found for subject: {}", subject))?;
 
         let metadata: SchemaMetadata = serde_json::from_value(value)
@@ -193,7 +140,7 @@ impl SchemaResources {
         Ok(metadata)
     }
 
-    /// Update schema metadata in ETCD
+    /// Update schema metadata in the metadata store
     pub(crate) async fn update_metadata(&self, metadata: &SchemaMetadata) -> Result<()> {
         let path = join_path(&[BASE_SCHEMAS_PATH, &metadata.subject, "metadata"]);
         let data = serde_json::to_value(metadata)
@@ -229,16 +176,20 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Get a specific schema version from LocalCache (fast read)
+    /// Get a specific schema version from store
     pub(crate) async fn get_version(&self, subject: &str, version: u32) -> Result<SchemaVersion> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "versions", &version.to_string()]);
-        let value = self.local_cache.get(&path).ok_or_else(|| {
-            anyhow!(
-                "Schema version {} not found for subject: {}",
-                version,
-                subject
-            )
-        })?;
+        let value = self
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
+            .ok_or_else(|| {
+                anyhow!(
+                    "Schema version {} not found for subject: {}",
+                    version,
+                    subject
+                )
+            })?;
 
         let schema_version: SchemaVersion = serde_json::from_value(value)
             .map_err(|e| anyhow!("Failed to deserialize schema version: {}", e))?;
@@ -246,10 +197,10 @@ impl SchemaResources {
         Ok(schema_version)
     }
 
-    /// List all version numbers for a subject from ETCD
+    /// List all version numbers for a subject from store
     pub(crate) async fn list_version_numbers(&self, subject: &str) -> Result<Vec<u32>> {
         let prefix = join_path(&[BASE_SCHEMAS_PATH, subject, "versions"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
 
         let mut versions: Vec<u32> = keys
             .iter()
@@ -260,12 +211,13 @@ impl SchemaResources {
         Ok(versions)
     }
 
-    /// List all subjects from LocalCache
+    /// List all subjects from store
     pub(crate) async fn list_subjects(&self) -> Result<Vec<String>> {
         let keys = self
-            .local_cache
-            .get_keys_with_prefix(BASE_SCHEMAS_PATH)
-            .await;
+            .store
+            .get_childrens(BASE_SCHEMAS_PATH)
+            .await
+            .unwrap_or_default();
 
         let subjects: Vec<String> = keys
             .iter()
@@ -285,19 +237,21 @@ impl SchemaResources {
         Ok(subjects)
     }
 
-    /// List all subjects with a prefix from LocalCache
+    /// List all subjects with a prefix from store
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
     pub(crate) async fn get_subjects_with_prefix(&self, prefix: &str) -> Vec<String> {
         let full_prefix = if prefix.is_empty() {
             BASE_SCHEMAS_PATH.to_string()
         } else {
             join_path(&[BASE_SCHEMAS_PATH, prefix])
         };
-        self.local_cache.get_keys_with_prefix(&full_prefix).await
+        self.store
+            .get_childrens(&full_prefix)
+            .await
+            .unwrap_or_default()
     }
 
-    /// Delete schema version from ETCD
+    /// Delete schema version from the metadata store
     pub(crate) async fn delete_version(&self, subject: &str, version: u32) -> Result<()> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "versions", &version.to_string()]);
         self.store.delete(&path).await?;
@@ -306,10 +260,9 @@ impl SchemaResources {
 
     /// Delete all versions for a subject
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
     pub(crate) async fn delete_all_versions(&self, subject: &str) -> Result<()> {
         let prefix = join_path(&[BASE_SCHEMAS_PATH, subject, "versions"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
         for key in keys {
             self.store.delete(&key).await?;
         }
@@ -318,7 +271,7 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Delete subject metadata from ETCD
+    /// Delete subject metadata from the metadata store
     #[allow(dead_code)]
     /// TODO: Intentional future operation
     pub(crate) async fn delete_metadata(&self, subject: &str) -> Result<()> {

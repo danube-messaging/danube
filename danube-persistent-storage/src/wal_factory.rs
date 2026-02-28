@@ -10,12 +10,11 @@ use crate::{
         BackendConfig, CloudBackend, CloudStore, LocalBackend, Uploader, UploaderBaseConfig,
         UploaderConfig,
     },
-    etcd_metadata::EtcdMetadata,
+    etcd_metadata::StorageMetadata,
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
 use danube_core::storage::PersistentStorageError;
-use danube_metadata_store::MetadataStorage;
 use tracing::{info, warn};
 
 /// WalStorageFactory encapsulates the storage stack and produces per-topic WalStorage instances.
@@ -26,8 +25,8 @@ pub struct WalStorageFactory {
     base_cfg: WalConfig,
     // CloudStore instance for storing objects persistently in cloud
     cloud: CloudStore,
-    // EtcdMetadata instance for storing metadata persistently in etcd
-    etcd: EtcdMetadata,
+    // StorageMetadata instance for storing metadata persistently in etcd
+    etcd: StorageMetadata,
     // topic_path (ns/topic) -> Wal
     topics: Arc<DashMap<String, Wal>>,
     // topic_path (ns/topic) -> uploader task handle
@@ -53,11 +52,11 @@ pub struct SealInfo {
 }
 
 impl WalStorageFactory {
-    /// Constructor: accepts BackendConfig and MetadataStorage and builds CloudStore/EtcdMetadata internally.
+    /// Constructor: accepts BackendConfig and a MetadataStore and builds CloudStore/StorageMetadata internally.
     pub fn new(
         cfg: WalConfig,
         backend: BackendConfig,
-        metadata_store: MetadataStorage,
+        metadata_store: Arc<dyn danube_core::metadata::MetadataStore>,
         etcd_root: impl Into<String>,
         uploader_base_cfg: UploaderBaseConfig,
         deleter_cfg: DeleterConfig,
@@ -76,7 +75,7 @@ impl WalStorageFactory {
             "initializing WalStorageFactory with backend"
         );
         let cloud = CloudStore::new(backend).expect("init cloud store");
-        let etcd = EtcdMetadata::new(metadata_store, etcd_root.into());
+        let etcd = StorageMetadata::new(metadata_store, etcd_root.into());
         Self {
             base_cfg: cfg,
             topics: Arc::new(DashMap::new()),
@@ -92,12 +91,12 @@ impl WalStorageFactory {
         }
     }
 
-    /// Test constructor: accepts pre-created CloudStore and EtcdMetadata instances for shared memory stores
+    /// Test constructor: accepts pre-created CloudStore and StorageMetadata instances for shared memory stores
     /// This method is intended for testing only to allow sharing memory store instances
     pub fn new_with_stores(
         cfg: WalConfig,
         cloud: CloudStore,
-        etcd: EtcdMetadata,
+        etcd: StorageMetadata,
         uploader_base_cfg: UploaderBaseConfig,
         deleter_cfg: DeleterConfig,
     ) -> Self {
@@ -349,7 +348,10 @@ impl WalStorageFactory {
     }
 
     /// Delete ETCD storage metadata for a topic (objects, cur pointer, state).
-    pub async fn delete_storage_metadata(&self, topic_name: &str) -> Result<(), PersistentStorageError> {
+    pub async fn delete_storage_metadata(
+        &self,
+        topic_name: &str,
+    ) -> Result<(), PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         self.etcd.delete_storage_topic(&topic_path).await
     }

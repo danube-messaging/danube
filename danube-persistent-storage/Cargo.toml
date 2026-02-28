@@ -10,7 +10,6 @@ edition = "2021"
 
 [dependencies]
 danube-core = { path = "../danube-core" }
-danube-metadata-store = { path = "../danube-metadata-store" }
 
 async-trait = {workspace = true }
 tokio = { workspace = true }

@@ -8,8 +8,8 @@ edition = "2021"
 [dependencies]
 danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
-danube-metadata-store = {path = "../danube-metadata-store"}
 danube-persistent-storage = {path = "../danube-persistent-storage"}
+danube-raft = {path = "../danube-raft"}
 
 async-trait = { workspace = true }
 futures = { workspace = true }

@@ -6,7 +6,7 @@ use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 use futures::StreamExt;
 
-use crate::danube_service::LocalCache;
+use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
 use crate::resources::{SchemaResources, TopicResources};
 use crate::subscription::SubscriptionOptions;
@@ -14,7 +14,7 @@ use crate::topic::Topic;
 use crate::topic::TopicStore;
 use anyhow::Result as AnyResult;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_metadata_store::{MemoryStore, MetadataStorage};
+use danube_core::metadata::MemoryStore;
 use serde_json::{Number, Value};
 
 fn mk_policies(entries: &[(&str, u32)]) -> Policies {
@@ -56,15 +56,14 @@ fn mk_policies(entries: &[(&str, u32)]) -> Policies {
 }
 
 async fn mk_topic(name: &str) -> Topic {
-    // In-memory metadata store and local cache for tests
+    // In-memory metadata store for tests
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
-    let local_cache = LocalCache::new(store.clone());
-    let topic_resources = TopicResources::new(local_cache.clone(), store.clone());
-    let schema_resources = SchemaResources::new(local_cache, store);
+    let topic_resources = TopicResources::new(store.clone());
+    let schema_resources = SchemaResources::new(store);
     use crate::danube_service::metrics_collector::MetricsCollector;
     use std::sync::Arc;
-    
+
     Topic::new(
         name,
         ConfigDispatchStrategy::NonReliable,
