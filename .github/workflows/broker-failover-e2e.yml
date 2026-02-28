@@ -10,16 +10,6 @@ jobs:
   build_and_test:
     runs-on: ubuntu-latest
 
-    services:
-      etcd:
-        image: quay.io/coreos/etcd:v3.5.22
-        ports:
-          - 2379:2379
-        env:
-          ETCD_NAME: etcd-danube
-          ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,21 +23,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Wait for etcd to be ready
-        run: |
-          for i in {1..10}; do
-            if nc -zv 127.0.0.1 2379; then
-              echo "etcd is ready."
-              break
-            elif [ $i -eq 10 ]; then
-              echo "etcd failed to start."
-              docker logs etcd-danube
-              exit 1
-            fi
-            echo "Waiting for etcd to start..."
-            sleep 5
-          done
-
       - name: Create certificate files
         run: |
           mkdir -p ./cert
@@ -60,12 +35,17 @@ jobs:
 
       - name: Start Broker A (background)
         env:
-          RUST_LOG: info
+          RUST_LOG: info,openraft=warn
         run: |
+          mkdir -p danube-data
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651"
           nohup ./target/release/danube-broker \
             --config-file ./config/danube_broker.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/raft-1 \
+            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:9040 \
             > broker-a.log 2>&1 &
           echo $! > broker-a.pid
@@ -100,12 +80,16 @@ jobs:
 
       - name: Start Broker B (background)
         env:
-          RUST_LOG: info
+          RUST_LOG: info,openraft=warn
         run: |
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651"
           nohup ./target/release/danube-broker \
             --config-file ./config/danube_broker.yml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
+            --raft-addr 0.0.0.0:7651 \
+            --data-dir ./danube-data/raft-2 \
+            --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:9041 \
             > broker-b.log 2>&1 &
           echo $! > broker-b.pid
@@ -189,13 +173,6 @@ jobs:
           }
           
           echo "✓ Broker B is operational and serving the failover topic"
-
-      - name: Collect etcd state for debugging
-        if: failure()
-        run: |
-          echo "=== ETCD State Dump ==="
-          docker exec etcd-danube etcdctl get --prefix "" || echo "Failed to dump etcd state"
-          echo "=== End ETCD State ==="
 
       - name: Upload logs on failure
         if: failure()

@@ -22,7 +22,7 @@ use metrics::counter;
 pub(crate) struct CachedSchemaInfo {
     pub(crate) subject: String,
     pub(crate) version: u32,
-    #[allow(dead_code)]  // Stored for future use and debugging
+    #[allow(dead_code)] // Stored for future use and debugging
     pub(crate) schema_id: u64,
 }
 
@@ -38,18 +38,18 @@ pub(crate) struct TopicSchemaContext {
     /// Schema subject assigned to this topic (e.g., "user-events-value")
     /// Once set, only schemas from this subject are allowed
     schema_subject: Mutex<Option<String>>,
-    
+
     /// Cache of schema info by schema_id (supports multiple versions)
     /// Key: schema_id (e.g., 201, 202, 203 for V1, V2, V3)
     /// Value: CachedSchemaInfo with subject, version, schema_id
     schema_cache: Mutex<HashMap<u64, CachedSchemaInfo>>,
-    
+
     /// Validation policy: None/Warn/Enforce (topic-level, can be changed by admin)
     validation_policy: Mutex<ValidationPolicy>,
-    
+
     /// Enable deep payload validation (topic-level, can be changed by admin)
     enable_payload_validation: Mutex<bool>,
-    
+
     /// Handle to schema resources for resolution and lookup
     resources: SchemaResources,
 }
@@ -62,7 +62,7 @@ impl TopicSchemaContext {
         Self {
             schema_subject: Mutex::new(None),
             schema_cache: Mutex::new(HashMap::new()),
-            validation_policy: Mutex::new(ValidationPolicy::Warn),  // Default: Warn for visibility
+            validation_policy: Mutex::new(ValidationPolicy::Warn), // Default: Warn for visibility
             enable_payload_validation: Mutex::new(false),
             resources,
         }
@@ -76,17 +76,18 @@ impl TopicSchemaContext {
     /// # Returns
     /// - `Ok(())` if schema is found
     /// - `Err` if schema subject is not found in registry
-    pub(crate) async fn set_schema_subject(
-        &self,
-        subject: String,
-        topic_name: &str,
-    ) -> Result<()> {
+    pub(crate) async fn set_schema_subject(&self, subject: String, topic_name: &str) -> Result<()> {
         // Verify subject exists in registry
-        let schema_id = self.resources.get_schema_id(&subject)
-            .ok_or_else(|| anyhow!(
-                "Schema subject '{}' not found in registry. Please register schema first.",
-                subject
-            ))?;
+        let schema_id = self
+            .resources
+            .get_schema_id(&subject)
+            .await
+            .ok_or_else(|| {
+                anyhow!(
+                    "Schema subject '{}' not found in registry. Please register schema first.",
+                    subject
+                )
+            })?;
 
         // Set the subject (schema versions will be cached as messages arrive)
         *self.schema_subject.lock().await = Some(subject.clone());
@@ -108,7 +109,8 @@ impl TopicSchemaContext {
         schema_ref: SchemaReference,
         topic_name: &str,
     ) -> Result<()> {
-        self.set_schema_subject(schema_ref.subject, topic_name).await
+        self.set_schema_subject(schema_ref.subject, topic_name)
+            .await
     }
 
     /// Get the topic's schema subject
@@ -145,14 +147,14 @@ impl TopicSchemaContext {
     pub(crate) async fn get_cached_schema(&self, schema_id: u64) -> Option<CachedSchemaInfo> {
         self.schema_cache.lock().await.get(&schema_id).cloned()
     }
-    
+
     /// Get the subject's schema_id (base ID, not version-specific)
     /// Returns None if no schema subject is configured
     pub(crate) async fn get_subject_schema_id(&self) -> Option<u64> {
         let subject = self.schema_subject.lock().await.clone()?;
-        self.resources.get_schema_id(&subject)
+        self.resources.get_schema_id(&subject).await
     }
-    
+
     /// Cache schema information from message metadata
     async fn cache_schema_info(&self, schema_id: u64, version: u32, subject: String) {
         let info = CachedSchemaInfo {
@@ -179,7 +181,7 @@ impl TopicSchemaContext {
     ) -> Result<()> {
         // Get current validation policy
         let policy = *self.validation_policy.lock().await;
-        
+
         // Skip validation if policy is None
         if matches!(policy, ValidationPolicy::None) {
             return Ok(());
@@ -195,7 +197,7 @@ impl TopicSchemaContext {
 
         // Check if topic has a schema subject assigned
         let topic_subject = self.schema_subject.lock().await.clone();
-        
+
         if topic_subject.is_none() {
             // Topic has no schema configured
             if matches!(policy, ValidationPolicy::Enforce) {
@@ -206,7 +208,7 @@ impl TopicSchemaContext {
             }
             return Ok(()); // Warn/None mode: allow messages without schema
         }
-        
+
         let topic_subject = topic_subject.unwrap();
 
         // Check if message has schema_id
@@ -272,16 +274,16 @@ impl TopicSchemaContext {
                     ValidationPolicy::None => return Ok(()),
                 }
             }
-            
+
             // Cached and valid - success!
         } else {
             // Not in cache - look up schema_id in registry
-            let schema_subject = self.resources.get_subject_by_schema_id(message_schema_id)
-                .ok_or_else(|| anyhow!(
-                    "Schema ID {} not found in registry",
-                    message_schema_id
-                ))?;
-                
+            let schema_subject = self
+                .resources
+                .get_subject_by_schema_id(message_schema_id)
+                .await
+                .ok_or_else(|| anyhow!("Schema ID {} not found in registry", message_schema_id))?;
+
             // Validate subject matches topic
             if schema_subject != topic_subject {
                 let err = anyhow!(
@@ -314,10 +316,11 @@ impl TopicSchemaContext {
                     ValidationPolicy::None => return Ok(()),
                 }
             }
-            
+
             // Cache it for next time
             let version = message.schema_version.unwrap_or(1);
-            self.cache_schema_info(message_schema_id, version, schema_subject).await;
+            self.cache_schema_info(message_schema_id, version, schema_subject)
+                .await;
         }
 
         // Schema validation passed - optionally do deep payload validation
@@ -350,7 +353,10 @@ impl TopicSchemaContext {
             Some(c) => c,
             None => {
                 // Not cached yet - look it up
-                let subject = self.resources.get_subject_by_schema_id(schema_id)
+                let subject = self
+                    .resources
+                    .get_subject_by_schema_id(schema_id)
+                    .await
                     .ok_or_else(|| anyhow!("Schema ID {} not found", schema_id))?;
                 let version = message.schema_version.unwrap_or(1);
                 CachedSchemaInfo {
@@ -366,7 +372,14 @@ impl TopicSchemaContext {
             .resources
             .get_version(&cached.subject, cached.version)
             .await
-            .map_err(|e| anyhow!("Schema version not found: {}/{} - {}", cached.subject, cached.version, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Schema version not found: {}/{} - {}",
+                    cached.subject,
+                    cached.version,
+                    e
+                )
+            })?;
 
         // Create validator and validate payload
         let validator = ValidatorFactory::create(&schema_version.schema_def)

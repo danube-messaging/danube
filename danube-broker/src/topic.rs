@@ -348,7 +348,7 @@ impl Topic {
 
     // Best-effort deletion of subscription from metadata store
     async fn delete_subscription_metadata(&self, subscription_name: &str) {
-        let mut topic_res = self.resources_topic.clone();
+        let topic_res = self.resources_topic.clone();
         let _ = topic_res
             .delete_subscription(subscription_name, &self.topic_name)
             .await;

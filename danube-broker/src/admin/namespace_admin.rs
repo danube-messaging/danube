@@ -37,7 +37,7 @@ impl NamespaceAdmin for DanubeAdminImpl {
 
         let req = request.into_inner();
 
-        let policies = match self.resources.namespace.get_policies(&req.name) {
+        let policies = match self.resources.namespace.get_policies(&req.name).await {
             Ok(policies) => policies,
             Err(err) => {
                 trace!(

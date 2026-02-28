@@ -8,48 +8,38 @@ use serde_json::Value;
 use crate::{
     resources::{BASE_BROKER_PATH, BASE_CLUSTER_PATH, BASE_NAMESPACES_PATH},
     utils::join_path,
-    LocalCache,
 };
 
 use super::{BASE_REGISTER_PATH, BASE_UNASSIGNED_PATH};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClusterResources {
-    local_cache: LocalCache,
     store: MetadataStorage,
     leadership: Option<LeadershipHandle>,
 }
 
 impl ClusterResources {
-    pub(crate) fn new(
-        local_cache: LocalCache,
-        store: MetadataStorage,
-        leadership: Option<LeadershipHandle>,
-    ) -> Self {
-        ClusterResources {
-            local_cache,
-            store,
-            leadership,
-        }
+    pub(crate) fn new(store: MetadataStorage, leadership: Option<LeadershipHandle>) -> Self {
+        ClusterResources { store, leadership }
     }
 
-    pub(crate) async fn create(&mut self, path: &str, data: Value) -> Result<()> {
+    pub(crate) async fn create(&self, path: &str, data: Value) -> Result<()> {
         self.store.put(path, data, MetaOptions::None).await?;
         Ok(())
     }
 
-    pub(crate) async fn delete(&mut self, path: &str) -> Result<()> {
+    pub(crate) async fn delete(&self, path: &str) -> Result<()> {
         self.store.delete(path).await?;
         Ok(())
     }
 
-    pub(crate) async fn create_cluster(&mut self, path: &str) -> Result<()> {
+    pub(crate) async fn create_cluster(&self, path: &str) -> Result<()> {
         let path = join_path(&[BASE_CLUSTER_PATH, path]);
         self.create(&path, serde_json::Value::Null).await?;
         Ok(())
     }
 
-    pub(crate) async fn new_unassigned_topic(&mut self, topic_name: &str) -> Result<()> {
+    pub(crate) async fn new_unassigned_topic(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_UNASSIGNED_PATH, topic_name]);
         self.create(&path, serde_json::Value::Null).await?;
         Ok(())
@@ -58,7 +48,7 @@ impl ClusterResources {
     /// Mark a topic for unload by creating an unassigned entry with an unload marker.
     /// Value format: {"reason":"unload", "from_broker": <broker_id>}
     pub(crate) async fn mark_topic_for_unload(
-        &mut self,
+        &self,
         topic_name: &str,
         from_broker_id: u64,
     ) -> Result<()> {
@@ -71,7 +61,7 @@ impl ClusterResources {
     }
 
     pub(crate) async fn schedule_topic_deletion(
-        &mut self,
+        &self,
         broker_id: &str,
         topic_name: &str,
     ) -> Result<()> {
@@ -85,9 +75,10 @@ impl ClusterResources {
     // example /cluster/brokers/{broker_id}/{namespace}/{topic})
     pub(crate) async fn get_broker_for_topic(&self, topic_name: &str) -> Option<String> {
         let keys = self
-            .local_cache
-            .get_keys_with_prefix(&BASE_BROKER_PATH)
-            .await;
+            .store
+            .get_childrens(BASE_BROKER_PATH)
+            .await
+            .unwrap_or_default();
         for path in keys {
             if let Some(pos) = path.find(topic_name) {
                 let parts: Vec<&str> = path[..pos].split('/').collect();
@@ -103,9 +94,10 @@ impl ClusterResources {
     // get the broker_id for all registered brokers
     pub(crate) async fn get_brokers(&self) -> Vec<String> {
         let paths = self
-            .local_cache
-            .get_keys_with_prefix(&BASE_REGISTER_PATH)
-            .await;
+            .store
+            .get_childrens(BASE_REGISTER_PATH)
+            .await
+            .unwrap_or_default();
 
         let mut broker_ids = Vec::new();
 
@@ -141,7 +133,7 @@ impl ClusterResources {
     /// Returns the list of topics currently assigned to the given broker as /namespace/topic strings
     pub(crate) async fn get_topics_for_broker(&self, broker_id: &str) -> Vec<String> {
         let prefix = join_path(&[BASE_BROKER_PATH, broker_id]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
         let mut topics = Vec::new();
         for key in keys {
             let parts: Vec<&str> = key.split('/').collect();
@@ -170,9 +162,9 @@ impl ClusterResources {
 
     /// Returns (broker_url, connect_url) for a registered broker.
     /// broker_url is the internal identity, connect_url is the client-facing address.
-    pub(crate) fn get_broker_urls(&self, broker_id: &str) -> Option<(String, String)> {
+    pub(crate) async fn get_broker_urls(&self, broker_id: &str) -> Option<(String, String)> {
         let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
-        let value = self.local_cache.get(&path)?;
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
 
         match value {
             Value::Object(map) => {
@@ -193,25 +185,24 @@ impl ClusterResources {
 
     /// Returns the full registration JSON object stored under /cluster/register/{broker_id}
     /// This is used to access additional fields like admin_addr and prom_exporter when available.
-    pub(crate) fn get_broker_register_info(
+    pub(crate) async fn get_broker_register_info(
         &self,
         broker_id: &str,
     ) -> Option<serde_json::Map<String, Value>> {
         let path = join_path(&[BASE_REGISTER_PATH, broker_id]);
-        match self.local_cache.get(&path)? {
+        match self.store.get(&path, MetaOptions::None).await.ok()?? {
             Value::Object(map) => Some(map),
             _ => None,
         }
     }
 
-    /// Returns the current Raft leader's node_id by querying the Raft runtime
-    /// directly, rather than reading a stale metadata key from LocalCache.
+    /// Returns the current Raft leader's node_id by querying the Raft runtime directly.
     pub(crate) fn get_cluster_leader(&self) -> Option<u64> {
         self.leadership.as_ref().and_then(|h| h.current_leader())
     }
 
     /// Returns the full registration JSON object stored under /cluster/register/{broker_id}
-    pub(crate) fn get_broker_info(&self, broker_id: &str) -> Option<BrokerInfo> {
+    pub(crate) async fn get_broker_info(&self, broker_id: &str) -> Option<BrokerInfo> {
         // Determine role first
         let mut broker_role = "None".to_string();
 
@@ -223,7 +214,7 @@ impl ClusterResources {
             }
         };
         // Read registration JSON and construct BrokerInfo.
-        let map = self.get_broker_register_info(broker_id)?;
+        let map = self.get_broker_register_info(broker_id).await?;
         let broker_addr = map
             .get("broker_url")
             .and_then(|v| v.as_str())
@@ -251,9 +242,10 @@ impl ClusterResources {
     // get the cluster namespaces
     pub(crate) async fn get_namespaces(&self) -> Vec<String> {
         let paths = self
-            .local_cache
-            .get_keys_with_prefix(&BASE_NAMESPACES_PATH)
-            .await;
+            .store
+            .get_childrens(BASE_NAMESPACES_PATH)
+            .await
+            .unwrap_or_default();
 
         let mut namespaces = Vec::new();
 

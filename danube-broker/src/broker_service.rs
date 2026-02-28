@@ -5,7 +5,6 @@ use danube_core::message::StreamMessage;
 use danube_persistent_storage::WalStorageFactory;
 use metrics::counter;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tonic::Status;
 use tracing::info;
 
@@ -40,8 +39,8 @@ pub(crate) struct BrokerService {
     /// Cluster/metadata accessor for topic lifecycle at cluster scope.
     pub(crate) topic_cluster: TopicCluster,
 
-    /// Shared resources (Local Cache views over cluster/namespace/topic metadata).
-    pub(crate) resources: Arc<Mutex<Resources>>,
+    /// Shared resources (cluster/namespace/topic metadata via Raft state machine).
+    pub(crate) resources: Arc<Resources>,
     /// Whether producers are allowed to auto-create topics when missing.
     pub(crate) auto_create_topics: bool,
 
@@ -63,7 +62,7 @@ impl BrokerService {
         let producers = ProducerRegistry::new();
         let consumers = ConsumerRegistry::new();
         let topic_worker_pool = Arc::new(TopicWorkerPool::new(None));
-        let resources_arc = Arc::new(Mutex::new(resources));
+        let resources_arc = Arc::new(resources);
         let metrics_collector = Arc::new(MetricsCollector::new());
 
         let topic_manager = TopicManager::new(
@@ -264,8 +263,10 @@ impl BrokerService {
 
     /// Returns the broker_id that currently serves the topic, if any.
     pub(crate) async fn get_topic_broker_id(&self, topic_name: &str) -> Option<String> {
-        let resources = self.resources.lock().await;
-        resources.cluster.get_broker_for_topic(topic_name).await
+        self.resources
+            .cluster
+            .get_broker_for_topic(topic_name)
+            .await
     }
 
     /// Retrieves partition names if `topic_name` is partitioned, or returns the single topic.
@@ -275,12 +276,12 @@ impl BrokerService {
 
         // check if the topic exist in the Metadata Store
         // if true, means that it is not a partitioned topic
-        match {
-            let resources = self.resources.lock().await;
-            resources
-                .namespace
-                .check_if_topic_exist(ns_name, topic_name)
-        } {
+        match self
+            .resources
+            .namespace
+            .check_if_topic_exist(ns_name, topic_name)
+            .await
+        {
             true => {
                 topics.push(topic_name.to_owned());
                 return topics;
@@ -290,13 +291,11 @@ impl BrokerService {
 
         // if not, we should look for any topic starting with topic_name
 
-        topics = {
-            let resources = self.resources.lock().await;
-            resources
-                .namespace
-                .get_topic_partitions(ns_name, topic_name)
-                .await
-        };
+        topics = self
+            .resources
+            .namespace
+            .get_topic_partitions(ns_name, topic_name)
+            .await;
 
         topics
     }
@@ -452,16 +451,17 @@ impl BrokerService {
 
     /// Creates a namespace if it doesn't already exist.
     pub(crate) async fn create_namespace_if_absent(&self, namespace_name: &str) -> Result<()> {
-        match {
-            let mut resources = self.resources.lock().await;
-            resources.namespace.namespace_exist(namespace_name).await
-        } {
+        match self
+            .resources
+            .namespace
+            .namespace_exist(namespace_name)
+            .await
+        {
             Ok(true) => {
                 return Err(anyhow!("Namespace {} already exists.", namespace_name));
             }
             Ok(false) => {
-                let mut resources = self.resources.lock().await;
-                resources
+                self.resources
                     .namespace
                     .create_namespace(namespace_name, None)
                     .await?;
@@ -477,9 +477,7 @@ impl BrokerService {
     // deletes only empty namespaces (with no topics)
     /// Deletes a namespace (only if empty based on backend rules).
     pub(crate) async fn delete_namespace(&self, ns_name: &str) -> Result<()> {
-        let mut resources = self.resources.lock().await;
-        resources.namespace.delete_namespace(ns_name).await?;
-
+        self.resources.namespace.delete_namespace(ns_name).await?;
         Ok(())
     }
 

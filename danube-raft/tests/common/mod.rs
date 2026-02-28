@@ -31,6 +31,7 @@ pub async fn start_cluster() -> (RaftNode, TempDir) {
     let node = RaftNode::start(RaftNodeConfig {
         data_dir: tmp.path().to_path_buf(),
         raft_addr: addr,
+        advertised_addr: None,
         ttl_check_interval: Duration::from_millis(200),
     })
     .await

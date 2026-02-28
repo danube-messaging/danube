@@ -3,7 +3,6 @@ use crate::{
     resources::BASE_SCHEMAS_PATH,
     schema::metadata::{SchemaMetadata, SchemaVersion},
     utils::join_path,
-    LocalCache,
 };
 use anyhow::{anyhow, Result};
 use danube_core::metadata::{MetaOptions, MetadataStore};
@@ -11,19 +10,16 @@ use serde_json::Value;
 
 /// SchemaResources manages schema metadata in the Raft-backed metadata store.
 ///
-/// - Writes go through Raft consensus (proposed via MetadataStore).
-/// - Reads that require read-after-write consistency use `self.store` (the Raft
-///   state machine, which is an in-memory BTreeMap on every broker).
-/// - Fast-path reads that tolerate eventual consistency may use `self.local_cache`.
+/// All reads and writes go through the Raft state machine (in-memory BTreeMap
+/// on every broker). No separate cache layer is needed.
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaResources {
-    local_cache: LocalCache,
     store: MetadataStorage,
 }
 
 impl SchemaResources {
-    pub(crate) fn new(local_cache: LocalCache, store: MetadataStorage) -> Self {
-        SchemaResources { local_cache, store }
+    pub(crate) fn new(store: MetadataStorage) -> Self {
+        SchemaResources { store }
     }
 
     /// Check if a schema subject exists.
@@ -36,23 +32,21 @@ impl SchemaResources {
         }
     }
 
-    /// Get schema metadata from LocalCache (fast read)
+    /// Get schema metadata (fast read from Raft state machine)
     /// Returns (schema_id, metadata) tuple
-    pub(crate) fn get_cached_metadata(&self, subject: &str) -> Option<(u64, Value)> {
+    pub(crate) async fn get_cached_metadata(&self, subject: &str) -> Option<(u64, Value)> {
         let path = format!("/schemas/{}/metadata", subject);
-        self.local_cache.get(&path).map(|metadata| {
-            // Extract schema_id from metadata
-            let schema_id = metadata
-                .get("schema_id")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            (schema_id, metadata)
-        })
+        let metadata = self.store.get(&path, MetaOptions::None).await.ok()??;
+        let schema_id = metadata
+            .get("schema_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Some((schema_id, metadata))
     }
 
-    /// Get schema ID from LocalCache
-    pub(crate) fn get_schema_id(&self, subject: &str) -> Option<u64> {
-        self.get_cached_metadata(subject).map(|(id, _)| id)
+    /// Get schema ID from store
+    pub(crate) async fn get_schema_id(&self, subject: &str) -> Option<u64> {
+        self.get_cached_metadata(subject).await.map(|(id, _)| id)
     }
 
     /// Store compatibility mode in the metadata store
@@ -64,14 +58,12 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Get compatibility mode from LocalCache
+    /// Get compatibility mode from store
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
-    pub(crate) fn get_compatibility_mode(&self, subject: &str) -> Option<String> {
+    pub(crate) async fn get_compatibility_mode(&self, subject: &str) -> Option<String> {
         let path = format!("/schemas/{}/compatibility", subject);
-        self.local_cache
-            .get(&path)
-            .and_then(|v| v.get("mode").and_then(|m| m.as_str().map(String::from)))
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        value.get("mode").and_then(|m| m.as_str().map(String::from))
     }
 
     // ========== Schema ID Generation (Raft-atomic) ==========
@@ -119,21 +111,15 @@ impl SchemaResources {
             .ok_or_else(|| anyhow!("Invalid index data for schema_id {}", schema_id))
     }
 
-    /// Get subject name by schema_id (tries LocalCache first, then ETCD)
+    /// Get subject name by schema_id from the Raft state machine
     /// This is the preferred method for fast lookups during message validation
-    pub(crate) fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
+    pub(crate) async fn get_subject_by_schema_id(&self, schema_id: u64) -> Option<String> {
         let path = format!("/schemas/_index/by_id/{}", schema_id);
-
-        // Try LocalCache first (fast path)
-        if let Some(value) = self.local_cache.get(&path) {
-            return value
-                .get("subject")
-                .and_then(|s| s.as_str())
-                .map(String::from);
-        }
-
-        // Not in cache - caller should use fetch_subject_by_schema_id for async lookup
-        None
+        let value = self.store.get(&path, MetaOptions::None).await.ok()??;
+        value
+            .get("subject")
+            .and_then(|s| s.as_str())
+            .map(String::from)
     }
 
     // Additional methods for SchemaStorage compatibility
@@ -190,16 +176,20 @@ impl SchemaResources {
         Ok(())
     }
 
-    /// Get a specific schema version from LocalCache (fast read)
+    /// Get a specific schema version from store
     pub(crate) async fn get_version(&self, subject: &str, version: u32) -> Result<SchemaVersion> {
         let path = join_path(&[BASE_SCHEMAS_PATH, subject, "versions", &version.to_string()]);
-        let value = self.local_cache.get(&path).ok_or_else(|| {
-            anyhow!(
-                "Schema version {} not found for subject: {}",
-                version,
-                subject
-            )
-        })?;
+        let value = self
+            .store
+            .get(&path, MetaOptions::None)
+            .await?
+            .ok_or_else(|| {
+                anyhow!(
+                    "Schema version {} not found for subject: {}",
+                    version,
+                    subject
+                )
+            })?;
 
         let schema_version: SchemaVersion = serde_json::from_value(value)
             .map_err(|e| anyhow!("Failed to deserialize schema version: {}", e))?;
@@ -207,10 +197,10 @@ impl SchemaResources {
         Ok(schema_version)
     }
 
-    /// List all version numbers for a subject from LocalCache
+    /// List all version numbers for a subject from store
     pub(crate) async fn list_version_numbers(&self, subject: &str) -> Result<Vec<u32>> {
         let prefix = join_path(&[BASE_SCHEMAS_PATH, subject, "versions"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
 
         let mut versions: Vec<u32> = keys
             .iter()
@@ -221,12 +211,13 @@ impl SchemaResources {
         Ok(versions)
     }
 
-    /// List all subjects from LocalCache
+    /// List all subjects from store
     pub(crate) async fn list_subjects(&self) -> Result<Vec<String>> {
         let keys = self
-            .local_cache
-            .get_keys_with_prefix(BASE_SCHEMAS_PATH)
-            .await;
+            .store
+            .get_childrens(BASE_SCHEMAS_PATH)
+            .await
+            .unwrap_or_default();
 
         let subjects: Vec<String> = keys
             .iter()
@@ -246,16 +237,18 @@ impl SchemaResources {
         Ok(subjects)
     }
 
-    /// List all subjects with a prefix from LocalCache
+    /// List all subjects with a prefix from store
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
     pub(crate) async fn get_subjects_with_prefix(&self, prefix: &str) -> Vec<String> {
         let full_prefix = if prefix.is_empty() {
             BASE_SCHEMAS_PATH.to_string()
         } else {
             join_path(&[BASE_SCHEMAS_PATH, prefix])
         };
-        self.local_cache.get_keys_with_prefix(&full_prefix).await
+        self.store
+            .get_childrens(&full_prefix)
+            .await
+            .unwrap_or_default()
     }
 
     /// Delete schema version from the metadata store
@@ -267,10 +260,9 @@ impl SchemaResources {
 
     /// Delete all versions for a subject
     #[allow(dead_code)]
-    /// TODO: Intentional future operation
     pub(crate) async fn delete_all_versions(&self, subject: &str) -> Result<()> {
         let prefix = join_path(&[BASE_SCHEMAS_PATH, subject, "versions"]);
-        let keys = self.local_cache.get_keys_with_prefix(&prefix).await;
+        let keys = self.store.get_childrens(&prefix).await.unwrap_or_default();
         for key in keys {
             self.store.delete(&key).await?;
         }

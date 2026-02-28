@@ -1,8 +1,6 @@
 use crate::metadata_storage::MetadataStorage;
 use danube_raft::leadership::LeadershipHandle;
 
-use crate::LocalCache;
-
 mod cluster;
 mod namespace;
 mod schema;
@@ -18,7 +16,6 @@ pub(crate) static BASE_REGISTER_PATH: &str = "/cluster/register";
 pub(crate) static BASE_BROKER_PATH: &str = "/cluster/brokers";
 pub(crate) static BASE_NAMESPACES_PATH: &str = "/namespaces";
 pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
-pub(crate) static BASE_SUBSCRIPTIONS_PATH: &str = "/subscriptions";
 pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
 
 // Once new topic is created, it is posted to unassigned path in order to be alocated by Load Manager to a broker
@@ -62,17 +59,13 @@ pub(crate) struct Resources {
 
 // A wrapper for interacting with Metadata Storage
 impl Resources {
-    pub(crate) fn new(
-        local_cache: LocalCache,
-        store: MetadataStorage,
-        leadership: Option<LeadershipHandle>,
-    ) -> Self {
+    pub(crate) fn new(store: MetadataStorage, leadership: Option<LeadershipHandle>) -> Self {
         Resources {
             store: store.clone(),
-            cluster: ClusterResources::new(local_cache.clone(), store.clone(), leadership),
-            namespace: NamespaceResources::new(local_cache.clone(), store.clone()),
-            topic: TopicResources::new(local_cache.clone(), store.clone()),
-            schema: SchemaResources::new(local_cache, store),
+            cluster: ClusterResources::new(store.clone(), leadership),
+            namespace: NamespaceResources::new(store.clone()),
+            topic: TopicResources::new(store.clone()),
+            schema: SchemaResources::new(store),
         }
     }
 }

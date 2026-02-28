@@ -1,16 +1,15 @@
 use crate::resources::SchemaResources;
 use crate::schema::{SchemaRegistry, ValidationPolicy};
 use crate::topic_control::TopicManager;
-use crate::{LocalCache, MetadataStorage};
+use crate::MetadataStorage;
 use anyhow::Result;
 use danube_core::proto::danube_schema::{
     schema_registry_server::SchemaRegistry as SchemaRegistryTrait, CheckCompatibilityRequest,
     CheckCompatibilityResponse, ConfigureTopicSchemaRequest, ConfigureTopicSchemaResponse,
     DeleteSchemaVersionRequest, DeleteSchemaVersionResponse, GetLatestSchemaRequest,
-    GetSchemaRequest, GetSchemaResponse, GetTopicSchemaConfigRequest,
-    GetTopicSchemaConfigResponse, ListVersionsRequest, ListVersionsResponse,
-    RegisterSchemaRequest, RegisterSchemaResponse, SchemaVersionInfo,
-    SetCompatibilityModeRequest, SetCompatibilityModeResponse,
+    GetSchemaRequest, GetSchemaResponse, GetTopicSchemaConfigRequest, GetTopicSchemaConfigResponse,
+    ListVersionsRequest, ListVersionsResponse, RegisterSchemaRequest, RegisterSchemaResponse,
+    SchemaVersionInfo, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
     UpdateTopicValidationPolicyRequest, UpdateTopicValidationPolicyResponse,
 };
 use std::sync::Arc;
@@ -25,12 +24,8 @@ pub struct SchemaRegistryService {
 }
 
 impl SchemaRegistryService {
-    pub fn new(
-        local_cache: LocalCache,
-        metadata_storage: MetadataStorage,
-        topic_manager: TopicManager,
-    ) -> Self {
-        let schema_resources = SchemaResources::new(local_cache, metadata_storage);
+    pub fn new(metadata_storage: MetadataStorage, topic_manager: TopicManager) -> Self {
+        let schema_resources = SchemaResources::new(metadata_storage);
         let registry = Arc::new(SchemaRegistry::new(Arc::new(schema_resources)));
 
         Self {
@@ -375,7 +370,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         request: Request<ConfigureTopicSchemaRequest>,
     ) -> Result<Response<ConfigureTopicSchemaResponse>, Status> {
         let req = request.into_inner();
-        
+
         // Parse validation policy
         let validation_policy = match req.validation_policy.to_lowercase().as_str() {
             "none" => ValidationPolicy::None,

@@ -30,7 +30,7 @@ use crate::{
     args_parse::Args,
     broker_metrics::init_metrics,
     broker_service::BrokerService,
-    danube_service::{DanubeService, LeaderElection, LoadManager, LocalCache, Syncronizer},
+    danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
 };
@@ -282,16 +282,9 @@ async fn main() -> Result<()> {
         deleter_cfg,
     );
 
-    // caching metadata locally to reduce the number of remote calls to Metadata Store
-    let local_cache = LocalCache::new(metadata_store.clone());
-
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
-    let resources = Resources::new(
-        local_cache.clone(),
-        metadata_store.clone(),
-        Some(leadership_handle.clone()),
-    );
+    let resources = Resources::new(metadata_store.clone(), Some(leadership_handle.clone()));
 
     // The synchronizer ensures that metadata & configuration settings across different brokers remains consistent.
     // using the client Producers to distribute metadata updates across brokers.
@@ -356,7 +349,6 @@ async fn main() -> Result<()> {
         Arc::clone(&broker),
         service_config,
         metadata_store,
-        local_cache,
         resources,
         leader_election_service,
         syncroniser,

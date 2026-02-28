@@ -4,7 +4,6 @@ mod broker_watcher;
 mod leader_election;
 pub(crate) mod load_manager;
 pub(crate) mod load_report;
-mod local_cache;
 pub(crate) mod metrics_collector;
 mod resource_monitor;
 mod syncronizer;
@@ -13,7 +12,6 @@ pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
-pub(crate) use local_cache::LocalCache;
 pub(crate) use syncronizer::Syncronizer;
 
 use anyhow::Result;
@@ -77,7 +75,6 @@ pub(crate) struct DanubeService {
     broker: Arc<BrokerService>,
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
-    local_cache: LocalCache,
     resources: Resources,
     leader_election: LeaderElection,
     syncronizer: Syncronizer,
@@ -103,7 +100,6 @@ impl DanubeService {
         broker: Arc<BrokerService>,
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
-        local_cache: LocalCache,
         resources: Resources,
         leader_election: LeaderElection,
         syncronizer: Syncronizer,
@@ -117,7 +113,6 @@ impl DanubeService {
             broker,
             service_config,
             meta_store,
-            local_cache,
             resources,
             leader_election,
             syncronizer,
@@ -134,18 +129,6 @@ impl DanubeService {
             broker_id = %self.broker_id,
             "initializing Danube cluster"
         );
-
-        // Start the Local Cache
-        //==========================================================================
-
-        // Fetch initial data, populate cache & watch for Events to update local cache
-
-        let local_cache_cloned = self.local_cache.clone();
-        let watch_stream = self.local_cache.populate_start_local_cache().await?;
-        // Process the ETCD Watch events
-        tokio::spawn(async move { local_cache_cloned.process_event(watch_stream).await });
-
-        info!("local cache service initialized and ready");
 
         // Cluster metadata setup
         //==========================================================================
@@ -235,7 +218,6 @@ impl DanubeService {
 
         // Initialize Schema Registry Service
         let schema_registry = Arc::new(SchemaRegistryService::new(
-            self.local_cache.clone(),
             self.meta_store.clone(),
             self.broker.topic_manager.clone(),
         ));

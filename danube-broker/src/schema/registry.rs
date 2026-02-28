@@ -14,7 +14,7 @@ use tracing::info;
 /// Core schema registry managing all schemas in the cluster
 #[derive(Debug)]
 pub struct SchemaRegistry {
-    /// Storage backend using Resources pattern (Raft state machine + LocalCache)
+    /// Storage backend using Resources pattern (Raft state machine)
     storage: Arc<SchemaResources>,
 
     /// Compatibility checker
@@ -299,6 +299,6 @@ impl SchemaRegistry {
 
 #[cfg(test)]
 mod tests {
-    // Note: Full integration tests would require a real MetadataStorage with LocalCache
+    // Note: Full integration tests would require a real MetadataStorage
     // Tests removed after deleting SchemaStorage wrapper - SchemaRegistry now uses SchemaResources directly
 }
