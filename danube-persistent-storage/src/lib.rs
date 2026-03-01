@@ -37,8 +37,8 @@ pub mod uploader_stream {
 // Shared frame utilities (header size, CRC-checked scanning)
 mod frames;
 
-mod etcd_metadata;
-pub use etcd_metadata::{ObjectDescriptor, StorageMetadata};
+mod storage_metadata;
+pub use storage_metadata::{ObjectDescriptor, StorageMetadata};
 
 // WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
 mod wal_factory;

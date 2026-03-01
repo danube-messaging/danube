@@ -82,7 +82,7 @@ async fn test_single_topic_basic_flow() {
 /// Expected
 /// - WAL rotation occurs when size/time thresholds are met
 /// - Uploader creates cloud objects in DNB1 format
-/// - Cloud object metadata is stored in ETCD
+/// - Cloud object metadata is stored in the metadata store
 #[tokio::test]
 #[ignore]
 async fn test_single_topic_wal_rotation_and_upload() {

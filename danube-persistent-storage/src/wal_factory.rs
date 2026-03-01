@@ -10,7 +10,7 @@ use crate::{
         BackendConfig, CloudBackend, CloudStore, LocalBackend, Uploader, UploaderBaseConfig,
         UploaderConfig,
     },
-    etcd_metadata::StorageMetadata,
+    storage_metadata::StorageMetadata,
     wal::{Wal, WalConfig},
     wal_storage::WalStorage,
 };
@@ -25,8 +25,8 @@ pub struct WalStorageFactory {
     base_cfg: WalConfig,
     // CloudStore instance for storing objects persistently in cloud
     cloud: CloudStore,
-    // StorageMetadata instance for storing metadata persistently in etcd
-    etcd: StorageMetadata,
+    // StorageMetadata instance for storing metadata persistently
+    metadata: StorageMetadata,
     // topic_path (ns/topic) -> Wal
     topics: Arc<DashMap<String, Wal>>,
     // topic_path (ns/topic) -> uploader task handle
@@ -57,7 +57,7 @@ impl WalStorageFactory {
         cfg: WalConfig,
         backend: BackendConfig,
         metadata_store: Arc<dyn danube_core::metadata::MetadataStore>,
-        etcd_root: impl Into<String>,
+        metadata_root: impl Into<String>,
         uploader_base_cfg: UploaderBaseConfig,
         deleter_cfg: DeleterConfig,
     ) -> Self {
@@ -75,12 +75,12 @@ impl WalStorageFactory {
             "initializing WalStorageFactory with backend"
         );
         let cloud = CloudStore::new(backend).expect("init cloud store");
-        let etcd = StorageMetadata::new(metadata_store, etcd_root.into());
+        let metadata = StorageMetadata::new(metadata_store, metadata_root.into());
         Self {
             base_cfg: cfg,
             topics: Arc::new(DashMap::new()),
             cloud,
-            etcd,
+            metadata,
             uploaders: Arc::new(DashMap::new()),
             uploader_tokens: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
@@ -96,7 +96,7 @@ impl WalStorageFactory {
     pub fn new_with_stores(
         cfg: WalConfig,
         cloud: CloudStore,
-        etcd: StorageMetadata,
+        metadata: StorageMetadata,
         uploader_base_cfg: UploaderBaseConfig,
         deleter_cfg: DeleterConfig,
     ) -> Self {
@@ -104,7 +104,7 @@ impl WalStorageFactory {
             base_cfg: cfg,
             topics: Arc::new(DashMap::new()),
             cloud,
-            etcd,
+            metadata,
             uploaders: Arc::new(DashMap::new()),
             uploader_tokens: Arc::new(DashMap::new()),
             root_prefix: "/danube".to_string(),
@@ -130,7 +130,7 @@ impl WalStorageFactory {
             );
             // Clean up sealed state marker after successful topic load to prevent reuse
             // This is non-critical, so we log but don't fail if cleanup fails
-            if let Err(e) = self.etcd.delete_storage_state_sealed(&topic_path).await {
+            if let Err(e) = self.metadata.delete_storage_state_sealed(&topic_path).await {
                 warn!(
                     target = "wal_factory",
                     topic = %topic_path,
@@ -158,7 +158,7 @@ impl WalStorageFactory {
             if let Ok(uploader) = Uploader::new(
                 cfg,
                 self.cloud.clone(),
-                self.etcd.clone(),
+                self.metadata.clone(),
                 ckpt_for_uploader,
             ) {
                 info!(target = "wal_factory", topic = %topic_path, "starting per-topic uploader");
@@ -187,7 +187,7 @@ impl WalStorageFactory {
 
         Ok(WalStorage::from_wal(topic_wal).with_cloud(
             self.cloud.clone(),
-            self.etcd.clone(),
+            self.metadata.clone(),
             topic_path,
         ))
     }
@@ -237,7 +237,7 @@ impl WalStorageFactory {
         }
 
         // Check for sealed state from previous broker to ensure offset continuity
-        let initial_offset = match self.etcd.get_storage_state_sealed(&topic_path).await {
+        let initial_offset = match self.metadata.get_storage_state_sealed(&topic_path).await {
             Ok(Some(sealed_state)) if sealed_state.sealed => {
                 let next_offset = sealed_state.last_committed_offset.saturating_add(1);
                 info!(
@@ -297,7 +297,7 @@ impl WalStorageFactory {
         self.deleter_tokens.clear();
     }
 
-    /// Flush WAL, drain and stop uploader, stop deleter, and persist sealed state to etcd.
+    /// Flush WAL, drain and stop uploader, stop deleter, and persist sealed state to metadata store.
     pub async fn flush_and_seal(
         &self,
         topic_name: &str,
@@ -332,13 +332,13 @@ impl WalStorageFactory {
         // After WAL flush and uploader drain, WAL tip reflects last committed offset boundary
         let last_committed_offset = wal.current_offset().saturating_sub(1);
         // Persist sealed state
-        let state = crate::etcd_metadata::StorageStateSealed {
+        let state = crate::storage_metadata::StorageStateSealed {
             sealed: true,
             last_committed_offset,
             broker_id,
             timestamp: chrono::Utc::now().timestamp() as u64,
         };
-        self.etcd
+        self.metadata
             .put_storage_state_sealed(&topic_path, &state)
             .await?;
 
@@ -347,13 +347,13 @@ impl WalStorageFactory {
         })
     }
 
-    /// Delete ETCD storage metadata for a topic (objects, cur pointer, state).
+    /// Delete storage metadata for a topic (objects, cur pointer, state).
     pub async fn delete_storage_metadata(
         &self,
         topic_name: &str,
     ) -> Result<(), PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        self.etcd.delete_storage_topic(&topic_path).await
+        self.metadata.delete_storage_topic(&topic_path).await
     }
 }
 

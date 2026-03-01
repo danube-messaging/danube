@@ -116,7 +116,7 @@ mod tests {
     ///
     /// Purpose
     /// - Validate successful Uploader creation with custom configuration
-    /// - Ensure all dependencies (WAL, CloudStore, EtcdMetadata) are properly integrated
+    /// - Ensure all dependencies (WAL, CloudStore, StorageMetadata) are properly integrated
     ///
     /// Flow
     /// - Create test setup with WAL, cloud store, and metadata store
@@ -218,7 +218,7 @@ mod tests {
             .expect("get descriptor")
             .expect("descriptor should exist");
 
-        let desc: crate::etcd_metadata::ObjectDescriptor =
+        let desc: crate::storage_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
 
         // let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
@@ -432,7 +432,7 @@ mod tests {
             .expect("get descriptor")
             .expect("descriptor should exist");
 
-        let desc: crate::etcd_metadata::ObjectDescriptor =
+        let desc: crate::storage_metadata::ObjectDescriptor =
             serde_json::from_value(desc_value).expect("parse descriptor");
 
         assert!(desc.object_id.starts_with("data-"));

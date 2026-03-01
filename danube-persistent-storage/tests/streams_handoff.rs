@@ -232,11 +232,11 @@ async fn local_files_cache_live_handoff() {
 ///
 /// Purpose
 /// - Validate chained reading from cloud objects followed by WAL tail, using the uploader to
-///   create a historical object and etcd descriptors.
+///   create a historical object and metadata descriptors.
 ///
 /// Flow
 /// - Initialize `Wal` with `CheckpointStore` and append 0..=2, then flush.
-/// - Start uploader (1s interval), wait for object descriptors in etcd.
+/// - Start uploader (1s interval), wait for object descriptors in metadata store.
 /// - Append 3..=5 and flush.
 /// - Build `WalStorage::with_cloud(...)` and create a reader from offset 0; collect 6 items.
 ///
@@ -362,7 +362,7 @@ async fn chaining_stream_handoff_memory() {
 ///   historical data from cloud objects and then seamlessly hands off to the local WAL tail.
 ///
 /// Flow
-/// - Build a factory with in-memory cloud and etcd; ensure per-topic WAL dir exists.
+/// - Build a factory with in-memory cloud and metadata store; ensure per-topic WAL dir exists.
 /// - Start per-topic storage via `factory.for_topic(...)` (starts uploader).
 /// - Append 0..=2 via storage so uploader ingests and writes object + descriptor; wait for descriptor.
 /// - Create a reader from offset 0; expect the three historical frames; then pad 0..=2 and append `live3`.
@@ -373,7 +373,7 @@ async fn chaining_stream_handoff_memory() {
 async fn test_factory_cloud_wal_handoff_per_topic() {
     let (factory, _mem) = common::create_test_factory().await;
     let topic_name = "/default/topic-hand";
-    let topic_path = "default/topic-hand"; // for cloud/etcd
+    let topic_path = "default/topic-hand"; // for cloud/metadata
 
     // Create per-topic storage via factory (this starts the per-topic uploader)
     let storage = factory.for_topic(topic_name).await.expect("create storage");
@@ -387,7 +387,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
             .expect("append pre-upload");
     }
 
-    // Brief head-start for the uploader, then wait for descriptor in etcd using common helpers
+    // Brief head-start for the uploader, then wait for descriptor in metadata store using common helpers
     // tokio::time::sleep(Duration::from_millis(1500)).await;
     // let uploaded = common::wait_for_condition(
     //     || {
@@ -447,7 +447,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
 ///   cloud reads and starts directly from the WAL tail.
 ///
 /// Flow
-/// - Build factory with in-memory cloud and etcd and ensure per-topic WAL file exists.
+/// - Build factory with in-memory cloud and metadata store and ensure per-topic WAL file exists.
 /// - Start per-topic storage and append 0..=2; wait for the object descriptor to appear.
 /// - Create a reader from offset 3 (after cloud end=2) to force WAL-only path.
 /// - Append padding 0..=2, then new messages 3 and 4.
@@ -458,7 +458,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
 async fn test_factory_cloud_skip_cloud_when_start_after_objects() {
     let (factory, _mem) = common::create_test_factory().await;
     let topic_name = "/default/topic-skip";
-    let topic_path = "default/topic-skip"; // for cloud/etcd
+    let topic_path = "default/topic-skip"; // for cloud/metadata
                                            // Create per-topic storage via factory (starts per-topic uploader)
     let storage = factory.for_topic(topic_name).await.expect("create storage");
 
