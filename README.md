@@ -1,8 +1,8 @@
 # 🌊 Danube Messaging
 
-**A lightweight and scalable Cloud-Native Messaging / Streaming Platform**
+**A self-contained, lightweight Cloud-Native Messaging Platform, built in Rust**
 
-Danube is an open-source distributed messaging broker platform, designed to be cloud-native and cost-effective. Built with a Write-Ahead Log (WAL) architecture and persistent object storage integration, Danube delivers sub-second dispatch with cloud economics.
+Danube is an open-source distributed messaging broker platform, designed to be cloud-native and cost-effective. It features embedded Raft consensus for metadata replication, built on Tokio and openraft. Paired with a Write-Ahead Log (WAL) architecture and cloud object storage, Danube delivers sub-second dispatch with operational simplicity and cloud economics.
 
 [![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
@@ -68,12 +68,11 @@ docker-compose exec -it danube-cli danube-cli consume \
 
 ### 🏗️ **Cluster & Broker Characteristics**
 
-- **Stateless brokers**: Metadata in ETCD and data in WAL/Object Storage
+- **Embedded Raft consensus**: Metadata replicated across brokers via openraft — no ETCD, no ZooKeeper, no external dependencies
 - **Horizontal scaling**: Add brokers in seconds with zero-downtime expansion
 - **Intelligent load balancing**: Automatic topic placement and rebalancing across brokers
+- **Broker resilience**: Automatic leader election, failover, and topic reconciliation on restart
 - **Security-ready**: TLS/mTLS support in Admin and data paths
-- **Leader election & HA**: Automatic failover and coordination via ETCD
-- **Multi-tenancy**: Isolated namespaces with policy controls
 
 ### 🌩️ **Write-Ahead Log + Cloud Persistence**
 
@@ -123,7 +122,7 @@ Danube features **the AI-native messaging platform administration** through the 
 
 **Example**: Ask Claude *"What's the cluster balance?"* or *"Create a partitioned topic for analytics"* and watch it happen.
 
-## Community & Clients
+## Danube Clients
 
 ### [Official Clients](https://danube-docs.dev-state.com/client_libraries/clients/)
 
