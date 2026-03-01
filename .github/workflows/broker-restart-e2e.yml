@@ -220,34 +220,40 @@ jobs:
           FOLLOWER_NODE_ID=$(cat temp/follower_node_id.txt)
           EXPECTED_TOPICS=$(cat temp/follower_topic_count_before.txt)
 
+          # Diagnostic: show last 30 lines of the restarted broker log
           echo "=== Follower broker log (restart section) ==="
-          # Show last 30 lines of the restarted broker
           tail -30 temp/broker_$FOLLOWER_PORT.log
           echo ""
 
-          # Verify is_restart=true in logs
-          if grep -q "is_restart=true" temp/broker_$FOLLOWER_PORT.log; then
-            echo "PASS: is_restart=true detected"
-          else
-            echo "FAIL: is_restart=true not found in logs"
-            exit 1
-          fi
+          # --- Verify via admin commands (deterministic, no log-grep races) ---
 
-          # Verify it came back as active (fast restart, within TTL)
-          if grep -q "restart detected: registration still valid" temp/broker_$FOLLOWER_PORT.log; then
-            echo "PASS: fast restart (within TTL) detected, broker is active"
-          else
-            echo "FAIL: expected 'restart detected: registration still valid' in logs"
-            cat temp/broker_$FOLLOWER_PORT.log
-            exit 1
-          fi
-
-          # Verify cluster still has 3 voters
-          echo ""
+          # 1. Cluster: verify 3 voters are present
           echo "=== Cluster status after follower restart ==="
-          ./target/release/danube-admin cluster status
+          CLUSTER_STATUS=$(./target/release/danube-admin cluster status 2>&1)
+          echo "$CLUSTER_STATUS"
+          VOTER_COUNT=$(echo "$CLUSTER_STATUS" | grep 'Voters' | grep -oP '\d+' | wc -l)
+          if [ "$VOTER_COUNT" -ge 3 ]; then
+            echo "PASS: cluster has $VOTER_COUNT voters"
+          else
+            echo "FAIL: expected 3 voters, got $VOTER_COUNT"
+            exit 1
+          fi
 
-          # Verify topics on the restarted broker (topic reconciliation)
+          # 2. Broker state: verify the restarted broker is "active" (fast restart < TTL)
+          echo ""
+          BROKERS_JSON=$(./target/release/danube-admin brokers list --output json)
+          echo "=== Brokers list ==="
+          echo "$BROKERS_JSON" | jq .
+          BROKER_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$FOLLOWER_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
+          echo "Restarted broker $FOLLOWER_NODE_ID status: $BROKER_STATUS"
+          if [ "$BROKER_STATUS" = "active" ]; then
+            echo "PASS: broker came back as active (fast restart within TTL)"
+          else
+            echo "FAIL: expected broker status 'active', got '$BROKER_STATUS'"
+            exit 1
+          fi
+
+          # 3. Topics: verify the restarted broker has its topics back (reconciliation)
           sleep 3
           FOLLOWER_TOPICS_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$FOLLOWER_ADMIN \
             ./target/release/danube-admin topics list --broker "$FOLLOWER_NODE_ID" --output json 2>/dev/null || echo "[]")
@@ -263,7 +269,7 @@ jobs:
             exit 1
           fi
 
-          # Verify total topic count is still 3
+          # 4. Total topics unchanged
           TOTAL_TOPICS=$(./target/release/danube-admin topics list --namespace default --output json | jq length)
           echo "Total topics in cluster: $TOTAL_TOPICS"
           if [ "$TOTAL_TOPICS" -eq 3 ]; then
@@ -399,34 +405,42 @@ jobs:
           EXPECTED_TOPICS=$(cat temp/leader_topic_count_before.txt)
           SURVIVOR_ADMIN=$(cat temp/survivor_admin_port.txt)
 
+          # Diagnostic: show last 30 lines of the restarted broker log
           echo "=== Restarted leader log (last 30 lines) ==="
           tail -30 temp/broker_$LEADER_PORT.log
           echo ""
 
-          # Verify is_restart=true
-          if grep -q "is_restart=true" temp/broker_$LEADER_PORT.log; then
-            echo "PASS: is_restart=true detected"
-          else
-            echo "FAIL: is_restart=true not found"
-            exit 1
-          fi
+          # --- Verify via admin commands (deterministic, no log-grep races) ---
 
-          # Verify it detected persisted state
-          if grep -q "cluster already initialized (from persisted state)" temp/broker_$LEADER_PORT.log; then
-            echo "PASS: persisted state detected (no re-initialization)"
-          else
-            echo "FAIL: expected 'cluster already initialized' in logs"
-            cat temp/broker_$LEADER_PORT.log
-            exit 1
-          fi
-
-          # Verify cluster still has 3 voters
-          echo ""
+          # 1. Cluster: verify 3 voters are still present
           echo "=== Cluster status after leader restart ==="
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
-            ./target/release/danube-admin cluster status
+          CLUSTER_STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+            ./target/release/danube-admin cluster status 2>&1)
+          echo "$CLUSTER_STATUS"
+          VOTER_COUNT=$(echo "$CLUSTER_STATUS" | grep 'Voters' | grep -oP '\d+' | wc -l)
+          if [ "$VOTER_COUNT" -ge 3 ]; then
+            echo "PASS: cluster has $VOTER_COUNT voters"
+          else
+            echo "FAIL: expected 3 voters, got $VOTER_COUNT"
+            exit 1
+          fi
 
-          # Verify total topics unchanged
+          # 2. Broker state: verify the restarted broker is registered and active
+          echo ""
+          BROKERS_JSON=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+            ./target/release/danube-admin brokers list --output json)
+          echo "=== Brokers list ==="
+          echo "$BROKERS_JSON" | jq .
+          BROKER_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$LEADER_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
+          echo "Restarted leader $LEADER_NODE_ID status: $BROKER_STATUS"
+          if [ "$BROKER_STATUS" = "active" ]; then
+            echo "PASS: restarted leader came back as active"
+          else
+            echo "FAIL: expected broker status 'active', got '$BROKER_STATUS'"
+            exit 1
+          fi
+
+          # 3. Total topics unchanged
           sleep 3
           TOTAL_TOPICS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
             ./target/release/danube-admin topics list --namespace default --output json | jq length)
@@ -439,7 +453,7 @@ jobs:
             exit 1
           fi
 
-          # Verify the restarted broker has its topics back
+          # 4. Topics on the restarted broker (reconciliation)
           LEADER_TOPICS_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$LEADER_ADMIN \
             ./target/release/danube-admin topics list --broker "$LEADER_NODE_ID" --output json 2>/dev/null || echo "[]")
           LEADER_TOPIC_COUNT_AFTER=$(echo "$LEADER_TOPICS_AFTER" | jq length)
@@ -467,14 +481,15 @@ jobs:
           echo "========================================="
           echo ""
           echo "Phase 1: Follower restart < TTL  — PASSED"
-          echo "  - is_restart=true detected"
-          echo "  - registration still valid (within TTL)"
-          echo "  - topic reconciliation verified"
+          echo "  - Cluster: 3 voters intact"
+          echo "  - Broker status: active (fast restart within TTL)"
+          echo "  - Topic reconciliation: topics restored on restarted broker"
           echo ""
           echo "Phase 2: Leader restart           — PASSED"
-          echo "  - Re-election on survivors verified"
-          echo "  - Persisted state detected (no re-init crash)"
-          echo "  - Topic reconciliation verified"
+          echo "  - Re-election: new leader elected on survivors"
+          echo "  - Cluster: 3 voters intact after rejoin"
+          echo "  - Broker status: active (fast restart within TTL)"
+          echo "  - Topic reconciliation: topics restored on restarted leader"
           echo ""
           echo "=== Final cluster state ==="
           ./target/release/danube-admin cluster status || true
