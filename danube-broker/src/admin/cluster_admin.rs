@@ -1,114 +1,14 @@
 use crate::admin::DanubeAdminImpl;
 use danube_core::admin_proto::{
-    cluster_admin_server::ClusterAdmin, AddNodeRequest, AddNodeResponse, ClusterInitRequest,
-    ClusterInitResponse, ClusterStatusResponse, Empty, PromoteNodeRequest, PromoteNodeResponse,
-    RemoveNodeRequest, RemoveNodeResponse,
+    cluster_admin_server::ClusterAdmin, AddNodeRequest, AddNodeResponse, ClusterStatusResponse,
+    Empty, PromoteNodeRequest, PromoteNodeResponse, RemoveNodeRequest, RemoveNodeResponse,
 };
-// ClusterNodeInfo is used inside ClusterInitRequest
 use danube_raft::BasicNode;
-use std::collections::BTreeMap;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 #[tonic::async_trait]
 impl ClusterAdmin for DanubeAdminImpl {
-    /// Bootstrap a multi-node cluster.
-    ///
-    /// The CLI discovers each node's `(node_id, raft_addr)` via `ClusterStatus`,
-    /// then sends the full membership here. This node calls `raft.initialize()`
-    /// with all members as voters at once.
-    ///
-    /// Idempotent: returns `already_initialized=true` if membership already exists.
-    async fn cluster_init(
-        &self,
-        request: Request<ClusterInitRequest>,
-    ) -> Result<Response<ClusterInitResponse>, Status> {
-        let req = request.into_inner();
-        info!(node_count = req.nodes.len(), "cluster init request");
-
-        // Check if the cluster is already initialized by looking at membership.
-        let metrics = self.raft.metrics().borrow().clone();
-        if let Some(membership) = metrics
-            .membership_config
-            .membership()
-            .get_joint_config()
-            .first()
-        {
-            if !membership.is_empty() {
-                info!("cluster already initialized, returning idempotent response");
-                return Ok(Response::new(ClusterInitResponse {
-                    success: true,
-                    already_initialized: true,
-                    leader_id: metrics.current_leader.unwrap_or(0),
-                    voter_count: membership.len() as u32,
-                    message: "Cluster already initialized".to_string(),
-                }));
-            }
-        }
-
-        if req.nodes.is_empty() {
-            return Err(Status::invalid_argument("at least one node is required"));
-        }
-
-        // Build the full membership map from the discovered node info.
-        let mut members = BTreeMap::new();
-        for node_info in &req.nodes {
-            if node_info.node_id == 0 {
-                return Err(Status::invalid_argument(
-                    "node_id must be non-zero for all nodes",
-                ));
-            }
-            if node_info.raft_addr.is_empty() {
-                return Err(Status::invalid_argument(
-                    "raft_addr must be non-empty for all nodes",
-                ));
-            }
-            members.insert(
-                node_info.node_id,
-                BasicNode {
-                    addr: node_info.raft_addr.clone(),
-                },
-            );
-        }
-
-        info!(?members, "initializing Raft cluster with all members");
-
-        self.raft
-            .initialize(members)
-            .await
-            .map_err(|e| Status::internal(format!("failed to initialize cluster: {}", e)))?;
-
-        // Wait briefly for leader election
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-
-        let metrics = self.raft.metrics().borrow().clone();
-        let voter_count = metrics
-            .membership_config
-            .membership()
-            .get_joint_config()
-            .first()
-            .map(|s| s.len() as u32)
-            .unwrap_or(1);
-
-        info!(
-            leader_id = ?metrics.current_leader,
-            voter_count,
-            "cluster initialized"
-        );
-
-        Ok(Response::new(ClusterInitResponse {
-            success: true,
-            already_initialized: false,
-            leader_id: metrics.current_leader.unwrap_or(0),
-            voter_count,
-            message: format!(
-                "Cluster initialized: leader={}, {} voter(s)",
-                metrics.current_leader.unwrap_or(0),
-                voter_count
-            ),
-        }))
-    }
-
     /// Return current Raft cluster state.
     async fn cluster_status(
         &self,

@@ -2,11 +2,11 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
 use crate::cloud::{CloudRangeReader, CloudStore};
-use crate::etcd_metadata::StorageMetadata;
 use crate::frames::FRAME_HEADER_SIZE;
 use crate::persistent_metrics::{
     CLOUD_OBJECTS_READ_TOTAL, CLOUD_READER_ERRORS_TOTAL, CLOUD_READ_BYTES_TOTAL,
 };
+use crate::storage_metadata::StorageMetadata;
 use metrics::counter;
 use std::collections::VecDeque;
 use tracing::error;
@@ -22,7 +22,7 @@ use tracing::error;
 #[derive(Clone, Debug)]
 pub struct CloudReader {
     cloud: CloudStore,
-    etcd: StorageMetadata,
+    metadata: StorageMetadata,
     topic_path: String,
 }
 
@@ -31,10 +31,10 @@ impl CloudReader {
     ///
     /// `topic_path` should be the logical topic identifier used in metadata
     /// (e.g., "ns/topic").
-    pub fn new(cloud: CloudStore, etcd: StorageMetadata, topic_path: String) -> Self {
+    pub fn new(cloud: CloudStore, metadata: StorageMetadata, topic_path: String) -> Self {
         Self {
             cloud,
-            etcd,
+            metadata,
             topic_path,
         }
     }
@@ -44,15 +44,15 @@ impl CloudReader {
         &self.topic_path
     }
 
-    /// Expose the underlying Etcd metadata helper (primarily for tests).
-    pub fn etcd(&self) -> &StorageMetadata {
-        &self.etcd
+    /// Expose the underlying storage metadata helper (primarily for tests).
+    pub fn metadata(&self) -> &StorageMetadata {
+        &self.metadata
     }
 
     /// Read messages in the inclusive range `[start, end_inclusive]` from cloud objects.
     /// If `end_inclusive` is None, read all available objects starting at `start`.
     ///
-    /// Objects are discovered via ETCD object descriptors and filtered by
+    /// Objects are discovered via metadata object descriptors and filtered by
     /// `[start_offset, end_offset]` overlap. Each selected object is decoded
     /// as a sequence of raw WAL frames. Frames outside the requested range
     /// are filtered out. The resulting stream yields messages ordered by offset.
@@ -62,7 +62,10 @@ impl CloudReader {
         end_inclusive: Option<u64>,
     ) -> Result<TopicStream, PersistentStorageError> {
         // Fetch descriptors and keep only those overlapping the requested range.
-        let mut descriptors = self.etcd.get_object_descriptors(self.topic_path()).await?;
+        let mut descriptors = self
+            .metadata
+            .get_object_descriptors(self.topic_path())
+            .await?;
         // Keep only overlapping descriptors and ensure ascending order by start_offset.
         descriptors.retain(|d| d.end_offset >= start);
         if let Some(end) = end_inclusive {

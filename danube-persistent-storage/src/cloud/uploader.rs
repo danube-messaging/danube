@@ -10,17 +10,17 @@ use tracing::{error, info};
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::uploader_stream;
 use crate::cloud::CloudStore;
-use crate::etcd_metadata::{ObjectDescriptor, StorageMetadata};
+use crate::storage_metadata::{ObjectDescriptor, StorageMetadata};
 use crate::wal::UploaderCheckpoint;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
-/// to ETCD. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,
+/// to the metadata store. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,
 /// last_read_byte_position)` and never flushes the WAL.
 #[derive(Debug)]
 pub struct Uploader {
     cfg: UploaderConfig,
     cloud: CloudStore,
-    etcd: StorageMetadata,
+    metadata: StorageMetadata,
     last_uploaded_offset: AtomicU64,
     ckpt_store: Option<Arc<CheckpointStore>>,
 }
@@ -30,13 +30,13 @@ impl Uploader {
     pub fn new(
         cfg: UploaderConfig,
         cloud: CloudStore,
-        etcd: StorageMetadata,
+        metadata: StorageMetadata,
         ckpt_store: Option<Arc<CheckpointStore>>,
     ) -> Result<Self, PersistentStorageError> {
         Ok(Self {
             cfg,
             cloud,
-            etcd,
+            metadata,
             last_uploaded_offset: AtomicU64::new(0),
             ckpt_store,
         })
@@ -175,7 +175,7 @@ impl Uploader {
 
     /// (streaming implementation lives in `uploader_stream` module)
 
-    /// Write descriptor to ETCD and persist uploader checkpoint.
+    /// Write descriptor to metadata store and persist uploader checkpoint.
     async fn commit_uploaded_descriptor(
         &self,
         object_id: &str,
@@ -186,7 +186,7 @@ impl Uploader {
         next_byte_pos: u64,
         offset_index: Vec<(u64, u64)>,
     ) -> Result<(), PersistentStorageError> {
-        // Write descriptor to ETCD
+        // Write descriptor to metadata store
         let desc = ObjectDescriptor {
             object_id: object_id.to_string(),
             start_offset,
@@ -202,11 +202,11 @@ impl Uploader {
             },
         };
         let start_padded = format!("{:020}", start_offset);
-        self.etcd
+        self.metadata
             .put_object_descriptor(&self.cfg.topic_path, &start_padded, &desc)
             .await?;
         let _ = self
-            .etcd
+            .metadata
             .put_current_pointer(&self.cfg.topic_path, &start_padded)
             .await;
 
@@ -259,7 +259,7 @@ pub struct UploaderBaseConfig {
 /// Fields:
 /// - `interval_seconds`: background cycle interval in seconds
 /// - `topic_path`: logical topic path (e.g., "ns/topic")
-/// - `root_prefix`: metadata root prefix (e.g., "/danube") used for ETCD paths
+/// - `root_prefix`: metadata root prefix (e.g., "/danube") used for metadata paths
 #[derive(Debug, Clone)]
 pub struct UploaderConfig {
     pub interval_seconds: u64,

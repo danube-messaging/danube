@@ -42,7 +42,7 @@ async fn test_factory_multi_topic_wal_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
 
-    // Build BackendConfig (memory) and Metadata store; factory constructs Cloud/Etcd internally
+    // Build BackendConfig (memory) and Metadata store; factory constructs Cloud/StorageMetadata internally
     let backend = BackendConfig::Local {
         backend: LocalBackend::Memory,
         root: "mem-prefix".to_string(),

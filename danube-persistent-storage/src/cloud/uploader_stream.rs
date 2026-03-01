@@ -56,7 +56,7 @@ impl UploadState {
 ///   this finds the largest prefix that ends exactly on a full frame while validating CRC per frame.
 /// - When we first see a complete frame, we lazily open the cloud streaming writer using a
 ///   timestamp-based final object name `data-<start>-<timestamp>.dnb1` for uniqueness.
-///   The end_offset is stored in ETCD metadata, not the object name.
+///   The end_offset is stored in the metadata store, not the object name.
 /// - Over the safe prefix, we do two additional lightweight scans in memory:
 ///   1) `extract_offsets_in_prefix` to determine `first_offset`/`last_offset` (first time sets
 ///      both; subsequent times updates `last_offset`).

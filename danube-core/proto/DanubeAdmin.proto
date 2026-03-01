@@ -26,11 +26,6 @@ service BrokerAdmin {
 // Raft cluster membership management.
 // These RPCs are forwarded to the Raft leader internally.
 service ClusterAdmin {
-  // Bootstrap a new multi-node cluster (like `cockroach init`).
-  // Contacts each listed address, discovers node_ids, calls raft::initialize.
-  // Idempotent: returns AlreadyInitialized if membership already exists.
-  rpc ClusterInit(ClusterInitRequest) returns (ClusterInitResponse);
-
   // Show Raft cluster state: leader, term, log index, voter/learner sets.
   rpc ClusterStatus(Empty) returns (ClusterStatusResponse);
 
@@ -275,29 +270,6 @@ message ProposedMove {
 }
 
 // ─── Cluster Admin messages ─────────────────────────────────────────────────
-
-// A node's identity for cluster initialization
-message ClusterNodeInfo {
-  uint64 node_id = 1;
-  string raft_addr = 2;
-}
-
-message ClusterInitRequest {
-  // All initial nodes with their node_id and Raft transport address.
-  // Populated by the CLI after discovering each node via ClusterStatus.
-  repeated ClusterNodeInfo nodes = 1;
-}
-
-message ClusterInitResponse {
-  bool success = 1;
-  // true if the cluster was already initialized (idempotent no-op)
-  bool already_initialized = 2;
-  // node_id of the elected leader (may be 0 if election is still in progress)
-  uint64 leader_id = 3;
-  // number of voters in the initialized cluster
-  uint32 voter_count = 4;
-  string message = 5;
-}
 
 message ClusterStatusResponse {
   // Current Raft leader node_id (0 if no leader)

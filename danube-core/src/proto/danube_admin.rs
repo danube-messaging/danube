@@ -301,37 +301,6 @@ pub struct ProposedMove {
     #[prost(string, tag = "5")]
     pub reason: ::prost::alloc::string::String,
 }
-/// A node's identity for cluster initialization
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ClusterNodeInfo {
-    #[prost(uint64, tag = "1")]
-    pub node_id: u64,
-    #[prost(string, tag = "2")]
-    pub raft_addr: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClusterInitRequest {
-    /// All initial nodes with their node_id and Raft transport address.
-    /// Populated by the CLI after discovering each node via ClusterStatus.
-    #[prost(message, repeated, tag = "1")]
-    pub nodes: ::prost::alloc::vec::Vec<ClusterNodeInfo>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ClusterInitResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-    /// true if the cluster was already initialized (idempotent no-op)
-    #[prost(bool, tag = "2")]
-    pub already_initialized: bool,
-    /// node_id of the elected leader (may be 0 if election is still in progress)
-    #[prost(uint64, tag = "3")]
-    pub leader_id: u64,
-    /// number of voters in the initialized cluster
-    #[prost(uint32, tag = "4")]
-    pub voter_count: u32,
-    #[prost(string, tag = "5")]
-    pub message: ::prost::alloc::string::String,
-}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClusterStatusResponse {
     /// Current Raft leader node_id (0 if no leader)
@@ -1268,33 +1237,6 @@ pub mod cluster_admin_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Bootstrap a new multi-node cluster (like `cockroach init`).
-        /// Contacts each listed address, discovers node_ids, calls raft::initialize.
-        /// Idempotent: returns AlreadyInitialized if membership already exists.
-        pub async fn cluster_init(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ClusterInitRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ClusterInitResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/danube_admin.ClusterAdmin/ClusterInit",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "ClusterInit"));
-            self.inner.unary(req, path, codec).await
-        }
         /// Show Raft cluster state: leader, term, log index, voter/learner sets.
         pub async fn cluster_status(
             &mut self,
@@ -1410,16 +1352,6 @@ pub mod cluster_admin_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ClusterAdminServer.
     #[async_trait]
     pub trait ClusterAdmin: std::marker::Send + std::marker::Sync + 'static {
-        /// Bootstrap a new multi-node cluster (like `cockroach init`).
-        /// Contacts each listed address, discovers node_ids, calls raft::initialize.
-        /// Idempotent: returns AlreadyInitialized if membership already exists.
-        async fn cluster_init(
-            &self,
-            request: tonic::Request<super::ClusterInitRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ClusterInitResponse>,
-            tonic::Status,
-        >;
         /// Show Raft cluster state: leader, term, log index, voter/learner sets.
         async fn cluster_status(
             &self,
@@ -1528,51 +1460,6 @@ pub mod cluster_admin_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/danube_admin.ClusterAdmin/ClusterInit" => {
-                    #[allow(non_camel_case_types)]
-                    struct ClusterInitSvc<T: ClusterAdmin>(pub Arc<T>);
-                    impl<
-                        T: ClusterAdmin,
-                    > tonic::server::UnaryService<super::ClusterInitRequest>
-                    for ClusterInitSvc<T> {
-                        type Response = super::ClusterInitResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ClusterInitRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ClusterAdmin>::cluster_init(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ClusterInitSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/danube_admin.ClusterAdmin/ClusterStatus" => {
                     #[allow(non_camel_case_types)]
                     struct ClusterStatusSvc<T: ClusterAdmin>(pub Arc<T>);

@@ -323,39 +323,48 @@ fn build_cluster_health_prompt() -> String {
 
 Please follow these steps:
 
-## Step 1: Cluster Overview
+## Step 1: Raft Consensus Health
+Use `cluster_status` to verify:
+- A leader is elected (leader_id != 0)
+- All expected brokers are voters (voter count matches expected cluster size)
+- No unexpected learners (learners should be empty unless scaling in progress)
+- Term is stable (not rapidly incrementing, which indicates election storms)
+
+**ALERT if no leader or voter count is wrong.**
+
+## Step 2: Cluster Overview
 Use `get_cluster_metrics` to get:
 - Total brokers, topics, producers, consumers
 - Cluster-wide message rates
 - Balance coefficient
 
-## Step 2: Broker Health
+## Step 3: Broker Health
 Use `list_brokers` and check:
-- All brokers are online
-- Leader is elected
-- No brokers in error state
+- All brokers are online and active
+- No brokers in drained or error state
 
-## Step 3: Load Distribution
+## Step 4: Load Distribution
 Use `get_cluster_balance` to verify:
 - Topics are evenly distributed
 - No single broker is overloaded
 - CV (coefficient of variation) < 0.2 is healthy
 
-## Step 4: Check for Issues
+## Step 5: Check for Issues
 Use `health_check` tool for automated diagnostics:
 - Connectivity issues
 - Resource constraints
 - Configuration problems
 
-## Step 5: Get Recommendations
+## Step 6: Get Recommendations
 Use `get_recommendations` for:
 - Actionable improvements
 - Capacity planning advice
 - Best practice suggestions
 
-## Step 6: Summary Report
+## Step 7: Summary Report
 Provide a summary with:
 - Overall health status (healthy/warning/critical)
+- Raft consensus: leader, term, voter count
 - Key metrics snapshot
 - Top 3 action items if any issues found"#
         .to_string()

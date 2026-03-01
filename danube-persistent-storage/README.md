@@ -22,7 +22,7 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
   - `max_batch_bytes`: max batched bytes before forcing a flush
   - `dir`, `file_name`: enable file-backed WAL
 - `WalStorageFactory`:
-  - `new(WalConfig, BackendConfig, MetadataStorage, etcd_root, UploaderBaseConfig, DeleterConfig) -> WalStorageFactory`
+  - `new(WalConfig, BackendConfig, MetadataStorage, metadata_root, UploaderBaseConfig, DeleterConfig) -> WalStorageFactory`
   - `for_topic("/ns/topic") -> WalStorage` (starts per-topic uploader once)
 
 ## Usage
@@ -45,7 +45,7 @@ let wal_base_cfg = WalConfig {
 // Cloud backend for objects
 let backend = BackendConfig::Local { backend: LocalBackend::Fs, root: "/tmp/danube-cloud".to_string() };
 
-// Metadata storage for object descriptors (e.g., etcd or in-memory)
+// Metadata storage for object descriptors (e.g., Raft metadata store or in-memory)
 let metadata_store: MetadataStorage = /* constructed in broker */;
 
 // Uploader base config (per-topic uploader interval)
@@ -54,7 +54,7 @@ let uploader_base = UploaderBaseConfig { interval_seconds: 300 };
 // Deleter (WAL retention) config
 let deleter_cfg = DeleterConfig { check_interval_minutes: 5, retention_time_minutes: None, retention_size_mb: None };
 
-// Create factory (constructs CloudStore + EtcdMetadata internally)
+// Create factory (constructs CloudStore + StorageMetadata internally)
 let factory = WalStorageFactory::new(
     wal_base_cfg,
     backend,
@@ -154,7 +154,7 @@ Key details
 - `WalStorage`: per-topic `PersistentStorage` implementing append and reader with Cloud→WAL chaining
 - `WalStorageFactory`: process-global facade that creates per-topic `WalStorage` and starts per-topic uploaders
 - `CloudStore`: backed by OpenDAL with `S3`, `Gcs`, `Azblob`, `Fs`, `Memory` implementations
-- `EtcdMetadata`: writes/reads per-object descriptors using `danube-metadata-store::MetadataStorage`
+- `StorageMetadata`: writes/reads per-object descriptors using `danube-metadata-store::MetadataStorage`
 - `Uploader`: periodic batches from WAL cache to cloud objects and descriptor updates (single-writer per topic)
 
 ### Cloud uploader behavior
@@ -162,7 +162,7 @@ Key details
 - Each uploader tick creates at most one cloud object per topic.
 - Frames are streamed sequentially across multiple WAL files into a single object per tick.
 - Optional cap `max_object_mb` bounds object size (e.g., 1024 for ~1 GiB).
-- Object naming: `data-<start_offset>-<timestamp>.dnb1` for uniqueness (end offset stored in ETCD metadata).
+- Object naming: `data-<start_offset>-<timestamp>.dnb1` for uniqueness (end offset stored in metadata store).
 - No copy/rename operations - objects written directly with final name for 33% faster uploads.
 
 Example YAML (broker uploader):
