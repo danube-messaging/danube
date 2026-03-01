@@ -39,7 +39,7 @@ jobs:
 
       - name: Start 3 Brokers in background
         env:
-          RUST_LOG: info,openraft=warn
+          RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p temp
           mkdir -p danube-data/cloud-storage

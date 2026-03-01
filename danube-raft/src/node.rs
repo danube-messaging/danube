@@ -54,10 +54,15 @@ pub struct RaftNode {
     pub node_id: u64,
     /// The address this node advertises to peers (used in cluster membership).
     pub advertised_addr: String,
+    /// True if the node_id file already existed on disk (restart, not first boot).
+    /// Used by `bootstrap_cluster` to skip re-initialization.
+    node_id_existed: bool,
     /// gRPC server join handle.
     _grpc_handle: tokio::task::JoinHandle<()>,
     /// TTL worker join handle.
     _ttl_handle: tokio::task::JoinHandle<()>,
+    /// Metrics watcher join handle.
+    _metrics_handle: tokio::task::JoinHandle<()>,
 }
 
 impl RaftNode {
@@ -67,7 +72,9 @@ impl RaftNode {
     /// On subsequent boots the persisted value is read back, giving the node a
     /// stable identity across restarts — identical to the pattern used by
     /// CockroachDB, TiKV, and Consul.
-    fn resolve_node_id(data_dir: &PathBuf) -> anyhow::Result<u64> {
+    /// Returns `(node_id, existed)` where `existed` is true if the node_id
+    /// file was already on disk (i.e. this is a restart, not a first boot).
+    fn resolve_node_id(data_dir: &PathBuf) -> anyhow::Result<(u64, bool)> {
         let id_path = data_dir.join("node_id");
         if id_path.exists() {
             let contents = fs::read_to_string(&id_path)?;
@@ -75,13 +82,13 @@ impl RaftNode {
                 .trim()
                 .parse()
                 .map_err(|e| anyhow::anyhow!("invalid node_id file: {}", e))?;
-            Ok(id)
+            Ok((id, true))
         } else {
             let id: u64 = rand::rng().random();
             fs::create_dir_all(data_dir)?;
             fs::write(&id_path, id.to_string())?;
             info!(node_id = id, path = %id_path.display(), "generated new stable node_id");
-            Ok(id)
+            Ok((id, false))
         }
     }
 
@@ -92,7 +99,7 @@ impl RaftNode {
     pub async fn start(cfg: RaftNodeConfig) -> anyhow::Result<Self> {
         // 0. Resolve stable node identity
         fs::create_dir_all(&cfg.data_dir)?;
-        let node_id = Self::resolve_node_id(&cfg.data_dir)?;
+        let (node_id, node_id_existed) = Self::resolve_node_id(&cfg.data_dir)?;
 
         // 1. Create openraft config
         let raft_config = Config {
@@ -142,15 +149,20 @@ impl RaftNode {
         // 7. Build the MetadataStore wrapper
         let store = RaftMetadataStore::new(raft.clone(), shared_data);
 
-        info!(node_id, "Raft node started");
+        // 8. Spawn metrics watcher for clean lifecycle logging
+        let metrics_handle = spawn_metrics_watcher(raft.metrics(), node_id);
+
+        info!(node_id, is_restart = node_id_existed, "Raft node started");
 
         Ok(Self {
             store,
             raft,
             node_id,
             advertised_addr,
+            node_id_existed,
             _grpc_handle: grpc_handle,
             _ttl_handle: ttl_handle,
+            _metrics_handle: metrics_handle,
         })
     }
 
@@ -205,25 +217,37 @@ impl RaftNode {
     ///   Others simply wait — they receive membership via Raft replication.
     ///
     /// Idempotent: if the cluster is already initialized (persisted state), returns Ok.
+    ///
+    /// Returns `true` if the cluster was already initialized from persisted state
+    /// (i.e. this is a **restart**, not a first boot). The caller can use this to
+    /// detect stale state and adjust broker registration accordingly.
     pub async fn bootstrap_cluster(
         &self,
         self_addr: &str,
         seed_nodes: &[String],
-    ) -> anyhow::Result<()> {
-        // Check if already initialized (persisted membership from a previous run).
-        let metrics = self.raft.metrics().borrow().clone();
-        if let Some(membership) = metrics
-            .membership_config
-            .membership()
-            .get_joint_config()
-            .first()
-        {
-            if !membership.is_empty() {
-                info!(
-                    node_id = self.node_id,
-                    "cluster already initialized (from persisted state)"
-                );
-                return Ok(());
+    ) -> anyhow::Result<bool> {
+        // Detect restart: if the node_id file already existed, this node has
+        // persisted Raft state. Skip seed discovery and re-initialization —
+        // just wait for the cluster to establish a leader.
+        // NOTE: We cannot rely on raft.metrics() here because openraft replays
+        // the log asynchronously after Raft::new(), so membership may appear
+        // empty for a brief window (race condition).
+        if self.node_id_existed {
+            info!(
+                node_id = self.node_id,
+                "cluster already initialized (from persisted state), waiting for leader..."
+            );
+            loop {
+                let m = self.raft.metrics().borrow().clone();
+                if m.current_leader.is_some() {
+                    info!(
+                        node_id = self.node_id,
+                        leader = ?m.current_leader,
+                        "cluster leader established (restart)"
+                    );
+                    return Ok(true);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
 
@@ -234,7 +258,7 @@ impl RaftNode {
                 "no seed_nodes configured — auto-initializing single-node cluster"
             );
             self.init_cluster(self_addr).await?;
-            return Ok(());
+            return Ok(false);
         }
 
         // Multi-node: discover all seed peers
@@ -328,7 +352,7 @@ impl RaftNode {
                     leader = ?m.current_leader,
                     "cluster leader established"
                 );
-                return Ok(());
+                return Ok(false);
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -352,4 +376,73 @@ impl RaftNode {
     pub fn leadership_handle(&self) -> LeadershipHandle {
         LeadershipHandle::new(self.raft.clone(), self.node_id)
     }
+}
+
+/// Watches Raft metrics for leader and membership changes, logging one line
+/// per state transition instead of per-request. This gives clean lifecycle
+/// visibility under `danube_raft=info` without the noise of openraft internals.
+fn spawn_metrics_watcher(
+    rx: tokio::sync::watch::Receiver<openraft::RaftMetrics<u64, BasicNode>>,
+    node_id: u64,
+) -> tokio::task::JoinHandle<()> {
+    let mut rx = rx;
+    tokio::spawn(async move {
+        let mut prev_leader: Option<u64> = None;
+        let mut prev_voters: BTreeSet<u64> = BTreeSet::new();
+
+        loop {
+            if rx.changed().await.is_err() {
+                break; // Raft shut down
+            }
+            let m = rx.borrow().clone();
+
+            // Log leader changes
+            if m.current_leader != prev_leader {
+                match m.current_leader {
+                    Some(leader) if prev_leader.is_some() => {
+                        info!(
+                            node_id,
+                            new_leader = leader,
+                            previous_leader = ?prev_leader,
+                            term = m.current_term,
+                            "cluster leader changed"
+                        );
+                    }
+                    Some(leader) => {
+                        info!(
+                            node_id,
+                            leader,
+                            term = m.current_term,
+                            "cluster leader elected"
+                        );
+                    }
+                    None if prev_leader.is_some() => {
+                        warn!(
+                            node_id,
+                            previous_leader = ?prev_leader,
+                            "cluster has no leader"
+                        );
+                    }
+                    None => {}
+                }
+                prev_leader = m.current_leader;
+            }
+
+            // Log voter membership changes
+            let current_voters: BTreeSet<u64> =
+                m.membership_config.membership().voter_ids().collect();
+            if !prev_voters.is_empty() && current_voters != prev_voters {
+                let added: Vec<u64> = current_voters.difference(&prev_voters).copied().collect();
+                let removed: Vec<u64> = prev_voters.difference(&current_voters).copied().collect();
+                info!(
+                    node_id,
+                    voters = ?current_voters,
+                    added = ?added,
+                    removed = ?removed,
+                    "cluster membership changed"
+                );
+            }
+            prev_voters = current_voters;
+        }
+    })
 }

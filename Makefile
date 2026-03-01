@@ -18,13 +18,16 @@ CONFIG_FILE := ./config/danube_broker.yml
 # Base data directory (each broker gets its own sub-directory)
 BASE_DATA_DIR := ./danube-data
 
-.PHONY: all brokers brokers-clean cluster-status data-clean admin admin-clean prom prom-clean
+.PHONY: all brokers brokers-stop brokers-clean broker-kill broker-start cluster-status data-clean admin admin-clean prom prom-clean
 
 no_target_specified:
 	@echo "Please specify a target to build. Available targets:"
 	@echo "all            -- build and start $(NUM_BROKERS) broker instances (auto-clusters)"
 	@echo "brokers        -- compile and start $(NUM_BROKERS) broker instances"
-	@echo "brokers-clean  -- stop all broker instances"
+	@echo "brokers-stop   -- stop all brokers (keep Raft data for restart testing)"
+	@echo "brokers-clean  -- stop all brokers and delete Raft data"
+	@echo "broker-kill    -- kill one broker: make broker-kill ID=0"
+	@echo "broker-start   -- start one broker: make broker-start ID=0"
 	@echo "cluster-status -- show Raft cluster status"
 	@echo "data-clean     -- remove all Raft data directories"
 	@echo "admin          -- start the admin HTTP server on port 8080"
@@ -35,7 +38,7 @@ no_target_specified:
 all: brokers
 
 # Set log level based on RUST_LOG value (if provided)
-LOG_LEVEL = $(if $(RUST_LOG),$(RUST_LOG),info$(comma)openraft=warn)
+LOG_LEVEL = $(if $(RUST_LOG),$(RUST_LOG),info$(comma)openraft::replication=off$(comma)openraft=error)
 comma := ,
 
 # Build the seed_nodes string: "0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
@@ -78,8 +81,8 @@ cluster-status:
 	@cargo build --release --package danube-admin --bin danube-admin 2>/dev/null
 	@RUST_LOG=warn ./target/release/danube-admin cluster status
 
-brokers-clean:
-	@echo "Cleaning up Broker instances..."
+brokers-stop:
+	@echo "Stopping all Broker instances (keeping Raft data)..."
 	@pids=$$(ps aux | grep '[d]anube-broker --config-file' | awk '{print $$2}'); \
 	if [ -n "$$pids" ]; then \
 		echo "$$pids" | xargs -r kill; \
@@ -87,7 +90,48 @@ brokers-clean:
 	else \
 		echo "No Danube broker instances found."; \
 	fi
-	@$(MAKE) data-clean
+
+brokers-clean: brokers-stop data-clean
+
+# Kill a single broker by index: make broker-kill ID=0
+broker-kill:
+	@if [ -z "$(ID)" ]; then echo "Usage: make broker-kill ID=<0-$(shell echo $(NUM_BROKERS) - 1 | bc)>"; exit 1; fi
+	@broker_port=$$(($(BASE_BROKER_PORT) + $(ID))); \
+	pid=$$(ps aux | grep "[d]anube-broker.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
+	if [ -n "$$pid" ]; then \
+		kill $$pid; \
+		echo "Broker $(ID) (port $$broker_port, pid $$pid) killed."; \
+	else \
+		echo "Broker $(ID) (port $$broker_port) is not running."; \
+	fi
+
+# Start a single broker by index: make broker-start ID=0
+broker-start:
+	@if [ -z "$(ID)" ]; then echo "Usage: make broker-start ID=<0-$(shell echo $(NUM_BROKERS) - 1 | bc)>"; exit 1; fi
+	@broker_port=$$(($(BASE_BROKER_PORT) + $(ID))); \
+	admin_port=$$(($(BASE_ADMIN_PORT) + $(ID))); \
+	raft_port=$$(($(BASE_RAFT_PORT) + $(ID))); \
+	prom_port=$$(($(BASE_PROM_PORT) + $(ID))); \
+	data_dir="$(BASE_DATA_DIR)/broker-$(ID)/raft"; \
+	log_file="broker_$$broker_port.log"; \
+	existing=$$(ps aux | grep "[d]anube-broker.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
+	if [ -n "$$existing" ]; then \
+		echo "Broker $(ID) (port $$broker_port) is already running (pid $$existing)."; \
+		exit 1; \
+	fi; \
+	mkdir -p "$$data_dir"; \
+	echo "Starting broker $(ID): client=$$broker_port admin=$$admin_port raft=$$raft_port prom=$$prom_port"; \
+	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 \
+	./target/release/danube-broker \
+	    --config-file $(CONFIG_FILE) \
+	    --broker-addr "0.0.0.0:$$broker_port" \
+	    --admin-addr "0.0.0.0:$$admin_port" \
+	    --raft-addr "0.0.0.0:$$raft_port" \
+	    --prom-exporter "0.0.0.0:$$prom_port" \
+	    --data-dir "$$data_dir" \
+	    --seed-nodes "$(SEED_NODES)" \
+	    > temp/$$log_file 2>&1 & \
+	echo "Broker $(ID) started (log: temp/$$log_file)."
 
 data-clean:
 	@echo "Removing Raft data directories..."
