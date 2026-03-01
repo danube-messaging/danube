@@ -372,3 +372,185 @@ pub async fn delete_namespace(client: &Arc<AdminGrpcClient>, params: NamespacePa
         Err(e) => format!("Error deleting namespace: {}", e),
     }
 }
+
+// ===== RAFT CLUSTER TOOLS =====
+
+pub async fn cluster_status(client: &Arc<AdminGrpcClient>) -> String {
+    match client.cluster_status().await {
+        Ok(status) => {
+            let voters_str = status
+                .voters
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let learners_str = if status.learners.is_empty() {
+                "none".to_string()
+            } else {
+                status
+                    .learners
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            let leader_str = if status.leader_id == 0 {
+                "none (election in progress)".to_string()
+            } else {
+                status.leader_id.to_string()
+            };
+
+            format!(
+                "Raft Cluster Status:\n\n\
+                 Self Node ID:  {}\n\
+                 Raft Address:  {}\n\
+                 Leader:        {}\n\
+                 Term:          {}\n\
+                 Last Applied:  {}\n\
+                 Voters:        [{}] ({} node(s))\n\
+                 Learners:      [{}]",
+                status.self_node_id,
+                status.raft_addr,
+                leader_str,
+                status.current_term,
+                status.last_applied,
+                voters_str,
+                status.voters.len(),
+                learners_str,
+            )
+        }
+        Err(e) => format!("Error getting cluster status: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AddClusterNodeParams {
+    /// Admin endpoint of the new broker to add to the Raft cluster.
+    /// The broker must already be running with the --join flag.
+    /// Example: "http://new-broker:50054"
+    pub node_addr: String,
+}
+
+pub async fn add_cluster_node(
+    client: &Arc<AdminGrpcClient>,
+    params: AddClusterNodeParams,
+) -> String {
+    // Step 1: Discover the new node's identity via its admin port
+    let discover_client =
+        match crate::core::AdminGrpcClient::connect(crate::core::GrpcClientConfig {
+            endpoint: params.node_addr.clone(),
+            request_timeout_ms: 5000,
+            ..Default::default()
+        })
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return format!(
+                    "Error connecting to new node at {}: {}",
+                    params.node_addr, e
+                )
+            }
+        };
+
+    let status = match discover_client.cluster_status().await {
+        Ok(s) => s,
+        Err(e) => {
+            return format!(
+                "Error discovering node identity at {}: {}",
+                params.node_addr, e
+            )
+        }
+    };
+
+    let node_id = status.self_node_id;
+    let raft_addr = status.raft_addr;
+
+    // Step 2: Add as learner via the leader
+    let req = danube_core::admin_proto::AddNodeRequest {
+        addr: raft_addr.clone(),
+        node_id,
+    };
+
+    match client.add_node(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Node added as Raft learner\n\n\
+                     Node ID:     {}\n\
+                     Raft Addr:   {}\n\
+                     Source:      {}\n\n\
+                     Next step: Use promote_cluster_node with node_id={} to make it a voter.",
+                    node_id, raft_addr, params.node_addr, node_id
+                )
+            } else {
+                format!("✗ Failed to add node: {}", response.message)
+            }
+        }
+        Err(e) => format!("Error adding node: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PromoteClusterNodeParams {
+    /// Node ID of the Raft learner to promote to a full voting member.
+    /// Use cluster_status to discover current learners.
+    /// Example: 12345678
+    pub node_id: u64,
+}
+
+pub async fn promote_cluster_node(
+    client: &Arc<AdminGrpcClient>,
+    params: PromoteClusterNodeParams,
+) -> String {
+    let req = danube_core::admin_proto::PromoteNodeRequest {
+        node_id: params.node_id,
+    };
+
+    match client.promote_node(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Node {} promoted to voter\n\n{}",
+                    params.node_id, response.message
+                )
+            } else {
+                format!("✗ Failed to promote node: {}", response.message)
+            }
+        }
+        Err(e) => format!("Error promoting node: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct RemoveClusterNodeParams {
+    /// Node ID to remove from the Raft cluster.
+    /// Use cluster_status to discover current voters and learners.
+    /// Example: 12345678
+    pub node_id: u64,
+}
+
+pub async fn remove_cluster_node(
+    client: &Arc<AdminGrpcClient>,
+    params: RemoveClusterNodeParams,
+) -> String {
+    let req = danube_core::admin_proto::RemoveNodeRequest {
+        node_id: params.node_id,
+    };
+
+    match client.remove_node(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Node {} removed from cluster\n\n{}",
+                    params.node_id, response.message
+                )
+            } else {
+                format!("✗ Failed to remove node: {}", response.message)
+            }
+        }
+        Err(e) => format!("Error removing node: {}", e),
+    }
+}

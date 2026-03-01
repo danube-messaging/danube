@@ -53,8 +53,8 @@ impl DanubeMcpServer {
     /// Returns the broker ID of the leader responsible for cluster coordination,
     /// metadata management, and load balancing decisions.
     ///
-    /// The leader is automatically elected via ETCD. Use this to verify cluster health
-    /// or troubleshoot coordination issues.
+    /// The leader is automatically elected via Raft consensus. Use this to verify cluster health
+    /// or troubleshoot coordination issues. For detailed Raft state, use cluster_status instead.
     #[tool]
     async fn get_leader(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::get_leader(&self.client).await;
@@ -184,6 +184,81 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::NamespaceParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::delete_namespace(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ===== RAFT CLUSTER TOOLS =====
+
+    /// Get the current Raft consensus cluster state.
+    ///
+    /// Returns detailed Raft internals: leader node ID, current term, last applied log index,
+    /// voter set (full voting members), and learner set (non-voting replicas).
+    ///
+    /// Use this to verify cluster health at the consensus level: confirm all expected brokers
+    /// are voters, check that a leader is elected, and detect split-brain or membership issues.
+    /// More detailed than get_leader — includes term, voter list, and learner list.
+    #[tool]
+    async fn cluster_status(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::cluster_status(&self.client).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Add a new broker to the Raft cluster as a non-voting learner.
+    ///
+    /// WARNING: This mutates cluster membership. The new broker must already be running
+    /// with the --join flag before calling this tool.
+    ///
+    /// Side effects: Adds the node as a Raft learner (non-voting). It will begin receiving
+    /// log replication but cannot participate in elections or quorum decisions.
+    ///
+    /// Workflow: Start broker with --join → add_cluster_node → promote_cluster_node →
+    /// activate_broker → trigger_rebalance. Use cluster_status to verify the node appears
+    /// as a learner after this operation.
+    #[tool]
+    async fn add_cluster_node(
+        &self,
+        Parameters(params): Parameters<tools::cluster::AddClusterNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::add_cluster_node(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Promote a Raft learner to a full voting member.
+    ///
+    /// WARNING: This mutates cluster membership and affects quorum size. Adding a voter
+    /// changes the majority requirement for all future Raft decisions.
+    ///
+    /// Side effects: The node becomes a full voter, participating in leader elections and
+    /// quorum decisions. Quorum size increases (e.g., 2-node → needs 2/2, 3-node → needs 2/3).
+    ///
+    /// Use cluster_status first to verify the node is a learner. After promotion, use
+    /// activate_broker to allow topic assignment.
+    #[tool]
+    async fn promote_cluster_node(
+        &self,
+        Parameters(params): Parameters<tools::cluster::PromoteClusterNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::promote_cluster_node(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Remove a node from the Raft cluster (voter or learner).
+    ///
+    /// WARNING: This is a DESTRUCTIVE operation that mutates cluster membership.
+    /// Removing a voter reduces quorum size. Removing the last voter will break the cluster.
+    /// Cannot be undone — the node must be re-added with add_cluster_node.
+    ///
+    /// Side effects: The node is removed from Raft membership and will no longer receive
+    /// log replication. If it was a voter, quorum requirements are recalculated.
+    ///
+    /// Before removing: unload_broker to migrate topics off the node, then remove it from
+    /// the Raft cluster. Use cluster_status to verify current membership before and after.
+    #[tool]
+    async fn remove_cluster_node(
+        &self,
+        Parameters(params): Parameters<tools::cluster::RemoveClusterNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::remove_cluster_node(&self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 

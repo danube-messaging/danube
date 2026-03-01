@@ -139,15 +139,6 @@ impl AdminGrpcClient {
 
     // ===== CLUSTER ADMIN METHODS =====
 
-    pub async fn cluster_init(
-        &self,
-        req: admin::ClusterInitRequest,
-    ) -> Result<admin::ClusterInitResponse> {
-        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
-        let fut = async move { client.cluster_init(req).await };
-        self.execute_with_timeout(fut).await
-    }
-
     pub async fn cluster_status(&self) -> Result<admin::ClusterStatusResponse> {
         let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
         let fut = async move { client.cluster_status(admin::Empty {}).await };
