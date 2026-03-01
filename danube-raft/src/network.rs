@@ -17,7 +17,7 @@ use openraft::raft::{
 use openraft::storage::Snapshot;
 use openraft::{BasicNode, OptionalSend, Vote};
 use tonic::transport::Channel;
-use tracing::warn;
+use tracing::{info, warn};
 
 use danube_core::raft_proto::raft_transport_client::RaftTransportClient;
 use danube_core::raft_proto::RaftRequest;
@@ -38,10 +38,12 @@ pub struct DanubeNetworkFactory;
 impl RaftNetworkFactory<TypeConfig> for DanubeNetworkFactory {
     type Network = DanubeNetwork;
 
-    async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
+    async fn new_client(&mut self, target: NodeId, node: &Node) -> Self::Network {
         DanubeNetwork {
+            target,
             addr: node.addr.clone(),
             client: None,
+            connected: false,
         }
     }
 }
@@ -52,8 +54,13 @@ impl RaftNetworkFactory<TypeConfig> for DanubeNetworkFactory {
 
 /// gRPC network connection to a single Raft peer.
 pub struct DanubeNetwork {
+    target: NodeId,
     addr: String,
     client: Option<RaftTransportClient<Channel>>,
+    /// Tracks whether the peer is currently reachable.
+    /// Used to log state transitions once (unreachable / reconnected)
+    /// instead of flooding logs on every failed RPC.
+    connected: bool,
 }
 
 impl DanubeNetwork {
@@ -68,6 +75,30 @@ impl DanubeNetwork {
         }
         Ok(self.client.as_mut().unwrap())
     }
+
+    /// Log once when a peer becomes reachable again after being unreachable.
+    fn mark_success(&mut self) {
+        if !self.connected {
+            info!(
+                target_node = self.target,
+                addr = %self.addr,
+                "peer is reachable"
+            );
+            self.connected = true;
+        }
+    }
+
+    /// Log once when a peer becomes unreachable after being reachable.
+    fn mark_failure(&mut self) {
+        if self.connected {
+            warn!(
+                target_node = self.target,
+                addr = %self.addr,
+                "peer became unreachable"
+            );
+            self.connected = false;
+        }
+    }
 }
 
 impl RaftNetwork<TypeConfig> for DanubeNetwork {
@@ -77,19 +108,27 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
-        let client = self
-            .ensure_client()
-            .await
-            .map_err(|e| unreachable_err(&e))?;
+        if let Err(e) = self.ensure_client().await {
+            self.mark_failure();
+            return Err(unreachable_err(&e));
+        }
 
-        let resp = client
+        let resp = match self
+            .client
+            .as_mut()
+            .unwrap()
             .append_entries(RaftRequest { data })
             .await
-            .map_err(|e| {
-                self.client = None; // reset on failure
-                unreachable_err(&e)
-            })?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.client = None;
+                self.mark_failure();
+                return Err(unreachable_err(&e));
+            }
+        };
 
+        self.mark_success();
         let reply = resp.into_inner();
         if !reply.error.is_empty() {
             return Err(net_err(&reply.error));
@@ -103,15 +142,26 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
-        let client = self
-            .ensure_client()
-            .await
-            .map_err(|e| unreachable_err(&e))?;
+        if let Err(e) = self.ensure_client().await {
+            self.mark_failure();
+            return Err(unreachable_err(&e));
+        }
 
-        let resp = client.vote(RaftRequest { data }).await.map_err(|e| {
-            self.client = None;
-            unreachable_err(&e)
-        })?;
+        let resp = match self
+            .client
+            .as_mut()
+            .unwrap()
+            .vote(RaftRequest { data })
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.client = None;
+                self.mark_failure();
+                return Err(unreachable_err(&e));
+            }
+        };
+        self.mark_success();
 
         let reply = resp.into_inner();
         if !reply.error.is_empty() {
@@ -159,18 +209,26 @@ impl RaftNetwork<TypeConfig> for DanubeNetwork {
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
         let data = serde_json::to_vec(&rpc).map_err(|e| net_err(&e.to_string()))?;
-        let client = self
-            .ensure_client()
-            .await
-            .map_err(|e| unreachable_err(&e))?;
+        if let Err(e) = self.ensure_client().await {
+            self.mark_failure();
+            return Err(unreachable_err(&e));
+        }
 
-        let resp = client
+        let resp = match self
+            .client
+            .as_mut()
+            .unwrap()
             .install_snapshot(RaftRequest { data })
             .await
-            .map_err(|e| {
+        {
+            Ok(r) => r,
+            Err(e) => {
                 self.client = None;
-                unreachable_err(&e)
-            })?;
+                self.mark_failure();
+                return Err(unreachable_err(&e));
+            }
+        };
+        self.mark_success();
 
         let reply = resp.into_inner();
         if !reply.error.is_empty() {

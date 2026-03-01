@@ -200,24 +200,26 @@ async fn main() -> Result<()> {
     let node_id = raft_node.node_id;
     info!(node_id, %raft_addr, "Raft metadata store initialized");
 
-    if args.join {
+    let was_restart = if args.join {
         // --join mode: skip bootstrap, node will be added to an existing cluster
         // via `danube-admin cluster add-node` + `promote-node`
         info!(
             node_id,
             "starting in --join mode (waiting to be added to cluster via admin CLI)"
         );
+        false
     } else {
         // Bootstrap the cluster (config-driven, NATS-style):
         //   - seed_nodes empty  → single-node auto-init (zero config)
         //   - seed_nodes present → discovers peers, lowest node_id initializes
+        // Returns true if cluster was already initialized (restart from persisted state).
         raft_node
             .bootstrap_cluster(
                 &raft_node.advertised_addr,
                 &service_config.meta_store.seed_nodes,
             )
-            .await?;
-    }
+            .await?
+    };
 
     let raft_handle = raft_node.raft.clone();
     let leadership_handle = raft_node.leadership_handle();
@@ -366,6 +368,7 @@ async fn main() -> Result<()> {
         leadership_handle,
         advertised_raft_addr_str,
         args.join,
+        was_restart,
     );
 
     danube

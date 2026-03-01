@@ -43,7 +43,7 @@ jobs:
 
       - name: Start broker (background)
         env:
-          RUST_LOG: info,openraft=warn
+          RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p danube-data
           nohup ./target/release/danube-broker \

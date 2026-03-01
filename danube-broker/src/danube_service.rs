@@ -85,6 +85,8 @@ pub(crate) struct DanubeService {
     /// When true, the broker was started with --join and should wait
     /// for cluster membership before registering. Joins as Drained.
     join_cluster: bool,
+    /// True if bootstrap_cluster found persisted Raft state (restart, not first boot).
+    was_restart: bool,
 }
 
 impl std::fmt::Debug for DanubeService {
@@ -111,6 +113,7 @@ impl DanubeService {
         leadership: LeadershipHandle,
         raft_addr: String,
         join_cluster: bool,
+        was_restart: bool,
     ) -> Self {
         DanubeService {
             broker_id,
@@ -125,6 +128,7 @@ impl DanubeService {
             leadership,
             raft_addr,
             join_cluster,
+            was_restart,
         }
     }
 
@@ -229,30 +233,146 @@ impl DanubeService {
         )
         .await?;
 
-        // Set initial broker state:
-        //   --join mode → "drained" (no topics until admin activates)
-        //   normal mode → "active"
-        if self.join_cluster {
-            if let Err(e) = self
-                .resources
-                .cluster
-                .set_broker_state(&self.broker_id.to_string(), "drained", Some("join"))
+        // Determine initial broker state based on startup context:
+        //   --join mode       → "drained" (wait for admin to activate)
+        //   restart > TTL     → "drained" (registration expired, admin must investigate)
+        //   full cluster restart → "active" (all registrations expired, safe to auto-activate)
+        //   restart < TTL     → "active" (fast restart, still registered)
+        //   first boot        → "active"
+        let (initial_state, state_reason) = if self.join_cluster {
+            ("drained", "join")
+        } else if self.was_restart {
+            // This is a restart (persisted Raft state). Check if our registration survived.
+            let my_reg_path = join_path(&[
+                crate::resources::BASE_REGISTER_PATH,
+                &self.broker_id.to_string(),
+            ]);
+            let my_reg_exists = self
+                .meta_store
+                .get(&my_reg_path, MetaOptions::None)
                 .await
-            {
-                warn!("Failed to set initial broker state to drained: {}", e);
+                .ok()
+                .flatten()
+                .is_some();
+
+            if my_reg_exists {
+                // Registration still valid → restart was within TTL
+                info!(
+                    broker_id = %self.broker_id,
+                    "restart detected: registration still valid (within TTL)"
+                );
+                ("active", "fast_restart")
+            } else {
+                // Registration expired. Check if this is a full cluster restart
+                // (all registrations gone) vs single broker failure.
+                let all_regs = self
+                    .meta_store
+                    .get_childrens(crate::resources::BASE_REGISTER_PATH)
+                    .await
+                    .unwrap_or_default();
+
+                if all_regs.is_empty() {
+                    // No brokers registered → full cluster restart → safe to go active
+                    info!(
+                        broker_id = %self.broker_id,
+                        "full cluster restart detected (no brokers registered). Registering as active."
+                    );
+                    ("active", "full_cluster_restart")
+                } else {
+                    // Other brokers are alive but we were declared dead
+                    warn!(
+                        broker_id = %self.broker_id,
+                        registered_brokers = all_regs.len(),
+                        "broker registration expired (unavailable > TTL). \
+                         Registering as drained. Use `danube-admin brokers activate` to resume."
+                    );
+                    ("drained", "stale_restart")
+                }
             }
+        } else {
+            // First boot
+            ("active", "boot")
+        };
+
+        if let Err(e) = self
+            .resources
+            .cluster
+            .set_broker_state(
+                &self.broker_id.to_string(),
+                initial_state,
+                Some(state_reason),
+            )
+            .await
+        {
+            warn!(
+                state = initial_state,
+                reason = state_reason,
+                error = %e,
+                "failed to set initial broker state"
+            );
+        }
+        if initial_state == "drained" {
             info!(
                 broker_id = %self.broker_id,
+                reason = state_reason,
                 "broker registered as drained (use `danube-admin brokers activate` to enable topic assignment)"
             );
-        } else {
-            if let Err(e) = self
-                .resources
-                .cluster
-                .set_broker_state(&self.broker_id.to_string(), "active", Some("boot"))
-                .await
-            {
-                warn!("Failed to set initial broker state to active: {}", e);
+        }
+
+        // Startup topic reconciliation
+        //==========================================================================
+        // On restart, the in-memory TopicManager is empty but metadata may still
+        // have topics assigned to this broker. The broker_watcher only fires on
+        // *new* events, so pre-existing assignments are invisible. Scan and
+        // recreate them now, before accepting client connections.
+        {
+            let broker_path = join_path(&[
+                crate::resources::BASE_BROKER_PATH,
+                &self.broker_id.to_string(),
+            ]);
+            match self.meta_store.get_childrens(&broker_path).await {
+                Ok(children) => {
+                    let mut reconciled = 0u32;
+                    for full_path in &children {
+                        let parts: Vec<&str> = full_path.split('/').collect();
+                        // Expected: /cluster/brokers/{id}/{ns}/{topic}
+                        if parts.len() < 6 {
+                            continue;
+                        }
+                        // Skip non-topic keys (e.g. /cluster/brokers/{id}/state)
+                        if parts[4] == "state" {
+                            continue;
+                        }
+                        let topic_name = format!("/{}/{}", parts[4], parts[5]);
+                        match self.broker.topic_manager.ensure_local(&topic_name).await {
+                            Ok(_) => {
+                                reconciled += 1;
+                                info!(topic = %topic_name, "reconciled topic on startup");
+                            }
+                            Err(e) => {
+                                warn!(
+                                    topic = %topic_name,
+                                    error = %e,
+                                    "failed to reconcile topic on startup"
+                                );
+                            }
+                        }
+                    }
+                    if reconciled > 0 {
+                        info!(
+                            broker_id = %self.broker_id,
+                            count = reconciled,
+                            "startup topic reconciliation complete"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        broker_id = %self.broker_id,
+                        error = %e,
+                        "failed to scan broker assignments for startup reconciliation"
+                    );
+                }
             }
         }
 
