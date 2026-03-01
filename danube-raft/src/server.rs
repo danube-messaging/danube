@@ -105,9 +105,11 @@ impl RaftTransport for RaftTransportHandler {
         &self,
         _request: Request<danube_core::raft_proto::Empty>,
     ) -> Result<Response<NodeInfoReply>, Status> {
+        let has_leader = self.raft.metrics().borrow().current_leader.is_some();
         Ok(Response::new(NodeInfoReply {
             node_id: self.node_id,
             raft_addr: self.raft_addr.clone(),
+            has_leader,
         }))
     }
 

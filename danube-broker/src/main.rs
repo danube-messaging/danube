@@ -40,6 +40,7 @@ use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
 use danube_raft::node::{RaftNode, RaftNodeConfig};
+use danube_raft::BootstrapResult;
 use std::net::SocketAddr;
 
 use crate::metadata_storage::MetadataStorage;
@@ -200,25 +201,30 @@ async fn main() -> Result<()> {
     let node_id = raft_node.node_id;
     info!(node_id, %raft_addr, "Raft metadata store initialized");
 
-    let was_restart = if args.join {
-        // --join mode: skip bootstrap, node will be added to an existing cluster
-        // via `danube-admin cluster add-node` + `promote-node`
+    let (was_restart, join_cluster) = if args.join {
+        // --join mode (manual override): skip bootstrap, node will be added to
+        // an existing cluster via `danube-admin cluster add-node` + `promote-node`
         info!(
             node_id,
             "starting in --join mode (waiting to be added to cluster via admin CLI)"
         );
-        false
+        (false, true)
     } else {
         // Bootstrap the cluster (config-driven, NATS-style):
         //   - seed_nodes empty  → single-node auto-init (zero config)
         //   - seed_nodes present → discovers peers, lowest node_id initializes
-        // Returns true if cluster was already initialized (restart from persisted state).
-        raft_node
+        //   - seed_nodes present + peers have leader → auto-join (scale-up)
+        let result = raft_node
             .bootstrap_cluster(
                 &raft_node.advertised_addr,
                 &service_config.meta_store.seed_nodes,
             )
-            .await?
+            .await?;
+        match result {
+            BootstrapResult::Restart => (true, false),
+            BootstrapResult::Initialized => (false, false),
+            BootstrapResult::JoinExisting => (false, true),
+        }
     };
 
     let raft_handle = raft_node.raft.clone();
@@ -367,7 +373,7 @@ async fn main() -> Result<()> {
         raft_handle,
         leadership_handle,
         advertised_raft_addr_str,
-        args.join,
+        join_cluster,
         was_restart,
     );
 

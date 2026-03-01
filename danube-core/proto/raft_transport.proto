@@ -30,6 +30,7 @@ message Empty {}
 message NodeInfoReply {
   uint64 node_id = 1;
   string raft_addr = 2;
+  bool has_leader = 3;
 }
 
 message ClientWriteRequest {
