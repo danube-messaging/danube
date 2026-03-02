@@ -19,6 +19,8 @@ pub struct NodeInfoReply {
     pub node_id: u64,
     #[prost(string, tag = "2")]
     pub raft_addr: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub has_leader: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClientWriteRequest {

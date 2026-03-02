@@ -30,6 +30,19 @@ use crate::state_machine::DanubeStateMachine;
 use crate::ttl_worker;
 use crate::typ::TypeConfig;
 
+/// Result of `bootstrap_cluster`, indicating how this node joined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapResult {
+    /// Persisted Raft state found — this is a restart, not a first boot.
+    Restart,
+    /// First boot: this node participated in forming a new cluster.
+    Initialized,
+    /// Fresh node but an existing cluster was detected on peers (scale-up).
+    /// The caller should treat this like `--join`: register as "drained" and
+    /// wait to be added to the Raft group via the admin CLI.
+    JoinExisting,
+}
+
 /// Configuration for starting a Raft node.
 pub struct RaftNodeConfig {
     /// Directory for redb log store and node metadata.
@@ -218,14 +231,15 @@ impl RaftNode {
     ///
     /// Idempotent: if the cluster is already initialized (persisted state), returns Ok.
     ///
-    /// Returns `true` if the cluster was already initialized from persisted state
-    /// (i.e. this is a **restart**, not a first boot). The caller can use this to
-    /// detect stale state and adjust broker registration accordingly.
+    /// Returns a `BootstrapResult` indicating how this node joined:
+    /// - `Restart` — persisted state, rejoining existing cluster
+    /// - `Initialized` — first boot, formed a new cluster
+    /// - `JoinExisting` — fresh node, but peers already have a cluster (scale-up)
     pub async fn bootstrap_cluster(
         &self,
         self_addr: &str,
         seed_nodes: &[String],
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<BootstrapResult> {
         // Detect restart: if the node_id file already existed, this node has
         // persisted Raft state. Skip seed discovery and re-initialization —
         // just wait for the cluster to establish a leader.
@@ -245,7 +259,7 @@ impl RaftNode {
                         leader = ?m.current_leader,
                         "cluster leader established (restart)"
                     );
-                    return Ok(true);
+                    return Ok(BootstrapResult::Restart);
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -258,7 +272,7 @@ impl RaftNode {
                 "no seed_nodes configured — auto-initializing single-node cluster"
             );
             self.init_cluster(self_addr).await?;
-            return Ok(false);
+            return Ok(BootstrapResult::Initialized);
         }
 
         // Multi-node: discover all seed peers
@@ -269,6 +283,7 @@ impl RaftNode {
         );
 
         let mut members: BTreeMap<u64, BasicNode> = BTreeMap::new();
+        let mut any_peer_has_leader = false;
 
         // Add self
         members.insert(
@@ -290,13 +305,17 @@ impl RaftNode {
             loop {
                 attempts += 1;
                 match Self::discover_peer(&endpoint_url).await {
-                    Ok((peer_id, peer_addr)) => {
+                    Ok((peer_id, peer_addr, has_leader)) => {
                         info!(
                             peer_node_id = peer_id,
                             peer_addr = %peer_addr,
+                            has_leader,
                             seed = %seed_addr,
                             "discovered seed peer"
                         );
+                        if has_leader {
+                            any_peer_has_leader = true;
+                        }
                         members.insert(peer_id, BasicNode { addr: peer_addr });
                         break;
                     }
@@ -318,8 +337,19 @@ impl RaftNode {
         info!(
             node_id = self.node_id,
             member_count = members.len(),
+            any_peer_has_leader,
             "all seed peers discovered"
         );
+
+        // If any peer already has a leader, the cluster is formed.
+        // This is a scale-up: don't try to bootstrap, wait to be added via admin CLI.
+        if any_peer_has_leader {
+            info!(
+                node_id = self.node_id,
+                "existing cluster detected on peers — entering join mode (register as drained)"
+            );
+            return Ok(BootstrapResult::JoinExisting);
+        }
 
         // The node with the lowest node_id performs the initialization
         let lowest_id = *members.keys().next().unwrap();
@@ -352,14 +382,14 @@ impl RaftNode {
                     leader = ?m.current_leader,
                     "cluster leader established"
                 );
-                return Ok(false);
+                return Ok(BootstrapResult::Initialized);
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
-    /// Contact a peer's Raft transport to get its node_id and raft_addr.
-    async fn discover_peer(endpoint_url: &str) -> anyhow::Result<(u64, String)> {
+    /// Contact a peer's Raft transport to get its node_id, raft_addr, and leader status.
+    async fn discover_peer(endpoint_url: &str) -> anyhow::Result<(u64, String, bool)> {
         let channel = Endpoint::from_shared(endpoint_url.to_string())?
             .connect_timeout(Duration::from_secs(3))
             .connect()
@@ -369,7 +399,7 @@ impl RaftNode {
             .get_node_info(danube_core::raft_proto::Empty {})
             .await?;
         let info = resp.into_inner();
-        Ok((info.node_id, info.raft_addr))
+        Ok((info.node_id, info.raft_addr, info.has_leader))
     }
 
     /// Create a lightweight handle for querying leadership status.
