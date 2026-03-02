@@ -1,3 +1,24 @@
+<!-- v0.8.0 START -->
+## v0.8.0 - 2026-03-02
+
+🚀 **Embedded Raft Consensus — etcd Removed**
+
+Danube no longer depends on an external etcd cluster for metadata storage. All metadata is now managed by an embedded Raft consensus layer built on [openraft](https://github.com/databendlabs/openraft) with [redb](https://github.com/cberner/redb) as the persistent log store. This eliminates an entire operational dependency, reduces deployment complexity, and improves latency by keeping metadata reads local to each broker.
+
+### 🏗️ Raft Metadata Engine
+
+* **Embedded Raft consensus** (#199) — Replaced etcd with an in-process Raft state machine (`danube-raft` crate). Each broker participates as a Raft voter; reads are served from local state, writes are proposed through the Raft leader. Persistent storage uses redb (single-file, zero-config embedded database). by @danrusei in d015e18
+
+* **Restart resilience** (#200) — Brokers detect restarts via persisted `node_id` and rejoin the existing Raft group automatically, preserving cluster membership across pod restarts and rolling upgrades. by @danrusei in d9cb9a2
+
+### 📈 Cluster Scaling
+
+* **Auto-detection of existing clusters** (#202) — During peer discovery, fresh nodes check whether seed peers already have an elected Raft leader. If so, the node enters join mode automatically (registers as "drained"), eliminating the need for shell wrappers or init-containers in Kubernetes. by @danrusei in a4abe78
+
+* **Raft cluster management via CLI & MCP** (#201) — Added `danube-admin cluster add-node`, `remove-node`, and `promote-node` commands (CLI + MCP tools) for managing Raft membership during scale-up and scale-down operations. by @danrusei in a266c8d
+
+<!-- v0.8.0 END -->
+
 <!-- v0.7.3 START -->
 ## v0.7.3 - 2026-02-15
 

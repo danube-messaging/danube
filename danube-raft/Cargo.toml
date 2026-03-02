@@ -1,6 +1,6 @@
 [package]
 name = "danube-raft"
-version = "0.7.3"
+version = "0.8.0"
 description = "Embedded Raft consensus layer for Danube messaging broker (replaces ETCD)"
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
 repository = "https://github.com/danube-messaging/danube"
