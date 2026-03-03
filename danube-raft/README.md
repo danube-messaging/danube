@@ -58,19 +58,6 @@ Reads go directly to the local in-memory `BTreeMap` via `SharedStateMachineData`
 
 On restart, persisted log entries are replayed through `apply()` to reconstruct the in-memory state. Snapshots compact this — instead of replaying millions of entries, a node loads a snapshot and only replays entries after it.
 
-## Modules
-
-- **`typ.rs`** — Openraft type configuration. Wires `RaftCommand`, `RaftResponse`, `NodeId(u64)`, `BasicNode` to all generics.
-- **`commands.rs`** — Defines `RaftCommand` (Put, PutWithTTL, Delete, DeletePrefix, CompareAndSwap, AllocateMonotonicId, ExpireTTLKeys) and `RaftResponse`.
-- **`state_machine.rs`** — In-memory replicated KV store (`BTreeMap`) with watch channels and TTL index. Applies committed log entries and emits `WatchEvent`s.
-- **`log_store.rs`** — Persistent Raft log using redb. Stores log entries (JSON) and Raft metadata (vote, purge state). Ensures durability across restarts.
-- **`network.rs`** — Outbound gRPC transport. Sends `AppendEntries`, `Vote`, `InstallSnapshot` RPCs to peers (JSON-serialized over gRPC).
-- **`server.rs`** — Inbound gRPC transport. Receives Raft RPCs from peers, plus `GetNodeInfo` (peer discovery) and `ClientWrite` (follower → leader forwarding).
-- **`raft_store.rs`** — `MetadataStore` trait implementation. Reads from local state machine, writes via Raft consensus. Transparently forwards writes to leader if needed.
-- **`node.rs`** — Entry point. Creates all components, starts gRPC server and TTL worker. Handles cluster bootstrap (single-node auto-init or multi-node seed discovery).
-- **`leadership.rs`** — Lightweight handle for the broker to check Raft leadership status without depending on openraft.
-- **`ttl_worker.rs`** — Background task (leader-only) that periodically expires TTL keys through Raft consensus, replacing etcd leases.
-
 ## Cluster Formation
 
 Cluster formation is config-driven via `seed_nodes`:
@@ -86,7 +73,19 @@ meta_store:
 
 - **Single-node** (empty/omitted `seed_nodes`): auto-initializes with zero config.
 - **Multi-node**: all peers listed in `seed_nodes`. On first boot, nodes discover each other via `GetNodeInfo`, the lowest `node_id` initializes the cluster, and all nodes wait for leader election before proceeding.
-- **Idempotent**: if the cluster is already initialized (persisted membership from a previous run), bootstrap returns immediately.
+
+## Node Lifecycle
+
+Each broker persists its `node_id` in `{data_dir}/node_id` on first boot. The bootstrap logic (`bootstrap_cluster`) returns a `BootstrapResult` enum that tells the broker how to proceed:
+
+| Scenario | Detection | BootstrapResult | Broker behavior |
+|---|---|---|---|
+| **Fresh node, no peers** | No `node_id` file, empty `seed_nodes` | `Initialized` | Auto-inits single-node cluster |
+| **Fresh node, first boot** | No `node_id` file, seed peers have no leader | `Initialized` | Lowest `node_id` bootstraps; others become followers |
+| **Fresh node, existing cluster** | No `node_id` file, a seed peer reports `has_leader = true` | `JoinExisting` | Starts in "drained" state; must be added via `danube-admin cluster add-node` then activated |
+| **Restart** | `node_id` file exists | `Restart` | Waits for leader election then resumes; membership is already persisted |
+
+The `has_leader` flag is served by the `GetNodeInfo` gRPC RPC so that fresh nodes can distinguish between "cluster doesn't exist yet" and "cluster is already running". This eliminates the need for shell wrappers or init-containers in Kubernetes, the broker detects the right action automatically.
 
 ## Serialization
 
