@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
 use metrics::counter;
 use std::sync::Arc;
@@ -25,9 +25,12 @@ use crate::utils::get_random_id;
 ///     message          consumer              buffers          sends
 ///       │                 │                     │               │                 │
 ///       ├─────────────────▶                     │               │                 │
-///       │  send_message() │                     │               │                 │
+///       │ send_message()  │                     │               │                 │
+///       │ or              │                     │               │                 │
+///       │ try_send_message()                    │               │                 │
 ///       │                 │                     │               │                 │
-///       │                 │  tx_cons.send()     │               │                 │
+///       │                 │ tx_cons.send()      │               │                 │
+///       │                 │ or tx_cons.try_send()               │                 │
 ///       │                 ├────────────────────▶│               │                 │
 ///       │                 │    (Producer)       │               │                 │
 ///       │                 │                     │  rx_cons      │                 │
@@ -43,6 +46,7 @@ use crate::utils::get_random_id;
 /// - tx_cons: Sender half - used by dispatcher to push messages
 /// - rx_cons: Receiver half - used by gRPC handler to pull messages
 /// - session: Tracks connection state (active, cancellation, session_id)
+/// - reliable dispatch blocks on a full internal channel; non-reliable dispatch can drop/skip on full
 /// ```
 ///
 /// # Lock Separation Strategy
@@ -63,7 +67,8 @@ use crate::utils::get_random_id;
 ///     (quick unlock)              │                 loop { rx.recv().await }
 ///     ↓                           │                 ↓
 ///  3. Send message                │              3. Forward to client
-///     tx_cons.send().await        │                 grpc_tx.send().await
+///     send_message().await        │                 grpc_tx.send().await
+///     or try_send_message()       │
 ///                                 │
 ///  ✓ No deadlock: different locks │
 /// ```
@@ -125,11 +130,13 @@ pub(crate) struct Consumer {
     /// **Message sender (Producer end of the internal channel)**.
     ///
     /// Used by: Dispatcher
-    /// - Dispatcher calls `consumer.send_message(msg)` which uses this sender
+    /// - Reliable dispatchers call `consumer.send_message(msg)` which uses this sender
+    /// - Non-reliable dispatchers call `consumer.try_send_message(msg)` which uses this sender
     /// - Pushes messages into the internal channel (buffer size: 4)
-    /// - If channel is full, send will block (backpressure)
+    /// - Reliable sends block on full channel (backpressure)
+    /// - Non-reliable sends do not wait on full channel; callers can drop or skip the message
     ///
-    /// Flow: `Dispatcher → tx_cons.send() → Channel → rx_cons.recv() → gRPC`
+    /// Flow: `Dispatcher → tx_cons.send()/try_send() → Channel → rx_cons.recv() → gRPC`
     pub(crate) tx_cons: mpsc::Sender<StreamMessage>,
 
     /// **Session state: active status, cancellation token, session ID**.
@@ -161,6 +168,14 @@ pub(crate) struct Consumer {
     pub(crate) rx_cons: Arc<Mutex<mpsc::Receiver<StreamMessage>>>,
 }
 
+/// Result of a non-blocking send attempt to the consumer's internal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsumerSendStatus {
+    Sent,
+    Full,
+    Closed,
+}
+
 impl Consumer {
     pub(crate) fn new(
         consumer_id: u64,
@@ -184,7 +199,10 @@ impl Consumer {
         }
     }
 
-    // The consumer task runs asynchronously, handling message delivery to the gRPC `ReceiverStream`.
+    /// Blocking send path used by reliable dispatchers.
+    ///
+    /// This method awaits channel capacity and returns an error if the consumer
+    /// channel has been closed.
     pub(crate) async fn send_message(&mut self, message: StreamMessage) -> Result<()> {
         // Since u8 is exactly 1 byte, the size in bytes will be equal to the number of elements in the vector.
         let payload_size = message.payload.len();
@@ -198,6 +216,7 @@ impl Consumer {
                 error = ?err,
                 "failed to send message to consumer"
             );
+            return Err(anyhow!("failed to send message to consumer: {}", err));
         } else {
             trace!(consumer_id = %self.consumer_id, "sending the message over channel to consumer");
             counter!(CONSUMER_MESSAGES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(1);
@@ -206,6 +225,43 @@ impl Consumer {
 
         // info!("Consumer task ended for consumer_id: {}", self.consumer_id);
         Ok(())
+    }
+
+    /// Non-blocking send path used by non-reliable dispatchers.
+    ///
+    /// This method never awaits channel capacity:
+    /// - `Sent`: message was enqueued
+    /// - `Full`: channel is saturated; caller can drop or try another consumer
+    /// - `Closed`: receiver is gone; caller should treat the consumer as unavailable
+    pub(crate) fn try_send_message(&mut self, message: StreamMessage) -> ConsumerSendStatus {
+        let payload_size = message.payload.len();
+
+        match self.tx_cons.try_send(message) {
+            Ok(()) => {
+                trace!(consumer_id = %self.consumer_id, "sending the message over channel to consumer");
+                counter!(CONSUMER_MESSAGES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(1);
+                counter!(CONSUMER_BYTES_OUT_TOTAL.name, "topic"=> self.topic_name.clone() , "subscription" => self.subscription_name.clone()).increment(payload_size as u64);
+                ConsumerSendStatus::Sent
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    consumer_id = %self.consumer_id,
+                    subscription = %self.subscription_name,
+                    topic = %self.topic_name,
+                    "consumer channel full; dropping non-reliable message"
+                );
+                ConsumerSendStatus::Full
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!(
+                    consumer_id = %self.consumer_id,
+                    subscription = %self.subscription_name,
+                    topic = %self.topic_name,
+                    "failed to send message to consumer"
+                );
+                ConsumerSendStatus::Closed
+            }
+        }
     }
 
     /// Get the current active status of this consumer

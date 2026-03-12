@@ -246,3 +246,67 @@ async fn non_reliable_multiple_round_robin() {
     assert!(got.iter().filter(|&&id| id == 1).count() >= 2);
     assert!(got.iter().filter(|&&id| id == 2).count() >= 2);
 }
+
+#[tokio::test]
+async fn non_reliable_shared_skips_full_consumer() {
+    let dispatcher = Dispatcher::non_reliable_shared();
+
+    let topic = "/default/shared_non_reliable_full";
+
+    let (tx_c1, mut rx_c1) = mpsc::channel::<StreamMessage>(1);
+    let fill_tx_c1 = tx_c1.clone();
+    let (_rx_cons_tx_c1, rx_cons_rx_c1) = mpsc::channel::<StreamMessage>(8);
+    let session_c1 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc_c1 = Arc::new(Mutex::new(rx_cons_rx_c1));
+    let c1 = Consumer::new(
+        103,
+        "c1-full",
+        1,
+        topic,
+        "sub",
+        tx_c1,
+        session_c1,
+        rx_cons_arc_c1,
+    );
+    dispatcher.add_consumer(c1).await.expect("add c1");
+
+    let (tx_c2, mut rx_c2) = mpsc::channel::<StreamMessage>(1);
+    let (_rx_cons_tx_c2, rx_cons_rx_c2) = mpsc::channel::<StreamMessage>(8);
+    let session_c2 = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc_c2 = Arc::new(Mutex::new(rx_cons_rx_c2));
+    let c2 = Consumer::new(
+        104,
+        "c2-fast",
+        1,
+        topic,
+        "sub",
+        tx_c2,
+        session_c2,
+        rx_cons_arc_c2,
+    );
+    dispatcher.add_consumer(c2).await.expect("add c2");
+
+    fill_tx_c1
+        .try_send(make_msg(800, 0, topic))
+        .expect("fill first consumer");
+
+    dispatcher
+        .dispatch_message(make_msg(801, 1, topic))
+        .await
+        .expect("dispatch");
+
+    let delivered = timeout(Duration::from_secs(1), rx_c2.recv())
+        .await
+        .expect("timely recv")
+        .expect("some");
+    assert_eq!(delivered.request_id, 801);
+
+    let first = timeout(Duration::from_secs(1), rx_c1.recv())
+        .await
+        .expect("timely recv")
+        .expect("some");
+    assert_eq!(first.request_id, 800);
+
+    let second = timeout(Duration::from_millis(50), rx_c1.recv()).await;
+    assert!(second.is_err(), "full consumer should not receive extra message");
+}

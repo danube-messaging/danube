@@ -16,6 +16,7 @@ pub(super) mod non_reliable;
 pub(super) mod reliable;
 
 /// Shared consumer state with round-robin support
+#[derive(Debug)]
 pub(super) struct SharedConsumerState {
     pub(super) consumers: Vec<Consumer>,
     pub(super) rr_index: Arc<AtomicUsize>,
@@ -69,9 +70,11 @@ impl SharedConsumerState {
 pub(super) struct SharedDispatcher;
 
 impl SharedDispatcher {
-    /// Spawn the non-reliable shared background task.
-    pub(super) fn start_non_reliable(control_rx: mpsc::Receiver<DispatcherCommand>) {
-        non_reliable::start(control_rx);
+    pub(super) async fn dispatch_non_reliable(
+        state: &mut SharedConsumerState,
+        message: danube_core::message::StreamMessage,
+    ) -> anyhow::Result<()> {
+        non_reliable::dispatch(state, message).await
     }
 
     /// Spawn the reliable shared background task.
