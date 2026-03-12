@@ -41,7 +41,7 @@
 //! # Use Cases
 //!
 //! - High-throughput message queues where occasional loss is acceptable
-//! - Load distribution across worker pools
+//! - Load distribution across shared consumers
 //! - Shared subscriptions with low-latency requirements
 //! - Real-time analytics where sampling is sufficient
 //! - Non-durable shared subscriptions

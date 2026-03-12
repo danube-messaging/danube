@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use danube_client::{SchemaType, SubType};
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{timeout, Duration};
 
 #[path = "test_utils.rs"]
 mod test_utils;
@@ -199,9 +199,6 @@ async fn schema_versioning_evolution() -> Result<()> {
         .execute()
         .await?;
 
-    // Allow Raft write to propagate
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
     // In this schema registry, versions of same subject share the schema_id
     // Versions are tracked separately
     assert_eq!(id_v1, id_v2, "Same subject should have same schema_id");
@@ -255,8 +252,6 @@ async fn consumer_receives_schema_metadata() -> Result<()> {
         .build()?;
     consumer.subscribe().await?;
     let mut stream = consumer.receive().await?;
-
-    sleep(Duration::from_millis(200)).await;
 
     // Send message
     let payload = r#"{"data": "test"}"#;

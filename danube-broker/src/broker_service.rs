@@ -17,7 +17,7 @@ use crate::{
     subscription::SubscriptionOptions,
     topic_cluster::TopicCluster,
     topic_control::{ConsumerRegistry, ProducerRegistry, TopicManager},
-    topic_worker::TopicWorkerPool,
+    topic_registry::TopicRegistry,
 };
 
 /// BrokerService is the broker API surface.
@@ -25,15 +25,15 @@ use crate::{
 /// It acts as a thin orchestrator:
 /// - Delegates local topic lifecycle and producer/consumer ops to `TopicManager`.
 /// - Delegates cluster-level operations (metadata) to `TopicCluster`.
-/// - Delegates message flow to `TopicWorkerPool`.
+/// - Delegates local topic lookup and message flow to `TopicRegistry`.
 ///
 /// This keeps the entrypoint clean while heavy lifting is done in specialized modules.
 #[derive(Debug)]
 pub(crate) struct BrokerService {
     /// Unique identifier for this broker instance.
     pub(crate) broker_id: u64,
-    /// Worker pool that owns and executes per-topic operations.
-    pub(crate) topic_worker_pool: Arc<TopicWorkerPool>,
+    /// Registry of local topics hosted by this broker.
+    pub(crate) topic_registry: Arc<TopicRegistry>,
     /// Manager for local topic lifecycle and producer/consumer management.
     pub(crate) topic_manager: TopicManager,
     /// Cluster/metadata accessor for topic lifecycle at cluster scope.
@@ -61,13 +61,13 @@ impl BrokerService {
     ) -> Self {
         let producers = ProducerRegistry::new();
         let consumers = ConsumerRegistry::new();
-        let topic_worker_pool = Arc::new(TopicWorkerPool::new(None));
+        let topic_registry = Arc::new(TopicRegistry::new(None));
         let resources_arc = Arc::new(resources);
         let metrics_collector = Arc::new(MetricsCollector::new());
 
         let topic_manager = TopicManager::new(
             broker_id,
-            topic_worker_pool.clone(),
+            topic_registry.clone(),
             wal_factory.clone(),
             resources_arc.clone(),
             producers.clone(),
@@ -82,7 +82,7 @@ impl BrokerService {
 
         BrokerService {
             broker_id,
-            topic_worker_pool,
+            topic_registry,
             topic_manager,
             topic_cluster,
             resources: resources_arc,
@@ -126,9 +126,9 @@ impl BrokerService {
         }
 
         // Fast path: topic is local
-        if self.topic_worker_pool.contains_topic(topic_name) {
+        if self.topic_registry.contains_topic(topic_name) {
             if let Some(req_ds) = dispatch_strategy {
-                if let Some(false) = self.topic_worker_pool.strategies_match(topic_name, req_ds) {
+                if let Some(false) = self.topic_registry.strategies_match(topic_name, req_ds) {
                     return Err(Status::failed_precondition(
                         "Producer requested dispatch strategy does not match topic strategy",
                     ));
@@ -137,7 +137,7 @@ impl BrokerService {
 
             // Schema reference validation: if producer explicitly sets schema, validate it
             if let Some(schema_ref) = schema_ref {
-                if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+                if let Some(topic) = self.topic_registry.get_topic(topic_name) {
                     let subject = schema_ref.subject.clone();
 
                     // Check if topic already has a schema subject assigned
@@ -217,7 +217,7 @@ impl BrokerService {
 
     /// Returns the list of topic names currently served by this broker.
     pub(crate) fn get_topics(&self) -> Vec<String> {
-        self.topic_worker_pool.get_all_topics()
+        self.topic_registry.get_all_topics()
     }
 
     // =====================================================================
@@ -250,7 +250,7 @@ impl BrokerService {
     /// Looks up the broker serving `topic_name`. Returns (is_local, broker_url, connect_url).
     pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String, String)> {
         // Served locally
-        if self.topic_worker_pool.contains_topic(topic_name) {
+        if self.topic_registry.contains_topic(topic_name) {
             return Some((true, String::new(), String::new()));
         }
 
@@ -310,7 +310,7 @@ impl BrokerService {
         topic_name: &str,
         producer_name: &str,
     ) -> Option<u64> {
-        let topic = self.topic_worker_pool.get_topic(topic_name)?;
+        let topic = self.topic_registry.get_topic(topic_name)?;
         let producers = topic.producers.lock().await;
         for (_id, producer) in producers.iter() {
             if producer.producer_name == producer_name {
@@ -384,7 +384,7 @@ impl BrokerService {
     /// Validates whether policies allow creating a new subscription for `topic_name`.
     pub(crate) async fn allow_subscription_creation(&self, topic_name: impl Into<String>) -> bool {
         let topic_name = topic_name.into();
-        if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
             let limit = topic
                 .topic_policies
                 .as_ref()
@@ -401,22 +401,22 @@ impl BrokerService {
     }
 
     // =====================================================================
-    // Messaging (delegated to TopicWorkerPool)
+    // Messaging (delegated to TopicRegistry)
     // =====================================================================
 
-    /// Publishes a message asynchronously via the worker pool.
+    /// Publishes a message asynchronously via the topic registry.
     pub async fn publish_message_async(
         &self,
         topic_name: String,
         message: StreamMessage,
     ) -> Result<()> {
-        // Route message through topic worker pool for async processing
-        self.topic_worker_pool
+        // Route message through the topic registry for async processing
+        self.topic_registry
             .publish_message_async(topic_name, message)
             .await
     }
 
-    // Async version of subscription using topic worker pool
+    // Async version of subscription using the topic registry
     pub(crate) async fn subscribe_async(
         &self,
         topic_name: String,
@@ -427,9 +427,9 @@ impl BrokerService {
             .await
     }
 
-    /// Acknowledges a message asynchronously via the worker pool.
+    /// Acknowledges a message asynchronously via the topic registry.
     pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
-        self.topic_worker_pool.ack_message_async(ack_msg).await
+        self.topic_registry.ack_message_async(ack_msg).await
     }
 
     // unsubscribe subscription from topic
@@ -481,22 +481,17 @@ impl BrokerService {
         Ok(())
     }
 
-    // Shutdown the broker service and all worker threads
+    // Shutdown the broker service and all topic state
     #[allow(dead_code)]
-    /// Shuts down the worker pool gracefully.
+    /// Shuts down the topic registry gracefully.
     pub(crate) async fn shutdown(&mut self) -> Result<()> {
-        let topic_count = self.topic_worker_pool.get_all_topics().len();
+        let topic_count = self.topic_registry.get_all_topics().len();
         info!(
             broker_id = %self.broker_id,
             topic_count = %topic_count,
             "shutting down broker service"
         );
 
-        // Shutdown the topic worker pool
-        Arc::get_mut(&mut self.topic_worker_pool)
-            .ok_or_else(|| anyhow!("Failed to get mutable reference to topic worker pool"))?
-            .shutdown()
-            .await;
 
         info!(
             broker_id = %self.broker_id,
