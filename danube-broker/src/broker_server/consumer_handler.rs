@@ -83,7 +83,7 @@ impl ConsumerService for DanubeServerImpl {
         }
 
         // Early policy check: max_consumers_per_topic
-        if let Some(topic) = service.topic_worker_pool.get_topic(&req.topic_name) {
+        if let Some(topic) = service.topic_registry.get_topic(&req.topic_name) {
             let limit = topic
                 .topic_policies
                 .as_ref()

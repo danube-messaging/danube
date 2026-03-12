@@ -77,7 +77,7 @@ impl ProducerService for DanubeServerImpl {
         }
 
         // Early policy check: max_producers_per_topic
-        if let Some(topic) = service.topic_worker_pool.get_topic(&req.topic_name) {
+        if let Some(topic) = service.topic_registry.get_topic(&req.topic_name) {
             if let Err(e) = topic.can_add_producer().await {
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"create_producer", "result"=>"error").increment(1);
                 return Err(Status::resource_exhausted(e.to_string()));
@@ -151,7 +151,7 @@ impl ProducerService for DanubeServerImpl {
         let topic_name = stream_message.msg_id.topic_name.clone();
 
         // Early policy check: max_message_size
-        if let Some(topic) = service.topic_worker_pool.get_topic(&topic_name) {
+        if let Some(topic) = service.topic_registry.get_topic(&topic_name) {
             if let Err(e) = topic.validate_message_size(stream_message.payload.len()) {
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
                 counter!(

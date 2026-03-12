@@ -17,7 +17,7 @@ use crate::{
     resources::Resources,
     subscription::{SubscriptionOptions, SUBSCRIPTION_IDLE_GRACE},
     topic::Topic,
-    topic_worker::TopicWorkerPool,
+    topic_registry::TopicRegistry,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_persistent_storage::WalStorageFactory;
@@ -26,8 +26,8 @@ use danube_persistent_storage::WalStorageFactory;
 pub(crate) struct TopicManager {
     /// Broker identifier for metrics and logging.
     pub(crate) broker_id: u64,
-    /// Worker pool handling per-topic execution and routing.
-    pub(crate) topic_worker_pool: Arc<TopicWorkerPool>,
+    /// Topic registry for local topics hosted by this broker.
+    pub(crate) topic_registry: Arc<TopicRegistry>,
     /// Factory for building per-topic WAL storage (reliable mode).
     pub(crate) wal_factory: WalStorageFactory,
     /// Shared access to metadata resources (Raft state machine).
@@ -41,10 +41,10 @@ pub(crate) struct TopicManager {
 }
 
 impl TopicManager {
-    /// Constructs a new TopicManager bound to this broker's worker pool and resources.
+    /// Constructs a new TopicManager bound to this broker's topic registry and resources.
     pub(crate) fn new(
         broker_id: u64,
-        topic_worker_pool: Arc<TopicWorkerPool>,
+        topic_registry: Arc<TopicRegistry>,
         wal_factory: WalStorageFactory,
         resources: Arc<Resources>,
         producers: ProducerRegistry,
@@ -53,7 +53,7 @@ impl TopicManager {
     ) -> Self {
         Self {
             broker_id,
-            topic_worker_pool,
+            topic_registry,
             wal_factory,
             resources,
             producers,
@@ -66,14 +66,14 @@ impl TopicManager {
     /// The check interval is half the grace period (worst-case delay = 1.5× grace).
     /// Also cleans up ConsumerRegistry entries for removed consumers.
     pub(crate) fn start_subscription_removal(&self) {
-        let topic_worker_pool = Arc::clone(&self.topic_worker_pool);
+        let topic_registry = Arc::clone(&self.topic_registry);
         let consumer_registry = self.consumers.clone();
         let interval = SUBSCRIPTION_IDLE_GRACE / 2;
 
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
-                let topics = topic_worker_pool.all_non_reliable_topics();
+                let topics = topic_registry.all_non_reliable_topics();
                 for topic in topics {
                     let removed = topic
                         .remove_idle_subscriptions(SUBSCRIPTION_IDLE_GRACE)
@@ -185,9 +185,9 @@ impl TopicManager {
         // Wrap topic in Arc for concurrent access
         let new_topic_arc = Arc::new(new_topic);
 
-        // Add topic to worker pool (single source of truth)
-        self.topic_worker_pool
-            .add_topic_to_worker(topic_name.to_string(), new_topic_arc);
+        // Add topic to the registry (single source of truth)
+        self.topic_registry
+            .add_topic(topic_name.to_string(), new_topic_arc);
 
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
@@ -236,7 +236,7 @@ impl TopicManager {
     /// Removes a topic from this broker, disconnects producers/consumers, and updates indices.
     pub(crate) async fn delete_local(&self, topic_name: &str) -> Result<Arc<Topic>> {
         // First check if topic exists
-        if !self.topic_worker_pool.contains_topic(topic_name) {
+        if !self.topic_registry.contains_topic(topic_name) {
             return Err(anyhow!(
                 "The topic {} does not exist on the broker {}",
                 topic_name,
@@ -245,7 +245,7 @@ impl TopicManager {
         }
 
         // Mark topic as unavailable to reject new publishes during deletion
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             topic.unavailable_topic().await;
         }
 
@@ -300,11 +300,11 @@ impl TopicManager {
             }
         }
 
-        // Remove from worker pool (single source of truth) to prevent new operations
+        // Remove from the registry (single source of truth) to prevent new operations
         let topic = self
-            .topic_worker_pool
-            .remove_topic_from_worker(topic_name)
-            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
+            .topic_registry
+            .remove_topic(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from registry"))?;
 
         // Disconnect all attached producers/consumers and clean indices
         let (producers, consumers) = topic.close().await?;
@@ -325,7 +325,7 @@ impl TopicManager {
     /// - Non-reliable: keep delivery, schema, namespace; delete producer metadata (optionally subscriptions)
     /// - Reliable: flush cursors, seal storage, delete producer metadata; keep subscriptions/cursors/storage
     pub(crate) async fn unload_topic(&self, topic_name: &str) -> Result<()> {
-        if !self.topic_worker_pool.contains_topic(topic_name) {
+        if !self.topic_registry.contains_topic(topic_name) {
             return Err(anyhow!(
                 "The topic {} does not exist on the broker {}",
                 topic_name,
@@ -349,14 +349,14 @@ impl TopicManager {
     }
 
     async fn unload_non_reliable_topic(&self, topic_name: &str) -> Result<()> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             topic.unavailable_topic().await;
         }
 
         let topic = self
-            .topic_worker_pool
-            .remove_topic_from_worker(topic_name)
-            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
+            .topic_registry
+            .remove_topic(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from registry"))?;
         let (producers, consumers) = topic.close().await?;
 
         for producer_id in producers {
@@ -379,7 +379,7 @@ impl TopicManager {
     }
 
     async fn unload_reliable_topic(&self, topic_name: &str) -> Result<()> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             topic.unavailable_topic().await;
         }
 
@@ -387,9 +387,9 @@ impl TopicManager {
         self.flush_and_seal(topic_name).await?;
 
         let topic = self
-            .topic_worker_pool
-            .remove_topic_from_worker(topic_name)
-            .ok_or_else(|| anyhow!("Failed to remove topic from worker pool"))?;
+            .topic_registry
+            .remove_topic(topic_name)
+            .ok_or_else(|| anyhow!("Failed to remove topic from registry"))?;
         let (producers, consumers) = topic.close().await?;
 
         for producer_id in producers {
@@ -408,7 +408,7 @@ impl TopicManager {
 
     /// Best-effort flush of all subscription cursors for a topic (reliable only).
     async fn flush_subscription_cursors(&self, topic_name: &str) -> Result<()> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             let subscriptions = topic.subscriptions.lock().await;
             for (_sub_name, subscription) in subscriptions.iter() {
                 if let Some(dispatcher) = &subscription.dispatcher {
@@ -428,7 +428,7 @@ impl TopicManager {
         producer_access_mode: i32,
         topic_name: &str,
     ) -> Result<u64> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             let producer_config = topic
                 .create_producer(producer_id, producer_name, producer_access_mode)
                 .await?;
@@ -457,7 +457,7 @@ impl TopicManager {
     /// Locates the topic managed by `producer_id`, if available.
     pub(crate) fn find_topic_by_producer(&self, producer_id: u64) -> Option<Arc<Topic>> {
         if let Some(topic_name) = self.producers.get_topic(producer_id) {
-            self.topic_worker_pool.get_topic(&topic_name)
+            self.topic_registry.get_topic(&topic_name)
         } else {
             None
         }
@@ -479,7 +479,7 @@ impl TopicManager {
         subscription_options: SubscriptionOptions,
     ) -> Result<u64> {
         let consumer_id = self
-            .topic_worker_pool
+            .topic_registry
             .subscribe_async(topic_name.clone(), subscription_options.clone())
             .await?;
 
@@ -490,7 +490,7 @@ impl TopicManager {
         gauge!(TOPIC_ACTIVE_CONSUMERS.name, "topic" => topic_name.clone()).increment(1);
 
         // Dual-track consumer count
-        if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
             let consumer_count = topic.get_consumer_count().await;
             self.metrics_collector
                 .set_consumer_count(&topic_name, consumer_count)
@@ -513,7 +513,7 @@ impl TopicManager {
     /// Finds consumer by id via the consumer index and topic subscriptions.
     pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<Consumer> {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+            if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
                 if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
                 {
                     return subscription.get_consumer(consumer_id);
@@ -545,7 +545,7 @@ impl TopicManager {
         subscription_name: &str,
         topic_name: &str,
     ) -> Option<u64> {
-        let topic = self.topic_worker_pool.get_topic(topic_name)?;
+        let topic = self.topic_registry.get_topic(topic_name)?;
         topic
             .validate_consumer(subscription_name, consumer_name)
             .await
@@ -554,7 +554,7 @@ impl TopicManager {
     /// Signals subscription dispatch to resume when a consumer reconnects (reliable mode).
     pub(crate) async fn trigger_dispatcher_on_reconnect(&self, consumer_id: u64) {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
-            if let Some(topic) = self.topic_worker_pool.get_topic(&topic_name) {
+            if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
                 let subscriptions = topic.subscriptions.lock().await;
                 if let Some(subscription) = subscriptions.get(&subscription_name) {
                     if let Some(dispatcher) = &subscription.dispatcher {
@@ -589,7 +589,7 @@ impl TopicManager {
         subscription_name: &str,
         topic_name: &str,
     ) -> Result<()> {
-        if let Some(topic) = self.topic_worker_pool.get_topic(topic_name) {
+        if let Some(topic) = self.topic_registry.get_topic(topic_name) {
             if let Some(value) = topic.check_subscription(subscription_name).await {
                 if value == false {
                     topic.unsubscribe(subscription_name).await;
@@ -629,9 +629,9 @@ impl TopicManager {
             "configuring schema for topic"
         );
 
-        // Get the topic from worker pool
+        // Get the topic from the registry
         let topic = self
-            .topic_worker_pool
+            .topic_registry
             .get_topic(topic_name)
             .ok_or_else(|| {
                 Status::not_found(format!("Topic '{}' not found on this broker", topic_name))
@@ -699,9 +699,9 @@ impl TopicManager {
             "updating validation policy for topic"
         );
 
-        // Get the topic from worker pool
+        // Get the topic from the registry
         let topic = self
-            .topic_worker_pool
+            .topic_registry
             .get_topic(topic_name)
             .ok_or_else(|| {
                 Status::not_found(format!("Topic '{}' not found on this broker", topic_name))
@@ -759,9 +759,9 @@ impl TopicManager {
     ) -> Result<(String, ValidationPolicy, bool, u64), Status> {
         info!(topic = %topic_name, "getting schema config for topic");
 
-        // Get the topic from worker pool
+        // Get the topic from registry
         let topic = self
-            .topic_worker_pool
+            .topic_registry
             .get_topic(topic_name)
             .ok_or_else(|| {
                 Status::not_found(format!("Topic '{}' not found on this broker", topic_name))

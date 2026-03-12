@@ -9,6 +9,7 @@ use crate::schema::protobuf::ProtobufHandler;
 use crate::schema::types::{CompatibilityMode, SchemaType};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
+use tokio::time::{sleep, Duration, Instant};
 use tracing::info;
 
 /// Core schema registry managing all schemas in the cluster
@@ -22,6 +23,9 @@ pub struct SchemaRegistry {
 }
 
 impl SchemaRegistry {
+    const LOCAL_METADATA_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
+    const LOCAL_METADATA_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
     pub fn new(storage: Arc<SchemaResources>) -> Self {
         Self {
             storage,
@@ -38,6 +42,32 @@ impl SchemaRegistry {
         let id = self.storage.allocate_next_schema_id().await?;
         info!(schema_id = %id, "generated new schema_id for new subject");
         Ok(id)
+    }
+
+    async fn wait_for_local_metadata_version(
+        &self,
+        subject: &str,
+        expected_version: u32,
+    ) -> Result<SchemaMetadata> {
+        let deadline = Instant::now() + Self::LOCAL_METADATA_SYNC_TIMEOUT;
+
+        loop {
+            if let Ok(metadata) = self.storage.get_metadata(subject).await {
+                if metadata.latest_version >= expected_version {
+                    return Ok(metadata);
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "Timed out waiting for local schema metadata for subject '{}' to reach version {}",
+                    subject,
+                    expected_version
+                ));
+            }
+
+            sleep(Self::LOCAL_METADATA_SYNC_POLL_INTERVAL).await;
+        }
     }
 
     /// Register a new schema or return existing schema ID if identical schema exists
@@ -105,7 +135,11 @@ impl SchemaRegistry {
             metadata.add_version(new_version.clone());
             self.storage.update_metadata(&metadata).await?;
 
-            Ok((metadata.id, new_version_number, true, metadata))
+            let synced_metadata = self
+                .wait_for_local_metadata_version(subject, new_version_number)
+                .await?;
+
+            Ok((metadata.id, new_version_number, true, synced_metadata))
         } else {
             // New subject, create first version
             // Generate globally unique ID via ETCD
@@ -138,9 +172,11 @@ impl SchemaRegistry {
                 .store_schema_id_index(schema_id, subject)
                 .await?;
 
+            let synced_metadata = self.wait_for_local_metadata_version(subject, 1).await?;
+
             info!(subject = %subject, schema_id = %schema_id, "registered new subject");
 
-            Ok((schema_id, 1, true, metadata))
+            Ok((schema_id, 1, true, synced_metadata))
         }
     }
 

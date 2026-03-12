@@ -1,7 +1,7 @@
 use crate::metadata_storage::MetadataStorage;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use danube_core::metadata::{MetaOptions, MetadataStore};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::resources::{BASE_BROKER_PATH, BASE_REGISTER_PATH};
@@ -37,10 +37,40 @@ pub(crate) async fn register_broker(
 
     let ttl_duration = Duration::from_secs(ttl as u64);
 
-    // Initial registration with TTL
-    store
-        .put_with_ttl(&path, payload.clone(), ttl_duration)
-        .await?;
+    let backoff_base = Duration::from_secs(1);
+    let backoff_max = Duration::from_secs(5);
+    let registration_deadline = Instant::now() + ttl_duration;
+    let mut current_backoff = backoff_base;
+    let mut attempts = 0u32;
+
+    loop {
+        attempts += 1;
+        match store
+            .put_with_ttl(&path, payload.clone(), ttl_duration)
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                if Instant::now() + current_backoff > registration_deadline {
+                    return Err(anyhow!(
+                        "failed to register broker after {} attempts: {}",
+                        attempts,
+                        e
+                    ));
+                }
+
+                warn!(
+                    broker_id = %broker_id,
+                    attempts,
+                    error = %e,
+                    backoff_ms = current_backoff.as_millis(),
+                    "initial broker registration failed, retrying"
+                );
+                sleep(current_backoff).await;
+                current_backoff = (current_backoff * 2).min(backoff_max);
+            }
+        }
+    }
     info!(
         broker_id = %broker_id,
         broker_url = %broker_url,
@@ -56,8 +86,6 @@ pub(crate) async fn register_broker(
     let ttl_ms = (ttl as u64) * 1000;
 
     tokio::spawn(async move {
-        let backoff_base = Duration::from_secs(1);
-        let backoff_max = Duration::from_secs(5);
         let mut current_backoff = backoff_base;
         let mut consecutive_failure_ms: u64 = 0;
         let mut registration_lost = false;

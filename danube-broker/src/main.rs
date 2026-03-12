@@ -21,7 +21,7 @@ mod topic;
 mod topic_cluster;
 mod topic_control;
 mod topic_schema;
-mod topic_worker;
+mod topic_registry;
 mod utils;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
