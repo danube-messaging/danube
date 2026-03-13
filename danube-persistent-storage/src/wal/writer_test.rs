@@ -87,7 +87,7 @@ mod tests {
         let test_message = make_test_message(1);
 
         // Test Write command
-        let test_bytes = test_message.payload.clone();
+        let test_bytes = test_message.payload.to_vec();
         let write_cmd = LogCommand::Write {
             offset: 1,
             bytes: test_bytes.clone(),
