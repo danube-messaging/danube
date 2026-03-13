@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let mut total_received_size = 0;
 
     while let Some(message) = message_stream.recv().await {
-        let payload = message.payload.clone();
+        let payload = message.payload.to_vec();
         total_received_size += payload.len();
 
         match String::from_utf8(payload) {
