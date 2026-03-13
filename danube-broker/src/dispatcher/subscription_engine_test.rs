@@ -31,7 +31,7 @@ fn make_test_message(topic_name: &str, offset: u64) -> StreamMessage {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: offset,
         },
-        payload: format!("test_payload_{}", offset).into_bytes(),
+        payload: format!("test_payload_{}", offset).into_bytes().into(),
         publish_time: 0,
         producer_name: "test_producer".to_string(),
         subscription_name: None,

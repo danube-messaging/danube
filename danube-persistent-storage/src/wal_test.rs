@@ -19,7 +19,7 @@ mod tests {
                 broker_addr: "b".to_string(),
                 topic_offset: 0,
             },
-            payload: format!("msg-{i}").into_bytes(),
+            payload: format!("msg-{i}").into_bytes().into(),
             publish_time: i,
             producer_name: "p".to_string(),
             subscription_name: None,

@@ -15,7 +15,7 @@ mod tests {
                 broker_addr: "localhost:6650".to_string(),
                 topic_offset: offset,
             },
-            payload: format!("test message {}", offset).into_bytes(),
+            payload: format!("test message {}", offset).into_bytes().into(),
             publish_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

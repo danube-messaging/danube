@@ -207,7 +207,7 @@ async fn policy_limit_max_message_size() -> AnyResult<()> {
             broker_addr: "127.0.0.1:0".to_string(),
             topic_offset: 0,
         },
-        payload: b"too-large".to_vec(), // 9 bytes
+        payload: b"too-large".to_vec().into(), // 9 bytes
         publish_time: 0,
         producer_name: "p".to_string(),
         subscription_name: None,
@@ -230,7 +230,7 @@ fn make_msg(i: u64, topic: &str) -> StreamMessage {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: i,
         },
-        payload: format!("wal-hello-{}", i).into_bytes(),
+        payload: format!("wal-hello-{}", i).into_bytes().into(),
         publish_time: 0,
         producer_name: "producer-wal".to_string(),
         subscription_name: None,
@@ -272,8 +272,8 @@ async fn topic_store_wal_store_and_read_from_offset() {
     let m1 = stream.next().await.expect("msg1").expect("ok");
     let m2 = stream.next().await.expect("msg2").expect("ok");
 
-    assert_eq!(m1.payload, b"wal-hello-1");
-    assert_eq!(m2.payload, b"wal-hello-2");
+    assert_eq!(m1.payload.as_ref(), b"wal-hello-1");
+    assert_eq!(m2.payload.as_ref(), b"wal-hello-2");
 }
 
 /// What this test validates
@@ -307,8 +307,8 @@ async fn topic_store_wal_latest_tailing() {
     let m1 = stream.next().await.expect("msg1").expect("ok");
     let m2 = stream.next().await.expect("msg2").expect("ok");
 
-    assert_eq!(m1.payload, b"wal-hello-10");
-    assert_eq!(m2.payload, b"wal-hello-11");
+    assert_eq!(m1.payload.as_ref(), b"wal-hello-10");
+    assert_eq!(m2.payload.as_ref(), b"wal-hello-11");
 }
 
 #[tokio::test]

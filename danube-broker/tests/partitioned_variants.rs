@@ -70,7 +70,7 @@ async fn partitioned_queue_shared_distribution_and_partition_coverage() -> Resul
             loop {
                 match stream.recv().await {
                     Some(msg) => {
-                        let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                        let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                         let topic_name = msg.msg_id.topic_name.clone();
                         let _ = cons.ack(&msg).await;
                         let _ = txc.send((cname.clone(), payload, topic_name));
@@ -185,7 +185,7 @@ async fn partitioned_pubsub_fanout_exclusive_full_receipt() -> Result<()> {
             loop {
                 match stream.recv().await {
                     Some(msg) => {
-                        let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                        let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                         let topic_name = msg.msg_id.topic_name.clone();
                         let _ = cons.ack(&msg).await;
                         let _ = txc.send((cname.clone(), payload, topic_name));

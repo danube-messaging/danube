@@ -249,7 +249,7 @@ impl TopicProducer {
         let send_message = StreamMessage {
             request_id: self.request_id.fetch_add(1, Ordering::SeqCst),
             msg_id,
-            payload: data.to_vec(),
+            payload: data.to_vec().into(),
             publish_time,
             producer_name: self.producer_name.clone(),
             subscription_name: None,

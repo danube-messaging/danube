@@ -25,7 +25,7 @@ pub fn make_test_message(
             broker_addr: "localhost:6650".to_string(),
             topic_offset,
         },
-        payload: payload.as_bytes().to_vec(),
+        payload: payload.as_bytes().to_vec().into(),
         publish_time: topic_offset,
         producer_name: format!("producer-{}", producer_id),
         subscription_name: None,
