@@ -87,7 +87,6 @@
 //! - Task distribution systems
 //! - Any scenario requiring both load balancing AND delivery guarantees
 
-use anyhow::anyhow;
 use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -202,11 +201,6 @@ async fn handle_command(
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(engine, ack_msg, pending, pending_message).await;
             let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
-        }
-        DispatcherCommand::DispatchMessage(_, response_tx) => {
-            let _ = response_tx.send(Err(anyhow!(
-                "Reliable dispatcher is stream-driven, not push-per-message"
-            )));
         }
         DispatcherCommand::PollAndDispatch => {
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);

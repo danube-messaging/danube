@@ -9,7 +9,9 @@
 //!
 //! - **Single Active Consumer**: Only one consumer is active at a time (the first consumer added)
 //! - **No Acknowledgments**: Messages are sent immediately without waiting for consumer confirmation
-//! - **Fire-and-Forget**: Once sent, the message is considered delivered (no retries)
+//! - **Best-Effort Delivery**: Uses a non-blocking enqueue to the active consumer
+//! - **Slow-Consumer Isolation**: A full consumer channel does not block the caller
+//! - **Drop-on-Full**: If the active consumer channel is full, the message is dropped without surfacing an error
 //! - **Failover**: If the active consumer disconnects, the next available consumer becomes active
 //!
 //! # State Management
@@ -22,8 +24,9 @@
 //!
 //! 1. `dispatch_message(msg)` is called (typically from Topic)
 //! 2. Check if active consumer exists and is healthy
-//! 3. Send message immediately to active consumer
-//! 4. Return success/failure (no waiting for ack)
+//! 3. Attempt non-blocking enqueue to the active consumer via `try_send_message()`
+//! 4. If the channel is full, drop the message and return success
+//! 5. If the channel is closed or no healthy consumer exists, return failure
 //!
 //! # Use Cases
 //!
@@ -34,44 +37,18 @@
 
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
-use tokio::sync::mpsc;
 use tracing::{trace, warn};
 
-use crate::consumer::Consumer;
+use crate::consumer::{Consumer, ConsumerSendStatus};
 
-use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 
-/// Spawn the non-reliable exclusive dispatcher background task.
-pub(super) fn start(mut control_rx: mpsc::Receiver<DispatcherCommand>) {
-    tokio::spawn(async move {
-        let mut state = ExclusiveConsumerState::new();
-
-        while let Some(cmd) = control_rx.recv().await {
-            match cmd {
-                DispatcherCommand::AddConsumer(c) => {
-                    state.add_consumer(c);
-                }
-                DispatcherCommand::RemoveConsumer(consumer_id) => {
-                    state.remove_consumer(consumer_id);
-                }
-                DispatcherCommand::DisconnectAllConsumers => {
-                    state.disconnect_all();
-                }
-                DispatcherCommand::DispatchMessage(msg, response_tx) => {
-                    let result =
-                        dispatch_to_active_consumer(state.active_consumer_mut(), msg).await;
-                    let _ = response_tx.send(result);
-                }
-                // Ignore reliable-only commands
-                DispatcherCommand::MessageAcked(_) => {}
-                DispatcherCommand::PollAndDispatch => {}
-                DispatcherCommand::ResetPending => {}
-                DispatcherCommand::FlushProgressNow => {}
-            }
-        }
-        trace!("Non-reliable exclusive dispatcher task exiting gracefully");
-    });
+/// Direct non-reliable exclusive dispatch.
+///
+/// This path does not spawn a background task and does not use dispatcher commands.
+/// It performs best-effort delivery inline on the caller's async path.
+pub(super) async fn dispatch(state: &mut ExclusiveConsumerState, msg: StreamMessage) -> Result<()> {
+    dispatch_to_active_consumer(state.active_consumer_mut(), msg).await
 }
 
 async fn dispatch_to_active_consumer(
@@ -82,14 +59,17 @@ async fn dispatch_to_active_consumer(
         if !cons.get_status().await {
             Err(anyhow!("Active consumer not healthy"))
         } else {
-            match cons.send_message(msg).await {
-                Ok(()) => {
+            match cons.try_send_message(msg) {
+                ConsumerSendStatus::Sent => {
                     trace!(consumer_id = %cons.consumer_id, "Message dispatched to active consumer");
                     Ok(())
                 }
-                Err(e) => {
-                    warn!(consumer_id = %cons.consumer_id, error = %e, "Failed to dispatch to active consumer");
-                    Err(e)
+                ConsumerSendStatus::Full => Ok(()),
+                ConsumerSendStatus::Closed => {
+                    cons.set_status_inactive().await;
+                    let error = anyhow!("Active consumer channel closed");
+                    warn!(consumer_id = %cons.consumer_id, error = %error, "Failed to dispatch to active consumer");
+                    Err(error)
                 }
             }
         }

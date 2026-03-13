@@ -73,7 +73,6 @@
 //! - Financial transactions, order processing
 //! - Any scenario where message loss is unacceptable
 
-use anyhow::anyhow;
 use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
 use std::sync::Arc;
@@ -193,11 +192,6 @@ async fn handle_command(
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(engine, ack_msg, pending, pending_message).await;
             let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
-        }
-        DispatcherCommand::DispatchMessage(_, response_tx) => {
-            let _ = response_tx.send(Err(anyhow!(
-                "Reliable dispatcher is stream-driven, not push-per-message"
-            )));
         }
         DispatcherCommand::PollAndDispatch => {
             // Increment notifier poll counter (fast path)

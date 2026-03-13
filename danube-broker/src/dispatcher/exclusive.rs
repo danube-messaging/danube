@@ -16,6 +16,7 @@ pub(super) mod reliable;
 
 /// Shared consumer state for exclusive dispatchers
 /// Manages the list of consumers and tracks which one is active
+#[derive(Debug)]
 pub(super) struct ExclusiveConsumerState {
     consumers: Vec<Consumer>,
     active_consumer: Option<Consumer>,
@@ -64,9 +65,11 @@ impl ExclusiveConsumerState {
 pub(super) struct ExclusiveDispatcher;
 
 impl ExclusiveDispatcher {
-    /// Spawn the non-reliable exclusive background task.
-    pub(super) fn start_non_reliable(control_rx: mpsc::Receiver<DispatcherCommand>) {
-        non_reliable::start(control_rx);
+    pub(super) async fn dispatch_non_reliable(
+        state: &mut ExclusiveConsumerState,
+        message: danube_core::message::StreamMessage,
+    ) -> anyhow::Result<()> {
+        non_reliable::dispatch(state, message).await
     }
 
     /// Spawn the reliable exclusive background task.

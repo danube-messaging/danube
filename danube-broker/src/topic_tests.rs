@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::storage::StartPosition;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 use futures::StreamExt;
+use tokio::time::timeout;
 
 use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
@@ -307,4 +309,71 @@ async fn topic_store_wal_latest_tailing() {
 
     assert_eq!(m1.payload, b"wal-hello-10");
     assert_eq!(m2.payload, b"wal-hello-11");
+}
+
+#[tokio::test]
+async fn non_reliable_topic_publish_does_not_stall_on_full_subscription() -> AnyResult<()> {
+    let topic_name = "/default/non_reliable_full_sub";
+    let topic = mk_topic(topic_name).await;
+
+    let _ = topic.create_producer(1, "p1", 0).await?;
+
+    let slow_consumer_id = topic
+        .subscribe(topic_name, sub_opts("slow-sub", "slow-consumer", 0))
+        .await?;
+    let fast_consumer_id = topic
+        .subscribe(topic_name, sub_opts("fast-sub", "fast-consumer", 0))
+        .await?;
+
+    let (slow_consumer, fast_consumer) = {
+        let subs = topic.subscriptions.lock().await;
+        let slow = subs
+            .get("slow-sub")
+            .and_then(|sub| sub.get_consumer(slow_consumer_id))
+            .expect("slow consumer");
+        let fast = subs
+            .get("fast-sub")
+            .and_then(|sub| sub.get_consumer(fast_consumer_id))
+            .expect("fast consumer");
+        (slow, fast)
+    };
+
+    for i in 0..4u64 {
+        slow_consumer
+            .tx_cons
+            .try_send(make_msg(9000 + i, topic_name))
+            .expect("fill slow consumer channel");
+    }
+
+    timeout(
+        Duration::from_millis(100),
+        topic.publish_message_async(make_msg(9001, topic_name)),
+    )
+    .await
+    .expect("publish should not block")?;
+
+    let fast_msg = {
+        let mut rx = fast_consumer.rx_cons.lock().await;
+        timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timely fast recv")
+            .expect("fast consumer message")
+    };
+    assert_eq!(fast_msg.request_id, 9001);
+
+    {
+        let mut rx = slow_consumer.rx_cons.lock().await;
+        for i in 0..4u64 {
+            let msg = timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timely slow recv")
+                .expect("slow filler message");
+            assert_eq!(msg.request_id, 9000 + i);
+        }
+
+        let second = timeout(Duration::from_millis(50), rx.recv()).await;
+        assert!(second.is_err(), "slow consumer should not receive published message");
+    }
+
+    Ok(())
 }

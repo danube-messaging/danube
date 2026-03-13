@@ -10,8 +10,9 @@
 //! - **Multiple Consumers**: All connected consumers can receive messages
 //! - **Round-Robin**: Messages are distributed evenly across consumers using atomic counter
 //! - **No Acknowledgments**: Messages are sent immediately without waiting for confirmation
-//! - **Fire-and-Forget**: Once sent, the message is considered delivered (no retries)
-//! - **Best-Effort Delivery**: If a consumer is unhealthy, tries next consumer in rotation
+//! - **Best-Effort Delivery**: Attempts a non-blocking enqueue to one consumer at a time
+//! - **Slow-Consumer Isolation**: Full consumer channels are skipped so one slow consumer does not stall fan-out
+//! - **Drop-on-Saturation**: If all healthy consumers are currently full, the message is dropped without surfacing an error
 //!
 //! # State Management
 //!
@@ -24,19 +25,20 @@
 //! The dispatcher uses an atomic counter to ensure fair distribution:
 //!
 //! 1. Calculate target index: `rr_index.fetch_add(1) % num_consumers`
-//! 2. Try sending to consumer at that index
-//! 3. If unhealthy or send fails, try next consumer
-//! 4. Continue until successful or all consumers tried
-//! 5. Return error if no healthy consumer found
+//! 2. Try a non-blocking send to the consumer at that index
+//! 3. If unhealthy, closed, or full, try the next consumer
+//! 4. Continue until successful or all consumers have been checked
+//! 5. Return error only when no consumer is available/healthy; saturation alone is treated as best-effort drop
 //!
 //! # Message Flow
 //!
 //! 1. `dispatch_message(msg)` is called (typically from Topic)
 //! 2. Calculate next consumer index via round-robin
 //! 3. Check consumer health with `get_status()`
-//! 4. Send message immediately via `send_message()`
-//! 5. Return success/failure (no waiting for ack)
-//! 6. If send fails, try next consumer in rotation
+//! 4. Attempt non-blocking enqueue via `try_send_message()`
+//! 5. If the channel is full, try the next consumer in rotation
+//! 6. If all healthy consumers are full, drop the message and return success
+//! 7. If all consumers are unavailable, return failure
 //!
 //! # Use Cases
 //!
@@ -48,41 +50,15 @@
 
 use anyhow::Result;
 use danube_core::message::StreamMessage;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::trace;
-
-use super::super::commands::DispatcherCommand;
+use crate::consumer::ConsumerSendStatus;
 use super::super::shared::SharedConsumerState;
 
-/// Spawn the non-reliable shared dispatcher background task.
-pub(super) fn start(mut control_rx: mpsc::Receiver<DispatcherCommand>) {
-    let rr_index = Arc::new(AtomicUsize::new(0));
-
-    tokio::spawn(async move {
-        let mut state = SharedConsumerState::new(rr_index);
-
-        while let Some(cmd) = control_rx.recv().await {
-            match cmd {
-                DispatcherCommand::AddConsumer(c) => {
-                    state.add_consumer(c);
-                }
-                DispatcherCommand::RemoveConsumer(consumer_id) => {
-                    state.remove_consumer(consumer_id);
-                }
-                DispatcherCommand::DisconnectAllConsumers => {
-                    state.disconnect_all();
-                }
-                DispatcherCommand::DispatchMessage(msg, response_tx) => {
-                    let result = dispatch_round_robin(&mut state, msg).await;
-                    let _ = response_tx.send(result);
-                }
-                _ => {}
-            }
-        }
-        trace!("Non-reliable shared dispatcher task exiting gracefully");
-    });
+/// Direct non-reliable shared dispatch.
+///
+/// This path does not spawn a background task and does not use dispatcher commands.
+/// It performs best-effort delivery inline on the caller's async path.
+pub(super) async fn dispatch(state: &mut SharedConsumerState, msg: StreamMessage) -> Result<()> {
+    dispatch_round_robin(state, msg).await
 }
 
 async fn dispatch_round_robin(state: &mut SharedConsumerState, msg: StreamMessage) -> Result<()> {
@@ -91,16 +67,34 @@ async fn dispatch_round_robin(state: &mut SharedConsumerState, msg: StreamMessag
         return Err(anyhow::anyhow!("No consumers available"));
     }
 
+    let mut saw_healthy = false;
+    let mut saw_full = false;
+
     for _ in 0..num_consumers {
         if let Some(target) = state.next_consumer_mut() {
             if !target.get_status().await {
                 continue;
             }
-            if target.send_message(msg.clone()).await.is_ok() {
-                return Ok(());
+
+            saw_healthy = true;
+
+            match target.try_send_message(msg.clone()) {
+                ConsumerSendStatus::Sent => return Ok(()),
+                ConsumerSendStatus::Full => {
+                    saw_full = true;
+                }
+                ConsumerSendStatus::Closed => {
+                    target.set_status_inactive().await;
+                }
             }
         }
     }
 
-    Err(anyhow::anyhow!("Failed to dispatch to any consumer"))
+    if saw_full {
+        Ok(())
+    } else if saw_healthy {
+        Err(anyhow::anyhow!("Failed to dispatch to any healthy consumer"))
+    } else {
+        Err(anyhow::anyhow!("No consumers available"))
+    }
 }

@@ -6,10 +6,6 @@
 //! dispatcher state (consumers, pending messages). This enables single-threaded event loop
 //! without complex synchronization.
 
-use anyhow::Result;
-use danube_core::message::StreamMessage;
-use tokio::sync::oneshot;
-
 use crate::consumer::Consumer;
 use crate::message::AckMessage;
 
@@ -21,9 +17,6 @@ use crate::message::AckMessage;
 ///
 /// **Consumer Management** (all dispatchers):
 /// - `AddConsumer`, `RemoveConsumer`, `DisconnectAllConsumers`
-///
-/// **Non-Reliable Only**:
-/// - `DispatchMessage` - Direct dispatch with oneshot response
 ///
 /// **Reliable Only**:
 /// - `MessageAcked` - Consumer acknowledgment received
@@ -41,11 +34,6 @@ pub(super) enum DispatcherCommand {
 
     /// Gracefully disconnect all consumers. Used during subscription shutdown.
     DisconnectAllConsumers,
-
-    /// Direct message dispatch (non-reliable only).
-    /// Topic sends message with oneshot channel for response.
-    /// Reliable dispatchers return error - they use `PollAndDispatch` instead.
-    DispatchMessage(StreamMessage, oneshot::Sender<Result<()>>),
 
     /// Consumer acknowledgment received (reliable only).
     /// Updates cursor, clears pending state, triggers next poll.

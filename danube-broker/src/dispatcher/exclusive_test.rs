@@ -185,3 +185,38 @@ async fn non_reliable_single_immediate_dispatch() {
         .expect("some");
     assert_eq!(got.request_id, 200);
 }
+
+#[tokio::test]
+async fn non_reliable_single_full_channel_drops_without_blocking() {
+    let dispatcher = Dispatcher::non_reliable_exclusive();
+
+    let topic = "/default/exclusive_non_reliable_full";
+    let (tx, mut rx) = mpsc::channel::<StreamMessage>(1);
+    let fill_tx = tx.clone();
+    let (_rx_cons_tx, rx_cons_rx) = mpsc::channel::<StreamMessage>(8);
+    let session = Arc::new(Mutex::new(ConsumerSession::new()));
+    let rx_cons_arc = Arc::new(Mutex::new(rx_cons_rx));
+    let consumer = Consumer::new(44, "c3", 0, topic, "sub", tx, session, rx_cons_arc);
+    dispatcher.add_consumer(consumer).await.expect("add consumer");
+
+    fill_tx
+        .try_send(make_msg(300, 0, topic))
+        .expect("fill consumer channel");
+
+    timeout(
+        Duration::from_millis(100),
+        dispatcher.dispatch_message(make_msg(301, 1, topic)),
+    )
+    .await
+    .expect("dispatch should not block")
+    .expect("dispatch should succeed");
+
+    let first = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timely recv")
+        .expect("some");
+    assert_eq!(first.request_id, 300);
+
+    let second = timeout(Duration::from_millis(50), rx.recv()).await;
+    assert!(second.is_err(), "full-channel message should be dropped");
+}
