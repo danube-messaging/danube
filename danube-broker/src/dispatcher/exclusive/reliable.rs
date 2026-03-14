@@ -10,7 +10,7 @@
 //! - **Single Active Consumer**: Only one consumer is active at a time
 //! - **Ack-Gating**: Only one message is in-flight at a time; next message waits for acknowledgment
 //! - **Pending State**: Tracks the current in-flight message and blocks new dispatches until ack received
-//! - **Automatic Retry**: If consumer disconnects, the pending message is resent to the next consumer
+//! - **Automatic Retry**: If dispatch is interrupted, the pending message stays buffered and is retried once an active consumer is available
 //! - **Progress Tracking**: Subscription progress is persisted to allow resumption from last acked offset
 //!
 //! # State Management
@@ -57,8 +57,8 @@
 //!
 //! 1. `RemoveConsumer` command is received
 //! 2. If removed consumer was active, `active_consumer` is cleared
-//! 3. `ResetPending` clears the in-flight gate and immediately attempts to resend any buffered message
-//! 4. The `pending_message` ensures no message loss during failover
+//! 3. `ResetPending` clears the in-flight gate while preserving any buffered message
+//! 4. The dispatcher retries the buffered message when an active consumer is available again
 //!
 //! # Persistence
 //!
@@ -75,8 +75,7 @@
 
 use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 use tracing::{trace, warn};
 
@@ -101,23 +100,17 @@ pub(super) fn start(
 }
 
 async fn run_reliable_loop(
-    engine: SubscriptionEngine,
+    mut engine: SubscriptionEngine,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
-    let engine = Arc::new(Mutex::new(engine));
     let mut state = ExclusiveConsumerState::new();
     let mut pending = false;
     let mut pending_message: Option<StreamMessage> = None;
 
     // Initialize stream from persisted progress
     {
-        if let Err(e) = engine
-            .lock()
-            .await
-            .init_stream_from_progress_or_latest()
-            .await
-        {
+        if let Err(e) = engine.init_stream_from_progress_or_latest().await {
             warn!(error = %e, "Reliable exclusive dispatcher failed to init stream");
         }
         let _ = ready_tx.send(true);
@@ -137,7 +130,7 @@ async fn run_reliable_loop(
                         handle_command(
                             cmd,
                             &mut state,
-                            &engine,
+                            &mut engine,
                             &mut pending,
                             &mut pending_message,
                         ).await;
@@ -149,7 +142,7 @@ async fn run_reliable_loop(
             _ = heartbeat.tick() => {
                 handle_heartbeat(
                     &mut state,
-                    &engine,
+                    &mut engine,
                     &mut pending,
                     &mut pending_message,
                 ).await;
@@ -161,7 +154,7 @@ async fn run_reliable_loop(
 async fn handle_command(
     cmd: DispatcherCommand,
     state: &mut ExclusiveConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -180,7 +173,7 @@ async fn handle_command(
             state.remove_consumer(id);
         }
         DispatcherCommand::DisconnectAllConsumers => {
-            if let Err(e) = engine.lock().await.flush_progress_now().await {
+            if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
             }
             state.disconnect_all();
@@ -201,7 +194,7 @@ async fn handle_command(
             handle_poll_and_dispatch(state, engine, pending, pending_message).await;
         }
         DispatcherCommand::FlushProgressNow => {
-            if let Err(e) = engine.lock().await.flush_progress_now().await {
+            if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "FlushProgressNow: failed to flush");
             }
         }
@@ -209,14 +202,14 @@ async fn handle_command(
 }
 
 async fn handle_ack(
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     ack_msg: AckMessage,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
     let acked_offset = ack_msg.msg_id.topic_offset;
 
-    if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
+    if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
         warn!(offset = %acked_offset, error = %e, "Ack handling failed");
     }
 
@@ -244,7 +237,7 @@ async fn handle_ack(
 
 async fn handle_poll_and_dispatch(
     state: &mut ExclusiveConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -265,7 +258,7 @@ async fn handle_poll_and_dispatch(
             );
             Some(buffered_msg)
         } else {
-            match engine.lock().await.poll_next().await {
+            match engine.poll_next().await {
                 Ok(msg_opt) => msg_opt,
                 Err(e) => {
                     warn!(error = %e, "poll_next error");
@@ -293,7 +286,7 @@ async fn handle_poll_and_dispatch(
 
 async fn handle_heartbeat(
     state: &mut ExclusiveConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -301,15 +294,12 @@ async fn handle_heartbeat(
         return;
     }
 
-    let lag_info = {
-        let engine_guard = engine.lock().await;
-        engine_guard.get_lag_info()
-    };
+    let lag_info = engine.get_lag_info();
 
     // Report lag gauge
     gauge!(
         SUBSCRIPTION_LAG_MESSAGES.name,
-        "subscription" => engine.lock().await._subscription_name.clone()
+        "subscription" => engine._subscription_name.clone()
     )
     .set(lag_info.lag_messages as f64);
 
