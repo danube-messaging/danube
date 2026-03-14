@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
 use metrics::counter;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
@@ -151,6 +152,8 @@ pub(crate) struct Consumer {
     /// - gRPC handler holds `rx_cons` lock for entire stream duration
     pub(crate) session: Arc<Mutex<ConsumerSession>>,
 
+    pub(crate) active: Arc<AtomicBool>,
+
     /// **Message receiver (Consumer end of the internal channel)**.
     ///
     /// Used by: gRPC streaming task (consumer_handler.rs)
@@ -187,6 +190,12 @@ impl Consumer {
         session: Arc<Mutex<ConsumerSession>>,
         rx_cons: Arc<Mutex<mpsc::Receiver<StreamMessage>>>,
     ) -> Self {
+        let active = session
+            .try_lock()
+            .expect("session mutex should not be held during consumer construction")
+            .active
+            .clone();
+
         Consumer {
             consumer_id: consumer_id.into(),
             consumer_name: consumer_name.into(),
@@ -195,6 +204,7 @@ impl Consumer {
             subscription_name: subscription_name.into(),
             tx_cons,
             session,
+            active,
             rx_cons,
         }
     }
@@ -266,17 +276,17 @@ impl Consumer {
 
     /// Get the current active status of this consumer
     pub(crate) async fn get_status(&self) -> bool {
-        self.session.lock().await.active
+        self.active.load(Ordering::Acquire)
     }
 
     /// Set the consumer status to active
     pub(crate) async fn set_status_active(&self) {
-        self.session.lock().await.active = true;
+        self.active.store(true, Ordering::Release);
     }
 
     /// Set the consumer status to inactive
     pub(crate) async fn set_status_inactive(&self) {
-        self.session.lock().await.active = false;
+        self.active.store(false, Ordering::Release);
     }
 }
 
@@ -325,7 +335,7 @@ pub(crate) struct ConsumerSession {
     ///
     /// **Read by**:
     /// - Dispatcher: Checks before sending messages (skip inactive consumers)
-    pub(crate) active: bool,
+    pub(crate) active: Arc<AtomicBool>,
 
     /// Cancellation token for the gRPC streaming task.
     ///
@@ -345,7 +355,7 @@ impl ConsumerSession {
     pub(crate) fn new() -> Self {
         Self {
             session_id: get_random_id(),
-            active: true,
+            active: Arc::new(AtomicBool::new(true)),
             cancellation: CancellationToken::new(),
         }
     }
@@ -358,7 +368,7 @@ impl ConsumerSession {
 
         // Create new session
         self.session_id = get_random_id();
-        self.active = true;
+        self.active.store(true, Ordering::Release);
         self.cancellation = CancellationToken::new();
 
         debug!(
@@ -371,7 +381,7 @@ impl ConsumerSession {
     /// Mark this session as inactive (called on disconnect)
     #[allow(dead_code)]
     pub(crate) fn disconnect(&mut self) {
-        self.active = false;
+        self.active.store(false, Ordering::Release);
         debug!(
             session_id = %self.session_id,
             "consumer session disconnected"

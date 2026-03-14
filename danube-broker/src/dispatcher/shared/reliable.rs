@@ -91,7 +91,7 @@ use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 use tracing::{trace, warn};
 
@@ -116,11 +116,10 @@ pub(super) fn start(
 }
 
 async fn run_reliable_loop(
-    engine: SubscriptionEngine,
+    mut engine: SubscriptionEngine,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
-    let engine = Arc::new(Mutex::new(engine));
     let rr_index = Arc::new(AtomicUsize::new(0));
     let rr_task = rr_index.clone();
     let mut state = SharedConsumerState::new(rr_task);
@@ -129,12 +128,7 @@ async fn run_reliable_loop(
 
     // Initialize stream
     {
-        if let Err(e) = engine
-            .lock()
-            .await
-            .init_stream_from_progress_or_latest()
-            .await
-        {
+        if let Err(e) = engine.init_stream_from_progress_or_latest().await {
             warn!(error = %e, "Reliable shared dispatcher failed to init stream");
         }
         let _ = ready_tx.send(true);
@@ -154,7 +148,7 @@ async fn run_reliable_loop(
                         handle_command(
                             cmd,
                             &mut state,
-                            &engine,
+                            &mut engine,
                             &mut pending,
                             &mut pending_message,
                         ).await;
@@ -164,7 +158,7 @@ async fn run_reliable_loop(
             }
 
             _ = heartbeat.tick() => {
-                handle_heartbeat(&mut state, &engine, &mut pending, &mut pending_message).await;
+                handle_heartbeat(&mut state, &mut engine, &mut pending, &mut pending_message).await;
             }
         }
     }
@@ -173,7 +167,7 @@ async fn run_reliable_loop(
 async fn handle_command(
     cmd: DispatcherCommand,
     state: &mut SharedConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -189,7 +183,7 @@ async fn handle_command(
             state.remove_consumer(id);
         }
         DispatcherCommand::DisconnectAllConsumers => {
-            if let Err(e) = engine.lock().await.flush_progress_now().await {
+            if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "DisconnectAllConsumers: flush failed");
             }
             state.disconnect_all();
@@ -210,7 +204,7 @@ async fn handle_command(
             handle_poll_and_dispatch(state, engine, pending, pending_message).await;
         }
         DispatcherCommand::FlushProgressNow => {
-            if let Err(e) = engine.lock().await.flush_progress_now().await {
+            if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "FlushProgressNow: failed");
             }
         }
@@ -218,14 +212,14 @@ async fn handle_command(
 }
 
 async fn handle_ack(
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     ack_msg: AckMessage,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
     let acked_offset = ack_msg.msg_id.topic_offset;
 
-    if let Err(e) = engine.lock().await.on_acked(ack_msg.msg_id.clone()).await {
+    if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
         warn!(offset = %acked_offset, error = %e, "Ack handling failed");
     }
 
@@ -245,7 +239,7 @@ async fn handle_ack(
 
 async fn handle_poll_and_dispatch(
     state: &mut SharedConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -261,7 +255,7 @@ async fn handle_poll_and_dispatch(
         );
         Some(buffered_msg)
     } else {
-        match engine.lock().await.poll_next().await {
+        match engine.poll_next().await {
             Ok(msg_opt) => msg_opt,
             Err(e) => {
                 warn!(error = %e, "poll_next error");
@@ -307,7 +301,7 @@ async fn handle_poll_and_dispatch(
 
 async fn handle_heartbeat(
     state: &mut SharedConsumerState,
-    engine: &Arc<Mutex<SubscriptionEngine>>,
+    engine: &mut SubscriptionEngine,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
 ) {
@@ -315,14 +309,11 @@ async fn handle_heartbeat(
         return;
     }
 
-    let lag_info = {
-        let engine_guard = engine.lock().await;
-        engine_guard.get_lag_info()
-    };
+    let lag_info = engine.get_lag_info();
 
     gauge!(
         SUBSCRIPTION_LAG_MESSAGES.name,
-        "subscription" => engine.lock().await._subscription_name.clone()
+        "subscription" => engine._subscription_name.clone()
     )
     .set(lag_info.lag_messages as f64);
 
