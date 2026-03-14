@@ -1,3 +1,18 @@
+<!-- v0.8.1 START -->
+## v0.8.1 - 2026-03-14
+### Performance Highlights
+
+This release focuses on reducing broker hot-path overhead. The biggest gains come from simplifying concurrency on publish and dispatch paths, isolating slow consumers so they no longer stall fan-out, and reducing message-copying costs.
+
+* **Hot-path concurrency cleanup** (#203) — Removed topic workers from the publish and delivery path, reducing queue boundaries, scheduler wakeups, and the mix of actor-style and lock-based coordination. by @danrusei in c490d4f
+
+* **Slow-consumer isolation for non-reliable subscriptions** (#204) — Non-reliable dispatch now uses non-blocking enqueue behavior so a saturated consumer no longer stalls topic fan-out. Exclusive subscriptions drop on full channels, while shared subscriptions skip saturated consumers before dropping only when all healthy targets are full. by @danrusei in 464b62d
+
+* **Lower payload-copying overhead** (#205) — Migrated message payload handling from `Vec<u8>` to `Bytes`, enabling shallow clones and reducing allocation and memory-copy costs across fan-out and retry paths. by @danrusei in fe506e4
+
+* **Reliable-path wakeup and lock reduction** (#206, #207) — Removed extra `Notify` indirection and helper wakeups in reliable dispatch, and replaced mutex-heavy hot-path checks with lighter coordination where safe. This reduces background work and contention in reliable subscription flows. by @danrusei in 3b3550c and cc353f1
+<!-- v0.8.1 END -->
+
 <!-- v0.8.0 START -->
 ## v0.8.0 - 2026-03-02
 
