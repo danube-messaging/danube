@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
@@ -40,7 +41,7 @@ pub struct StreamMessage {
     // Identifies the message, associated with a unique topic, subscription and the broker
     pub msg_id: MessageID,
     // The actual payload of the message
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
     // Timestamp for when the message was published
     pub publish_time: u64,
     // Identifies the producer’s name
@@ -83,7 +84,7 @@ impl From<ProtoStreamMessage> for StreamMessage {
                 || panic!("Message ID cannot be None"),
                 |msg_id| msg_id.into(),
             ),
-            payload: proto_stream_msg.payload,
+            payload: proto_stream_msg.payload.into(),
             publish_time: proto_stream_msg.publish_time,
             producer_name: proto_stream_msg.producer_name,
             subscription_name: Some(proto_stream_msg.subscription_name),
@@ -110,7 +111,7 @@ impl From<StreamMessage> for ProtoStreamMessage {
         ProtoStreamMessage {
             request_id: stream_msg.request_id,
             msg_id: Some(stream_msg.msg_id.into()), // Convert MessageID into MsgId
-            payload: stream_msg.payload,
+            payload: stream_msg.payload.to_vec(),
             publish_time: stream_msg.publish_time,
             producer_name: stream_msg.producer_name,
             subscription_name: stream_msg.subscription_name.unwrap_or_default(),

@@ -50,7 +50,7 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
         let mut received = Vec::new();
         let mut parts = HashSet::new();
         while let Some(m) = stream.recv().await {
-            let payload = String::from_utf8(m.payload.clone()).unwrap();
+            let payload = String::from_utf8(m.payload.to_vec()).unwrap();
             received.push(payload);
             parts.insert(m.msg_id.topic_name.clone());
             let _ = consumer.ack(&m).await;

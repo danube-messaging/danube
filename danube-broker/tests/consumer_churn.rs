@@ -66,7 +66,7 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
             loop {
                 match stream.recv().await {
                     Some(msg) => {
-                        let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                        let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                         let _ = cons.ack(&msg).await;
                         let _ = txc.send((cname.clone(), payload));
                     }
@@ -100,7 +100,7 @@ async fn churn_shared_queue_join_leave() -> Result<()> {
         loop {
             match s3.recv().await {
                 Some(msg) => {
-                    let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                    let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                     let _ = c3.ack(&msg).await;
                     let _ = tx3.send(("cs-cons-2".to_string(), payload));
                 }
@@ -212,7 +212,7 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
             loop {
                 match stream.recv().await {
                     Some(msg) => {
-                        let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                        let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                         let _ = cons.ack(&msg).await;
                         let _ = txc.send((cname.clone(), payload));
                     }
@@ -243,7 +243,7 @@ async fn churn_exclusive_fanout_join_leave() -> Result<()> {
         loop {
             match s3.recv().await {
                 Some(msg) => {
-                    let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                    let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                     let _ = c3.ack(&msg).await;
                     let _ = tx3.send(("ce-cons-2".to_string(), payload));
                 }

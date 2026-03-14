@@ -24,7 +24,7 @@ mod tests {
                 broker_addr: "127.0.0.1:8080".to_string(),
                 topic_offset: i,
             },
-            payload: format!("cloud-{}", i).into_bytes(),
+            payload: format!("cloud-{}", i).into_bytes().into(),
             publish_time: 0,
             producer_name: "producer-cloud".to_string(),
             subscription_name: None,

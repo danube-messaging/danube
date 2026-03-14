@@ -419,7 +419,7 @@ async fn test_single_topic_large_message_handling() {
     let large_payload = vec![0u8; 1024 * 1024];
     let large_msg = make_test_message(0, 1, topic_name, 0, "");
     let mut large_msg = large_msg;
-    large_msg.payload = large_payload.clone();
+    large_msg.payload = large_payload.clone().into();
 
     // Append large message
     storage

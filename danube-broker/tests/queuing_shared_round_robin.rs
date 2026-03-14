@@ -65,7 +65,7 @@ async fn queue_shared_round_robin_distribution() -> Result<()> {
             loop {
                 match stream.recv().await {
                     Some(msg) => {
-                        let payload = String::from_utf8(msg.payload.clone()).unwrap();
+                        let payload = String::from_utf8(msg.payload.to_vec()).unwrap();
                         // ack
                         let _ = cons.ack(&msg).await;
                         let _ = txc.send((cname.clone(), payload));

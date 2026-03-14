@@ -27,7 +27,7 @@ fn make_msg(topic: &str, i: u64) -> StreamMessage {
             broker_addr: "127.0.0.1:6650".to_string(),
             topic_offset: i,
         },
-        payload: format!("msg-{}", i).into_bytes(),
+        payload: format!("msg-{}", i).into_bytes().into(),
         publish_time: 0,
         producer_name: "test-producer".to_string(),
         subscription_name: None,

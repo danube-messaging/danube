@@ -15,7 +15,7 @@ mod tests {
                 broker_addr: "localhost:6650".to_string(),
                 topic_offset: offset,
             },
-            payload: format!("test message {}", offset).into_bytes(),
+            payload: format!("test message {}", offset).into_bytes().into(),
             publish_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -87,7 +87,7 @@ mod tests {
         let test_message = make_test_message(1);
 
         // Test Write command
-        let test_bytes = test_message.payload.clone();
+        let test_bytes = test_message.payload.to_vec();
         let write_cmd = LogCommand::Write {
             offset: 1,
             bytes: test_bytes.clone(),

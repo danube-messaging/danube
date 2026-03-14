@@ -19,7 +19,7 @@ mod tests {
                 broker_addr: "b".to_string(),
                 topic_offset: 0,
             },
-            payload: format!("msg-{i}").into_bytes(),
+            payload: format!("msg-{i}").into_bytes().into(),
             publish_time: i,
             producer_name: "p".to_string(),
             subscription_name: None,
@@ -350,8 +350,8 @@ mod tests {
             .await
             .map_err(|_| "timeout waiting for second message")?
             .unwrap()?;
-        assert_eq!(first.payload, b"msg-3".to_vec());
-        assert_eq!(second.payload, b"msg-4".to_vec());
+        assert_eq!(first.payload.as_ref(), b"msg-3");
+        assert_eq!(second.payload.as_ref(), b"msg-4");
         Ok(())
     }
 

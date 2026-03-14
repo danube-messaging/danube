@@ -46,7 +46,7 @@ fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: topic_off,
         },
-        payload: format!("exclusive-{}", req_id).into_bytes(),
+        payload: format!("exclusive-{}", req_id).into_bytes().into(),
         publish_time: 0,
         producer_name: "producer-test".to_string(),
         subscription_name: None,

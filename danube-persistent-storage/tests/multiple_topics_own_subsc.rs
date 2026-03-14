@@ -383,9 +383,9 @@ async fn test_multiple_topics_factory_reuse() {
         }
 
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].payload, b"from-storage-1");
-        assert_eq!(messages[1].payload, b"from-storage-2");
-        assert_eq!(messages[2].payload, b"from-storage-3");
+        assert_eq!(messages[0].payload.as_ref(), b"from-storage-1");
+        assert_eq!(messages[1].payload.as_ref(), b"from-storage-2");
+        assert_eq!(messages[2].payload.as_ref(), b"from-storage-3");
     }
 }
 
@@ -553,8 +553,8 @@ async fn test_multiple_topics_mixed_workloads() {
         }
     }
     assert_eq!(heavy_messages.len(), 100);
-    assert_eq!(heavy_messages[0].payload, b"heavy-0");
-    assert_eq!(heavy_messages[99].payload, b"heavy-99");
+    assert_eq!(heavy_messages[0].payload.as_ref(), b"heavy-0");
+    assert_eq!(heavy_messages[99].payload.as_ref(), b"heavy-99");
 
     // Light workload verification
     let mut light_reader = light_storage
@@ -568,8 +568,8 @@ async fn test_multiple_topics_mixed_workloads() {
         }
     }
     assert_eq!(light_messages.len(), 20);
-    assert_eq!(light_messages[0].payload, b"light-0");
-    assert_eq!(light_messages[19].payload, b"light-19");
+    assert_eq!(light_messages[0].payload.as_ref(), b"light-0");
+    assert_eq!(light_messages[19].payload.as_ref(), b"light-19");
 
     // Burst workload verification
     let mut burst_reader = burst_storage
@@ -583,10 +583,10 @@ async fn test_multiple_topics_mixed_workloads() {
         }
     }
     assert_eq!(burst_messages.len(), 45);
-    assert_eq!(burst_messages[0].payload, b"burst-0-0");
-    assert_eq!(burst_messages[14].payload, b"burst-0-14");
-    assert_eq!(burst_messages[15].payload, b"burst-1-0");
-    assert_eq!(burst_messages[44].payload, b"burst-2-14");
+    assert_eq!(burst_messages[0].payload.as_ref(), b"burst-0-0");
+    assert_eq!(burst_messages[14].payload.as_ref(), b"burst-0-14");
+    assert_eq!(burst_messages[15].payload.as_ref(), b"burst-1-0");
+    assert_eq!(burst_messages[44].payload.as_ref(), b"burst-2-14");
 
     // Verify independent cloud storage (if uploads occurred)
     let heavy_objects = count_cloud_objects(&memory_store, heavy_topic).await;

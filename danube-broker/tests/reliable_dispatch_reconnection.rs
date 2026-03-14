@@ -69,7 +69,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         let msg = timeout(Duration::from_secs(5), stream.recv())
             .await?
             .expect("Expected message");
-        let payload = String::from_utf8(msg.payload.clone())?;
+        let payload = String::from_utf8(msg.payload.to_vec())?;
         assert_eq!(payload, payloads[i], "Message {} should match", i);
         consumer.ack(&msg).await?;
     }
@@ -78,7 +78,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
     let pending_msg = timeout(Duration::from_secs(5), stream.recv())
         .await?
         .expect("Expected pending message");
-    let pending_payload = String::from_utf8(pending_msg.payload.clone())?;
+    let pending_payload = String::from_utf8(pending_msg.payload.to_vec())?;
     assert_eq!(
         pending_payload, payloads[3],
         "Pending message should be msg_3"
@@ -106,7 +106,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
     let redelivered_msg = timeout(Duration::from_secs(5), stream_reconnected.recv())
         .await?
         .expect("Expected redelivered message");
-    let redelivered_payload = String::from_utf8(redelivered_msg.payload.clone())?;
+    let redelivered_payload = String::from_utf8(redelivered_msg.payload.to_vec())?;
 
     assert_eq!(
         redelivered_payload, payloads[3],
@@ -122,7 +122,7 @@ async fn reliable_exclusive_reconnection_resends_pending_message() -> Result<()>
         let msg = timeout(Duration::from_secs(5), stream_reconnected.recv())
             .await?
             .expect("Expected remaining message");
-        let payload = String::from_utf8(msg.payload.clone())?;
+        let payload = String::from_utf8(msg.payload.to_vec())?;
         assert_eq!(payload, payloads[i], "Message {} should match", i);
         consumer_reconnected.ack(&msg).await?;
     }
@@ -203,12 +203,12 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
     for _ in 0..3 {
         tokio::select! {
             Some(msg) = s1.recv() => {
-                let payload = String::from_utf8(msg.payload.clone())?;
+                let payload = String::from_utf8(msg.payload.to_vec())?;
                 received_by_c1.push(payload.clone());
                 c1.ack(&msg).await?;
             }
             Some(msg) = s2.recv() => {
-                let payload = String::from_utf8(msg.payload.clone())?;
+                let payload = String::from_utf8(msg.payload.to_vec())?;
                 received_by_c2.push(payload.clone());
                 c2.ack(&msg).await?;
             }
@@ -226,7 +226,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
     .expect("Expected a message");
 
     let (receiver, msg) = pending_msg;
-    let pending_payload = String::from_utf8(msg.payload.clone())?;
+    let pending_payload = String::from_utf8(msg.payload.to_vec())?;
 
     if receiver == "c1" {
         // c1 got the message, DON'T ack it and disconnect c1 (graceful close)
@@ -243,7 +243,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         let failover_msg = timeout(Duration::from_secs(5), s2.recv())
             .await?
             .expect("Expected failover message for c2");
-        let failover_payload = String::from_utf8(failover_msg.payload.clone())?;
+        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
 
         assert_eq!(
             failover_payload, pending_payload,
@@ -269,7 +269,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         let failover_msg = timeout(Duration::from_secs(5), s1.recv())
             .await?
             .expect("Expected failover message for c1");
-        let failover_payload = String::from_utf8(failover_msg.payload.clone())?;
+        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
 
         assert_eq!(
             failover_payload, pending_payload,
@@ -288,7 +288,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         loop {
             match timeout(Duration::from_secs(2), s2.recv()).await {
                 Ok(Some(msg)) => {
-                    let payload = String::from_utf8(msg.payload.clone())?;
+                    let payload = String::from_utf8(msg.payload.to_vec())?;
                     received_by_c2.push(payload);
                     c2.ack(&msg).await?;
                 }
@@ -300,7 +300,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         loop {
             match timeout(Duration::from_secs(2), s1.recv()).await {
                 Ok(Some(msg)) => {
-                    let payload = String::from_utf8(msg.payload.clone())?;
+                    let payload = String::from_utf8(msg.payload.to_vec())?;
                     received_by_c1.push(payload);
                     c1.ack(&msg).await?;
                 }
@@ -378,14 +378,14 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
     let msg0 = timeout(Duration::from_secs(5), stream.recv())
         .await?
         .expect("msg0");
-    assert_eq!(String::from_utf8(msg0.payload.clone())?, payloads[0]);
+    assert_eq!(String::from_utf8(msg0.payload.to_vec())?, payloads[0]);
     consumer.ack(&msg0).await?;
 
     // Get second message but don't ack
     let msg1 = timeout(Duration::from_secs(5), stream.recv())
         .await?
         .expect("msg1");
-    let pending_payload = String::from_utf8(msg1.payload.clone())?;
+    let pending_payload = String::from_utf8(msg1.payload.to_vec())?;
     assert_eq!(pending_payload, payloads[1]);
     // Don't ack!
 
@@ -408,7 +408,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .await?
         .expect("redelivered1");
     assert_eq!(
-        String::from_utf8(redelivered1.payload.clone())?,
+        String::from_utf8(redelivered1.payload.to_vec())?,
         payloads[1],
         "First reconnection should redeliver msg_1"
     );
@@ -433,7 +433,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .await?
         .expect("redelivered2");
     assert_eq!(
-        String::from_utf8(redelivered2.payload.clone())?,
+        String::from_utf8(redelivered2.payload.to_vec())?,
         payloads[1],
         "CRITICAL: Second reconnection should STILL redeliver msg_1, not advance to msg_2"
     );
@@ -446,7 +446,7 @@ async fn reliable_multiple_reconnections_same_message() -> Result<()> {
         .await?
         .expect("msg2");
     assert_eq!(
-        String::from_utf8(msg2.payload.clone())?,
+        String::from_utf8(msg2.payload.to_vec())?,
         payloads[2],
         "After acking msg_1, should receive msg_2"
     );

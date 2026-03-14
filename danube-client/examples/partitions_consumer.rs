@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     let mut message_stream = consumer.receive().await?;
 
     while let Some(message) = message_stream.recv().await {
-        let payload = message.payload.clone();
+        let payload = message.payload.to_vec();
 
         match String::from_utf8(payload) {
             Ok(message_str) => {

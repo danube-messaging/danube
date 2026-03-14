@@ -39,7 +39,7 @@ mod tests {
                 broker_addr: "localhost:6650".to_string(),
                 topic_offset: i,
             },
-            payload: format!("uploader-msg-{}", i).into_bytes(),
+            payload: format!("uploader-msg-{}", i).into_bytes().into(),
             publish_time: i,
             producer_name: "test-producer".to_string(),
             subscription_name: None,

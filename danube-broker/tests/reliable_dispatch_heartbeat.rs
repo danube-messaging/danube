@@ -83,7 +83,7 @@ async fn test_notification_coalescing_recovery() -> Result<()> {
 
         while received_payloads.len() < total_messages {
             if let Some(msg) = stream.recv().await {
-                let payload = String::from_utf8(msg.payload.clone())?;
+                let payload = String::from_utf8(msg.payload.to_vec())?;
                 received_payloads.push(payload);
                 consumer.ack(&msg).await?;
             }
@@ -180,7 +180,7 @@ async fn test_subscription_creation_race_condition() -> Result<()> {
 
         while received_indices.len() < total_messages {
             if let Some(msg) = stream.recv().await {
-                let payload = String::from_utf8(msg.payload.clone())?;
+                let payload = String::from_utf8(msg.payload.to_vec())?;
                 // Extract message index
                 if let Some(idx_str) = payload.strip_prefix("race_msg_") {
                     let idx: usize = idx_str.parse()?;
@@ -273,7 +273,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         let msg = timeout(Duration::from_secs(5), stream.recv())
             .await?
             .expect("Should receive message");
-        let payload = String::from_utf8(msg.payload.clone())?;
+        let payload = String::from_utf8(msg.payload.to_vec())?;
         assert_eq!(payload, format!("disconnect_msg_{}", i));
         consumer.ack(&msg).await?;
     }
@@ -286,7 +286,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
     let pending_msg = timeout(Duration::from_secs(5), stream.recv())
         .await?
         .expect("Should receive message 3");
-    let pending_payload = String::from_utf8(pending_msg.payload.clone())?;
+    let pending_payload = String::from_utf8(pending_msg.payload.to_vec())?;
     assert_eq!(pending_payload, "disconnect_msg_3");
 
     // DON'T ACK - this message should be buffered as pending
@@ -316,7 +316,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
     let redelivered_msg = timeout(Duration::from_secs(10), stream2.recv())
         .await?
         .expect("Should redeliver pending message");
-    let redelivered_payload = String::from_utf8(redelivered_msg.payload.clone())?;
+    let redelivered_payload = String::from_utf8(redelivered_msg.payload.to_vec())?;
     assert_eq!(
         redelivered_payload, "disconnect_msg_3",
         "Should redeliver unacked message #3"
@@ -334,7 +334,7 @@ async fn test_consumer_disconnect_during_notification() -> Result<()> {
         let msg = timeout(Duration::from_secs(5), stream2.recv())
             .await?
             .expect("Should receive message");
-        let payload = String::from_utf8(msg.payload.clone())?;
+        let payload = String::from_utf8(msg.payload.to_vec())?;
         assert_eq!(payload, format!("disconnect_msg_{}", i));
         consumer2.ack(&msg).await?;
     }
@@ -416,7 +416,7 @@ async fn test_poll_next_returns_none_recovery() -> Result<()> {
 
         while received.len() < total_messages {
             if let Some(msg) = stream.recv().await {
-                let payload = String::from_utf8(msg.payload.clone())?;
+                let payload = String::from_utf8(msg.payload.to_vec())?;
                 received.push(payload.clone());
                 consumer.ack(&msg).await?;
             }

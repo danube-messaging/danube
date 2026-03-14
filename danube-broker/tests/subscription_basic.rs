@@ -46,7 +46,7 @@ async fn run_basic_subscription(topic_prefix: &str, sub_type: SubType) -> Result
 
     let receive_future = async {
         if let Some(stream_message) = message_stream.recv().await {
-            let payload = String::from_utf8(stream_message.payload.clone()).unwrap();
+            let payload = String::from_utf8(stream_message.payload.to_vec()).unwrap();
             assert_eq!(payload, "Hello Danube");
             let _ = consumer.ack(&stream_message).await?;
         }

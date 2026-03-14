@@ -26,7 +26,7 @@ fn make_msg_tagged(i: u64, topic: &str, tag: &str) -> StreamMessage {
             broker_addr: "127.0.0.1:8080".to_string(),
             topic_offset: i,
         },
-        payload: format!("{}-{}", tag, i).into_bytes(),
+        payload: format!("{}-{}", tag, i).into_bytes().into(),
         publish_time: 0,
         producer_name: "producer".to_string(),
         subscription_name: None,
@@ -45,7 +45,7 @@ fn make_msg_bin(topic: &str, off: u64, payload: &[u8]) -> StreamMessage {
             broker_addr: "127.0.0.1:6650".to_string(),
             topic_offset: off,
         },
-        payload: payload.to_vec(),
+        payload: payload.to_vec().into(),
         publish_time: 0,
         producer_name: "producer".to_string(),
         subscription_name: None,
@@ -422,9 +422,9 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         .expect("timeout r2")
         .unwrap()
         .unwrap();
-    assert_eq!(r0.payload, b"h0");
-    assert_eq!(r1.payload, b"h1");
-    assert_eq!(r2.payload, b"h2");
+    assert_eq!(r0.payload.as_ref(), b"h0");
+    assert_eq!(r1.payload.as_ref(), b"h1");
+    assert_eq!(r2.payload.as_ref(), b"h2");
 
     // The WAL is fresh; with cloud end=2, next live should be offset 3. Append only the next live item.
     storage
@@ -437,7 +437,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
         .expect("timeout r3")
         .unwrap()
         .unwrap();
-    assert_eq!(r3.payload, b"live3");
+    assert_eq!(r3.payload.as_ref(), b"live3");
 }
 
 /// Test: factory cloud→WAL handoff with start after cloud range (skip cloud)
@@ -514,6 +514,6 @@ async fn test_factory_cloud_skip_cloud_when_start_after_objects() {
         .expect("timeout r4")
         .unwrap()
         .unwrap();
-    assert_eq!(r3.payload, b"w3");
-    assert_eq!(r4.payload, b"w4");
+    assert_eq!(r3.payload.as_ref(), b"w3");
+    assert_eq!(r4.payload.as_ref(), b"w4");
 }
