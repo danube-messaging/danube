@@ -91,7 +91,6 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     let engine = SubscriptionEngine::new("sub-shared".to_string(), Arc::new(ts.clone()));
     let dispatcher = Dispatcher::reliable_shared(engine);
-    let notifier = dispatcher.get_notifier();
 
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);
@@ -113,7 +112,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Append first message and notify -> expect delivery to one of the consumers
     ts.store_message(make_msg(500, 0, topic)).await.unwrap();
-    notifier.notify_one();
+    dispatcher.wake_dispatch().await.expect("wake first");
 
     // Expect first delivery to either c1 or c2
     let first_delivered = timeout(Duration::from_secs(2), async {
@@ -137,7 +136,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Append second message and notify -> expect other consumer to receive next (round-robin)
     ts.store_message(make_msg(501, 1, topic)).await.unwrap();
-    notifier.notify_one();
+    dispatcher.wake_dispatch().await.expect("wake second");
 
     let second_delivered = timeout(Duration::from_secs(2), async {
         tokio::select! {

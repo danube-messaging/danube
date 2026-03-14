@@ -35,7 +35,7 @@
 //!
 //! # Message Flow
 //!
-//! 1. **Poll**: `PollAndDispatch` command triggers polling
+//! 1. **Wake**: External wakeups or the heartbeat trigger a dispatch attempt
 //! 2. **Check Pending**: If `pending == true`, skip (message already in-flight)
 //! 3. **Get Message**: Either resend buffered message OR poll next from SubscriptionEngine
 //! 4. **Select Consumer**: Use round-robin to pick target consumer
@@ -43,23 +43,23 @@
 //! 6. **Retry on Failure**: If unhealthy, try next consumer in rotation (up to N attempts)
 //! 7. **Buffer & Mark**: Store in `pending_message`, set `pending = true`
 //! 8. **Wait for Ack**: Consumer must acknowledge before next message
-//! 9. **On Ack**: Clear `pending` flag and `pending_message` buffer, trigger next poll
+//! 9. **On Ack**: Clear `pending` flag and `pending_message` buffer, then immediately attempt the next dispatch
 //!
 //! # Heartbeat Watchdog
 //!
-//! A background heartbeat (500ms interval) monitors lag and triggers dispatch:
+//! A background heartbeat (500ms interval) monitors lag and attempts dispatch:
 //!
 //! - Checks subscription lag via `SubscriptionEngine::get_lag_info()`
-//! - If lag detected (unread messages in WAL), triggers `PollAndDispatch`
+//! - If lag is detected (unread messages in WAL), runs another dispatch attempt directly in the loop
 //! - Ensures messages are dispatched even without explicit Topic notifications
 //! - Reports lag metrics for monitoring
 //!
-//! # Notification System
+//! # Wakeup Path
 //!
-//! The `get_notifier()` method returns an `Arc<Notify>` for the Topic to signal new messages:
+//! Reliable topics wake the dispatcher directly through the dispatcher facade:
 //!
-//! - Topic calls `notifier.notify_one()` when new messages arrive
-//! - Spawned task listens for notifications and sends `PollAndDispatch` command
+//! - Topic publish and reconnect paths call `Dispatcher::wake_dispatch()`
+//! - The dispatcher loop receives `PollAndDispatch` directly, without an extra `Notify` bridge task
 //! - Ensures low-latency dispatch when messages are produced
 //!
 //! # Consumer Failover
@@ -69,7 +69,7 @@
 //! 1. `RemoveConsumer` command removes consumer from list
 //! 2. The `pending_message` remains buffered
 //! 3. `ResetPending` command (from subscription) clears `pending` flag
-//! 4. Next `PollAndDispatch` resends buffered message to a different consumer
+//! 4. The dispatcher immediately attempts to resend the buffered message to a different consumer
 //! 5. Round-robin continues with remaining consumers
 //!
 //! # Persistence
@@ -108,18 +108,16 @@ use super::super::subscription_engine::SubscriptionEngine;
 pub(super) fn start(
     engine: SubscriptionEngine,
     control_rx: mpsc::Receiver<DispatcherCommand>,
-    control_tx: mpsc::Sender<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
-        run_reliable_loop(engine, control_rx, control_tx, ready_tx).await;
+        run_reliable_loop(engine, control_rx, ready_tx).await;
     });
 }
 
 async fn run_reliable_loop(
     engine: SubscriptionEngine,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
-    control_tx: mpsc::Sender<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     let engine = Arc::new(Mutex::new(engine));
@@ -159,7 +157,6 @@ async fn run_reliable_loop(
                             &engine,
                             &mut pending,
                             &mut pending_message,
-                            &control_tx,
                         ).await;
                     }
                     None => break,
@@ -167,7 +164,7 @@ async fn run_reliable_loop(
             }
 
             _ = heartbeat.tick() => {
-                handle_heartbeat(&state, &engine, pending, &control_tx).await;
+                handle_heartbeat(&mut state, &engine, &mut pending, &mut pending_message).await;
             }
         }
     }
@@ -179,14 +176,13 @@ async fn handle_command(
     engine: &Arc<Mutex<SubscriptionEngine>>,
     pending: &mut bool,
     pending_message: &mut Option<StreamMessage>,
-    control_tx: &mpsc::Sender<DispatcherCommand>,
 ) {
     match cmd {
         DispatcherCommand::AddConsumer(c) => {
             trace!(consumer_id = %c.consumer_id, "consumer added");
             state.add_consumer(c);
             if !*pending {
-                let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
+                handle_poll_and_dispatch(state, engine, pending, pending_message).await;
             }
         }
         DispatcherCommand::RemoveConsumer(id) => {
@@ -200,7 +196,7 @@ async fn handle_command(
         }
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(engine, ack_msg, pending, pending_message).await;
-            let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
+            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
         }
         DispatcherCommand::PollAndDispatch => {
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
@@ -211,7 +207,7 @@ async fn handle_command(
                 trace!("Consumer disconnected, will failover buffered message");
             }
             *pending = false;
-            let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
+            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
         }
         DispatcherCommand::FlushProgressNow => {
             if let Err(e) = engine.lock().await.flush_progress_now().await {
@@ -310,12 +306,12 @@ async fn handle_poll_and_dispatch(
 }
 
 async fn handle_heartbeat(
-    state: &SharedConsumerState,
+    state: &mut SharedConsumerState,
     engine: &Arc<Mutex<SubscriptionEngine>>,
-    pending: bool,
-    control_tx: &mpsc::Sender<DispatcherCommand>,
+    pending: &mut bool,
+    pending_message: &mut Option<StreamMessage>,
 ) {
-    if state.is_empty() || pending {
+    if state.is_empty() || *pending {
         return;
     }
 
@@ -333,6 +329,6 @@ async fn handle_heartbeat(
     if lag_info.has_lag {
         trace!(lag_messages = %lag_info.lag_messages, "heartbeat detected lag");
         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
-        let _ = control_tx.send(DispatcherCommand::PollAndDispatch).await;
+        handle_poll_and_dispatch(state, engine, pending, pending_message).await;
     }
 }

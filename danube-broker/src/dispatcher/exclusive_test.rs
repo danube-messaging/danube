@@ -89,7 +89,6 @@ async fn reliable_single_ack_gating() {
     // Dispatcher with reliable engine (start: Latest)
     let engine = SubscriptionEngine::new("sub-a".to_string(), Arc::new(ts.clone()));
     let dispatcher = Dispatcher::reliable_exclusive(engine);
-    let notifier = dispatcher.get_notifier();
 
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
@@ -107,7 +106,7 @@ async fn reliable_single_ack_gating() {
 
     // Append the first message AFTER engine init; then notify to trigger dispatch loop
     ts.store_message(make_msg(100, 0, topic)).await.unwrap();
-    notifier.notify_one();
+    dispatcher.wake_dispatch().await.expect("wake first");
 
     // Expect first message (should be the only one available)
     let first = timeout(Duration::from_secs(2), rx.recv())
@@ -130,7 +129,7 @@ async fn reliable_single_ack_gating() {
 
     // Append the second message NOW; then notify to trigger next dispatch
     ts.store_message(make_msg(101, 1, topic)).await.unwrap();
-    notifier.notify_one();
+    dispatcher.wake_dispatch().await.expect("wake second");
 
     // Expect second message
     let second = timeout(Duration::from_secs(2), rx.recv())

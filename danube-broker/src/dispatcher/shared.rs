@@ -81,10 +81,9 @@ impl SharedDispatcher {
     pub(super) fn start_reliable(
         engine: SubscriptionEngine,
         control_rx: mpsc::Receiver<DispatcherCommand>,
-        control_tx: mpsc::Sender<DispatcherCommand>,
         ready_tx: watch::Sender<bool>,
     ) {
-        reliable::start(engine, control_rx, control_tx, ready_tx);
+        reliable::start(engine, control_rx, ready_tx);
     }
 }
 
