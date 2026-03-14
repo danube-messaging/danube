@@ -8,7 +8,7 @@ use danube_persistent_storage::WalStorage;
 use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, warn};
 
@@ -66,7 +66,6 @@ pub(crate) struct Topic {
     pub(crate) producers: Mutex<HashMap<u64, Producer>>,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
-    pub(crate) notifiers: Mutex<Vec<Arc<Notify>>>,
     // handle to metadata topic resources for cleanup operations
     resources_topic: TopicResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
@@ -101,7 +100,6 @@ impl Topic {
             subscriptions: Mutex::new(HashMap::new()),
             producers: Mutex::new(HashMap::new()),
             dispatch_strategy,
-            notifiers: Mutex::new(Vec::new()),
             resources_topic,
             topic_store,
             state: Mutex::new(TopicState::Active),
@@ -284,10 +282,7 @@ impl Topic {
                     return Err(anyhow!("WAL is not configured for a reliable topic"));
                 }
 
-                let notifier_guard = self.notifiers.lock().await;
-                for notifier in notifier_guard.iter() {
-                    notifier.notify_one();
-                }
+                self.wake_reliable_dispatchers().await;
                 Ok(())
             }
         }
@@ -354,6 +349,26 @@ impl Topic {
             .await;
     }
 
+    async fn wake_reliable_dispatchers(&self) {
+        let dispatchers: Vec<Dispatcher> = {
+            let subscriptions = self.subscriptions.lock().await;
+            subscriptions
+                .values()
+                .filter_map(|subscription| subscription.dispatcher.clone())
+                .collect()
+        };
+
+        for dispatcher in dispatchers {
+            if let Err(err) = dispatcher.wake_dispatch().await {
+                debug!(
+                    topic = %self.topic_name,
+                    error = %err,
+                    "failed to wake reliable dispatcher"
+                );
+            }
+        }
+    }
+
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         let mut subscriptions = self.subscriptions.lock().await;
         let subscription = subscriptions
@@ -406,7 +421,7 @@ impl Topic {
             }
 
             if let DispatchStrategy::Reliable = &self.dispatch_strategy {
-                let notifier = new_subscription
+                new_subscription
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,
@@ -415,11 +430,8 @@ impl Topic {
                         Some(Duration::from_secs(10)),
                     )
                     .await?;
-                if let Some(notifier) = notifier {
-                    self.notifiers.lock().await.push(notifier);
-                }
             } else {
-                let _ = new_subscription
+                new_subscription
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,

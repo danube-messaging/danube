@@ -555,19 +555,20 @@ impl TopicManager {
     pub(crate) async fn trigger_dispatcher_on_reconnect(&self, consumer_id: u64) {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
             if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
-                let subscriptions = topic.subscriptions.lock().await;
-                if let Some(subscription) = subscriptions.get(&subscription_name) {
-                    if let Some(dispatcher) = &subscription.dispatcher {
-                        if let Err(e) = dispatcher.reset_pending().await {
-                            tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
-                        }
-                    }
-                }
-                drop(subscriptions);
+                let dispatcher = {
+                    let subscriptions = topic.subscriptions.lock().await;
+                    subscriptions
+                        .get(&subscription_name)
+                        .and_then(|subscription| subscription.dispatcher.clone())
+                };
 
-                let notifier_guard = topic.notifiers.lock().await;
-                for notifier in notifier_guard.iter() {
-                    notifier.notify_one();
+                if let Some(dispatcher) = dispatcher {
+                    if let Err(e) = dispatcher.reset_pending().await {
+                        tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
+                    }
+                    if let Err(e) = dispatcher.wake_dispatch().await {
+                        tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to wake dispatcher");
+                    }
                 }
             } else {
                 tracing::warn!(

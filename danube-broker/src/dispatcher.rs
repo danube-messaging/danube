@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::sync::{mpsc, watch, Mutex, Notify};
+use tokio::sync::{mpsc, watch, Mutex};
 
 use crate::{consumer::Consumer, message::AckMessage};
 
@@ -106,29 +106,6 @@ impl Dispatcher {
         }
     }
 
-    /// Get notifier for signaling new messages from Topic (reliable only).
-    /// Spawns a listener that converts notifications into PollAndDispatch commands.
-    pub(crate) fn get_notifier(&self) -> Arc<Notify> {
-        match &self.handle {
-            DispatcherHandle::Reliable { control_tx, .. } => {
-                let notify = Arc::new(Notify::new());
-                let tx = control_tx.clone();
-                let n = notify.clone();
-                tokio::spawn(async move {
-                    loop {
-                        n.notified().await;
-                        use crate::broker_metrics::DISPATCHER_NOTIFIER_POLLS_TOTAL;
-                        use metrics::counter;
-                        counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
-                        let _ = tx.send(DispatcherCommand::PollAndDispatch).await;
-                    }
-                });
-                notify
-            }
-            _ => Arc::new(Notify::new()),
-        }
-    }
-
     /// Push a single message for immediate dispatch.
     /// Used by: non-reliable only (reliable dispatchers are stream-driven via notifier).
     pub(crate) async fn dispatch_message(&self, message: StreamMessage) -> Result<()> {
@@ -155,6 +132,16 @@ impl Dispatcher {
                 .send(DispatcherCommand::MessageAcked(ack_msg))
                 .await
                 .map_err(|_| anyhow!("Failed to send ack command")),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn wake_dispatch(&self) -> Result<()> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => control_tx
+                .send(DispatcherCommand::PollAndDispatch)
+                .await
+                .map_err(|_| anyhow!("Failed to wake dispatcher")),
             _ => Ok(()),
         }
     }

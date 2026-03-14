@@ -2,7 +2,7 @@ use anyhow::{anyhow, Ok, Result};
 use metrics::gauge;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::Instant;
 use tracing::trace;
 
@@ -125,17 +125,17 @@ impl Subscription {
         topic_store: Option<TopicStore>,
         topic_resources: Option<TopicResources>,
         sub_progress_flush_interval: Option<Duration>,
-    ) -> Result<Option<Arc<Notify>>> {
-        let (new_dispatcher, notifier) = match dispatch_strategy {
+    ) -> Result<()> {
+        let new_dispatcher = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
                 // Exclusive
-                0 => (Dispatcher::non_reliable_exclusive(), None),
+                0 => Dispatcher::non_reliable_exclusive(),
 
                 // Shared
-                1 => (Dispatcher::non_reliable_shared(), None),
+                1 => Dispatcher::non_reliable_shared(),
 
                 // Failover
-                2 => (Dispatcher::non_reliable_exclusive(), None),
+                2 => Dispatcher::non_reliable_exclusive(),
 
                 _ => {
                     return Err(anyhow!("Should not get here"));
@@ -161,8 +161,7 @@ impl Subscription {
                         );
                         let dispatcher = Dispatcher::reliable_exclusive(engine);
                         dispatcher.ready().await;
-                        let notifier = dispatcher.get_notifier();
-                        (dispatcher, Some(notifier))
+                        dispatcher
                     }
 
                     // Shared
@@ -180,8 +179,7 @@ impl Subscription {
                         );
                         let dispatcher = Dispatcher::reliable_shared(engine);
                         dispatcher.ready().await;
-                        let notifier = dispatcher.get_notifier();
-                        (dispatcher, Some(notifier))
+                        dispatcher
                     }
 
                     // Failover (treat as single active consumer)
@@ -198,8 +196,7 @@ impl Subscription {
                             self.dispatch_rate_limiter.clone(),
                         );
                         let dispatcher = Dispatcher::reliable_exclusive(engine);
-                        let notifier = dispatcher.get_notifier();
-                        (dispatcher, Some(notifier))
+                        dispatcher
                     }
 
                     _ => {
@@ -211,7 +208,7 @@ impl Subscription {
 
         self.dispatcher = Some(new_dispatcher);
 
-        Ok(notifier)
+        Ok(())
     }
 
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
