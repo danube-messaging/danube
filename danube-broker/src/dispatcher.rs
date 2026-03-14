@@ -66,7 +66,7 @@ impl Dispatcher {
     pub(crate) fn reliable_exclusive(engine: SubscriptionEngine) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        ExclusiveDispatcher::start_reliable(engine, control_rx, control_tx.clone(), ready_tx);
+        ExclusiveDispatcher::start_reliable(engine, control_rx, ready_tx);
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -79,7 +79,7 @@ impl Dispatcher {
     pub(crate) fn reliable_shared(engine: SubscriptionEngine) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        SharedDispatcher::start_reliable(engine, control_rx, control_tx.clone(), ready_tx);
+        SharedDispatcher::start_reliable(engine, control_rx, ready_tx);
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
