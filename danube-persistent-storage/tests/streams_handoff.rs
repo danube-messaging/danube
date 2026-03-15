@@ -1,18 +1,14 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
 use tokio::time::timeout;
 
 use danube_core::message::{MessageID, StreamMessage};
-use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::wal::{Wal, WalConfig};
-use danube_persistent_storage::{
-    BackendConfig, CloudStore, LocalBackend, StorageMetadata, Uploader, UploaderConfig, WalStorage,
-};
+use danube_persistent_storage::WalStorage;
 
 // Use shared helpers to align integration test setup
 mod common;
@@ -244,90 +240,42 @@ async fn local_files_cache_live_handoff() {
 /// - Messages 0..=2 originate from the cloud object, 3..=5 from WAL tail; total of 6 in order.
 #[tokio::test]
 async fn chaining_stream_handoff_memory() {
-    let topic_path = "ns/topic-handoff";
-
-    // WAL durable config with CheckpointStore
-    let tmp = tempfile::TempDir::new().expect("temp wal dir");
-    let wal_dir = tmp.path().to_path_buf();
-    let cfg = WalConfig {
-        dir: Some(wal_dir.clone()),
-        cache_capacity: Some(128),
-        ..Default::default()
-    };
-    let wal_ckpt = wal_dir.join("wal.ckpt");
-    let uploader_ckpt = wal_dir.join("uploader.ckpt");
-    let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
-    let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
-        .await
-        .expect("wal init");
+    let (factory, mem) = common::create_test_factory().await;
+    let topic_name = "/default/topic-handoff-memory";
+    let topic_path = "default/topic-handoff-memory";
+    let storage = factory.for_topic(topic_name).await.expect("create storage");
 
     for i in 0..3u64 {
-        let m = make_msg_tagged(i, topic_path, "cloud");
-        wal.append(&m).await.expect("append pre-upload");
+        storage
+            .append_message(topic_name, make_msg_tagged(i, topic_path, "cloud"))
+            .await
+            .expect("append pre-upload");
     }
-    wal.flush().await.expect("flush wal");
 
-    let cloud = CloudStore::new(BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "mem-handoff".to_string(),
-    })
-    .expect("cloud store mem");
+    let uploaded = common::wait_for_condition(
+        || {
+            let mem = mem.clone();
+            async move { common::count_cloud_objects(&mem, topic_path).await > 0 }
+        },
+        12000,
+    )
+    .await;
+    assert!(uploaded, "no segment descriptors found under {}", topic_path);
 
-    let mem = MemoryStore::new().await.expect("memory meta store");
-    let mem_arc: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(mem.clone());
-    let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
-
-    let up_cfg = UploaderConfig {
-        interval_seconds: 1,
-        topic_path: topic_path.to_string(),
-        root_prefix: "/danube".to_string(),
-        max_object_mb: None,
-    };
-    let uploader = Arc::new(
-        Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
-    );
-    let handle = uploader.clone().start();
-    // Deterministic wait for object creation in metadata
-    let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
-    let mut found = false;
-    for _ in 0..50 {
-        // up to 5s
-        let children = mem.get_childrens(&prefix).await.unwrap_or_default();
-        let objects: Vec<_> = children
-            .into_iter()
-            .filter(|c| c != "cur" && !c.ends_with('/'))
-            .collect();
-        if !objects.is_empty() {
-            found = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(found, "no object descriptors found under {}", prefix);
-    handle.abort();
-
-    // Append 3..5 after upload (these exist only in WAL)
     for i in 3..6u64 {
-        let m = make_msg_tagged(i, topic_path, "wal");
-        wal.append(&m).await.expect("append post-upload");
+        storage
+            .append_message(topic_name, make_msg_tagged(i, topic_path, "wal"))
+            .await
+            .expect("append post-upload");
     }
-    wal.flush().await.expect("flush wal");
 
-    // Build WalStorage with cloud capabilities and read from offset 0
-    let storage = WalStorage::from_wal(wal.clone()).with_cloud(
-        cloud.clone(),
-        meta.clone(),
-        topic_path.to_string(),
-    );
     let stream = storage
-        .create_reader(topic_path, StartPosition::Offset(0))
+        .create_reader(topic_name, StartPosition::Offset(0))
         .await
         .expect("create reader");
 
-    // Limit to the first 6 messages to avoid hanging on the infinite WAL tail stream
-    let fut = stream.take(6).try_collect::<Vec<_>>();
-    let msgs: Vec<StreamMessage> = timeout(Duration::from_secs(5), fut)
+    let fut = stream.take(6).try_collect::<Vec<StreamMessage>>();
+    let msgs = timeout(Duration::from_secs(5), fut)
         .await
         .expect("stream timed out waiting for 6 messages")
         .expect("try_collect");

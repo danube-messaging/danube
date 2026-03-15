@@ -128,7 +128,7 @@ async fn test_multiple_topics_independent_uploaders() {
         );
 
         // Verify objects contain correct topic data
-        let prefix = format!("/danube/storage/topics/{}/objects", topic);
+        let prefix = format!("/danube/storage/topics/{}/segments", topic);
         let children = memory_store
             .get_childrens(&prefix)
             .await
@@ -140,7 +140,7 @@ async fn test_multiple_topics_independent_uploaders() {
 
         assert!(
             !objects.is_empty(),
-            "Topic {} should have object descriptors",
+            "Topic {} should have segment descriptors",
             topic
         );
     }

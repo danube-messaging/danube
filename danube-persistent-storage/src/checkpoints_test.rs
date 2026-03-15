@@ -27,7 +27,7 @@ mod tests {
             last_committed_offset: 42,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: Some("data-0-42.dnb1".to_string()),
+            last_segment_id: Some("data-0-42.dnb1".to_string()),
             updated_at: 1234567890,
         };
 
@@ -47,7 +47,7 @@ mod tests {
 
         assert_eq!(read_checkpoint.last_committed_offset, 42);
         assert_eq!(
-            read_checkpoint.last_object_id,
+            read_checkpoint.last_segment_id,
             Some("data-0-42.dnb1".to_string())
         );
         assert_eq!(read_checkpoint.updated_at, 1234567890);
@@ -105,7 +105,7 @@ mod tests {
             last_committed_offset: 100,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: None,
+            last_segment_id: None,
             updated_at: 9876543210,
         };
 
@@ -125,7 +125,7 @@ mod tests {
             .expect("checkpoint should exist");
 
         assert_eq!(read_checkpoint.last_committed_offset, 100);
-        assert_eq!(read_checkpoint.last_object_id, None);
+        assert_eq!(read_checkpoint.last_segment_id, None);
         assert_eq!(read_checkpoint.updated_at, 9876543210);
     }
 
@@ -154,7 +154,7 @@ mod tests {
             last_committed_offset: 10,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: Some("first".to_string()),
+            last_segment_id: Some("first".to_string()),
             updated_at: 1000,
         };
         CheckPoint::write_uploader_to_path(&checkpoint1, &path)
@@ -166,7 +166,7 @@ mod tests {
             last_committed_offset: 20,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: Some("second".to_string()),
+            last_segment_id: Some("second".to_string()),
             updated_at: 2000,
         };
         CheckPoint::write_uploader_to_path(&checkpoint2, &path)
@@ -180,7 +180,7 @@ mod tests {
             .expect("checkpoint should exist");
 
         assert_eq!(read_checkpoint.last_committed_offset, 20);
-        assert_eq!(read_checkpoint.last_object_id, Some("second".to_string()));
+        assert_eq!(read_checkpoint.last_segment_id, Some("second".to_string()));
         assert_eq!(read_checkpoint.updated_at, 2000);
     }
 
@@ -190,7 +190,7 @@ mod tests {
             last_committed_offset: u64::MAX,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: Some("very-long-object-id-with-special-chars-!@#$%^&*()".to_string()),
+            last_segment_id: Some("very-long-object-id-with-special-chars-!@#$%^&*()".to_string()),
             updated_at: 0,
         };
 
@@ -203,7 +203,7 @@ mod tests {
                 .expect("deserialize");
 
         assert_eq!(deserialized.last_committed_offset, u64::MAX);
-        assert_eq!(deserialized.last_object_id, checkpoint.last_object_id);
+        assert_eq!(deserialized.last_segment_id, checkpoint.last_segment_id);
         assert_eq!(deserialized.updated_at, 0);
     }
 }

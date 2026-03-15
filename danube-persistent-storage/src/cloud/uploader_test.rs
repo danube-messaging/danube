@@ -20,9 +20,10 @@ where
 mod tests {
     use super::wait_for_condition;
     use crate::checkpoint::CheckpointStore;
+    use crate::cloud::{CloudStore, Uploader, UploaderConfig};
+    use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
     use crate::wal::{UploaderCheckpoint, Wal, WalConfig};
-    use crate::{BackendConfig, CloudStore, LocalBackend, StorageMetadata};
-    use crate::{Uploader, UploaderConfig};
+    use crate::{BackendConfig, LocalBackend};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
     use std::collections::HashMap;
@@ -109,7 +110,7 @@ mod tests {
         let config = UploaderConfig::default();
         assert_eq!(config.interval_seconds, 300);
         assert_eq!(config.topic_path, "default/topic");
-        assert_eq!(config.root_prefix, "/danube");
+        assert_eq!(config._root_prefix, "/danube");
     }
 
     /// Test: Uploader instance creation and initialization
@@ -134,7 +135,7 @@ mod tests {
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/topic".to_string(),
-            root_prefix: "/test".to_string(),
+            _root_prefix: "/test".to_string(),
             max_object_mb: None,
         };
 
@@ -176,7 +177,7 @@ mod tests {
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/topic".to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
 
@@ -198,7 +199,7 @@ mod tests {
         handle.abort();
 
         // Verify object was created
-        let prefix = "/danube/storage/topics/test/topic/objects";
+        let prefix = "/danube/storage/topics/test/topic/segments";
         let children = mem.get_childrens(prefix).await.expect("get children");
         let objects: Vec<_> = children
             .into_iter()
@@ -218,8 +219,7 @@ mod tests {
             .expect("get descriptor")
             .expect("descriptor should exist");
 
-        let desc: crate::storage_metadata::ObjectDescriptor =
-            serde_json::from_value(desc_value).expect("parse descriptor");
+        let desc: SegmentDescriptor = serde_json::from_value(desc_value).expect("parse descriptor");
 
         // let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
         // let data = cloud.get_object(&object_path).await.expect("get object");
@@ -228,7 +228,7 @@ mod tests {
         // assert_eq!(off, 0);
 
         // Verify object exists in cloud
-        let object_path = format!("storage/topics/test/topic/objects/{}", desc.object_id);
+        let object_path = format!("storage/topics/test/topic/segments/{}", desc.segment_id);
         let data = cloud.get_object(&object_path).await.expect("get object");
         assert!(
             data.len() >= 16,
@@ -272,7 +272,7 @@ mod tests {
             last_committed_offset: 5,
             last_read_file_seq: 0,
             last_read_byte_position: 0,
-            last_object_id: Some("previous-object".to_string()),
+            last_segment_id: Some("previous-object".to_string()),
             updated_at: chrono::Utc::now().timestamp() as u64,
         };
 
@@ -290,7 +290,7 @@ mod tests {
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/resume".to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
 
@@ -303,7 +303,7 @@ mod tests {
             || {
                 let mem = mem.clone();
                 async move {
-                    let prefix = "/danube/storage/topics/test/resume/objects";
+                    let prefix = "/danube/storage/topics/test/resume/segments";
                     let children = mem.get_childrens(prefix).await.unwrap_or_default();
                     let objects: Vec<_> = children
                         .into_iter()
@@ -342,7 +342,7 @@ mod tests {
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/empty".to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
 
@@ -352,7 +352,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1200)).await;
         handle.abort();
 
-        let prefix = "/danube/storage/topics/test/empty/objects";
+        let prefix = "/danube/storage/topics/test/empty/segments";
         let children = mem.get_childrens(prefix).await.unwrap_or_default();
         let objects: Vec<_> = children
             .into_iter()
@@ -392,7 +392,7 @@ mod tests {
         let config = UploaderConfig {
             interval_seconds: 1,
             topic_path: "test/naming".to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
 
@@ -403,7 +403,7 @@ mod tests {
             || {
                 let mem = mem.clone();
                 async move {
-                    let prefix = "/danube/storage/topics/test/naming/objects";
+                    let prefix = "/danube/storage/topics/test/naming/segments";
                     let children = mem.get_childrens(prefix).await.unwrap_or_default();
                     let objects: Vec<_> = children
                         .into_iter()
@@ -419,7 +419,7 @@ mod tests {
         assert!(ok, "Should have created objects");
         handle.abort();
 
-        let prefix = "/danube/storage/topics/test/naming/objects";
+        let prefix = "/danube/storage/topics/test/naming/segments";
         let children = mem.get_childrens(prefix).await.expect("get children");
         let objects: Vec<_> = children
             .into_iter()
@@ -432,11 +432,10 @@ mod tests {
             .expect("get descriptor")
             .expect("descriptor should exist");
 
-        let desc: crate::storage_metadata::ObjectDescriptor =
-            serde_json::from_value(desc_value).expect("parse descriptor");
+        let desc: SegmentDescriptor = serde_json::from_value(desc_value).expect("parse descriptor");
 
-        assert!(desc.object_id.starts_with("data-"));
-        assert!(desc.object_id.ends_with(".dnb1"));
+        assert!(desc.segment_id.starts_with("data-"));
+        assert!(desc.segment_id.ends_with(".dnb1"));
         assert_eq!(desc.start_offset, 0);
         assert_eq!(desc.end_offset, 2);
     }

@@ -1,10 +1,8 @@
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
-use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, ObjectDescriptor, StorageFactory, StorageFactoryConfig,
-    UploaderBaseConfig,
+    BackendConfig, LocalBackend, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,7 +55,8 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
         StorageFactoryConfig::cloud_native(
             WalConfig {
                 dir: Some(unique_dir),
-                fsync_interval_ms: Some(200),
+                fsync_interval_ms: Some(50),
+                fsync_max_batch_bytes: Some(1),
                 ..Default::default()
             },
             "/danube",
@@ -65,12 +64,9 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
                 backend: LocalBackend::Memory,
                 root: "integration-test".to_string(),
             },
-            UploaderBaseConfig {
-                interval_seconds: 1,
-                ..Default::default()
-            },
-            Some(DeleterConfig::default()),
-        ),
+            None,
+        )
+        .with_uploader_interval_seconds(1),
         store_arc,
     );
 
@@ -99,7 +95,7 @@ where
 /// Counts objects in cloud storage for a topic
 #[allow(dead_code)]
 pub async fn count_cloud_objects(memory_store: &MemoryStore, topic_path: &str) -> usize {
-    let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
+    let prefix = format!("/danube/storage/topics/{}/segments", topic_path);
     let children = memory_store
         .get_childrens(&prefix)
         .await
@@ -115,8 +111,8 @@ pub async fn count_cloud_objects(memory_store: &MemoryStore, topic_path: &str) -
 pub async fn get_latest_object_descriptor(
     memory_store: &MemoryStore,
     topic_path: &str,
-) -> Option<ObjectDescriptor> {
-    let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
+) -> Option<SegmentDescriptor> {
+    let prefix = format!("/danube/storage/topics/{}/segments", topic_path);
     let children = memory_store.get_childrens(&prefix).await.ok()?;
     let mut objects: Vec<_> = children
         .into_iter()
@@ -136,7 +132,7 @@ pub async fn get_latest_object_descriptor(
             .await
             .ok()??;
 
-        serde_json::from_value(desc_value).ok()
+        serde_json::from_value::<SegmentDescriptor>(desc_value).ok()
     } else {
         None
     }

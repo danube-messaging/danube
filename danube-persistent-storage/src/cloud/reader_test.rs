@@ -5,11 +5,10 @@ mod tests {
     use std::time::Duration;
 
     use crate::checkpoint::CheckpointStore;
+    use crate::cloud::{CloudReader, CloudStore, Uploader, UploaderConfig};
+    use crate::storage_metadata::StorageMetadata;
     use crate::wal::{Wal, WalConfig};
-    use crate::{
-        BackendConfig, CloudReader, CloudStore, LocalBackend, StorageMetadata, Uploader,
-        UploaderConfig,
-    };
+    use crate::{BackendConfig, LocalBackend};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
@@ -82,7 +81,7 @@ mod tests {
         let up_cfg = UploaderConfig {
             interval_seconds: 1,
             topic_path: topic_path.to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
         let uploader = Arc::new(
@@ -93,10 +92,7 @@ mod tests {
         // Wait until objects cover the requested end offset (2520), otherwise keep uploading
         let mut waited = 0u64;
         let ok = loop {
-            let mut descs = meta
-                .get_object_descriptors(topic_path)
-                .await
-                .unwrap_or_default();
+            let mut descs = meta.get_segment_descriptors(topic_path).await.unwrap_or_default();
             descs.sort_by_key(|d| d.end_offset);
             if let Some(last) = descs.last() {
                 if last.end_offset >= 2520 {
@@ -118,7 +114,10 @@ mod tests {
             .read_range(2500, Some(2520))
             .await
             .expect("cloud read");
-        let msgs: Vec<StreamMessage> = stream.try_collect::<Vec<_>>().await.expect("collect");
+        let msgs: Vec<StreamMessage> = stream
+            .try_collect::<Vec<StreamMessage>>()
+            .await
+            .expect("collect");
         assert_eq!(msgs.len(), 21);
         for (i, m) in msgs.into_iter().enumerate() {
             assert_eq!(m.payload, format!("cloud-{}", 2500 + i as u64).into_bytes());
@@ -184,7 +183,7 @@ mod tests {
         let up_cfg = UploaderConfig {
             interval_seconds: 1,
             topic_path: topic_path.to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: None,
         };
         let uploader = Arc::new(
@@ -216,7 +215,7 @@ mod tests {
         }
         let ok = wait_for_objects(
             mem.clone(),
-            "/danube/storage/topics/ns/topic-cloud/objects",
+            "/danube/storage/topics/ns/topic-cloud/segments",
             5000,
             50,
         )
@@ -227,7 +226,10 @@ mod tests {
         // CloudReader
         let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
         let stream = reader.read_range(0, Some(2)).await.expect("cloud read");
-        let msgs: Vec<StreamMessage> = stream.try_collect::<Vec<_>>().await.expect("try_collect");
+        let msgs: Vec<StreamMessage> = stream
+            .try_collect::<Vec<StreamMessage>>()
+            .await
+            .expect("try_collect");
 
         assert_eq!(msgs.len(), 3, "should read 3 messages from cloud objects");
         for (i, m) in msgs.into_iter().enumerate() {

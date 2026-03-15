@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::{BackendConfig, CloudBackend, CloudStore, LocalBackend};
+    use crate::cloud::CloudStore;
+    use crate::{BackendConfig, CloudBackend, LocalBackend};
     use std::collections::HashMap;
 
     /// Test: Memory backend basic put/get operations
@@ -26,10 +27,10 @@ mod tests {
         })
         .expect("create memory store");
 
-        let test_data = b"hello world";
+        let test_data = b"hello world".to_vec();
         let path = "test/object.bin";
 
-        store.put_object(path, test_data).await.expect("put object");
+        store.put_object(path, &test_data).await.expect("put object");
         let retrieved = store.get_object(path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
@@ -57,10 +58,10 @@ mod tests {
         })
         .expect("create memory store");
 
-        let test_data = b"prefixed data";
+        let test_data = b"prefixed data".to_vec();
         let path = "nested/path/object.bin";
 
-        store.put_object(path, test_data).await.expect("put object");
+        store.put_object(path, &test_data).await.expect("put object");
         let retrieved = store.get_object(path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
@@ -91,10 +92,10 @@ mod tests {
         })
         .expect("create fs store");
 
-        let test_data = b"filesystem test data";
+        let test_data = b"filesystem test data".to_vec();
         let path = "fs-test/object.bin";
 
-        store.put_object(path, test_data).await.expect("put object");
+        store.put_object(path, &test_data).await.expect("put object");
         let retrieved = store.get_object(path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
@@ -249,7 +250,7 @@ mod tests {
         })
         .expect("create memory store");
 
-        let test_data = b"path joining test";
+        let test_data = b"path joining test".to_vec();
 
         // Various path formats should all work
         let paths = vec![
@@ -260,7 +261,7 @@ mod tests {
         ];
 
         for path in paths {
-            store.put_object(path, test_data).await.expect("put object");
+            store.put_object(path, &test_data).await.expect("put object");
             let retrieved = store.get_object(path).await.expect("get object");
             assert_eq!(retrieved, test_data, "Failed for path: {}", path);
         }

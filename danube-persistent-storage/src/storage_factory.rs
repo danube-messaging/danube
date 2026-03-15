@@ -29,6 +29,7 @@ pub struct StorageFactoryConfig {
     pub metadata_root: String,
     pub durable_backend: Option<BackendConfig>,
     pub retention: Option<RetentionConfig>,
+    pub uploader_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: None,
             retention: None,
+            uploader_interval_seconds: None,
         }
     }
 
@@ -61,6 +63,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: Some(durable_backend),
             retention,
+            uploader_interval_seconds: None,
         }
     }
 
@@ -76,7 +79,13 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: Some(durable_backend),
             retention,
+            uploader_interval_seconds: None,
         }
+    }
+
+    pub fn with_uploader_interval_seconds(mut self, interval_seconds: u64) -> Self {
+        self.uploader_interval_seconds = Some(interval_seconds);
+        self
     }
 }
 
@@ -109,6 +118,10 @@ pub struct SealInfo {
 
 impl StorageFactory {
     pub fn new(config: StorageFactoryConfig, metadata_store: Arc<dyn MetadataStore>) -> Self {
+        let mut uploader_base_cfg = UploaderBaseConfig::default();
+        if let Some(interval_seconds) = config.uploader_interval_seconds {
+            uploader_base_cfg.interval_seconds = interval_seconds;
+        }
         let durable_store = config
             .durable_backend
             .clone()
@@ -127,7 +140,7 @@ impl StorageFactory {
             topics: Arc::new(DashMap::new()),
             uploaders: Arc::new(DashMap::new()),
             uploader_tokens: Arc::new(DashMap::new()),
-            uploader_base_cfg: UploaderBaseConfig::default(),
+            uploader_base_cfg,
             deleter_cfg: config.retention.map(|retention| DeleterConfig {
                 check_interval_minutes: retention.check_interval_minutes,
                 retention_time_minutes: retention.time_minutes,
@@ -304,8 +317,8 @@ impl StorageFactory {
         broker_id: u64,
     ) -> Result<SealInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let hot_log = match self.topics.get(&topic_path) {
-            Some(w) => w.clone(),
+        let hot_log = match self.topics.remove(&topic_path) {
+            Some((_, w)) => w,
             None => {
                 return Err(PersistentStorageError::Other(
                     "no storage for topic".to_string(),
@@ -313,7 +326,8 @@ impl StorageFactory {
             }
         };
 
-        hot_log.flush().await?;
+        let last_committed_offset = hot_log.last_committed_offset();
+        hot_log.shutdown().await;
         if let Some(cancel) = self.uploader_tokens.get(&topic_path) {
             cancel.cancel();
         }
@@ -327,17 +341,16 @@ impl StorageFactory {
             let _ = handle.1.await;
         }
 
-        let commit_info = self.commit_info(topic_name).await?;
         let state = StorageStateSealed {
             sealed: true,
-            last_committed_offset: commit_info.last_committed_offset,
+            last_committed_offset,
             broker_id,
             timestamp: chrono::Utc::now().timestamp() as u64,
         };
         self.mobility_state.store(&topic_path, &state).await?;
 
         Ok(SealInfo {
-            last_committed_offset: commit_info.last_committed_offset,
+            last_committed_offset,
         })
     }
 

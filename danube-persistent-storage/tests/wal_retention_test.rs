@@ -6,8 +6,8 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{
-    wal::WalConfig, BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig,
-    UploaderBaseConfig,
+    wal::WalConfig, BackendConfig, LocalBackend, RetentionConfig, StorageFactory,
+    StorageFactoryConfig,
 };
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -72,7 +72,7 @@ async fn test_retention_time_based_end_to_end() {
             last_committed_offset: 999,
             last_read_file_seq: 2,
             last_read_byte_position: 0,
-            last_object_id: None,
+            last_segment_id: None,
             updated_at: 0,
         })
         .await
@@ -162,7 +162,7 @@ async fn test_retention_multi_topic_independence() {
             last_committed_offset: 999,
             last_read_file_seq: 2,
             last_read_byte_position: 0,
-            last_object_id: None,
+            last_segment_id: None,
             updated_at: 0,
         })
         .await
@@ -197,7 +197,7 @@ async fn test_retention_multi_topic_independence() {
             last_committed_offset: 999,
             last_read_file_seq: 11, // seq < 11 eligible -> only 10
             last_read_byte_position: 0,
-            last_object_id: None,
+            last_segment_id: None,
             updated_at: 0,
         })
         .await
@@ -294,6 +294,8 @@ async fn test_stateful_reader_after_retention() {
 
     let wal_cfg = WalConfig {
         dir: Some(unique_dir),
+        fsync_interval_ms: Some(50),
+        fsync_max_batch_bytes: Some(1),
         // Make rotation more aggressive to ensure multiple rotated files
         rotate_max_bytes: Some(64),
         ..Default::default()
@@ -316,12 +318,13 @@ async fn test_stateful_reader_after_retention() {
             wal_cfg.clone(),
             "/danube".to_string(),
             backend.clone(),
-            UploaderBaseConfig {
-                interval_seconds: 1,
-                ..Default::default()
-            },
-            Some(deleter_cfg.clone()),
-        ),
+            Some(RetentionConfig {
+                check_interval_minutes: deleter_cfg.check_interval_minutes,
+                time_minutes: deleter_cfg.retention_time_minutes,
+                size_mb: deleter_cfg.retention_size_mb,
+            }),
+        )
+        .with_uploader_interval_seconds(1),
         memory_store.clone() as Arc<dyn MetadataStore>,
     );
 

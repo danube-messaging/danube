@@ -32,6 +32,10 @@ impl HotLog {
         self.inner.flush().await
     }
 
+    pub async fn shutdown(&self) {
+        self.inner.shutdown().await
+    }
+
     pub async fn current_wal_checkpoint(&self) -> Option<WalCheckpoint> {
         self.inner.current_wal_checkpoint().await
     }

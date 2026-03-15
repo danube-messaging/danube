@@ -19,7 +19,7 @@ mod tests {
             last_committed_offset: committed,
             last_read_file_seq: seq,
             last_read_byte_position: 0,
-            last_object_id: None,
+            last_segment_id: None,
             updated_at: 0,
         }
     }
