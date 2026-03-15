@@ -1,4 +1,4 @@
-use crate::storage_metadata::{ObjectDescriptor, StorageMetadata};
+use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]
@@ -15,18 +15,18 @@ impl SegmentCatalog {
         &self,
         topic_path: &str,
         start_offset_padded: &str,
-        descriptor: &ObjectDescriptor,
+        descriptor: &SegmentDescriptor,
     ) -> Result<(), PersistentStorageError> {
         self.metadata
-            .put_object_descriptor(topic_path, start_offset_padded, descriptor)
+            .put_segment_descriptor(topic_path, start_offset_padded, descriptor)
             .await
     }
 
     pub async fn list_segments(
         &self,
         topic_path: &str,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
-        self.metadata.get_object_descriptors(topic_path).await
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
+        self.metadata.get_segment_descriptors(topic_path).await
     }
 
     pub async fn list_segments_range(
@@ -34,9 +34,9 @@ impl SegmentCatalog {
         topic_path: &str,
         from_padded: &str,
         to_padded: Option<&str>,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
         self.metadata
-            .get_object_descriptors_range(topic_path, from_padded, to_padded)
+            .get_segment_descriptors_range(topic_path, from_padded, to_padded)
             .await
     }
 
@@ -46,7 +46,7 @@ impl SegmentCatalog {
         start_offset_padded: &str,
     ) -> Result<(), PersistentStorageError> {
         self.metadata
-            .put_current_pointer(topic_path, start_offset_padded)
+            .put_current_segment(topic_path, start_offset_padded)
             .await
     }
 

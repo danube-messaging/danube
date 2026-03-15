@@ -18,7 +18,7 @@ use tokio::io::{AsyncSeekExt, SeekFrom};
 /// Internal mutable state for a single streaming cycle.
 struct UploadState {
     cloud_writer: Option<CloudWriter>,
-    object_id: Option<String>,
+    segment_id: Option<String>,
     first_offset: Option<u64>,
     last_offset: Option<u64>,
     msgs_since_index: usize,
@@ -33,7 +33,7 @@ impl UploadState {
     fn new(start_seq: u64, start_pos: u64) -> Self {
         Self {
             cloud_writer: None,
-            object_id: None,
+            segment_id: None,
             first_offset: None,
             last_offset: None,
             msgs_since_index: 0,
@@ -85,7 +85,7 @@ pub async fn stream_frames_to_cloud(
     max_object_mb: Option<u64>,
 ) -> Result<
     Option<(
-        String,            // final_object_id
+        String,
         u64,               // start_offset
         u64,               // end_offset
         u64,               // next_seq_out
@@ -127,7 +127,7 @@ pub async fn stream_frames_to_cloud(
     };
 
     // 4) Finalize uploaded object and return
-    let (final_object_id, end, meta) = finalize_uploaded_object(&mut state).await?;
+    let (final_segment_id, end, meta) = finalize_uploaded_segment(&mut state).await?;
     // Metrics: upload latency, bytes, objects (ok)
     let provider = cloud.provider().to_string();
 
@@ -147,7 +147,7 @@ pub async fn stream_frames_to_cloud(
         .increment(meta.content_length());
 
     Ok(Some((
-        final_object_id,
+        final_segment_id,
         first_offset_val,
         end,
         state.next_seq_out,
@@ -222,12 +222,12 @@ async fn process_file_and_upload_once(
                         .unwrap()
                         .as_secs();
                     let obj = format!("data-{}-{}.dnb1", s, timestamp);
-                    let path = format!("storage/topics/{}/objects/{}", topic_path, obj);
+                    let path = format!("storage/topics/{}/segments/{}", topic_path, obj);
                     let writer = cloud
                         .open_streaming_writer(&path, 8 * 1024 * 1024, 4)
                         .await?;
                     state.cloud_writer = Some(writer);
-                    state.object_id = Some(obj);
+                    state.segment_id = Some(obj);
                     state.start_instant = Some(Instant::now());
                 }
             } else {
@@ -271,7 +271,7 @@ async fn process_file_and_upload_once(
     Ok(())
 }
 
-async fn finalize_uploaded_object(
+async fn finalize_uploaded_segment(
     state: &mut UploadState,
 ) -> Result<(String, u64, opendal::Metadata), PersistentStorageError> {
     // 1. Close cloud writer (finalizes upload)
@@ -284,8 +284,8 @@ async fn finalize_uploaded_object(
     // 2. Extract offsets and object ID
     let first_offset = state.first_offset.expect("first_offset must be set");
     let end = state.last_offset.unwrap_or(first_offset);
-    let final_object_id = state.object_id.take().expect("object_id must be set");
+    let final_segment_id = state.segment_id.take().expect("segment_id must be set");
 
     // Object is already written with final timestamp-based name - no copy/rename needed
-    Ok((final_object_id, end, meta))
+    Ok((final_segment_id, end, meta))
 }

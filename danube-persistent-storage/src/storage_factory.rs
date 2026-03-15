@@ -1,10 +1,11 @@
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::{BackendConfig, CloudStore, Uploader, UploaderBaseConfig, UploaderConfig};
+use crate::hot_log::HotLog;
 use crate::mobility_state::MobilityState;
 use crate::segment_catalog::SegmentCatalog;
 use crate::storage_metadata::{StorageMetadata, StorageStateSealed};
 use crate::wal::deleter::{Deleter, DeleterConfig};
-use crate::wal::{Wal, WalConfig};
+use crate::wal::WalConfig;
 use crate::wal_storage::WalStorage;
 use dashmap::DashMap;
 use danube_core::metadata::MetadataStore;
@@ -86,7 +87,7 @@ pub struct StorageFactory {
     segment_catalog: SegmentCatalog,
     mobility_state: MobilityState,
     durable_store: Option<CloudStore>,
-    topics: Arc<DashMap<String, Wal>>,
+    topics: Arc<DashMap<String, HotLog>>,
     uploaders: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     uploader_tokens: Arc<DashMap<String, CancellationToken>>,
     uploader_base_cfg: UploaderBaseConfig,
@@ -94,6 +95,11 @@ pub struct StorageFactory {
     deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     deleter_tokens: Arc<DashMap<String, CancellationToken>>,
     metadata_root: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    pub last_committed_offset: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +196,7 @@ impl StorageFactory {
             }
         }
 
-        let storage = WalStorage::from_wal(topic_wal);
+        let storage = WalStorage::from_hot_log(topic_wal);
         match self.durable_store.clone() {
             Some(store) if self.mode != StorageMode::Local => Ok(storage.with_durable_history(
                 store,
@@ -206,7 +212,7 @@ impl StorageFactory {
         topic_path: &str,
     ) -> Result<
         (
-            Wal,
+            HotLog,
             Option<std::path::PathBuf>,
             Option<Arc<CheckpointStore>>,
         ),
@@ -254,9 +260,10 @@ impl StorageFactory {
             }
         };
 
-        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone(), initial_offset).await?;
-        self.topics.insert(topic_path.to_string(), wal.clone());
-        Ok((wal, root_path, ckpt_store))
+        let wal = crate::wal::Wal::with_config_with_store(cfg, ckpt_store.clone(), initial_offset).await?;
+        let hot_log = HotLog::from(wal);
+        self.topics.insert(topic_path.to_string(), hot_log.clone());
+        Ok((hot_log, root_path, ckpt_store))
     }
 
     pub async fn shutdown(&self) {
@@ -272,13 +279,12 @@ impl StorageFactory {
         self.deleter_tokens.clear();
     }
 
-    pub async fn flush_and_seal(
+    pub async fn commit_info(
         &self,
         topic_name: &str,
-        broker_id: u64,
-    ) -> Result<SealInfo, PersistentStorageError> {
+    ) -> Result<CommitInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let wal = match self.topics.get(&topic_path) {
+        let hot_log = match self.topics.get(&topic_path) {
             Some(w) => w.clone(),
             None => {
                 return Err(PersistentStorageError::Other(
@@ -287,7 +293,27 @@ impl StorageFactory {
             }
         };
 
-        wal.flush().await?;
+        Ok(CommitInfo {
+            last_committed_offset: hot_log.last_committed_offset(),
+        })
+    }
+
+    pub async fn seal(
+        &self,
+        topic_name: &str,
+        broker_id: u64,
+    ) -> Result<SealInfo, PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        let hot_log = match self.topics.get(&topic_path) {
+            Some(w) => w.clone(),
+            None => {
+                return Err(PersistentStorageError::Other(
+                    "no storage for topic".to_string(),
+                ))
+            }
+        };
+
+        hot_log.flush().await?;
         if let Some(cancel) = self.uploader_tokens.get(&topic_path) {
             cancel.cancel();
         }
@@ -301,17 +327,17 @@ impl StorageFactory {
             let _ = handle.1.await;
         }
 
-        let last_committed_offset = wal.current_offset().saturating_sub(1);
+        let commit_info = self.commit_info(topic_name).await?;
         let state = StorageStateSealed {
             sealed: true,
-            last_committed_offset,
+            last_committed_offset: commit_info.last_committed_offset,
             broker_id,
             timestamp: chrono::Utc::now().timestamp() as u64,
         };
         self.mobility_state.store(&topic_path, &state).await?;
 
         Ok(SealInfo {
-            last_committed_offset,
+            last_committed_offset: commit_info.last_committed_offset,
         })
     }
 

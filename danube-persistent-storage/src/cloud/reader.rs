@@ -65,7 +65,7 @@ impl CloudReader {
         // Fetch descriptors and keep only those overlapping the requested range.
         let mut descriptors = self
             .metadata
-            .get_object_descriptors(self.topic_path())
+            .get_segment_descriptors(self.topic_path())
             .await?;
         // Keep only overlapping descriptors and ensure ascending order by start_offset.
         descriptors.retain(|d| d.end_offset >= start);
@@ -100,7 +100,7 @@ impl CloudReader {
                     }
                     let desc = &descriptors[idx];
                     idx += 1;
-                    let key = format!("storage/topics/{}/objects/{}", topic_path, desc.object_id);
+                    let key = format!("storage/topics/{}/segments/{}", topic_path, desc.segment_id);
                     // Use sparse index if present to jump near the requested start offset.
                     let start_byte = match &desc.offset_index {
                         Some(index) if !index.is_empty() => {

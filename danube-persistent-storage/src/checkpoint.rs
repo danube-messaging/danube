@@ -49,7 +49,7 @@ pub struct UploaderCheckpoint {
     pub last_read_byte_position: u64,
     /// The unique identifier of the last cloud object that was written. Useful for debugging and
     /// for resuming multi-part uploads if the process was interrupted.
-    pub last_object_id: Option<String>,
+    pub last_segment_id: Option<String>,
     /// The timestamp (seconds since epoch) when this checkpoint was last updated.
     pub updated_at: u64,
 }

@@ -27,10 +27,10 @@ pub use cloud::{BackendConfig, CloudBackend, LocalBackend};
 mod frames;
 
 mod storage_metadata;
-pub use storage_metadata::ObjectDescriptor;
+pub use storage_metadata::SegmentDescriptor;
 
 mod storage_factory;
-pub use storage_factory::{RetentionConfig, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
+pub use storage_factory::{CommitInfo, RetentionConfig, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
 
 mod persistent_metrics;
 

@@ -216,13 +216,13 @@ impl TopicManager {
         ))
     }
 
-    /// Flush and seal persistent storage (WAL/uploader/deleter).
-    pub(crate) async fn flush_and_seal(&self, topic_name: &str) -> Result<()> {
+    /// Seal persistent storage after flushing hot state and draining background workers.
+    pub(crate) async fn seal_persistent_storage(&self, topic_name: &str) -> Result<()> {
         self.storage_factory
-            .flush_and_seal(topic_name, self.broker_id)
+            .seal(topic_name, self.broker_id)
             .await
             .map(|_| ())
-            .map_err(|e| anyhow!("flush_and_seal failed: {}", e))
+            .map_err(|e| anyhow!("seal failed: {}", e))
     }
 
     /// Delete ETCD storage metadata for a reliable topic.
@@ -258,11 +258,11 @@ impl TopicManager {
             .map(|ds| matches!(ds, ConfigDispatchStrategy::Reliable))
             .unwrap_or(false);
         if is_reliable {
-            if let Err(e) = self.flush_and_seal(topic_name).await {
+            if let Err(e) = self.seal_persistent_storage(topic_name).await {
                 error!(
                     topic = %topic_name,
                     error = %e,
-                    "flush_and_seal failed during delete"
+                    "seal failed during delete"
                 );
             }
             if let Err(e) = self.delete_storage_metadata(topic_name).await {
@@ -384,7 +384,7 @@ impl TopicManager {
         }
 
         let _ = self.flush_subscription_cursors(topic_name).await;
-        self.flush_and_seal(topic_name).await?;
+        self.seal_persistent_storage(topic_name).await?;
 
         let topic = self
             .topic_registry

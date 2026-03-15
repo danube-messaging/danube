@@ -19,8 +19,8 @@ impl std::fmt::Debug for StorageMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObjectDescriptor {
-    pub object_id: String,
+pub struct SegmentDescriptor {
+    pub segment_id: String,
     pub start_offset: u64,
     pub end_offset: u64,
     pub size: u64,
@@ -46,14 +46,14 @@ impl StorageMetadata {
         Self { store, root }
     }
 
-    pub async fn put_object_descriptor(
+    pub async fn put_segment_descriptor(
         &self,
         topic_path: &str,
         start_offset_padded: &str,
-        desc: &ObjectDescriptor,
+        desc: &SegmentDescriptor,
     ) -> Result<(), PersistentStorageError> {
         let key = format!(
-            "{}/storage/topics/{}/objects/{}",
+            "{}/storage/topics/{}/segments/{}",
             self.root, topic_path, start_offset_padded
         );
         let value =
@@ -66,12 +66,12 @@ impl StorageMetadata {
     }
 
     /// Optional pointer to the current rolling object key (stores the start_offset_padded).
-    pub async fn put_current_pointer(
+    pub async fn put_current_segment(
         &self,
         topic_path: &str,
         start_offset_padded: &str,
     ) -> Result<(), PersistentStorageError> {
-        let key = format!("{}/storage/topics/{}/objects/cur", self.root, topic_path);
+        let key = format!("{}/storage/topics/{}/segments/cur", self.root, topic_path);
         let val = serde_json::json!({ "start": start_offset_padded });
         self.store
             .put(&key, val, MetaOptions::None)
@@ -80,11 +80,11 @@ impl StorageMetadata {
         Ok(())
     }
 
-    pub async fn get_object_descriptors(
+    pub async fn get_segment_descriptors(
         &self,
         topic_path: &str,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
-        let prefix = format!("{}/storage/topics/{}/objects/", self.root, topic_path);
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/{}/segments/", self.root, topic_path);
         let kvs = self
             .store
             .get_bulk(&prefix)
@@ -92,7 +92,7 @@ impl StorageMetadata {
             .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
         let mut out = Vec::new();
         for kv in kvs {
-            if let Ok(desc) = serde_json::from_slice::<ObjectDescriptor>(&kv.value) {
+            if let Ok(desc) = serde_json::from_slice::<SegmentDescriptor>(&kv.value) {
                 out.push(desc)
             }
         }
@@ -103,13 +103,13 @@ impl StorageMetadata {
 
     /// Fetch descriptors starting at or after `from_padded` (inclusive). If `to_padded` is Some,
     /// it will stop at keys <= `to_padded`.
-    pub async fn get_object_descriptors_range(
+    pub async fn get_segment_descriptors_range(
         &self,
         topic_path: &str,
         from_padded: &str,
         to_padded: Option<&str>,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
-        let prefix = format!("{}/storage/topics/{}/objects/", self.root, topic_path);
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/{}/segments/", self.root, topic_path);
         let kvs = self
             .store
             .get_bulk(&prefix)
@@ -124,7 +124,7 @@ impl StorageMetadata {
                     continue;
                 }
                 if idx >= from_padded && to_padded.map(|t| idx <= t).unwrap_or(true) {
-                    if let Ok(desc) = serde_json::from_slice::<ObjectDescriptor>(&kv.value) {
+                    if let Ok(desc) = serde_json::from_slice::<SegmentDescriptor>(&kv.value) {
                         out.push(desc);
                     }
                 }

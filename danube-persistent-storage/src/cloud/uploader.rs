@@ -10,7 +10,7 @@ use tracing::{error, info};
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::uploader_stream;
 use crate::cloud::CloudStore;
-use crate::storage_metadata::{ObjectDescriptor, StorageMetadata};
+use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
 use crate::wal::UploaderCheckpoint;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
@@ -77,7 +77,7 @@ impl Uploader {
                 tracing::info!(
                     target = "uploader",
                     last_committed_offset = ckpt.last_committed_offset,
-                    last_object_id = ckpt.last_object_id.as_deref().unwrap_or(""),
+                    last_segment_id = ckpt.last_segment_id.as_deref().unwrap_or(""),
                     "resumed uploader from checkpoint"
                 );
             }
@@ -156,10 +156,9 @@ impl Uploader {
         )
         .await?
         {
-            Some((object_id, start_offset, end_offset, next_seq, next_pos, meta, offset_index)) => {
-                // Write descriptor and checkpoints now that upload is finalized
-                self.commit_uploaded_descriptor(
-                    &object_id,
+            Some((segment_id, start_offset, end_offset, next_seq, next_pos, meta, offset_index)) => {
+                self.commit_uploaded_segment(
+                    &segment_id,
                     start_offset,
                     end_offset,
                     meta,
@@ -177,9 +176,9 @@ impl Uploader {
     /// (streaming implementation lives in `uploader_stream` module)
 
     /// Write descriptor to metadata store and persist uploader checkpoint.
-    async fn commit_uploaded_descriptor(
+    async fn commit_uploaded_segment(
         &self,
-        object_id: &str,
+        segment_id: &str,
         start_offset: u64,
         end_offset: u64,
         meta: opendal::Metadata,
@@ -188,8 +187,8 @@ impl Uploader {
         offset_index: Vec<(u64, u64)>,
     ) -> Result<(), PersistentStorageError> {
         // Write descriptor to metadata store
-        let desc = ObjectDescriptor {
-            object_id: object_id.to_string(),
+        let desc = SegmentDescriptor {
+            segment_id: segment_id.to_string(),
             start_offset,
             end_offset,
             size: meta.content_length(),
@@ -204,11 +203,11 @@ impl Uploader {
         };
         let start_padded = format!("{:020}", start_offset);
         self.metadata
-            .put_object_descriptor(&self.cfg.topic_path, &start_padded, &desc)
+            .put_segment_descriptor(&self.cfg.topic_path, &start_padded, &desc)
             .await?;
         let _ = self
             .metadata
-            .put_current_pointer(&self.cfg.topic_path, &start_padded)
+            .put_current_segment(&self.cfg.topic_path, &start_padded)
             .await;
 
         // Persist uploader checkpoint after successful commit
@@ -216,7 +215,7 @@ impl Uploader {
             last_committed_offset: end_offset,
             last_read_file_seq: next_file_seq,
             last_read_byte_position: next_byte_pos,
-            last_object_id: Some(object_id.to_string()),
+            last_segment_id: Some(segment_id.to_string()),
             updated_at: chrono::Utc::now().timestamp() as u64,
         };
         if let Some(store) = &self.ckpt_store {

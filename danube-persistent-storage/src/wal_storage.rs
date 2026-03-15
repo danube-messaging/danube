@@ -9,26 +9,29 @@ use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use crate::cloud::{CloudReader, CloudStore};
+use crate::hot_log::HotLog;
 use crate::storage_metadata::StorageMetadata;
-use crate::wal::Wal;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
-    wal: Wal,
+    hot_log: HotLog,
     durable_store: Option<CloudStore>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
 }
 
 impl WalStorage {
-    /// Construct from a pre-configured WAL
-    pub fn from_wal(wal: Wal) -> Self {
+    pub fn from_hot_log(hot_log: HotLog) -> Self {
         Self {
-            wal,
+            hot_log,
             durable_store: None,
             metadata: None,
             topic_path: None,
         }
+    }
+
+    pub fn from_wal(wal: crate::wal::Wal) -> Self {
+        Self::from_hot_log(wal.into())
     }
 
     /// Enable durable historical reads by wiring CloudStore + StorageMetadata and logical topic path.
@@ -53,7 +56,7 @@ impl WalStorage {
     /// This method is extremely lightweight (atomic load, no locking) and can be called
     /// frequently for lag detection without performance concerns.
     pub fn current_offset(&self) -> u64 {
-        self.wal.current_offset()
+        self.hot_log.current_offset()
     }
 
     /// Convenience: append a message directly to the underlying WAL.
@@ -61,7 +64,7 @@ impl WalStorage {
     /// Note: Integration tests use `storage.append(&msg)`; this helper forwards to `Wal::append`.
     #[allow(dead_code)]
     pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
-        self.wal.append(msg).await
+        self.hot_log.append(msg).await
     }
 }
 
@@ -72,10 +75,9 @@ impl PersistentStorage for WalStorage {
         topic_name: &str,
         msg: StreamMessage,
     ) -> Result<u64, PersistentStorageError> {
-        // Ensure writer has topic for metrics
-        self.wal.set_topic_for_metrics(topic_name.to_string()).await;
+        self.hot_log.set_topic_for_metrics(topic_name.to_string()).await;
         let payload_len = msg.payload.len() as u64;
-        let res = self.wal.append(&msg).await;
+        let res = self.hot_log.append(&msg).await;
         if let Ok(_off) = res {
             counter!(WAL_APPEND_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
             counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string())
@@ -97,9 +99,8 @@ impl PersistentStorage for WalStorage {
         ) {
             (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
             _ => {
-                // Fallback to WAL-only behavior if cloud integration is not configured.
                 let (from, live) = match start {
-                    StartPosition::Latest => (self.wal.current_offset(), true),
+                    StartPosition::Latest => (self.hot_log.current_offset(), true),
                     StartPosition::Offset(o) => (o, false),
                 };
                 warn!(
@@ -107,7 +108,7 @@ impl PersistentStorage for WalStorage {
                     start = from,
                     "cloud is not configured; creating reader from WAL only"
                 );
-                let stream = self.wal.tail_reader(from, live).await;
+                let stream = self.hot_log.tail_reader(from, live).await;
                 if stream.is_ok() {
                     counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
                 }
@@ -115,21 +116,15 @@ impl PersistentStorage for WalStorage {
             }
         };
 
-        // 1. Determine the concrete start offset and whether we are in live mode.
         let (start_offset, live) = match start {
-            StartPosition::Latest => (self.wal.current_offset(), true),
+            StartPosition::Latest => (self.hot_log.current_offset(), true),
             StartPosition::Offset(o) => (o, false),
         };
 
-        // 2. Get the WAL's start offset from its checkpoint. This tells us the oldest
-        // offset available in the local WAL files.
-        let wal_checkpoint = self.wal.current_wal_checkpoint().await;
+        let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
         let wal_start_offset = wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset);
 
-        // 3. Implement the tiered reading logic.
         if start_offset >= wal_start_offset {
-            // CASE 1: The entire read can be served from the local WAL.
-            // This is the most efficient path for active consumers.
             info!(
                 target = "wal_storage",
                 topic = %topic_path,
@@ -137,13 +132,12 @@ impl PersistentStorage for WalStorage {
                 wal_start = wal_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            let stream = self.wal.tail_reader(start_offset, live).await;
+            let stream = self.hot_log.tail_reader(start_offset, live).await;
             if stream.is_ok() {
                 counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
             }
             stream
         } else {
-            // CASE 2: The read must start from the cloud and then hand off to the WAL.
             let handoff_offset = wal_start_offset;
             info!(
                 target = "wal_storage",
@@ -153,17 +147,13 @@ impl PersistentStorage for WalStorage {
                 "creating reader with Cloud->WAL chaining"
             );
 
-            // Create a stream for the historical data from the cloud.
-            // This will read from start_offset up to (but not including) handoff_offset.
             let reader = CloudReader::new(durable_store, metadata, topic_path.clone());
             let cloud_stream = reader
                 .read_range(start_offset, Some(handoff_offset - 1))
                 .await?;
 
-            // Create a stream for the recent data from the WAL, starting at the handoff point.
-            let wal_stream = self.wal.tail_reader(handoff_offset, false).await?;
+            let wal_stream = self.hot_log.tail_reader(handoff_offset, false).await?;
 
-            // Chain them together to provide a single, seamless stream to the consumer.
             let chained = cloud_stream.chain(wal_stream);
             counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
             counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string())
@@ -181,6 +171,6 @@ impl PersistentStorage for WalStorage {
     }
 
     async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
-        self.wal.flush().await
+        self.hot_log.flush().await
     }
 }
