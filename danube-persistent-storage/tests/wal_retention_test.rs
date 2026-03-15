@@ -6,7 +6,8 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{
-    wal::WalConfig, BackendConfig, LocalBackend, UploaderBaseConfig, WalStorageFactory,
+    wal::WalConfig, BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig,
+    UploaderBaseConfig,
 };
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -310,16 +311,18 @@ async fn test_stateful_reader_after_retention() {
         retention_size_mb: Some(0),
     };
     let memory_store: Arc<MemoryStore> = Arc::new(MemoryStore::new().await.expect("mem"));
-    let factory = WalStorageFactory::new(
-        wal_cfg.clone(),
-        backend.clone(),
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::cloud_native(
+            wal_cfg.clone(),
+            "/danube".to_string(),
+            backend.clone(),
+            UploaderBaseConfig {
+                interval_seconds: 1,
+                ..Default::default()
+            },
+            Some(deleter_cfg.clone()),
+        ),
         memory_store.clone() as Arc<dyn MetadataStore>,
-        "/danube".to_string(),
-        UploaderBaseConfig {
-            interval_seconds: 1,
-            ..Default::default()
-        },
-        deleter_cfg.clone(),
     );
 
     let topic = "integration/retention-reader";

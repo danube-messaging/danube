@@ -41,9 +41,11 @@ load_manager:
     min_topic_age_seconds: 300
     blacklist_topics: []
 
-wal_cloud:
+storage:
+  mode: cloud_native
+  cache_root: "./danube-data/wal"
+  metadata_root: "/danube-data"
   wal:
-    dir: "./danube-data/wal"
     file_name: "wal.log"
     cache_capacity: 1024
     file_sync:
@@ -55,13 +57,6 @@ wal_cloud:
       time_minutes: 2880
       size_mb: 20480
       check_interval_minutes: 5
-
-  uploader:
-    enabled: true
-    interval_seconds: 60
-    root_prefix: "/danube-data"
-    max_object_mb: 1024
-
   cloud:
     backend: "s3"
     root: "s3://danube-messages/cluster-data"

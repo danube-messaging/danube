@@ -119,82 +119,22 @@ load_manager:
     # Examples: ["/system/*", "/admin/critical-topic", "/production/*"]
     blacklist_topics: []
 
-# WAL and Cloud Storage Configuration
-# Cloud-native persistence: local WAL (hot path) + background cloud uploads (durability)
-wal_cloud:
-  # Local Write-Ahead Log: Fast append-only log with in-memory cache
+# Storage Configuration
+storage:
+  mode: local
+  root: "./danube-data/wal"
   wal:
-    # WAL root directory (per-topic subdirectories created automatically)
-    # Use fast local SSD for best performance. Set to null for in-memory mode (testing only)
-    dir: "./danube-data/wal"
-
-    # Base filename for WAL (with rotation: wal.<seq>.log)
     file_name: "wal.log"
-
-    # In-memory cache capacity (number of recent messages)
-    # Higher = better consumer hit rates, more memory. Lower = less memory, more disk reads
     cache_capacity: 1024
-
-    # File sync configuration: fsync cadence and write batching
     file_sync:
-      # Flush interval (milliseconds): how often to fsync buffered writes
-      # Production: 5000 (5s). High-throughput: 10000 (10s). Low-latency: 1000 (1s)
       interval_ms: 5000
-
-      # Max buffered bytes before forcing a flush (write batch size)
-      # Larger = better throughput. Smaller = lower latency, more frequent fsyncs
-      max_batch_bytes: 10485760 # 10 MiB
-
-    # File rotation: prevents unbounded file growth, creates wal.0.log, wal.1.log, etc.
+      max_batch_bytes: 10485760
     rotation:
-      # Size-based rotation threshold (bytes)
-      max_bytes: 536870912 # 512 MiB
-
-      # Time-based rotation threshold (hours) - optional
-      # Ensures no infinitely old files (good for low-traffic topics)
-      # max_hours: 24
-
-    # Local WAL retention: prunes old files after cloud upload
-    # Both time and size limits applied; whichever triggers first
+      max_bytes: 536870912
     retention:
-      # Time-based: delete files older than this (minutes)
-      # Must be larger than uploader interval. Production: 48h. Min: 24h
-      time_minutes: 2880 # 48 hours
-
-      # Size-based: delete oldest files when total exceeds this (MB per topic)
-      # Production: 20 GiB. Space-constrained: 10 GiB minimum
-      size_mb: 20480 # 20 GiB
-
-      # How often to check retention policy (minutes)
+      time_minutes: 2880
+      size_mb: 20480
       check_interval_minutes: 5
-
-  # Cloud Uploader: background task that persists WAL to cloud storage
-  uploader:
-    # Enable cloud uploads (disable for local-only dev/testing)
-    enabled: true
-
-    # Upload cycle interval (seconds)
-    # Testing: 30s. Production: 300s (5 min). High-durability: 60s (1 min)
-    interval_seconds: 30
-
-    # Metadata root prefix (change only for multiple independent clusters)
-    root_prefix: "/danube-data"
-
-    # Max cloud object size (MB) - optimal for S3/GCS multipart uploads
-    max_object_mb: 256
-
-  # Cloud Storage Backend (powered by OpenDAL)
-  cloud:
-    # Backend options: fs | s3 | gcs | azblob | memory
-    # Production: Use s3/gcs/azblob for cloud-native. Multi-broker: shared fs or cloud
-    backend: "fs"
-
-    # Storage root (backend-specific format)
-    # fs: "./path", s3: "s3://bucket/prefix", gcs: "gcs://bucket/prefix"
-    # Multi-broker: must be shared/accessible across all brokers
-    root: "./danube-data/cloud-storage"
-
-    # Backend-specific options - see commented examples below
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

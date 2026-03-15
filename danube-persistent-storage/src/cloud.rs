@@ -1,16 +1,16 @@
 // Top-level cloud module entry: flat submodules and public re-exports
 
-pub mod storage_config;
-pub mod storage;
-pub mod reader;
-pub mod uploader;
-pub mod uploader_stream;
+mod storage_config;
+mod storage;
+mod reader;
+mod uploader;
+mod uploader_stream;
 
 // Re-export the public API used by the rest of the crate
 pub use storage::{CloudRangeReader, CloudStore, CloudWriter};
 pub use storage_config::{BackendConfig, CloudBackend, LocalBackend};
 pub use reader::CloudReader;
-pub use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};
+pub(crate) use uploader::{Uploader, UploaderBaseConfig, UploaderConfig};
 
 // Local test modules for cloud components
 #[cfg(test)]

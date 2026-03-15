@@ -339,7 +339,9 @@ For production deployment:
 Update `../config/danube_broker.yml`:
 
 ```yaml
-wal_cloud:
+storage:
+  mode: cloud_native
+  cache_root: "./danube-data/wal"
   cloud:
     backend: "s3"
     root: "s3://your-bucket/danube"

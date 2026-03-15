@@ -14,7 +14,8 @@ use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig, WalStorageFactory,
+    BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig, Uploader,
+    UploaderBaseConfig, UploaderConfig,
 };
 use tokio_stream::StreamExt;
 
@@ -50,16 +51,18 @@ async fn test_factory_multi_topic_wal_isolation() {
     let meta = MemoryStore::new().await.expect("memory meta");
     let metadata_store: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(meta);
 
-    let factory = WalStorageFactory::new(
-        WalConfig {
-            dir: Some(wal_root.clone()),
-            ..Default::default()
-        },
-        backend,
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::cloud_native(
+            WalConfig {
+                dir: Some(wal_root.clone()),
+                ..Default::default()
+            },
+            "/danube",
+            backend,
+            UploaderBaseConfig::default(),
+            Some(DeleterConfig::default()),
+        ),
         metadata_store,
-        "/danube",
-        UploaderBaseConfig::default(),
-        DeleterConfig::default(),
     );
 
     let topic_a = "/default/topic-a";

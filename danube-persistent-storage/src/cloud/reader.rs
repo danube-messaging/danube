@@ -45,6 +45,7 @@ impl CloudReader {
     }
 
     /// Expose the underlying storage metadata helper (primarily for tests).
+    #[cfg(test)]
     pub fn metadata(&self) -> &StorageMetadata {
         &self.metadata
     }

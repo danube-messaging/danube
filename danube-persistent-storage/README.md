@@ -168,11 +168,13 @@ Key details
 Example YAML (broker uploader):
 
 ```yaml
-wal_cloud:
-  uploader:
-    interval_seconds: 300
-    root_prefix: "/danube-data"
-    max_object_mb: 1024
+storage:
+  mode: cloud_native
+  metadata_root: "/danube-data"
+  cache_root: "./danube-data/wal"
+  cloud:
+    backend: "s3"
+    root: "s3://danube-data/messages"
 ```
 
 ## Tests

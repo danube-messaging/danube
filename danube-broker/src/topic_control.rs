@@ -20,7 +20,7 @@ use crate::{
     topic_registry::TopicRegistry,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
-use danube_persistent_storage::WalStorageFactory;
+use danube_persistent_storage::StorageFactory;
 /// Manages topics and their associated producers and consumers.
 #[derive(Debug, Clone)]
 pub(crate) struct TopicManager {
@@ -29,7 +29,7 @@ pub(crate) struct TopicManager {
     /// Topic registry for local topics hosted by this broker.
     pub(crate) topic_registry: Arc<TopicRegistry>,
     /// Factory for building per-topic WAL storage (reliable mode).
-    pub(crate) wal_factory: WalStorageFactory,
+    pub(crate) storage_factory: StorageFactory,
     /// Shared access to metadata resources (Raft state machine).
     pub(crate) resources: Arc<Resources>,
     /// Index of producer_id -> topic_name.
@@ -45,7 +45,7 @@ impl TopicManager {
     pub(crate) fn new(
         broker_id: u64,
         topic_registry: Arc<TopicRegistry>,
-        wal_factory: WalStorageFactory,
+        storage_factory: StorageFactory,
         resources: Arc<Resources>,
         producers: ProducerRegistry,
         consumers: ConsumerRegistry,
@@ -54,7 +54,7 @@ impl TopicManager {
         Self {
             broker_id,
             topic_registry,
-            wal_factory,
+            storage_factory,
             resources,
             producers,
             consumers,
@@ -109,9 +109,9 @@ impl TopicManager {
 
         let dispatch_strategy = dispatch_strategy.unwrap();
 
-        // Build per-topic WalStorage with Cloud handoff via the factory
+        // Build per-topic storage via the factory
         let wal_storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
-            Some(self.wal_factory.for_topic(topic_name).await?)
+            Some(self.storage_factory.for_topic(topic_name).await?)
         } else {
             None
         };
@@ -218,7 +218,7 @@ impl TopicManager {
 
     /// Flush and seal persistent storage (WAL/uploader/deleter).
     pub(crate) async fn flush_and_seal(&self, topic_name: &str) -> Result<()> {
-        self.wal_factory
+        self.storage_factory
             .flush_and_seal(topic_name, self.broker_id)
             .await
             .map(|_| ())
@@ -227,7 +227,7 @@ impl TopicManager {
 
     /// Delete ETCD storage metadata for a reliable topic.
     pub(crate) async fn delete_storage_metadata(&self, topic_name: &str) -> Result<()> {
-        self.wal_factory
+        self.storage_factory
             .delete_storage_metadata(topic_name)
             .await
             .map_err(|e| anyhow!("delete_storage_metadata failed: {}", e))

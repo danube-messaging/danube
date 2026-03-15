@@ -3,7 +3,8 @@ use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
 use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, ObjectDescriptor, UploaderBaseConfig, WalStorageFactory,
+    BackendConfig, LocalBackend, ObjectDescriptor, StorageFactory, StorageFactoryConfig,
+    UploaderBaseConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,7 +38,7 @@ pub fn make_test_message(
 
 /// Creates a test setup with in-memory backends
 #[allow(dead_code)]
-pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
+pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
     let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
 
     // Use a unique WAL directory per test run to avoid interference with previous runs.
@@ -52,23 +53,25 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
     };
 
     let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
-    let factory = WalStorageFactory::new(
-        WalConfig {
-            dir: Some(unique_dir),
-            fsync_interval_ms: Some(200),
-            ..Default::default()
-        },
-        BackendConfig::Local {
-            backend: LocalBackend::Memory,
-            root: "integration-test".to_string(),
-        },
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::cloud_native(
+            WalConfig {
+                dir: Some(unique_dir),
+                fsync_interval_ms: Some(200),
+                ..Default::default()
+            },
+            "/danube",
+            BackendConfig::Local {
+                backend: LocalBackend::Memory,
+                root: "integration-test".to_string(),
+            },
+            UploaderBaseConfig {
+                interval_seconds: 1,
+                ..Default::default()
+            },
+            Some(DeleterConfig::default()),
+        ),
         store_arc,
-        "/danube",
-        UploaderBaseConfig {
-            interval_seconds: 1,
-            ..Default::default()
-        },
-        DeleterConfig::default(),
     );
 
     (factory, memory_store)

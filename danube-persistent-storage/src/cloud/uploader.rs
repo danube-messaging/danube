@@ -17,7 +17,7 @@ use crate::wal::UploaderCheckpoint;
 /// to the metadata store. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,
 /// last_read_byte_position)` and never flushes the WAL.
 #[derive(Debug)]
-pub struct Uploader {
+pub(crate) struct Uploader {
     cfg: UploaderConfig,
     cloud: CloudStore,
     metadata: StorageMetadata,
@@ -27,7 +27,7 @@ pub struct Uploader {
 
 impl Uploader {
     /// Create a new per-topic uploader.
-    pub fn new(
+    pub(crate) fn new(
         cfg: UploaderConfig,
         cloud: CloudStore,
         metadata: StorageMetadata,
@@ -44,7 +44,8 @@ impl Uploader {
 
     /// Backward-compatible start without an explicit cancellation token.
     /// Used by tests; for production, prefer start_with_cancel so callers can cancel.
-    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
+    #[cfg(test)]
+    pub(crate) fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
         let token = CancellationToken::new();
         self.start_with_cancel(token)
     }
@@ -53,7 +54,7 @@ impl Uploader {
     ///
     /// Best-effort semantics: single-writer assumption (no distributed lease).
     /// On start, attempts to resume from the last uploader checkpoint.
-    pub fn start_with_cancel(
+    pub(crate) fn start_with_cancel(
         self: Arc<Self>,
         cancel: CancellationToken,
     ) -> JoinHandle<Result<(), PersistentStorageError>> {
@@ -240,8 +241,9 @@ impl Uploader {
     }
 
     /// Returns current uploaded offset watermark.
-    pub fn last_uploaded_offset(&self) -> u64 {
-        self.last_uploaded_offset.load(Ordering::Acquire)
+    #[cfg(test)]
+    pub(crate) fn last_uploaded_offset(&self) -> u64 {
+        self.last_uploaded_offset.load(Ordering::Relaxed)
     }
 
     // drain_and_stop/request_stop are no longer needed; cooperative shutdown via CancellationToken
@@ -249,7 +251,7 @@ impl Uploader {
 
 /// Base (broker-level) uploader configuration applied to all per-topic uploaders.
 #[derive(Debug, Clone)]
-pub struct UploaderBaseConfig {
+pub(crate) struct UploaderBaseConfig {
     pub interval_seconds: u64,
     pub max_object_mb: Option<u64>,
 }
@@ -261,19 +263,23 @@ pub struct UploaderBaseConfig {
 /// - `topic_path`: logical topic path (e.g., "ns/topic")
 /// - `root_prefix`: metadata root prefix (e.g., "/danube") used for metadata paths
 #[derive(Debug, Clone)]
-pub struct UploaderConfig {
+pub(crate) struct UploaderConfig {
     pub interval_seconds: u64,
     pub topic_path: String,  // e.g., "ns/topic"
-    pub root_prefix: String, // e.g., "/danube"
+    pub _root_prefix: String, // e.g., "/danube"
     pub max_object_mb: Option<u64>,
 }
 
 impl UploaderConfig {
-    pub fn from_base(base: &UploaderBaseConfig, topic_path: String, root_prefix: String) -> Self {
+    pub(crate) fn from_base(
+        base: &UploaderBaseConfig,
+        topic_path: String,
+        root_prefix: String,
+    ) -> Self {
         Self {
             interval_seconds: base.interval_seconds,
             topic_path,
-            root_prefix,
+            _root_prefix: root_prefix,
             max_object_mb: base.max_object_mb,
         }
     }
@@ -293,7 +299,7 @@ impl Default for UploaderConfig {
         Self {
             interval_seconds: 300,
             topic_path: "default/topic".to_string(),
-            root_prefix: "/danube".to_string(),
+            _root_prefix: "/danube".to_string(),
             max_object_mb: Some(256),
         }
     }

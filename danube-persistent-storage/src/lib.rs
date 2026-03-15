@@ -3,50 +3,37 @@ mod errors;
 pub mod wal;
 pub use wal::Wal;
 
-// Unified checkpoints (WAL + uploader)
 pub mod checkpoint;
 pub use checkpoint::{CheckPoint, UploaderCheckpoint, WalCheckpoint};
+
+mod hot_log;
+pub use hot_log::HotLog;
+
+mod durable_store;
+pub use durable_store::{DurableStore, DurableStoreConfig, OpendalDurableStore};
+
+mod segment_catalog;
+pub use segment_catalog::SegmentCatalog;
+
+mod mobility_state;
+pub use mobility_state::MobilityState;
 
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
-// New flat cloud module entry
-pub mod cloud;
-pub use cloud::{
-    BackendConfig, CloudBackend, CloudRangeReader, CloudReader, CloudStore, CloudWriter,
-    LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig,
-};
+mod cloud;
+pub use cloud::{BackendConfig, CloudBackend, LocalBackend};
 
-// Backward-compatibility shims for legacy module paths used by tests/consumers.
-// These re-export from the new cloud entry so existing `use crate::cloud_store::*` keeps working.
-pub mod cloud_store {
-    pub use crate::cloud::{
-        BackendConfig, CloudBackend, CloudRangeReader, CloudStore, CloudWriter, LocalBackend,
-    };
-}
-pub mod cloud_reader {
-    pub use crate::cloud::CloudReader;
-}
-pub mod uploader {
-    pub use crate::cloud::{Uploader, UploaderBaseConfig, UploaderConfig};
-}
-pub mod uploader_stream {
-    pub use crate::cloud::uploader_stream::*;
-}
-
-// Shared frame utilities (header size, CRC-checked scanning)
 mod frames;
 
 mod storage_metadata;
-pub use storage_metadata::{ObjectDescriptor, StorageMetadata};
+pub use storage_metadata::ObjectDescriptor;
 
-// WalStorageFactory: facade to create per-topic WalStorage and manage per-topic uploaders
-mod wal_factory;
-pub use wal_factory::WalStorageFactory;
+mod storage_factory;
+pub use storage_factory::{RetentionConfig, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
 
 mod persistent_metrics;
 
-// Unit tests
 #[cfg(test)]
 mod checkpoints_test;
 #[cfg(test)]

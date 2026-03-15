@@ -22,6 +22,7 @@ mod topic_cluster;
 mod topic_control;
 mod topic_schema;
 mod topic_registry;
+mod storage_configuration;
 mod utils;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
@@ -33,15 +34,19 @@ use crate::{
     danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
+    storage_configuration::{CloudConfig, StorageConfig, WalNode},
 };
 
 use anyhow::{Context, Result};
-use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{BackendConfig, UploaderBaseConfig, WalStorageFactory};
+use danube_persistent_storage::{
+    BackendConfig, CloudBackend, LocalBackend, RetentionConfig, StorageFactory,
+    StorageFactoryConfig,
+};
 use danube_raft::node::{RaftNode, RaftNodeConfig};
 use danube_raft::BootstrapResult;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
+use std::collections::HashMap;
 
 use crate::metadata_storage::MetadataStorage;
 
@@ -232,72 +237,10 @@ async fn main() -> Result<()> {
     let advertised_raft_addr_str = raft_node.advertised_addr.clone();
     let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
-    // Initialize WAL + Cloud (wal_cloud) configuration (Phase D)
-    let wal_cfg = service_config
-        .wal_cloud
-        .as_ref()
-        .cloned()
-        .expect("wal_cloud configuration is required in Phase D");
-
-    // Prepare WalConfig (per-topic WALs will be created by the factory using this as base)
-    let wal_base_cfg = WalConfig {
-        dir: wal_cfg.wal.dir.as_ref().map(|d| d.into()),
-        file_name: wal_cfg.wal.file_name.clone(),
-        cache_capacity: wal_cfg.wal.cache_capacity,
-        fsync_interval_ms: wal_cfg.wal.file_sync.as_ref().and_then(|f| f.interval_ms),
-        fsync_max_batch_bytes: wal_cfg
-            .wal
-            .file_sync
-            .as_ref()
-            .and_then(|f| f.max_batch_bytes),
-        rotate_max_bytes: wal_cfg.wal.rotation.as_ref().and_then(|r| r.max_bytes),
-        // Map hours (config) to seconds (WalConfig)
-        rotate_max_seconds: wal_cfg
-            .wal
-            .rotation
-            .as_ref()
-            .and_then(|r| r.max_hours.map(|h| h.saturating_mul(3600))),
-        ..Default::default()
-    };
-
-    // Build BackendConfig from CloudConfig (conversion defined in service_configuration.rs)
-    let cloud_backend: BackendConfig = (&wal_cfg.cloud).into();
-
-    // Create UploaderBaseConfig from broker configuration
-    let uploader_base_cfg = UploaderBaseConfig {
-        interval_seconds: wal_cfg.uploader.interval_seconds,
-        max_object_mb: wal_cfg.uploader.max_object_mb,
-    };
-
-    // Build DeleterConfig (retention) from broker configuration (defaults handled in factory layer if needed)
-    let deleter_cfg = if let Some(ret) = &wal_cfg.wal.retention {
-        DeleterConfig {
-            check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
-            retention_time_minutes: ret.time_minutes,
-            retention_size_mb: ret.size_mb,
-        }
-    } else {
-        DeleterConfig {
-            check_interval_minutes: 5,
-            retention_time_minutes: None,
-            retention_size_mb: None,
-        }
-    };
-
-    // Create WalStorageFactory to encapsulate storage stack and per-topic uploaders
     let store_arc: Arc<dyn danube_core::metadata::MetadataStore> = Arc::new(metadata_store.clone());
-    let wal_factory = WalStorageFactory::new(
-        wal_base_cfg,
-        cloud_backend,
-        store_arc,
-        wal_cfg
-            .uploader
-            .root_prefix
-            .clone()
-            .unwrap_or_else(|| "/danube".to_string()),
-        uploader_base_cfg,
-        deleter_cfg,
-    );
+    let storage_factory_config =
+        build_storage_factory_config(&service_config.storage, &service_config.meta_store.data_dir);
+    let storage_factory = StorageFactory::new(storage_factory_config, store_arc);
 
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
@@ -314,7 +257,7 @@ async fn main() -> Result<()> {
     let broker_service = BrokerService::new(
         broker_id,
         resources.clone(),
-        wal_factory,
+        storage_factory,
         service_config.auto_create_topics,
     );
 
@@ -389,4 +332,196 @@ async fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn build_storage_factory_config(
+    storage: &StorageConfig,
+    metadata_data_dir: &str,
+) -> StorageFactoryConfig {
+    match storage {
+        StorageConfig::Local {
+            root,
+            metadata_root,
+            wal,
+        } => StorageFactoryConfig::local(
+            build_wal_config(Some(root.clone()), wal),
+            metadata_root
+                .clone()
+                .unwrap_or_else(|| "/danube".to_string()),
+        ),
+        StorageConfig::SharedFs {
+            root,
+            cache_root,
+            metadata_root,
+            wal,
+        } => StorageFactoryConfig::shared_fs(
+            build_wal_config(
+                Some(resolve_cache_root(
+                    cache_root.as_ref(),
+                    metadata_data_dir,
+                    "shared-fs-cache",
+                )),
+                wal,
+            ),
+            metadata_root
+                .clone()
+                .unwrap_or_else(|| "/danube".to_string()),
+            BackendConfig::Local {
+                backend: LocalBackend::Fs,
+                root: root.clone(),
+            },
+            build_retention_config(wal),
+        ),
+        StorageConfig::CloudNative {
+            cloud,
+            cache_root,
+            metadata_root,
+            wal,
+        } => StorageFactoryConfig::cloud_native(
+            build_wal_config(
+                Some(resolve_cache_root(
+                    cache_root.as_ref(),
+                    metadata_data_dir,
+                    "cloud-cache",
+                )),
+                wal,
+            ),
+            metadata_root
+                .clone()
+                .unwrap_or_else(|| "/danube".to_string()),
+            cloud_config_to_backend(cloud),
+            build_retention_config(wal),
+        ),
+    }
+}
+
+fn build_wal_config(root: Option<String>, wal: &WalNode) -> WalConfig {
+    WalConfig {
+        dir: wal.dir.clone().or(root).map(Into::into),
+        file_name: wal.file_name.clone(),
+        cache_capacity: wal.cache_capacity,
+        fsync_interval_ms: wal.file_sync.as_ref().and_then(|f| f.interval_ms),
+        fsync_max_batch_bytes: wal.file_sync.as_ref().and_then(|f| f.max_batch_bytes),
+        rotate_max_bytes: wal.rotation.as_ref().and_then(|r| r.max_bytes),
+        rotate_max_seconds: wal
+            .rotation
+            .as_ref()
+            .and_then(|r| r.max_hours.map(|h| h.saturating_mul(3600))),
+        ..Default::default()
+    }
+}
+
+fn build_retention_config(wal: &WalNode) -> Option<RetentionConfig> {
+    wal.retention.as_ref().map(|ret| RetentionConfig {
+        check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
+        time_minutes: ret.time_minutes,
+        size_mb: ret.size_mb,
+    })
+}
+
+fn resolve_cache_root(cache_root: Option<&String>, metadata_data_dir: &str, suffix: &str) -> String {
+    if let Some(cache_root) = cache_root {
+        return cache_root.clone();
+    }
+    let mut base = PathBuf::from(metadata_data_dir);
+    if base.file_name().is_some() {
+        base.pop();
+    }
+    base.push(suffix);
+    base.to_string_lossy().into_owned()
+}
+
+fn cloud_config_to_backend(cfg: &CloudConfig) -> BackendConfig {
+    match cfg {
+        CloudConfig::S3 {
+            root,
+            region,
+            endpoint,
+            access_key,
+            secret_key,
+            profile,
+            role_arn,
+            session_token,
+            anonymous,
+            virtual_host_style,
+        } => {
+            let mut options = HashMap::new();
+            if let Some(v) = region {
+                options.insert("region".into(), v.clone());
+            }
+            if let Some(v) = endpoint {
+                options.insert("endpoint".into(), v.clone());
+            }
+            if let Some(v) = access_key {
+                options.insert("access_key".into(), v.clone());
+            }
+            if let Some(v) = secret_key {
+                options.insert("secret_key".into(), v.clone());
+            }
+            if let Some(v) = profile {
+                options.insert("profile".into(), v.clone());
+            }
+            if let Some(v) = role_arn {
+                options.insert("role_arn".into(), v.clone());
+            }
+            if let Some(v) = session_token {
+                options.insert("session_token".into(), v.clone());
+            }
+            if let Some(v) = anonymous {
+                options.insert("anonymous".into(), v.to_string());
+            }
+            if let Some(v) = virtual_host_style {
+                options.insert("virtual_host_style".into(), v.to_string());
+            }
+            BackendConfig::Cloud {
+                backend: CloudBackend::S3,
+                root: root.clone(),
+                options,
+            }
+        }
+        CloudConfig::Gcs {
+            root,
+            project,
+            credentials_json,
+            credentials_path,
+        } => {
+            let mut options = HashMap::new();
+            if let Some(v) = project {
+                options.insert("project".into(), v.clone());
+            }
+            if let Some(v) = credentials_json {
+                options.insert("credentials_json".into(), v.clone());
+            }
+            if let Some(v) = credentials_path {
+                options.insert("credentials_path".into(), v.clone());
+            }
+            BackendConfig::Cloud {
+                backend: CloudBackend::Gcs,
+                root: root.clone(),
+                options,
+            }
+        }
+        CloudConfig::Azblob {
+            root,
+            endpoint,
+            account_name,
+            account_key,
+        } => {
+            let mut options = HashMap::new();
+            if let Some(v) = endpoint {
+                options.insert("endpoint".into(), v.clone());
+            }
+            if let Some(v) = account_name {
+                options.insert("account_name".into(), v.clone());
+            }
+            if let Some(v) = account_key {
+                options.insert("account_key".into(), v.clone());
+            }
+            BackendConfig::Cloud {
+                backend: CloudBackend::Azblob,
+                root: root.clone(),
+                options,
+            }
+        }
+    }
 }

@@ -15,7 +15,7 @@ use crate::wal::Wal;
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
     wal: Wal,
-    cloud: Option<CloudStore>,
+    durable_store: Option<CloudStore>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
 }
@@ -25,24 +25,24 @@ impl WalStorage {
     pub fn from_wal(wal: Wal) -> Self {
         Self {
             wal,
-            cloud: None,
+            durable_store: None,
             metadata: None,
             topic_path: None,
         }
     }
 
-    /// Enable cloud historical reads by wiring CloudStore + StorageMetadata and logical topic path.
-    pub fn with_cloud(
+    /// Enable durable historical reads by wiring CloudStore + StorageMetadata and logical topic path.
+    pub(crate) fn with_durable_history(
         mut self,
-        cloud: CloudStore,
+        durable_store: CloudStore,
         metadata: StorageMetadata,
         topic_path: String,
     ) -> Self {
-        self.cloud = Some(cloud);
+        self.durable_store = Some(durable_store);
         self.metadata = Some(metadata);
         self.topic_path = Some(topic_path);
         if let Some(tp) = &self.topic_path {
-            info!(target = "wal_storage", topic = %tp, "cloud handoff enabled for topic");
+            info!(target = "wal_storage", topic = %tp, "durable history enabled for topic");
         }
         self
     }
@@ -90,8 +90,8 @@ impl PersistentStorage for WalStorage {
         start: StartPosition,
     ) -> Result<TopicStream, PersistentStorageError> {
         // This function requires cloud and metadata to be configured for the tiered reading logic.
-        let (cloud, metadata, topic_path) = match (
-            self.cloud.as_ref(),
+        let (durable_store, metadata, topic_path) = match (
+            self.durable_store.as_ref(),
             self.metadata.as_ref(),
             self.topic_path.as_ref(),
         ) {
@@ -155,7 +155,7 @@ impl PersistentStorage for WalStorage {
 
             // Create a stream for the historical data from the cloud.
             // This will read from start_offset up to (but not including) handoff_offset.
-            let reader = CloudReader::new(cloud, metadata, topic_path.clone());
+            let reader = CloudReader::new(durable_store, metadata, topic_path.clone());
             let cloud_stream = reader
                 .read_range(start_offset, Some(handoff_offset - 1))
                 .await?;
