@@ -1,6 +1,5 @@
 use crate::checkpoint::WalCheckpoint;
 use crate::cloud::CloudStore;
-use crate::cloud::CloudWriter;
 use crate::frames::{
     extract_offsets_in_prefix, scan_safe_frame_boundary_with_crc, FRAME_HEADER_SIZE,
 };
@@ -17,7 +16,7 @@ use tokio::io::{AsyncSeekExt, SeekFrom};
 
 /// Internal mutable state for a single streaming cycle.
 struct UploadState {
-    cloud_writer: Option<CloudWriter>,
+    segment_bytes: Vec<u8>,
     segment_id: Option<String>,
     first_offset: Option<u64>,
     last_offset: Option<u64>,
@@ -32,7 +31,7 @@ struct UploadState {
 impl UploadState {
     fn new(start_seq: u64, start_pos: u64) -> Self {
         Self {
-            cloud_writer: None,
+            segment_bytes: Vec::new(),
             segment_id: None,
             first_offset: None,
             last_offset: None,
@@ -106,7 +105,7 @@ pub async fn stream_frames_to_cloud(
     let cap_bytes: Option<u64> = max_object_mb.map(|mb| mb.saturating_mul(1024 * 1024));
     for (seq, path) in files.into_iter().filter(|(s, _)| *s >= start_seq) {
         process_file_and_upload_once(
-            cloud, topic_path, seq, &path, start_seq, start_pos, &mut carry, &mut state,
+            seq, &path, start_seq, start_pos, &mut carry, &mut state,
         )
         .await?;
 
@@ -127,7 +126,7 @@ pub async fn stream_frames_to_cloud(
     };
 
     // 4) Finalize uploaded object and return
-    let (final_segment_id, end, meta) = finalize_uploaded_segment(&mut state).await?;
+    let (final_segment_id, end, meta) = finalize_uploaded_segment(cloud, topic_path, &mut state).await?;
     // Metrics: upload latency, bytes, objects (ok)
     let provider = cloud.provider().to_string();
 
@@ -157,6 +156,142 @@ pub async fn stream_frames_to_cloud(
     )))
 }
 
+pub async fn resume_position_from_uploaded_offset(
+    wal_ckpt: &WalCheckpoint,
+    last_committed_offset: u64,
+) -> Result<Option<(u64, u64)>, PersistentStorageError> {
+    if wal_ckpt.last_offset <= last_committed_offset {
+        return Ok(None);
+    }
+
+    let files = build_ordered_wal_files_with_offsets(wal_ckpt);
+    for (idx, (seq, path, first_offset)) in files.iter().enumerate() {
+        let first_offset = match first_offset {
+            Some(first_offset) => *first_offset,
+            None => continue,
+        };
+        if last_committed_offset < first_offset {
+            return Ok(Some((*seq, 0)));
+        }
+
+        let next_first_offset = files
+            .iter()
+            .skip(idx + 1)
+            .find_map(|(_, _, next_first)| *next_first)
+            .unwrap_or_else(|| wal_ckpt.last_offset.saturating_add(1));
+        if next_first_offset <= first_offset {
+            continue;
+        }
+        let end_offset = next_first_offset.saturating_sub(1);
+        if last_committed_offset > end_offset {
+            continue;
+        }
+
+        let resume_pos =
+            find_resume_position_in_file(path, last_committed_offset).await?;
+        return Ok(Some((*seq, resume_pos)));
+    }
+
+    Ok(None)
+}
+
+pub fn initial_resume_position(wal_ckpt: &WalCheckpoint) -> Option<(u64, u64)> {
+    build_ordered_wal_files_with_offsets(wal_ckpt)
+        .into_iter()
+        .find_map(|(seq, _path, first_offset)| first_offset.map(|_| (seq, 0)))
+}
+
+pub async fn upload_contiguous_rotated_file_as_segment(
+    cloud: &CloudStore,
+    topic_path: &str,
+    wal_ckpt: &WalCheckpoint,
+    last_committed_offset: u64,
+    max_object_mb: Option<u64>,
+) -> Result<Option<(String, u64, u64, opendal::Metadata, Vec<(u64, u64)>)>, PersistentStorageError>
+{
+    let next_expected_offset = last_committed_offset.saturating_add(1);
+    let mut rotated_files: Vec<(u64, PathBuf)> = wal_ckpt
+        .rotated_files
+        .iter()
+        .map(|(_, path, first_offset)| (*first_offset, path.clone()))
+        .collect();
+    rotated_files.sort_by_key(|(first_offset, _)| *first_offset);
+
+    let path = match rotated_files
+        .into_iter()
+        .find(|(first_offset, _)| *first_offset == next_expected_offset)
+    {
+        Some((_, path)) => path,
+        None => return Ok(None),
+    };
+
+    let file_bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(PersistentStorageError::Io(format!(
+                "read wal for rotated upload failed: {}",
+                e
+            )))
+        }
+    };
+    if file_bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let safe_len = scan_safe_frame_boundary_with_crc(&file_bytes);
+    if safe_len == 0 {
+        return Ok(None);
+    }
+
+    if let Some(cap_bytes) = max_object_mb.map(|mb| mb.saturating_mul(1024 * 1024)) {
+        if safe_len as u64 > cap_bytes {
+            return Ok(None);
+        }
+    }
+
+    let safe_bytes = &file_bytes[..safe_len];
+    let (start_offset, end_offset) = match extract_offsets_in_prefix(safe_bytes) {
+        (Some(start_offset), Some(end_offset)) => (start_offset, end_offset),
+        _ => return Ok(None),
+    };
+    if start_offset != next_expected_offset {
+        return Ok(None);
+    }
+
+    let started_at = Instant::now();
+    let segment_id = format!(
+        "data-{}-{}.dnb1",
+        start_offset,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
+    let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment_id);
+    let meta = cloud.put_object_meta(&object_path, safe_bytes).await?;
+
+    let provider = cloud.provider().to_string();
+    let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+    histogram!(CLOUD_UPLOAD_LATENCY_MS.name, "provider"=> provider.clone()).record(elapsed_ms);
+    let topic_label = if topic_path.starts_with('/') {
+        topic_path.to_string()
+    } else {
+        format!("/{}", topic_path)
+    };
+    counter!(CLOUD_UPLOAD_OBJECTS_TOTAL.name, "topic"=> topic_label.clone(), "provider"=> provider.clone(), "result"=> "ok").increment(1);
+    counter!(CLOUD_UPLOAD_BYTES_TOTAL.name, "topic"=> topic_label, "provider"=> provider)
+        .increment(meta.content_length());
+
+    Ok(Some((
+        segment_id,
+        start_offset,
+        end_offset,
+        meta,
+        build_offset_index_entries(safe_bytes),
+    )))
+}
+
 fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
     // Map rotated_files (seq, path, first_offset) -> (seq, path) for streaming
     let mut files: Vec<(u64, PathBuf)> = wal_ckpt
@@ -169,9 +304,49 @@ fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
     files
 }
 
+fn build_ordered_wal_files_with_offsets(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf, Option<u64>)> {
+    let mut files: Vec<(u64, PathBuf, Option<u64>)> = wal_ckpt
+        .rotated_files
+        .iter()
+        .map(|(seq, path, first_offset)| (*seq, path.clone(), Some(*first_offset)))
+        .collect();
+    if !wal_ckpt.file_path.is_empty() {
+        files.push((
+            wal_ckpt.file_seq,
+            PathBuf::from(&wal_ckpt.file_path),
+            wal_ckpt.active_file_first_offset,
+        ));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
+async fn find_resume_position_in_file(
+    path: &PathBuf,
+    last_committed_offset: u64,
+) -> Result<u64, PersistentStorageError> {
+    let file_bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| PersistentStorageError::Other(format!("read wal for resume: {}", e)))?;
+    let safe_len = scan_safe_frame_boundary_with_crc(&file_bytes);
+    let mut pos = 0usize;
+    while pos + FRAME_HEADER_SIZE <= safe_len {
+        let offset = u64::from_le_bytes(file_bytes[pos..pos + 8].try_into().unwrap());
+        let payload_len =
+            u32::from_le_bytes(file_bytes[pos + 8..pos + 12].try_into().unwrap()) as usize;
+        let next = pos + FRAME_HEADER_SIZE + payload_len;
+        if next > safe_len {
+            break;
+        }
+        if offset > last_committed_offset {
+            return Ok(pos as u64);
+        }
+        pos = next;
+    }
+    Ok(safe_len as u64)
+}
+
 async fn process_file_and_upload_once(
-    cloud: &CloudStore,
-    topic_path: &str,
     seq: u64,
     path: &PathBuf,
     start_seq: u64,
@@ -222,11 +397,6 @@ async fn process_file_and_upload_once(
                         .unwrap()
                         .as_secs();
                     let obj = format!("data-{}-{}.dnb1", s, timestamp);
-                    let path = format!("storage/topics/{}/segments/{}", topic_path, obj);
-                    let writer = cloud
-                        .open_streaming_writer(&path, 8 * 1024 * 1024, 4)
-                        .await?;
-                    state.cloud_writer = Some(writer);
                     state.segment_id = Some(obj);
                     state.start_instant = Some(Instant::now());
                 }
@@ -257,9 +427,7 @@ async fn process_file_and_upload_once(
                 state.msgs_since_index = (state.msgs_since_index + 1) % 1000; // INDEX_EVERY_MSGS
                 idx_scan = next;
             }
-            if let Some(w) = state.cloud_writer.as_mut() {
-                w.write(&carry[..safe_len]).await?;
-            }
+            state.segment_bytes.extend_from_slice(&carry[..safe_len]);
             // Drain uploaded bytes from carry
             carry.drain(0..safe_len);
             state.total_bytes_uploaded += safe_len as u64;
@@ -272,20 +440,34 @@ async fn process_file_and_upload_once(
 }
 
 async fn finalize_uploaded_segment(
+    cloud: &CloudStore,
+    topic_path: &str,
     state: &mut UploadState,
 ) -> Result<(String, u64, opendal::Metadata), PersistentStorageError> {
-    // 1. Close cloud writer (finalizes upload)
-    let mut cw = state
-        .cloud_writer
-        .take()
-        .expect("writer must exist for finalize");
-    let meta = cw.close().await?;
-
-    // 2. Extract offsets and object ID
     let first_offset = state.first_offset.expect("first_offset must be set");
     let end = state.last_offset.unwrap_or(first_offset);
     let final_segment_id = state.segment_id.take().expect("segment_id must be set");
-
-    // Object is already written with final timestamp-based name - no copy/rename needed
+    let object_path = format!("storage/topics/{}/segments/{}", topic_path, final_segment_id);
+    let meta = cloud.put_object_meta(&object_path, &state.segment_bytes).await?;
     Ok((final_segment_id, end, meta))
+}
+
+fn build_offset_index_entries(bytes: &[u8]) -> Vec<(u64, u64)> {
+    let mut idx = 0usize;
+    let mut offsets = Vec::new();
+    let mut msgs_since_index = 0usize;
+    while idx + FRAME_HEADER_SIZE <= bytes.len() {
+        let offset = u64::from_le_bytes(bytes[idx..idx + 8].try_into().unwrap());
+        let len = u32::from_le_bytes(bytes[idx + 8..idx + 12].try_into().unwrap()) as usize;
+        let next = idx + FRAME_HEADER_SIZE + len;
+        if next > bytes.len() {
+            break;
+        }
+        if msgs_since_index == 0 {
+            offsets.push((offset, idx as u64));
+        }
+        msgs_since_index = (msgs_since_index + 1) % 1000;
+        idx = next;
+    }
+    offsets
 }

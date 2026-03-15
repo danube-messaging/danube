@@ -20,8 +20,7 @@ mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
-// Re-export for external users: crate::wal::{Wal, UploaderCheckpoint}
-pub use crate::checkpoint::{CheckPoint, CheckpointStore, UploaderCheckpoint, WalCheckpoint};
+use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
 
 /// Write-Ahead Log (WAL) with:
 /// - In-memory ordered replay cache
@@ -212,6 +211,21 @@ impl Wal {
             d.push("wal.ckpt");
             d
         });
+        let mut ckpt_store = ckpt_store;
+        if ckpt_store.is_none() {
+            if let Some(wal_ckpt_path) = checkpoint_path.clone() {
+                let store = Arc::new(CheckpointStore::new(wal_ckpt_path.clone()));
+                if let Err(e) = store.load_from_disk().await {
+                    warn!(
+                        target = "wal",
+                        path = %wal_ckpt_path.display(),
+                        error = %e,
+                        "failed to preload wal checkpoint store"
+                    );
+                }
+                ckpt_store = Some(store);
+            }
+        }
 
         // Determine starting offset: use initial_offset if provided, otherwise 0
         let start_offset = initial_offset.unwrap_or(0);
@@ -384,6 +398,11 @@ impl Wal {
         Ok((items, watermark))
     }
 
+    pub async fn earliest_cached_offset(&self) -> Option<u64> {
+        let cache = self.inner.cache.lock().await;
+        cache.first_offset()
+    }
+
     /// Read the current WAL checkpoint from disk if available.
     pub async fn read_wal_checkpoint(
         &self,
@@ -396,16 +415,6 @@ impl Wal {
             None => return Ok(None),
         };
         CheckPoint::read_wal_from_path(&ckpt_path).await
-    }
-
-    /// Return the active WAL file path if durability is enabled.
-    pub async fn active_wal_path(&self) -> Option<PathBuf> {
-        self.inner.wal_path.lock().await.clone()
-    }
-
-    /// Expose the path to `<dir>/wal.ckpt` if durability is enabled.
-    pub async fn wal_checkpoint_path(&self) -> Option<PathBuf> {
-        self.inner.checkpoint_path.clone()
     }
 
     /// Return the latest in-memory WAL checkpoint if available (writer-updated), avoiding disk I/O.
@@ -425,11 +434,6 @@ impl Wal {
     /// Return the next offset that will be assigned on append (i.e., current tip + 1).
     pub fn current_offset(&self) -> u64 {
         self.inner.next_offset.load(Ordering::Acquire)
-    }
-
-    /// Expose the underlying checkpoint store if configured for this WAL.
-    pub fn checkpoint_store(&self) -> Option<Arc<CheckpointStore>> {
-        self.inner.ckpt_store.clone()
     }
 
     /// Graceful shutdown: flush pending buffered data and stop the background writer task.

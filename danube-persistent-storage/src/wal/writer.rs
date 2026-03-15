@@ -1,4 +1,4 @@
-use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
+use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crc32fast;
 use danube_core::storage::PersistentStorageError;
 use std::path::PathBuf;
@@ -243,8 +243,10 @@ impl WriterState {
             // Update cache and persist via store
             store.update_wal(&ckpt).await?;
         } else {
-            // Fallback to direct file write
-            CheckPoint::write_wal_to_path(&ckpt, &ckpt_path).await?;
+            return Err(PersistentStorageError::Other(format!(
+                "file-backed wal missing checkpoint store for {}",
+                ckpt_path.display()
+            )));
         }
         debug!(target = "wal", last_offset, file_seq = self.file_seq, path = %ckpt_path.display(), "wrote wal checkpoint");
         Ok(())

@@ -92,6 +92,10 @@ impl Cache {
         self.map.range(from..).map(|(k, v)| (*k, v.clone()))
     }
 
+    pub(crate) fn first_offset(&self) -> Option<u64> {
+        self.map.keys().next().cloned()
+    }
+
     /// Test helper: get item by exact offset.
     #[allow(dead_code)]
     pub(crate) fn get(&self, offset: u64) -> Option<(u64, StreamMessage)> {

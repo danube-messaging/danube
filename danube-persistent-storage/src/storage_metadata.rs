@@ -80,6 +80,48 @@ impl StorageMetadata {
         Ok(())
     }
 
+    pub async fn get_segment_descriptor(
+        &self,
+        topic_path: &str,
+        start_offset_padded: &str,
+    ) -> Result<Option<SegmentDescriptor>, PersistentStorageError> {
+        let key = format!(
+            "{}/storage/topics/{}/segments/{}",
+            self.root, topic_path, start_offset_padded
+        );
+        match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => {
+                let desc = serde_json::from_value::<SegmentDescriptor>(value)
+                    .map_err(|e| PersistentStorageError::Other(e.to_string()))?;
+                Ok(Some(desc))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PersistentStorageError::Metadata(e.to_string())),
+        }
+    }
+
+    pub async fn get_current_segment_descriptor(
+        &self,
+        topic_path: &str,
+    ) -> Result<Option<SegmentDescriptor>, PersistentStorageError> {
+        let key = format!("{}/storage/topics/{}/segments/cur", self.root, topic_path);
+        let start_offset_padded = match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => value
+                .get("start")
+                .and_then(|start| start.as_str())
+                .map(|start| start.to_string()),
+            Ok(None) => None,
+            Err(e) => return Err(PersistentStorageError::Metadata(e.to_string())),
+        };
+        match start_offset_padded {
+            Some(start_offset_padded) => {
+                self.get_segment_descriptor(topic_path, &start_offset_padded)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
     pub async fn get_segment_descriptors(
         &self,
         topic_path: &str,

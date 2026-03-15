@@ -13,6 +13,7 @@ mod tests {
     use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
     use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
 
     fn make_msg(i: u64, topic: &str) -> StreamMessage {
         StreamMessage {
@@ -55,8 +56,7 @@ mod tests {
             ..Default::default()
         };
         let wal_ckpt = wal_dir.join("wal.ckpt");
-        let uploader_ckpt = wal_dir.join("uploader.ckpt");
-        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
         let _ = store.load_from_disk().await;
         let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
             .await
@@ -85,9 +85,10 @@ mod tests {
             max_object_mb: None,
         };
         let uploader = Arc::new(
-            Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
+            Uploader::new(up_cfg, cloud.clone(), meta.clone(), store).expect("uploader"),
         );
-        let handle = uploader.clone().start();
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         // Wait until objects cover the requested end offset (2520), otherwise keep uploading
         let mut waited = 0u64;
@@ -106,7 +107,8 @@ mod tests {
             waited += 50;
         };
         assert!(ok, "uploader did not create objects in time");
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
 
         // Reader should only return requested window
         let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
@@ -153,8 +155,7 @@ mod tests {
             ..Default::default()
         };
         let wal_ckpt = wal_dir.join("wal.ckpt");
-        let uploader_ckpt = wal_dir.join("uploader.ckpt");
-        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
         let _ = store.load_from_disk().await;
         let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
             .await
@@ -187,9 +188,10 @@ mod tests {
             max_object_mb: None,
         };
         let uploader = Arc::new(
-            Uploader::new(up_cfg, cloud.clone(), meta.clone(), Some(store)).expect("uploader"),
+            Uploader::new(up_cfg, cloud.clone(), meta.clone(), store).expect("uploader"),
         );
-        let handle = uploader.clone().start();
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         // Wait for an object to appear deterministically
         async fn wait_for_objects(
@@ -221,7 +223,8 @@ mod tests {
         )
         .await;
         assert!(ok, "uploader did not create objects in time");
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
 
         // CloudReader
         let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());

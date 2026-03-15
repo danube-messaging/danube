@@ -22,7 +22,7 @@ mod tests {
     use crate::checkpoint::CheckpointStore;
     use crate::cloud::{CloudStore, Uploader, UploaderConfig};
     use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
-    use crate::wal::{UploaderCheckpoint, Wal, WalConfig};
+    use crate::wal::{Wal, WalConfig};
     use crate::{BackendConfig, LocalBackend};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
@@ -30,6 +30,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
 
     fn make_message(i: u64) -> StreamMessage {
         StreamMessage {
@@ -69,8 +70,7 @@ mod tests {
 
         // Create a shared CheckpointStore for this topic directory.
         let wal_ckpt = wal_dir.join("wal.ckpt");
-        let uploader_ckpt = wal_dir.join("uploader.ckpt");
-        let store = Arc::new(CheckpointStore::new(wal_ckpt, uploader_ckpt));
+        let store = Arc::new(CheckpointStore::new(wal_ckpt));
         let _ = store.load_from_disk().await; // best-effort preload
 
         // Create WAL with the injected CheckpointStore so writer will persist checkpoints through it.
@@ -139,7 +139,7 @@ mod tests {
             max_object_mb: None,
         };
 
-        let uploader = Uploader::new(config.clone(), cloud, meta, Some(store));
+        let uploader = Uploader::new(config.clone(), cloud, meta, store);
         assert!(uploader.is_ok());
 
         let uploader = uploader.unwrap();
@@ -181,9 +181,9 @@ mod tests {
             max_object_mb: None,
         };
 
-        let uploader =
-            Arc::new(Uploader::new(config, cloud.clone(), meta, Some(store)).expect("uploader"));
-        let handle = uploader.clone().start();
+        let uploader = Arc::new(Uploader::new(config, cloud.clone(), meta, store).expect("uploader"));
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         // Wait for upload deterministically
         let ok = wait_for_condition(
@@ -196,7 +196,8 @@ mod tests {
         )
         .await;
         assert!(ok, "uploader did not advance offset in time");
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
 
         // Verify object was created
         let prefix = "/danube/storage/topics/test/topic/segments";
@@ -267,19 +268,25 @@ mod tests {
         }
         wal.flush().await.expect("flush wal");
 
-        // Create checkpoint manually at offset 5
-        let checkpoint = UploaderCheckpoint {
-            last_committed_offset: 5,
-            last_read_file_seq: 0,
-            last_read_byte_position: 0,
-            last_segment_id: Some("previous-object".to_string()),
-            updated_at: chrono::Utc::now().timestamp() as u64,
+        let start_padded = format!("{:020}", 0);
+        let previous_segment = SegmentDescriptor {
+            segment_id: "data-0-previous.dnb1".to_string(),
+            start_offset: 0,
+            end_offset: 5,
+            size: 0,
+            etag: None,
+            created_at: 0,
+            completed: true,
+            offset_index: None,
         };
-
-        store
-            .update_uploader(&checkpoint)
+        meta
+            .put_segment_descriptor("test/resume", &start_padded, &previous_segment)
             .await
-            .expect("write checkpoint");
+            .expect("write prior segment descriptor");
+        meta
+            .put_current_segment("test/resume", &start_padded)
+            .await
+            .expect("write current segment pointer");
 
         // Add messages with next offsets 6..=8
         for i in 6..9u64 {
@@ -294,10 +301,11 @@ mod tests {
             max_object_mb: None,
         };
 
-        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, store).expect("uploader"));
 
         assert_eq!(uploader.test_last_uploaded_offset(), 0);
-        let handle = uploader.clone().start();
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         let ok = wait_for_condition(
             || {
@@ -317,7 +325,8 @@ mod tests {
         )
         .await;
         assert!(ok, "Should have created objects after resume");
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
     }
 
     /// Test: Uploader behavior with empty WAL
@@ -346,11 +355,13 @@ mod tests {
             max_object_mb: None,
         };
 
-        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
-        let handle = uploader.clone().start();
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, store).expect("uploader"));
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         tokio::time::sleep(Duration::from_millis(1200)).await;
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
 
         let prefix = "/danube/storage/topics/test/empty/segments";
         let children = mem.get_childrens(prefix).await.unwrap_or_default();
@@ -396,8 +407,9 @@ mod tests {
             max_object_mb: None,
         };
 
-        let uploader = Arc::new(Uploader::new(config, cloud, meta, Some(store)).expect("uploader"));
-        let handle = uploader.clone().start();
+        let uploader = Arc::new(Uploader::new(config, cloud, meta, store).expect("uploader"));
+        let cancel = CancellationToken::new();
+        let handle = uploader.clone().start_with_cancel(cancel.clone());
 
         let ok = wait_for_condition(
             || {
@@ -417,7 +429,8 @@ mod tests {
         )
         .await;
         assert!(ok, "Should have created objects");
-        handle.abort();
+        cancel.cancel();
+        let _ = handle.await;
 
         let prefix = "/danube/storage/topics/test/naming/segments";
         let children = mem.get_childrens(prefix).await.expect("get children");

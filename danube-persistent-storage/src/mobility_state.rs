@@ -29,8 +29,4 @@ impl MobilityState {
     pub async fn clear(&self, topic_path: &str) -> Result<(), PersistentStorageError> {
         self.metadata.delete_storage_state_sealed(topic_path).await
     }
-
-    pub fn metadata(&self) -> &StorageMetadata {
-        &self.metadata
-    }
 }

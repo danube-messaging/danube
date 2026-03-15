@@ -5,13 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::checkpoint::CheckpointStore;
 use crate::cloud::uploader_stream;
 use crate::cloud::CloudStore;
 use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
-use crate::wal::UploaderCheckpoint;
 
 /// Uploader streams raw WAL frames to cloud storage and writes object descriptors
 /// to the metadata store. It resumes precisely using `UploaderCheckpoint` `(last_read_file_seq,
@@ -22,7 +21,7 @@ pub(crate) struct Uploader {
     cloud: CloudStore,
     metadata: StorageMetadata,
     last_uploaded_offset: AtomicU64,
-    ckpt_store: Option<Arc<CheckpointStore>>,
+    ckpt_store: Arc<CheckpointStore>,
 }
 
 impl Uploader {
@@ -31,7 +30,7 @@ impl Uploader {
         cfg: UploaderConfig,
         cloud: CloudStore,
         metadata: StorageMetadata,
-        ckpt_store: Option<Arc<CheckpointStore>>,
+        ckpt_store: Arc<CheckpointStore>,
     ) -> Result<Self, PersistentStorageError> {
         Ok(Self {
             cfg,
@@ -40,14 +39,6 @@ impl Uploader {
             last_uploaded_offset: AtomicU64::new(0),
             ckpt_store,
         })
-    }
-
-    /// Backward-compatible start without an explicit cancellation token.
-    /// Used by tests; for production, prefer start_with_cancel so callers can cancel.
-    #[cfg(test)]
-    pub(crate) fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
-        let token = CancellationToken::new();
-        self.start_with_cancel(token)
     }
 
     /// Start a background periodic task that uploads batches with explicit cancellation token.
@@ -65,20 +56,30 @@ impl Uploader {
                 interval = self.cfg.interval_seconds,
                 "uploader started"
             );
-            // On start, try to resume from uploader checkpoint if present.
-            let initial_ckpt = if let Some(store) = &self.ckpt_store {
-                store.get_uploader().await
-            } else {
-                None
+            let initial_segment = match self
+                .metadata
+                .get_current_segment_descriptor(&self.cfg.topic_path)
+                .await
+            {
+                Ok(segment) => segment,
+                Err(e) => {
+                    warn!(
+                        target = "uploader",
+                        topic = %self.cfg.topic_path,
+                        error = %e,
+                        "failed to read current segment descriptor on startup"
+                    );
+                    None
+                }
             };
-            if let Some(ckpt) = initial_ckpt {
+            if let Some(segment) = initial_segment {
                 self.last_uploaded_offset
-                    .store(ckpt.last_committed_offset, Ordering::Release);
+                    .store(segment.end_offset, Ordering::Release);
                 tracing::info!(
                     target = "uploader",
-                    last_committed_offset = ckpt.last_committed_offset,
-                    last_segment_id = ckpt.last_segment_id.as_deref().unwrap_or(""),
-                    "resumed uploader from checkpoint"
+                    last_committed_offset = segment.end_offset,
+                    last_segment_id = %segment.segment_id,
+                    "resumed uploader from segment metadata"
                 );
             }
 
@@ -133,37 +134,84 @@ impl Uploader {
     /// to whole-frame boundaries and avoids buffering locally for cloud uploads.
     async fn run_once(&self) -> Result<bool, PersistentStorageError> {
         // Snapshot state at cycle start
-        let up_ckpt = match &self.ckpt_store {
-            Some(store) => store.get_uploader().await.unwrap_or_default(),
-            None => UploaderCheckpoint::default(),
+        let durable_segment = match self
+            .metadata
+            .get_current_segment_descriptor(&self.cfg.topic_path)
+            .await
+        {
+            Ok(segment) => segment,
+            Err(e) => {
+                warn!(
+                    target = "uploader",
+                    topic = %self.cfg.topic_path,
+                    error = %e,
+                    "failed to read current segment descriptor"
+                );
+                None
+            }
         };
-        let wal_ckpt = match &self.ckpt_store {
-            Some(store) => match store.get_wal().await {
-                Some(c) => c,
-                None => return Ok(false),
-            },
+        let wal_ckpt = match self.ckpt_store.get_wal().await {
+            Some(c) => c,
             None => return Ok(false),
         };
 
-        // Stream frames from (seq,pos) up to snapshot watermark directly to cloud via streaming module.
-        match uploader_stream::stream_frames_to_cloud(
-            &self.cloud,
-            &self.cfg.topic_path,
-            &wal_ckpt,
-            up_ckpt.last_read_file_seq,
-            up_ckpt.last_read_byte_position,
-            self.cfg.max_object_mb,
-        )
-        .await?
-        {
-            Some((segment_id, start_offset, end_offset, next_seq, next_pos, meta, offset_index)) => {
+        if let Some(last_committed_offset) = durable_segment.as_ref().map(|segment| segment.end_offset) {
+            if let Some((segment_id, start_offset, end_offset, meta, offset_index)) =
+                uploader_stream::upload_contiguous_rotated_file_as_segment(
+                    &self.cloud,
+                    &self.cfg.topic_path,
+                    &wal_ckpt,
+                    last_committed_offset,
+                    self.cfg.max_object_mb,
+                )
+                .await?
+            {
                 self.commit_uploaded_segment(
                     &segment_id,
                     start_offset,
                     end_offset,
                     meta,
-                    next_seq,
-                    next_pos,
+                    offset_index,
+                )
+                .await?;
+                return Ok(true);
+            }
+        }
+
+        let (start_seq, start_pos) = match durable_segment {
+            Some(durable_segment) => {
+                match uploader_stream::resume_position_from_uploaded_offset(
+                    &wal_ckpt,
+                    durable_segment.end_offset,
+                )
+                .await?
+                {
+                    Some(pos) => pos,
+                    None => return Ok(false),
+                }
+            }
+            None => match uploader_stream::initial_resume_position(&wal_ckpt) {
+                Some(pos) => pos,
+                None => return Ok(false),
+            },
+        };
+
+        match uploader_stream::stream_frames_to_cloud(
+            &self.cloud,
+            &self.cfg.topic_path,
+            &wal_ckpt,
+            start_seq,
+            start_pos,
+            self.cfg.max_object_mb,
+        )
+        .await?
+        {
+            Some((segment_id, start_offset, end_offset, _next_seq, _next_pos, meta, offset_index)) => {
+                self.commit_uploaded_segment(
+                    &segment_id,
+                    start_offset,
+                    end_offset,
+                    meta,
                     offset_index,
                 )
                 .await?;
@@ -182,8 +230,6 @@ impl Uploader {
         start_offset: u64,
         end_offset: u64,
         meta: opendal::Metadata,
-        next_file_seq: u64,
-        next_byte_pos: u64,
         offset_index: Vec<(u64, u64)>,
     ) -> Result<(), PersistentStorageError> {
         // Write descriptor to metadata store
@@ -210,18 +256,6 @@ impl Uploader {
             .put_current_segment(&self.cfg.topic_path, &start_padded)
             .await;
 
-        // Persist uploader checkpoint after successful commit
-        let up = UploaderCheckpoint {
-            last_committed_offset: end_offset,
-            last_read_file_seq: next_file_seq,
-            last_read_byte_position: next_byte_pos,
-            last_segment_id: Some(segment_id.to_string()),
-            updated_at: chrono::Utc::now().timestamp() as u64,
-        };
-        if let Some(store) = &self.ckpt_store {
-            let _ = store.update_uploader(&up).await;
-        }
-
         self.last_uploaded_offset
             .store(end_offset, Ordering::Release);
         Ok(())
@@ -237,12 +271,6 @@ impl Uploader {
     #[cfg(test)]
     pub(crate) fn test_last_uploaded_offset(&self) -> u64 {
         self.last_uploaded_offset.load(Ordering::Acquire)
-    }
-
-    /// Returns current uploaded offset watermark.
-    #[cfg(test)]
-    pub(crate) fn last_uploaded_offset(&self) -> u64 {
-        self.last_uploaded_offset.load(Ordering::Relaxed)
     }
 
     // drain_and_stop/request_stop are no longer needed; cooperative shutdown via CancellationToken

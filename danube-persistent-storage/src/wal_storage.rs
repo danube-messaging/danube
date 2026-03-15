@@ -18,6 +18,7 @@ pub struct WalStorage {
     durable_store: Option<CloudStore>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
+    history_cutover_from_hot: bool,
 }
 
 impl WalStorage {
@@ -27,6 +28,7 @@ impl WalStorage {
             durable_store: None,
             metadata: None,
             topic_path: None,
+            history_cutover_from_hot: false,
         }
     }
 
@@ -47,6 +49,11 @@ impl WalStorage {
         if let Some(tp) = &self.topic_path {
             info!(target = "wal_storage", topic = %tp, "durable history enabled for topic");
         }
+        self
+    }
+
+    pub(crate) fn with_hot_cutover(mut self) -> Self {
+        self.history_cutover_from_hot = true;
         self
     }
 
@@ -121,8 +128,15 @@ impl PersistentStorage for WalStorage {
             StartPosition::Offset(o) => (o, false),
         };
 
-        let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
-        let wal_start_offset = wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset);
+        let wal_start_offset = if self.history_cutover_from_hot {
+            self.hot_log
+                .earliest_cached_offset()
+                .await
+                .unwrap_or_else(|| self.hot_log.current_offset())
+        } else {
+            let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
+            wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset)
+        };
 
         if start_offset >= wal_start_offset {
             info!(

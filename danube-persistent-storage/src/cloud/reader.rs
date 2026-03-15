@@ -44,12 +44,6 @@ impl CloudReader {
         &self.topic_path
     }
 
-    /// Expose the underlying storage metadata helper (primarily for tests).
-    #[cfg(test)]
-    pub fn metadata(&self) -> &StorageMetadata {
-        &self.metadata
-    }
-
     /// Read messages in the inclusive range `[start, end_inclusive]` from cloud objects.
     /// If `end_inclusive` is None, read all available objects starting at `start`.
     ///

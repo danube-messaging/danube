@@ -1,4 +1,5 @@
-use crate::wal::{Wal, WalCheckpoint, WalConfig};
+use crate::checkpoint::WalCheckpoint;
+use crate::wal::{Wal, WalConfig};
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
@@ -38,6 +39,10 @@ impl HotLog {
 
     pub async fn current_wal_checkpoint(&self) -> Option<WalCheckpoint> {
         self.inner.current_wal_checkpoint().await
+    }
+
+    pub async fn earliest_cached_offset(&self) -> Option<u64> {
+        self.inner.earliest_cached_offset().await
     }
 
     pub async fn set_topic_for_metrics(&self, topic_name: String) {

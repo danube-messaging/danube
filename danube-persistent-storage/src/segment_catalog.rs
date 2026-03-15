@@ -29,17 +29,6 @@ impl SegmentCatalog {
         self.metadata.get_segment_descriptors(topic_path).await
     }
 
-    pub async fn list_segments_range(
-        &self,
-        topic_path: &str,
-        from_padded: &str,
-        to_padded: Option<&str>,
-    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
-        self.metadata
-            .get_segment_descriptors_range(topic_path, from_padded, to_padded)
-            .await
-    }
-
     pub async fn set_current_segment(
         &self,
         topic_path: &str,

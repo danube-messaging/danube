@@ -22,12 +22,14 @@ impl CloudStore {
     #[inline]
     pub fn provider(&self) -> &str { &self.provider }
 
+    #[cfg(test)]
     pub async fn put_object(&self, path: &str, bytes: &[u8]) -> Result<(), PersistentStorageError> {
         // Use Writer-based API to allow backend MPU and return Metadata; discard it here.
         let _ = self.put_object_meta(path, bytes).await?;
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, PersistentStorageError> {
         let key = self.join(path);
         let data = self.op.read(&key).await.map_err(|e| {
@@ -59,30 +61,6 @@ impl CloudStore {
             .await
             .map_err(|e| PersistentStorageError::Other(format!("cloud close {}: {}", key, e)))?;
         Ok(meta)
-    }
-
-    /// Create a streaming writer to the given path with configurable chunk size and concurrency.
-    /// This uses OpenDAL's writer_with API which enables multipart uploads for cloud backends.
-    pub async fn open_streaming_writer(
-        &self,
-        path: &str,
-        chunk_size: usize,
-        concurrent: usize,
-    ) -> Result<CloudWriter, PersistentStorageError> {
-        let key = self.join(path);
-        let writer = self
-            .op
-            .writer_with(&key)
-            .chunk(chunk_size)
-            .concurrent(concurrent)
-            .await
-            .map_err(|e| {
-                PersistentStorageError::Other(format!("cloud writer_with {}: {}", key, e))
-            })?;
-        Ok(CloudWriter {
-            inner: writer,
-            bytes_written: 0,
-        })
     }
 
     /// Create a reader for the given path and initialize its starting byte offset.
@@ -121,21 +99,6 @@ impl CloudStore {
         }
     }
 
-    /// Copy an object from one key to another. Some backends may implement this
-    /// as server-side copy. For services without native rename, this is the
-    /// recommended way to materialize the final key.
-    pub async fn copy_object(
-        &self,
-        from_path: &str,
-        to_path: &str,
-    ) -> Result<(), PersistentStorageError> {
-        let from = self.join(from_path);
-        let to = self.join(to_path);
-        self.op.copy(&from, &to).await.map_err(|e| {
-            PersistentStorageError::Other(format!("cloud copy {} -> {}: {}", from, to, e))
-        })
-    }
-
     /// Delete an object by key. No-op if object doesn't exist.
     pub async fn delete_object(&self, path: &str) -> Result<(), PersistentStorageError> {
         let key = self.join(path);
@@ -143,31 +106,6 @@ impl CloudStore {
             .delete(&key)
             .await
             .map_err(|e| PersistentStorageError::Other(format!("cloud delete {}: {}", key, e)))
-    }
-}
-
-/// Streaming cloud writer wrapper.
-pub struct CloudWriter {
-    pub(crate) inner: opendal::Writer,
-    pub(crate) bytes_written: u64,
-}
-
-impl CloudWriter {
-    pub async fn write(&mut self, buf: &[u8]) -> Result<(), PersistentStorageError> {
-        let buffer = opendal::Buffer::from(buf.to_vec());
-        self.inner
-            .write(buffer)
-            .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud write: {}", e)))?;
-        self.bytes_written += buf.len() as u64;
-        Ok(())
-    }
-
-    pub async fn close(&mut self) -> Result<opendal::Metadata, PersistentStorageError> {
-        self.inner
-            .close()
-            .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud close: {}", e)))
     }
 }
 
