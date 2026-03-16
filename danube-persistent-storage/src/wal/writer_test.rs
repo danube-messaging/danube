@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::frames::{decode_next_frame, FRAME_HEADER_SIZE};
     use crate::wal::writer::{run, LogCommand, WriterInit};
     use danube_core::message::{MessageID, StreamMessage};
     use tempfile::TempDir;
@@ -255,32 +256,25 @@ mod tests {
 
         // Read and verify frame format: [u64 offset][u32 len][u32 crc][bytes]
         let mut file = tokio::fs::File::open(&wal_path).await?;
+        let mut frame_bytes = Vec::new();
+        file.read_to_end(&mut frame_bytes).await?;
+        let frame = decode_next_frame(&frame_bytes)?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing frame"))?;
 
         // Read offset
-        let mut offset_bytes = [0u8; 8];
-        file.read_exact(&mut offset_bytes).await?;
-        let offset = u64::from_le_bytes(offset_bytes);
-        assert_eq!(offset, 123);
+        assert_eq!(frame.offset, 123);
 
         // Read length
-        let mut len_bytes = [0u8; 4];
-        file.read_exact(&mut len_bytes).await?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
-        assert_eq!(len, test_data.len());
+        assert_eq!(frame.frame_len, FRAME_HEADER_SIZE + test_data.len());
 
         // Read CRC
-        let mut crc_bytes = [0u8; 4];
-        file.read_exact(&mut crc_bytes).await?;
-        let stored_crc = u32::from_le_bytes(crc_bytes);
+        assert!(frame.frame_len <= frame_bytes.len());
 
         // Read data
-        let mut data = vec![0u8; len];
-        file.read_exact(&mut data).await?;
-        assert_eq!(data, test_data);
+        assert_eq!(frame.payload, test_data.as_slice());
 
         // Verify CRC
-        let computed_crc = crc32fast::hash(&data);
-        assert_eq!(stored_crc, computed_crc);
+        assert_eq!(frame.frame_len, frame_bytes.len());
 
         Ok(())
     }

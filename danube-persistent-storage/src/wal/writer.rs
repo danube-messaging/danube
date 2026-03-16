@@ -1,5 +1,5 @@
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
-use crc32fast;
+use crate::frames::append_encoded_frame;
 use danube_core::storage::PersistentStorageError;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,14 +93,8 @@ impl WriterState {
         }
         // Frame and buffer the entry. We avoid borrowing the writer here so we can call
         // `process_flush()` (which accesses `self.writer`) without overlapping borrows.
-        let len = bytes.len() as u32;
-        let crc = crc32fast::hash(bytes);
-        self.write_buf.extend_from_slice(&offset.to_le_bytes());
-        self.write_buf.extend_from_slice(&len.to_le_bytes());
-        self.write_buf.extend_from_slice(&crc.to_le_bytes());
-        self.write_buf.extend_from_slice(bytes);
-
-        self.bytes_in_file += (8 + 4 + 4 + bytes.len()) as u64;
+        append_encoded_frame(&mut self.write_buf, offset, bytes);
+        self.bytes_in_file += (crate::frames::FRAME_HEADER_SIZE + bytes.len()) as u64;
         // Remember last offset appended
         self.last_offset_written = Some(offset);
 

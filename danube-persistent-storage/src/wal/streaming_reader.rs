@@ -7,8 +7,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::checkpoint::WalCheckpoint;
-use crate::frames::scan_safe_frame_boundary_with_crc;
-use crate::frames::FRAME_HEADER_SIZE;
+use crate::frames::{decode_next_frame, scan_safe_frame_boundary};
 use tracing::info;
 
 /// Build ordered list of WAL files from checkpoint: rotated files + active file, sorted by seq.
@@ -73,27 +72,22 @@ pub(crate) async fn stream_from_wal_files(
 
                 // Parse as many complete frames as possible from the carry buffer.
                 let mut idx = 0usize;
-                let safe_len = scan_safe_frame_boundary_with_crc(&carry);
-                while idx + FRAME_HEADER_SIZE <= safe_len {
-                    let off = u64::from_le_bytes(carry[idx..idx + 8].try_into().unwrap());
-                    let len =
-                        u32::from_le_bytes(carry[idx + 8..idx + 12].try_into().unwrap()) as usize;
-                    let frame_end = idx + FRAME_HEADER_SIZE + len;
-                    if frame_end > safe_len {
-                        break;
-                    }
-                    if off >= from_offset {
-                        let payload = &carry[idx + FRAME_HEADER_SIZE..frame_end];
+                let safe_len = scan_safe_frame_boundary(&carry);
+                while idx < safe_len {
+                    let frame = match decode_next_frame(&carry[idx..safe_len]) {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) | Err(_) => break,
+                    };
+                    if frame.offset >= from_offset {
                         match bincode::serde::decode_from_slice::<StreamMessage, _>(
-                            payload,
+                            frame.payload,
                             bincode::config::standard(),
                         )
                         .map(|(v, _)| v)
                         {
                             Ok(mut msg) => {
-                                msg.msg_id.topic_offset = off;
+                                msg.msg_id.topic_offset = frame.offset;
                                 if tx.send(Ok(msg)).await.is_err() {
-                                    // receiver dropped; stop work
                                     break 'outer;
                                 }
                             }
@@ -108,7 +102,7 @@ pub(crate) async fn stream_from_wal_files(
                             }
                         }
                     }
-                    idx = frame_end;
+                    idx += frame.frame_len;
                 }
 
                 // Drain the parsed bytes from the carry buffer to keep memory bounded.

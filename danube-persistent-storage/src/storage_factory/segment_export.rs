@@ -1,5 +1,5 @@
 use super::{StorageFactory, StorageMode};
-use crate::frames::{extract_offsets_in_prefix, scan_safe_frame_boundary_with_crc, FRAME_HEADER_SIZE};
+use crate::frames::{decode_next_frame, extract_offsets, scan_safe_frame_boundary};
 use crate::hot_log::HotLog;
 use crate::metadata::SegmentDescriptor;
 use danube_core::storage::PersistentStorageError;
@@ -82,12 +82,12 @@ impl StorageFactory {
                 continue;
             }
 
-            let safe_len = scan_safe_frame_boundary_with_crc(&file_bytes);
+            let safe_len = scan_safe_frame_boundary(&file_bytes);
             if safe_len == 0 {
                 continue;
             }
             let safe_bytes = &file_bytes[..safe_len];
-            let (start_offset, end_offset) = match extract_offsets_in_prefix(safe_bytes) {
+            let (start_offset, end_offset) = match extract_offsets(safe_bytes) {
                 (Some(start), Some(end)) => (start, end),
                 _ => continue,
             };
@@ -191,18 +191,16 @@ fn build_offset_index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
     let mut idx = 0usize;
     let mut offsets = Vec::new();
     let mut msgs_since_index = 0usize;
-    while idx + FRAME_HEADER_SIZE <= bytes.len() {
-        let offset = u64::from_le_bytes(bytes[idx..idx + 8].try_into().unwrap());
-        let len = u32::from_le_bytes(bytes[idx + 8..idx + 12].try_into().unwrap()) as usize;
-        let next = idx + FRAME_HEADER_SIZE + len;
-        if next > bytes.len() {
-            break;
-        }
+    while idx < bytes.len() {
+        let frame = match decode_next_frame(&bytes[idx..]) {
+            Ok(Some(frame)) => frame,
+            Ok(None) | Err(_) => break,
+        };
         if msgs_since_index == 0 {
-            offsets.push((offset, idx as u64));
+            offsets.push((frame.offset, idx as u64));
         }
         msgs_since_index = (msgs_since_index + 1) % 1000;
-        idx = next;
+        idx += frame.frame_len;
     }
     if offsets.is_empty() {
         None

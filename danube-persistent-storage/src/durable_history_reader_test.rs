@@ -4,6 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::durable_history_reader::DurableHistoryReader;
+    use crate::frames::append_encoded_frame;
     use crate::opendal::OpendalStore;
     use crate::metadata::{SegmentDescriptor, StorageMetadata};
     use crate::{BackendConfig, DurableStore, LocalBackend, OpendalDurableStore};
@@ -39,11 +40,7 @@ mod tests {
             }
             let payload =
                 bincode::serde::encode_to_vec(msg, bincode::config::standard()).expect("serialize");
-            let crc = crc32fast::hash(&payload);
-            bytes.extend_from_slice(&msg.msg_id.topic_offset.to_le_bytes());
-            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(&crc.to_le_bytes());
-            bytes.extend_from_slice(&payload);
+            append_encoded_frame(&mut bytes, msg.msg_id.topic_offset, &payload);
         }
         (bytes, index)
     }

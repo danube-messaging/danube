@@ -2,7 +2,7 @@ use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
 use crate::durable_store::{DurableRangeReader, DurableStore};
-use crate::frames::FRAME_HEADER_SIZE;
+use crate::frames::{decode_next_frame, FrameDecodeError};
 use crate::persistent_metrics::{
     DURABLE_HISTORY_SEGMENTS_READ_TOTAL, DURABLE_HISTORY_READER_ERRORS_TOTAL, DURABLE_HISTORY_READ_BYTES_TOTAL,
 };
@@ -159,33 +159,31 @@ fn parse_frames_from_carry(
     _provider: &str,
 ) -> Result<(), PersistentStorageError> {
     let mut idx = 0usize;
-    while idx + FRAME_HEADER_SIZE <= carry.len() {
-        let off = u64::from_le_bytes(carry[idx..idx + 8].try_into().unwrap());
-        let len = u32::from_le_bytes(carry[idx + 8..idx + 12].try_into().unwrap()) as usize;
-        let crc = u32::from_le_bytes(carry[idx + 12..idx + 16].try_into().unwrap());
-        let next = idx + FRAME_HEADER_SIZE + len;
-        if next > carry.len() {
-            break;
-        }
-        let rec = &carry[idx + FRAME_HEADER_SIZE..next];
-        // Strict CRC validation: error on mismatch
-        let computed = crc32fast::hash(rec);
-        if computed != crc {
-            error!(
-                target = "durable_history_reader",
-                at_byte = idx,
-                offset = off,
-                expected_crc = crc,
-                computed_crc = computed,
-                "CRC mismatch while decoding durable segment"
-            );
-            return Err(PersistentStorageError::Other(format!(
-                "durable_history_reader: CRC mismatch at offset {} (expected {}, got {})",
-                off, crc, computed
-            )));
-        }
-        let msg: StreamMessage =
-            bincode::serde::decode_from_slice(rec, bincode::config::standard())
+    while idx < carry.len() {
+        let frame = match decode_next_frame(&carry[idx..]) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(FrameDecodeError::CrcMismatch {
+                offset,
+                expected_crc,
+                computed_crc,
+            }) => {
+                error!(
+                    target = "durable_history_reader",
+                    at_byte = idx,
+                    offset,
+                    expected_crc,
+                    computed_crc,
+                    "CRC mismatch while decoding durable segment"
+                );
+                return Err(PersistentStorageError::Other(format!(
+                    "durable_history_reader: CRC mismatch at offset {} (expected {}, got {})",
+                    offset, expected_crc, computed_crc
+                )));
+            }
+        };
+        let mut msg: StreamMessage =
+            bincode::serde::decode_from_slice(frame.payload, bincode::config::standard())
                 .map(|(v, _)| v)
                 .map_err(|e| {
                     PersistentStorageError::Other(format!(
@@ -193,8 +191,9 @@ fn parse_frames_from_carry(
                         e
                     ))
                 })?;
-        out.push((off, msg));
-        idx = next;
+        msg.msg_id.topic_offset = frame.offset;
+        out.push((frame.offset, msg));
+        idx += frame.frame_len;
     }
     // Remove consumed prefix, retain leftover for next chunk
     if idx > 0 {
