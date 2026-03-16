@@ -12,13 +12,13 @@ mod metadata;
 mod durable_history_reader;
 
 mod durable_store;
-pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore, OpendalDurableStore};
+pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore};
 
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
 mod opendal;
-pub use opendal::{BackendConfig, CloudBackend, LocalBackend};
+pub use opendal::{BackendConfig, CloudBackend, LocalBackend, OpendalDurableStore};
 
 mod frames;
 

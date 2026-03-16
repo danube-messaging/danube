@@ -234,7 +234,9 @@ async fn test_reliable_topic_move_with_offset_continuity() -> Result<()> {
         let expected_offsets: Vec<u64> = (5..18).collect();
         assert_eq!(
             offsets_seen, expected_offsets,
-            "❌ FAILED: Offset sequence broken!\n  Expected: {:?}\n  Got: {:?}",
+            "❌ FAILED: Offset sequence broken!
+  Expected: {:?}
+  Got: {:?}",
             expected_offsets, offsets_seen
         );
 

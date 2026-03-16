@@ -2,7 +2,39 @@
 mod tests {
     use crate::opendal::OpendalStore;
     use crate::{BackendConfig, CloudBackend, LocalBackend};
+    use danube_core::storage::PersistentStorageError;
     use std::collections::HashMap;
+
+    fn joined_path(store: &OpendalStore, path: &str) -> String {
+        let p = path.trim_matches('/');
+        if store.root_prefix.is_empty() {
+            p.to_string()
+        } else {
+            format!("{}/{}", store.root_prefix.trim_matches('/'), p)
+        }
+    }
+
+    async fn put_object(
+        store: &OpendalStore,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), PersistentStorageError> {
+        let _ = store.put_object_meta(path, bytes).await?;
+        Ok(())
+    }
+
+    async fn get_object(
+        store: &OpendalStore,
+        path: &str,
+    ) -> Result<Vec<u8>, PersistentStorageError> {
+        let key = joined_path(store, path);
+        let data = store
+            .op
+            .read(&key)
+            .await
+            .map_err(|e| PersistentStorageError::Other(format!("opendal get_object {}: {}", key, e)))?;
+        Ok(data.to_vec())
+    }
 
     /// Test: Memory backend basic put/get operations
     ///
@@ -30,8 +62,8 @@ mod tests {
         let test_data = b"hello world".to_vec();
         let path = "test/object.bin";
 
-        store.put_object(path, &test_data).await.expect("put object");
-        let retrieved = store.get_object(path).await.expect("get object");
+        put_object(&store, path, &test_data).await.expect("put object");
+        let retrieved = get_object(&store, path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
 
@@ -61,8 +93,8 @@ mod tests {
         let test_data = b"prefixed data".to_vec();
         let path = "nested/path/object.bin";
 
-        store.put_object(path, &test_data).await.expect("put object");
-        let retrieved = store.get_object(path).await.expect("get object");
+        put_object(&store, path, &test_data).await.expect("put object");
+        let retrieved = get_object(&store, path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
 
@@ -95,8 +127,8 @@ mod tests {
         let test_data = b"filesystem test data".to_vec();
         let path = "fs-test/object.bin";
 
-        store.put_object(path, &test_data).await.expect("put object");
-        let retrieved = store.get_object(path).await.expect("get object");
+        put_object(&store, path, &test_data).await.expect("put object");
+        let retrieved = get_object(&store, path).await.expect("get object");
         assert_eq!(retrieved, test_data);
     }
 
@@ -261,8 +293,8 @@ mod tests {
         ];
 
         for path in paths {
-            store.put_object(path, &test_data).await.expect("put object");
-            let retrieved = store.get_object(path).await.expect("get object");
+            put_object(&store, path, &test_data).await.expect("put object");
+            let retrieved = get_object(&store, path).await.expect("get object");
             assert_eq!(retrieved, test_data, "Failed for path: {}", path);
         }
     }
@@ -285,7 +317,7 @@ mod tests {
         })
         .expect("create memory store");
 
-        let result = store.get_object("nonexistent/object.bin").await;
+        let result = get_object(&store, "nonexistent/object.bin").await;
         assert!(result.is_err(), "Should fail to get nonexistent object");
     }
 }

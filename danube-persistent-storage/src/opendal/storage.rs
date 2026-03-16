@@ -22,22 +22,6 @@ impl OpendalStore {
     #[inline]
     pub fn provider(&self) -> &str { &self.provider }
 
-    #[cfg(test)]
-    pub async fn put_object(&self, path: &str, bytes: &[u8]) -> Result<(), PersistentStorageError> {
-        // Use Writer-based API to allow backend MPU and return Metadata; discard it here.
-        let _ = self.put_object_meta(path, bytes).await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, PersistentStorageError> {
-        let key = self.join(path);
-        let data = self.op.read(&key).await.map_err(|e| {
-            PersistentStorageError::Other(format!("opendal get_object {}: {}", key, e))
-        })?;
-        Ok(data.to_vec())
-    }
-
     /// Write an object using the streaming writer API and return backend-provided metadata.
     /// This enables multipart uploads and exposes fields like ETag where supported.
     pub async fn put_object_meta(

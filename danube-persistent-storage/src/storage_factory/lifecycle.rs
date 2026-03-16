@@ -1,7 +1,7 @@
 use super::{normalize_topic_path, CommitInfo, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
-use crate::durable_store::{DurableStore, OpendalDurableStore};
+use crate::durable_store::DurableStore;
 use crate::metadata::{StorageMetadata, StorageStateSealed};
-use crate::opendal::{BackendConfig, LocalBackend};
+use crate::opendal::{BackendConfig, LocalBackend, OpendalDurableStore};
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
 use danube_core::metadata::MetadataStore;

@@ -1,4 +1,3 @@
-use crate::opendal::{BackendConfig, OpendalRangeReader, OpendalStore};
 use async_trait::async_trait;
 use danube_core::storage::PersistentStorageError;
 
@@ -32,11 +31,11 @@ pub struct DurableRangeReader {
 }
 
 impl DurableRangeReader {
-    fn from_backend_reader(reader: OpendalRangeReader) -> Self {
+    pub(crate) fn from_raw_parts(inner: opendal::Reader, offset: u64, size: u64) -> Self {
         Self {
-            inner: reader.inner,
-            offset: reader.offset,
-            size: reader.size,
+            inner,
+            offset,
+            size,
         }
     }
 
@@ -72,54 +71,4 @@ pub trait DurableStore: Send + Sync + std::fmt::Debug {
         start_byte: u64,
     ) -> Result<DurableRangeReader, PersistentStorageError>;
     async fn delete_segment(&self, path: &str) -> Result<(), PersistentStorageError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct OpendalDurableStore {
-    inner: OpendalStore,
-}
-
-impl OpendalDurableStore {
-    pub fn new(inner: OpendalStore) -> Self {
-        Self { inner }
-    }
-
-    pub fn from_backend(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
-        Ok(Self {
-            inner: OpendalStore::new(cfg)?,
-        })
-    }
-}
-
-#[async_trait]
-impl DurableStore for OpendalDurableStore {
-    fn provider(&self) -> &str {
-        self.inner.provider()
-    }
-
-    async fn put_segment(
-        &self,
-        path: &str,
-        bytes: &[u8],
-    ) -> Result<DurableObjectMetadata, PersistentStorageError> {
-        self.inner
-            .put_object_meta(path, bytes)
-            .await
-            .map(DurableObjectMetadata::from_opendal)
-    }
-
-    async fn open_segment_reader(
-        &self,
-        path: &str,
-        start_byte: u64,
-    ) -> Result<DurableRangeReader, PersistentStorageError> {
-        self.inner
-            .open_ranged_reader(path, start_byte)
-            .await
-            .map(DurableRangeReader::from_backend_reader)
-    }
-
-    async fn delete_segment(&self, path: &str) -> Result<(), PersistentStorageError> {
-        self.inner.delete_object(path).await
-    }
 }
