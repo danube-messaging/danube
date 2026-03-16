@@ -10,10 +10,10 @@ use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
-use crate::cloud::DurableHistoryReader;
+use crate::durable_history_reader::DurableHistoryReader;
 use crate::durable_store::DurableStore;
 use crate::hot_log::HotLog;
-use crate::storage_metadata::StorageMetadata;
+use crate::metadata::StorageMetadata;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
@@ -39,7 +39,7 @@ impl WalStorage {
         Self::from_hot_log(wal.into())
     }
 
-    /// Enable durable historical reads by wiring CloudStore + StorageMetadata and logical topic path.
+    /// Enable durable historical reads by wiring DurableStore + StorageMetadata and logical topic path.
     pub(crate) fn with_durable_history(
         mut self,
         durable_store: Arc<dyn DurableStore>,

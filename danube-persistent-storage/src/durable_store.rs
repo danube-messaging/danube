@@ -1,4 +1,4 @@
-use crate::cloud::{BackendConfig, CloudRangeReader, CloudStore};
+use crate::opendal::{BackendConfig, OpendalRangeReader, OpendalStore};
 use async_trait::async_trait;
 use danube_core::storage::PersistentStorageError;
 
@@ -32,7 +32,7 @@ pub struct DurableRangeReader {
 }
 
 impl DurableRangeReader {
-    fn from_backend_reader(reader: CloudRangeReader) -> Self {
+    fn from_backend_reader(reader: OpendalRangeReader) -> Self {
         Self {
             inner: reader.inner,
             offset: reader.offset,
@@ -76,17 +76,17 @@ pub trait DurableStore: Send + Sync + std::fmt::Debug {
 
 #[derive(Debug, Clone)]
 pub struct OpendalDurableStore {
-    inner: CloudStore,
+    inner: OpendalStore,
 }
 
 impl OpendalDurableStore {
-    pub fn new(inner: CloudStore) -> Self {
+    pub fn new(inner: OpendalStore) -> Self {
         Self { inner }
     }
 
     pub fn from_backend(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
         Ok(Self {
-            inner: CloudStore::new(cfg)?,
+            inner: OpendalStore::new(cfg)?,
         })
     }
 }

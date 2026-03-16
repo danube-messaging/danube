@@ -10,7 +10,7 @@ use metrics::counter;
 use crate::persistent_metrics::WAL_DELETE_TOTAL;
 
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
-use crate::storage_metadata::StorageMetadata;
+use crate::metadata::StorageMetadata;
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]

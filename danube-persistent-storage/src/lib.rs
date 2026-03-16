@@ -7,9 +7,9 @@ pub mod checkpoint;
 
 mod hot_log;
 
-mod segment_catalog;
+mod metadata;
 
-mod mobility_state;
+mod durable_history_reader;
 
 mod durable_store;
 pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore, OpendalDurableStore};
@@ -17,18 +17,20 @@ pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore,
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
-mod cloud;
-pub use cloud::{BackendConfig, CloudBackend, LocalBackend};
+mod opendal;
+pub use opendal::{BackendConfig, CloudBackend, LocalBackend};
 
 mod frames;
 
-mod storage_metadata;
-pub use storage_metadata::{SegmentDescriptor, StorageMetadata};
+pub use metadata::{SegmentDescriptor, StorageMetadata};
 
 mod storage_factory;
 pub use storage_factory::{CommitInfo, RetentionConfig, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
 
 mod persistent_metrics;
+
+#[cfg(test)]
+mod durable_history_reader_test;
 
 #[cfg(test)]
 mod wal_test;

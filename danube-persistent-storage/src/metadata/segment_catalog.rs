@@ -1,4 +1,4 @@
-use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
+use crate::metadata::storage_metadata::{SegmentDescriptor, StorageMetadata};
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]

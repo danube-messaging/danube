@@ -1,4 +1,4 @@
-use crate::storage_metadata::{StorageMetadata, StorageStateSealed};
+use crate::metadata::storage_metadata::{StorageMetadata, StorageStateSealed};
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]

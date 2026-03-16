@@ -6,14 +6,14 @@ use crate::frames::FRAME_HEADER_SIZE;
 use crate::persistent_metrics::{
     DURABLE_HISTORY_SEGMENTS_READ_TOTAL, DURABLE_HISTORY_READER_ERRORS_TOTAL, DURABLE_HISTORY_READ_BYTES_TOTAL,
 };
-use crate::storage_metadata::StorageMetadata;
+use crate::metadata::StorageMetadata;
 use metrics::counter;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tracing::error;
 
-/// DurableHistoryReader reads historical messages for a topic from cloud objects
-/// that contain raw WAL frames as uploaded by the Uploader.
+/// DurableHistoryReader reads historical messages for a topic from durable segments
+/// that contain raw WAL frames exported from the hot log.
 ///
 /// Frame format per record (little-endian):
 /// - `u64 offset`
@@ -22,7 +22,7 @@ use tracing::error;
 /// - `len` bytes (bincode-serialized `StreamMessage`)
 #[derive(Clone, Debug)]
 pub struct DurableHistoryReader {
-    cloud: Arc<dyn DurableStore>,
+    durable_store: Arc<dyn DurableStore>,
     metadata: StorageMetadata,
     topic_path: String,
 }
@@ -32,9 +32,13 @@ impl DurableHistoryReader {
     ///
     /// `topic_path` should be the logical topic identifier used in metadata
     /// (e.g., "ns/topic").
-    pub fn new(cloud: Arc<dyn DurableStore>, metadata: StorageMetadata, topic_path: String) -> Self {
+    pub fn new(
+        durable_store: Arc<dyn DurableStore>,
+        metadata: StorageMetadata,
+        topic_path: String,
+    ) -> Self {
         Self {
-            cloud,
+            durable_store,
             metadata,
             topic_path,
         }
@@ -45,11 +49,11 @@ impl DurableHistoryReader {
         &self.topic_path
     }
 
-    /// Read messages in the inclusive range `[start, end_inclusive]` from cloud objects.
-    /// If `end_inclusive` is None, read all available objects starting at `start`.
+    /// Read messages in the inclusive range `[start, end_inclusive]` from durable segments.
+    /// If `end_inclusive` is None, read all available segments starting at `start`.
     ///
-    /// Objects are discovered via metadata object descriptors and filtered by
-    /// `[start_offset, end_offset]` overlap. Each selected object is decoded
+    /// Segments are discovered via metadata segment descriptors and filtered by
+    /// `[start_offset, end_offset]` overlap. Each selected segment is decoded
     /// as a sequence of raw WAL frames. Frames outside the requested range
     /// are filtered out. The resulting stream yields messages ordered by offset.
     pub async fn read_range(
@@ -70,7 +74,7 @@ impl DurableHistoryReader {
         descriptors.sort_by_key(|d| d.start_offset);
 
         // Build a stream that iterates objects and yields messages lazily
-        let cloud = self.cloud.clone();
+        let durable_store = self.durable_store.clone();
         let topic_path = self.topic_path.clone();
         let chunk_size: usize = 4 * 1024 * 1024; // 4 MiB
         let mut idx = 0usize;
@@ -103,8 +107,8 @@ impl DurableHistoryReader {
                         }
                         _ => 0u64,
                     };
-                    let provider = cloud.provider().to_string();
-                    let reader = cloud.open_segment_reader(&key, start_byte).await?;
+                    let provider = durable_store.provider().to_string();
+                    let reader = durable_store.open_segment_reader(&key, start_byte).await?;
                     counter!(DURABLE_HISTORY_SEGMENTS_READ_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(1);
                     cur_reader = Some(reader);
                     carry.clear();
@@ -112,7 +116,7 @@ impl DurableHistoryReader {
 
                 // Read next chunk from current reader
                 let reader = cur_reader.as_mut().unwrap();
-                let provider = cloud.provider().to_string();
+                let provider = durable_store.provider().to_string();
                 let chunk = reader.read_chunk(chunk_size).await?;
                 if !chunk.is_empty() {
                     counter!(DURABLE_HISTORY_READ_BYTES_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(chunk.len() as u64);
@@ -173,7 +177,7 @@ fn parse_frames_from_carry(
                 offset = off,
                 expected_crc = crc,
                 computed_crc = computed,
-                "CRC mismatch while decoding cloud object"
+                "CRC mismatch while decoding durable segment"
             );
             return Err(PersistentStorageError::Other(format!(
                 "durable_history_reader: CRC mismatch at offset {} (expected {}, got {})",

@@ -7,7 +7,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::checkpoint::{CheckpointStore, WalCheckpoint};
-    use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
+    use crate::metadata::{SegmentDescriptor, StorageMetadata};
     use crate::wal::deleter::{Deleter, DeleterConfig};
 
     // Helper to create a small file and return its PathBuf and size

@@ -1,4 +1,4 @@
-// Centralized metric name constants for the persistent storage crate (WAL + Cloud)
+// Centralized metric name constants for the persistent storage crate (WAL + durable storage)
 // Mirrors the style of danube-broker/src/broker_metrics.rs without cross-crate deps.
 
 #[derive(Debug, Clone, Copy)]
@@ -44,32 +44,32 @@ pub const WAL_DELETE_TOTAL: Metric = Metric {
     description: "Total number of WAL files deleted by retention (per topic)",
 };
 
-// Cloud metrics (proposed; not yet wired)
+// Segment export and durable-store metrics (proposed; not yet wired)
 pub const CLOUD_UPLOAD_OBJECTS_TOTAL: Metric = Metric {
     name: "danube_cloud_upload_objects_total",
-    description: "Total number of cloud objects uploaded (per topic, provider, result)",
+    description: "Total number of durable segments uploaded (per topic, provider, result)",
 };
 
 pub const CLOUD_UPLOAD_BYTES_TOTAL: Metric = Metric {
     name: "danube_cloud_upload_bytes_total",
-    description: "Total bytes uploaded to cloud (per topic, provider)",
+    description: "Total bytes uploaded to durable storage (per topic, provider)",
 };
 
 pub const CLOUD_UPLOAD_LATENCY_MS: Metric = Metric {
     name: "danube_cloud_upload_latency_ms",
-    description: "Latency to upload and finalize one cloud object (provider)",
+    description: "Latency to upload and finalize one durable segment (provider)",
 };
 
 #[allow(dead_code)]
 pub const CLOUD_LIST_TOTAL: Metric = Metric {
     name: "danube_cloud_list_total",
-    description: "Total number of cloud list operations (provider)",
+    description: "Total number of durable-store list operations (provider)",
 };
 
 #[allow(dead_code)]
 pub const CLOUD_LIST_LATENCY_MS: Metric = Metric {
     name: "danube_cloud_list_latency_ms",
-    description: "Latency of cloud list operations (provider)",
+    description: "Latency of durable-store list operations (provider)",
 };
 
 pub const DURABLE_HISTORY_TO_HOT_TOTAL: Metric = Metric {

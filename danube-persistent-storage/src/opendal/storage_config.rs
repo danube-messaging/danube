@@ -176,7 +176,7 @@ fn warn_unknown_options(
     for k in options.keys() {
         if !allowed.contains(&k.as_str()) {
             warn!(
-                target = "cloud_store",
+                target = "opendal_store",
                 "unknown {} option '{}'; accepted keys: {:?}", service, k, allowed
             );
         }

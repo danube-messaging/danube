@@ -1,10 +1,10 @@
-use crate::cloud::storage_config::BackendConfig;
+use crate::opendal::storage_config::BackendConfig;
 // Re-export split helpers for backward compatibility with existing tests
 use danube_core::storage::PersistentStorageError;
 use opendal::Operator;
 
 #[derive(Debug, Clone)]
-pub struct CloudStore {
+pub struct OpendalStore {
     /// Optional extra prefix for key joining (used by Local backends)
     pub(crate) root_prefix: String,
     /// Opendal operator
@@ -13,7 +13,7 @@ pub struct CloudStore {
     pub(crate) provider: String,
 }
 
-impl CloudStore {
+impl OpendalStore {
     pub fn new(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
         let (op, root_prefix, provider) = cfg.build_operator()?;
         Ok(Self { root_prefix, op, provider })
@@ -33,7 +33,7 @@ impl CloudStore {
     pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, PersistentStorageError> {
         let key = self.join(path);
         let data = self.op.read(&key).await.map_err(|e| {
-            PersistentStorageError::Other(format!("cloud get_object {}: {}", key, e))
+            PersistentStorageError::Other(format!("opendal get_object {}: {}", key, e))
         })?;
         Ok(data.to_vec())
     }
@@ -48,18 +48,18 @@ impl CloudStore {
         let key = self.join(path);
         let mut writer =
             self.op.writer(&key).await.map_err(|e| {
-                PersistentStorageError::Other(format!("cloud writer {}: {}", key, e))
+                PersistentStorageError::Other(format!("opendal writer {}: {}", key, e))
             })?;
         // Write requires owned data for the async future; pass a Buffer
         let buf = opendal::Buffer::from(bytes.to_vec());
         writer
             .write(buf)
             .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud write {}: {}", key, e)))?;
+            .map_err(|e| PersistentStorageError::Other(format!("opendal write {}: {}", key, e)))?;
         let meta = writer
             .close()
             .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud close {}: {}", key, e)))?;
+            .map_err(|e| PersistentStorageError::Other(format!("opendal close {}: {}", key, e)))?;
         Ok(meta)
     }
 
@@ -69,20 +69,20 @@ impl CloudStore {
         &self,
         path: &str,
         start_byte: u64,
-    ) -> Result<CloudRangeReader, PersistentStorageError> {
+    ) -> Result<OpendalRangeReader, PersistentStorageError> {
         let key = self.join(path);
         let reader =
             self.op.reader(&key).await.map_err(|e| {
-                PersistentStorageError::Other(format!("cloud reader {}: {}", key, e))
+                PersistentStorageError::Other(format!("opendal reader {}: {}", key, e))
             })?;
         // Stat to get content length for safe range bounds
         let meta = self
             .op
             .stat(&key)
             .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud stat {}: {}", key, e)))?;
+            .map_err(|e| PersistentStorageError::Other(format!("opendal stat {}: {}", key, e)))?;
         let size = meta.content_length();
-        Ok(CloudRangeReader {
+        Ok(OpendalRangeReader {
             inner: reader,
             offset: start_byte,
             size,
@@ -105,18 +105,18 @@ impl CloudStore {
         self.op
             .delete(&key)
             .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud delete {}: {}", key, e)))
+            .map_err(|e| PersistentStorageError::Other(format!("opendal delete {}: {}", key, e)))
     }
 }
 
-/// Ranged cloud reader wrapper that supports chunked reads via explicit ranges.
-pub struct CloudRangeReader {
+/// Ranged opendal reader wrapper that supports chunked reads via explicit ranges.
+pub struct OpendalRangeReader {
     pub(crate) inner: opendal::Reader,
     pub(crate) offset: u64,
     pub(crate) size: u64,
 }
 
-impl CloudRangeReader {
+impl OpendalRangeReader {
     /// Read the next chunk of up to chunk_size bytes.
     pub async fn read_chunk(
         &mut self,
@@ -130,7 +130,7 @@ impl CloudRangeReader {
             .inner
             .read(self.offset..end)
             .await
-            .map_err(|e| PersistentStorageError::Other(format!("cloud read: {}", e)))?;
+            .map_err(|e| PersistentStorageError::Other(format!("opendal read: {}", e)))?;
         self.offset += buf.len() as u64;
         Ok(buf.to_vec())
     }
