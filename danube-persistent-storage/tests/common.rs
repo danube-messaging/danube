@@ -49,24 +49,24 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
         d.push(format!("danube-integration-test-{}", nanos));
         d
     };
+    let wal_cfg = WalConfig {
+        dir: Some(unique_dir),
+        fsync_interval_ms: Some(5_000),
+        ..Default::default()
+    };
 
     let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
     let factory = StorageFactory::new(
         StorageFactoryConfig::cloud_native(
-            WalConfig {
-                dir: Some(unique_dir),
-                fsync_interval_ms: Some(50),
-                fsync_max_batch_bytes: Some(1),
-                ..Default::default()
-            },
+            wal_cfg,
             "/danube",
             BackendConfig::Local {
                 backend: LocalBackend::Memory,
-                root: "integration-test".to_string(),
+                root: "test-memory".to_string(),
             },
             None,
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         store_arc,
     );
 

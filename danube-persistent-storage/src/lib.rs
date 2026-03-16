@@ -11,6 +11,9 @@ mod segment_catalog;
 
 mod mobility_state;
 
+mod durable_store;
+pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore, OpendalDurableStore};
+
 mod wal_storage;
 pub use wal_storage::WalStorage;
 

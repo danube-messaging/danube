@@ -316,7 +316,7 @@ async fn chaining_stream_handoff_memory() {
 /// Expected
 /// - Ordered delivery `h0, h1, h2` from cloud followed by `live3` from the WAL tail.
 #[tokio::test]
-async fn test_factory_cloud_wal_handoff_per_topic() {
+async fn test_factory_durable_history_hot_handoff_per_topic() {
     let (factory, _mem) = common::create_test_factory().await;
     let topic_name = "/default/topic-hand";
     let topic_path = "default/topic-hand"; // for cloud/metadata
@@ -401,7 +401,7 @@ async fn test_factory_cloud_wal_handoff_per_topic() {
 /// Expected
 /// - Reader does not consume any cloud records and immediately reads from WAL: `w3`, `w4`.
 #[tokio::test]
-async fn test_factory_cloud_skip_cloud_when_start_after_objects() {
+async fn test_factory_skip_durable_history_when_start_after_segments() {
     let (factory, _mem) = common::create_test_factory().await;
     let topic_name = "/default/topic-skip";
     let topic_path = "default/topic-skip"; // for cloud/metadata

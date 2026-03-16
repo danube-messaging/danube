@@ -431,6 +431,14 @@ impl Wal {
         Ok(())
     }
 
+    /// Force the active WAL file to rotate so it can be treated as an immutable segment.
+    pub async fn rotate(&self) -> Result<(), PersistentStorageError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.inner.cmd_tx.send(LogCommand::Rotate(tx)).await;
+        let _ = rx.await;
+        Ok(())
+    }
+
     /// Return the next offset that will be assigned on append (i.e., current tip + 1).
     pub fn current_offset(&self) -> u64 {
         self.inner.next_offset.load(Ordering::Acquire)

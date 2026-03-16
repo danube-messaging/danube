@@ -33,6 +33,10 @@ impl HotLog {
         self.inner.flush().await
     }
 
+    pub async fn rotate(&self) -> Result<(), PersistentStorageError> {
+        self.inner.rotate().await
+    }
+
     pub async fn shutdown(&self) {
         self.inner.shutdown().await
     }

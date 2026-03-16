@@ -1,21 +1,24 @@
 use crate::persistent_metrics::{
-    CLOUD_HANDOFF_TO_WAL_TOTAL, WAL_APPEND_BYTES_TOTAL, WAL_APPEND_TOTAL, WAL_READER_CREATE_TOTAL,
+    DURABLE_HISTORY_TO_HOT_TOTAL, WAL_APPEND_BYTES_TOTAL, WAL_APPEND_TOTAL,
+    WAL_READER_CREATE_TOTAL,
 };
 use async_trait::async_trait;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use metrics::counter;
+use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
-use crate::cloud::{CloudReader, CloudStore};
+use crate::cloud::DurableHistoryReader;
+use crate::durable_store::DurableStore;
 use crate::hot_log::HotLog;
 use crate::storage_metadata::StorageMetadata;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
     hot_log: HotLog,
-    durable_store: Option<CloudStore>,
+    durable_store: Option<Arc<dyn DurableStore>>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
     history_cutover_from_hot: bool,
@@ -39,7 +42,7 @@ impl WalStorage {
     /// Enable durable historical reads by wiring CloudStore + StorageMetadata and logical topic path.
     pub(crate) fn with_durable_history(
         mut self,
-        durable_store: CloudStore,
+        durable_store: Arc<dyn DurableStore>,
         metadata: StorageMetadata,
         topic_path: String,
     ) -> Self {
@@ -72,6 +75,52 @@ impl WalStorage {
     #[allow(dead_code)]
     pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
         self.hot_log.append(msg).await
+    }
+
+    async fn create_hot_reader(
+        &self,
+        topic_name: &str,
+        from: u64,
+        live: bool,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let stream = self.hot_log.tail_reader(from, live).await;
+        if stream.is_ok() {
+            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+        }
+        stream
+    }
+
+    async fn hot_start_offset(&self) -> u64 {
+        if self.history_cutover_from_hot {
+            self.hot_log
+                .earliest_cached_offset()
+                .await
+                .unwrap_or_else(|| self.hot_log.current_offset())
+        } else {
+            let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
+            wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset)
+        }
+    }
+
+    async fn create_durable_history_reader(
+        &self,
+        topic_name: &str,
+        durable_store: Arc<dyn DurableStore>,
+        metadata: StorageMetadata,
+        topic_path: String,
+        start_offset: u64,
+        hot_start_offset: u64,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let reader = DurableHistoryReader::new(durable_store, metadata, topic_path);
+        let durable_stream = reader
+            .read_range(start_offset, Some(hot_start_offset - 1))
+            .await?;
+        let hot_stream = self.hot_log.tail_reader(hot_start_offset, false).await?;
+        let chained = durable_stream.chain(hot_stream);
+        counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "durable_history_then_hot").increment(1);
+        counter!(DURABLE_HISTORY_TO_HOT_TOTAL.name, "topic"=> topic_name.to_string())
+            .increment(1);
+        Ok(Box::pin(chained))
     }
 }
 
@@ -113,13 +162,9 @@ impl PersistentStorage for WalStorage {
                 warn!(
                     target = "wal_storage",
                     start = from,
-                    "cloud is not configured; creating reader from WAL only"
+                    "durable history is not configured; creating reader from WAL only"
                 );
-                let stream = self.hot_log.tail_reader(from, live).await;
-                if stream.is_ok() {
-                    counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
-                }
-                return stream;
+                return self.create_hot_reader(topic_name, from, live).await;
             }
         };
 
@@ -128,51 +173,34 @@ impl PersistentStorage for WalStorage {
             StartPosition::Offset(o) => (o, false),
         };
 
-        let wal_start_offset = if self.history_cutover_from_hot {
-            self.hot_log
-                .earliest_cached_offset()
-                .await
-                .unwrap_or_else(|| self.hot_log.current_offset())
-        } else {
-            let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
-            wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset)
-        };
+        let hot_start_offset = self.hot_start_offset().await;
 
-        if start_offset >= wal_start_offset {
+        if start_offset >= hot_start_offset {
             info!(
                 target = "wal_storage",
                 topic = %topic_path,
                 start = start_offset,
-                wal_start = wal_start_offset,
+                hot_start = hot_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            let stream = self.hot_log.tail_reader(start_offset, live).await;
-            if stream.is_ok() {
-                counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
-            }
-            stream
+            self.create_hot_reader(topic_name, start_offset, live).await
         } else {
-            let handoff_offset = wal_start_offset;
             info!(
                 target = "wal_storage",
                 topic = %topic_path,
                 start = start_offset,
-                handoff = handoff_offset,
-                "creating reader with Cloud->WAL chaining"
+                hot_start = hot_start_offset,
+                "creating reader from durable history plus hot state"
             );
-
-            let reader = CloudReader::new(durable_store, metadata, topic_path.clone());
-            let cloud_stream = reader
-                .read_range(start_offset, Some(handoff_offset - 1))
-                .await?;
-
-            let wal_stream = self.hot_log.tail_reader(handoff_offset, false).await?;
-
-            let chained = cloud_stream.chain(wal_stream);
-            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
-            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string())
-                .increment(1);
-            Ok(Box::pin(chained))
+            self.create_durable_history_reader(
+                topic_name,
+                durable_store,
+                metadata,
+                topic_path,
+                start_offset,
+                hot_start_offset,
+            )
+            .await
         }
     }
 

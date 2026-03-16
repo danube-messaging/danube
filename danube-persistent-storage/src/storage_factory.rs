@@ -1,7 +1,6 @@
 use crate::checkpoint::CheckpointStore;
-use crate::cloud::{
-    BackendConfig, CloudStore, LocalBackend, Uploader, UploaderBaseConfig, UploaderConfig,
-};
+use crate::cloud::{BackendConfig, LocalBackend};
+use crate::durable_store::{DurableStore, OpendalDurableStore};
 use crate::frames::{extract_offsets_in_prefix, scan_safe_frame_boundary_with_crc, FRAME_HEADER_SIZE};
 use crate::hot_log::HotLog;
 use crate::mobility_state::MobilityState;
@@ -34,7 +33,7 @@ pub struct StorageFactoryConfig {
     metadata_root: String,
     durable_backend: Option<BackendConfig>,
     retention: Option<RetentionConfig>,
-    uploader_interval_seconds: Option<u64>,
+    segment_export_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +51,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: None,
             retention: None,
-            uploader_interval_seconds: None,
+            segment_export_interval_seconds: None,
         }
     }
 
@@ -68,7 +67,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: Some(durable_backend),
             retention,
-            uploader_interval_seconds: None,
+            segment_export_interval_seconds: None,
         }
     }
 
@@ -84,12 +83,12 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             durable_backend: Some(durable_backend),
             retention,
-            uploader_interval_seconds: None,
+            segment_export_interval_seconds: None,
         }
     }
 
-    pub fn with_uploader_interval_seconds(mut self, interval_seconds: u64) -> Self {
-        self.uploader_interval_seconds = Some(interval_seconds);
+    pub fn with_segment_export_interval_seconds(mut self, interval_seconds: u64) -> Self {
+        self.segment_export_interval_seconds = Some(interval_seconds);
         self
     }
 }
@@ -100,11 +99,11 @@ pub struct StorageFactory {
     base_cfg: WalConfig,
     segment_catalog: SegmentCatalog,
     mobility_state: MobilityState,
-    durable_store: Option<CloudStore>,
+    durable_store: Option<Arc<dyn DurableStore>>,
     topics: Arc<DashMap<String, HotLog>>,
-    uploaders: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
-    uploader_tokens: Arc<DashMap<String, CancellationToken>>,
-    uploader_base_cfg: UploaderBaseConfig,
+    segment_exporters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
+    segment_exporter_tokens: Arc<DashMap<String, CancellationToken>>,
+    segment_export_interval_seconds: u64,
     deleter_cfg: Option<DeleterConfig>,
     deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     deleter_tokens: Arc<DashMap<String, CancellationToken>>,
@@ -123,10 +122,8 @@ pub struct SealInfo {
 
 impl StorageFactory {
     pub fn new(config: StorageFactoryConfig, metadata_store: Arc<dyn MetadataStore>) -> Self {
-        let mut uploader_base_cfg = UploaderBaseConfig::default();
-        if let Some(interval_seconds) = config.uploader_interval_seconds {
-            uploader_base_cfg.interval_seconds = interval_seconds;
-        }
+        let segment_export_interval_seconds =
+            config.segment_export_interval_seconds.unwrap_or(300);
         let durable_backend = config
             .durable_backend
             .clone()
@@ -141,9 +138,10 @@ impl StorageFactory {
                 }
             });
         let durable_store = durable_backend
-            .map(CloudStore::new)
+            .map(OpendalDurableStore::from_backend)
             .transpose()
-            .expect("init durable store");
+            .expect("init durable store")
+            .map(|store| Arc::new(store) as Arc<dyn DurableStore>);
         let metadata = StorageMetadata::new(metadata_store, config.metadata_root.clone());
         let segment_catalog = SegmentCatalog::new(metadata.clone());
         let mobility_state = MobilityState::new(metadata.clone());
@@ -154,9 +152,9 @@ impl StorageFactory {
             mobility_state,
             durable_store,
             topics: Arc::new(DashMap::new()),
-            uploaders: Arc::new(DashMap::new()),
-            uploader_tokens: Arc::new(DashMap::new()),
-            uploader_base_cfg,
+            segment_exporters: Arc::new(DashMap::new()),
+            segment_exporter_tokens: Arc::new(DashMap::new()),
+            segment_export_interval_seconds,
             deleter_cfg: config.retention.map(|retention| DeleterConfig {
                 check_interval_minutes: retention.check_interval_minutes,
                 retention_time_minutes: retention.time_minutes,
@@ -193,27 +191,66 @@ impl StorageFactory {
             }
         }
 
-        if let (Some(store), Some(cfg)) = (durable_store.clone(), Some(self.uploader_base_cfg.clone())) {
-            if self.mode == StorageMode::CloudNative && !self.uploaders.contains_key(&topic_path) {
-                let uploader_cfg = UploaderConfig::from_base(&cfg, topic_path.clone(), self.metadata_root.clone());
-                let ckpt_for_uploader = ckpt_store.clone().ok_or_else(|| {
-                    PersistentStorageError::Other(
-                        "cloud_native requires wal.dir for uploader state".to_string(),
-                    )
-                })?;
-                if let Ok(uploader) = Uploader::new(
-                    uploader_cfg,
-                    store,
-                    self.segment_catalog.metadata().clone(),
-                    ckpt_for_uploader,
-                ) {
-                    let arc_up = Arc::new(uploader);
-                    let cancel = CancellationToken::new();
-                    let handle = arc_up.clone().start_with_cancel(cancel.clone());
-                    self.uploaders.insert(topic_path.clone(), handle);
-                    self.uploader_tokens.insert(topic_path.clone(), cancel);
+        if durable_store.is_some()
+            && self.mode == StorageMode::CloudNative
+            && !self.segment_exporters.contains_key(&topic_path)
+        {
+            let factory = self.clone();
+            let hot_log = topic_wal.clone();
+            let topic_path_for_task = topic_path.clone();
+            let interval_seconds = self.segment_export_interval_seconds;
+            let cancel = CancellationToken::new();
+            let cancel_for_task = cancel.clone();
+            let handle = tokio::spawn(async move {
+                info!(
+                    target = "storage_factory",
+                    topic = %topic_path_for_task,
+                    interval = interval_seconds,
+                    "cloud_native segment exporter started"
+                );
+                if let Err(e) = factory
+                    .cut_and_export_topic_segments(&topic_path_for_task, &hot_log)
+                    .await
+                {
+                    warn!(
+                        target = "storage_factory",
+                        topic = %topic_path_for_task,
+                        error = %e,
+                        "cloud_native segment exporter cycle failed on startup"
+                    );
                 }
-            }
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+                loop {
+                    tokio::select! {
+                        _ = cancel_for_task.cancelled() => {
+                            info!(
+                                target = "storage_factory",
+                                topic = %topic_path_for_task,
+                                "cloud_native segment exporter stopped"
+                            );
+                            break;
+                        }
+                        _ = ticker.tick() => {
+                            if let Err(e) = factory
+                                .cut_and_export_topic_segments(&topic_path_for_task, &hot_log)
+                                .await
+                            {
+                                warn!(
+                                    target = "storage_factory",
+                                    topic = %topic_path_for_task,
+                                    error = %e,
+                                    "cloud_native segment exporter cycle failed"
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+            self.segment_exporters.insert(topic_path.clone(), handle);
+            self.segment_exporter_tokens
+                .insert(topic_path.clone(), cancel);
         }
 
         if self.mode == StorageMode::CloudNative && !self.deleters.contains_key(&topic_path) {
@@ -294,6 +331,33 @@ impl StorageFactory {
             ));
         }
 
+        let wal_checkpoint = match ckpt_store.as_ref() {
+            Some(store) => store.get_wal().await,
+            None => None,
+        };
+        let local_wal_state_available = wal_checkpoint
+            .as_ref()
+            .map(Self::wal_checkpoint_has_local_data)
+            .unwrap_or(false);
+        if wal_checkpoint.is_some() && !local_wal_state_available {
+            warn!(
+                target = "storage_factory",
+                topic = %topic_path,
+                "startup recovery found wal checkpoint but no referenced local wal files; falling back to durable segment continuity"
+            );
+        }
+        let catalog_current_segment = match self.segment_catalog.metadata().get_current_segment_descriptor(topic_path).await {
+            Ok(segment) => segment,
+            Err(e) => {
+                warn!(
+                    target = "storage_factory",
+                    topic = %topic_path,
+                    error = %e,
+                    "failed to read current segment descriptor during startup recovery"
+                );
+                None
+            }
+        };
         let (initial_offset, resumed_from_sealed) = match self.mobility_state.load(topic_path).await {
             Ok(Some(sealed_state)) if sealed_state.sealed => {
                 (
@@ -301,7 +365,18 @@ impl StorageFactory {
                     true,
                 )
             }
-            Ok(_) => (None, false),
+            Ok(_) => {
+                if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative)
+                    && !local_wal_state_available
+                {
+                    match catalog_current_segment {
+                        Some(segment) => (Some(segment.end_offset.saturating_add(1)), true),
+                        None => (None, false),
+                    }
+                } else {
+                    (None, false)
+                }
+            }
             Err(e) => {
                 warn!(
                     target = "storage_factory",
@@ -320,15 +395,15 @@ impl StorageFactory {
     }
 
     pub async fn shutdown(&self) {
-        for item in self.uploader_tokens.iter() {
+        for item in self.segment_exporter_tokens.iter() {
             item.value().cancel();
         }
         for item in self.deleter_tokens.iter() {
             item.value().cancel();
         }
-        self.uploaders.clear();
+        self.segment_exporters.clear();
         self.deleters.clear();
-        self.uploader_tokens.clear();
+        self.segment_exporter_tokens.clear();
         self.deleter_tokens.clear();
     }
 
@@ -368,10 +443,10 @@ impl StorageFactory {
 
         let last_committed_offset = hot_log.last_committed_offset();
         hot_log.shutdown().await;
-        if self.uses_sealed_segment_export() {
-            self.export_topic_segments(&topic_path, &hot_log).await?;
-        }
         self.stop_topic_background_tasks(&topic_path).await;
+        if self.uses_sealed_segment_export() {
+            self.export_topic_segments(&topic_path, &hot_log, true).await?;
+        }
         self.clear_topic_wal_state(&topic_path).await?;
 
         let state = StorageStateSealed {
@@ -402,19 +477,32 @@ impl StorageFactory {
         Ok(())
     }
 
+    async fn cut_and_export_topic_segments(
+        &self,
+        topic_path: &str,
+        hot_log: &HotLog,
+    ) -> Result<(), PersistentStorageError> {
+        if self.mode != StorageMode::CloudNative {
+            return Ok(());
+        }
+        hot_log.rotate().await?;
+        self.export_topic_segments(topic_path, hot_log, false).await
+    }
+
     async fn export_topic_segments(
         &self,
         topic_path: &str,
         hot_log: &HotLog,
+        include_active_file: bool,
     ) -> Result<(), PersistentStorageError> {
         if !self.uses_sealed_segment_export() {
             return Ok(());
         }
         let durable_store = match self.durable_store.clone() {
             Some(store) => store,
-            None if self.mode == StorageMode::SharedFs => {
+            None if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative) => {
                 return Err(PersistentStorageError::Other(
-                    "shared_fs requires durable backend for segment export".to_string(),
+                    "durable storage mode requires durable backend for segment export".to_string(),
                 ))
             }
             None => return Ok(()),
@@ -436,9 +524,11 @@ impl StorageFactory {
             .iter()
             .map(|(_, path, first_offset)| (*first_offset, path.clone()))
             .collect();
-        if let Some(first_offset) = wal_ckpt.active_file_first_offset {
-            if !wal_ckpt.file_path.is_empty() {
-                files.push((first_offset, PathBuf::from(wal_ckpt.file_path.clone())));
+        if include_active_file {
+            if let Some(first_offset) = wal_ckpt.active_file_first_offset {
+                if !wal_ckpt.file_path.is_empty() {
+                    files.push((first_offset, PathBuf::from(wal_ckpt.file_path.clone())));
+                }
             }
         }
         files.sort_by_key(|(first_offset, _)| *first_offset);
@@ -480,7 +570,7 @@ impl StorageFactory {
                     .as_secs()
             );
             let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment_id);
-            let meta = durable_store.put_object_meta(&object_path, safe_bytes).await?;
+            let meta = durable_store.put_segment(&object_path, safe_bytes).await?;
             let desc = SegmentDescriptor {
                 segment_id: segment_id.clone(),
                 start_offset,
@@ -536,16 +626,16 @@ impl StorageFactory {
         let segments = self.segment_catalog.list_segments(topic_path).await?;
         for segment in segments {
             let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment.segment_id);
-            durable_store.delete_object(&object_path).await?;
+            durable_store.delete_segment(&object_path).await?;
         }
         Ok(())
     }
 
     async fn stop_topic_background_tasks(&self, topic_path: &str) {
-        if let Some((_, cancel)) = self.uploader_tokens.remove(topic_path) {
+        if let Some((_, cancel)) = self.segment_exporter_tokens.remove(topic_path) {
             cancel.cancel();
         }
-        if let Some((_, handle)) = self.uploaders.remove(topic_path) {
+        if let Some((_, handle)) = self.segment_exporters.remove(topic_path) {
             let _ = handle.await;
         }
         if let Some((_, cancel)) = self.deleter_tokens.remove(topic_path) {
@@ -566,11 +656,23 @@ impl StorageFactory {
         Some(root)
     }
 
-    fn uses_sealed_segment_export(&self) -> bool {
-        matches!(self.mode, StorageMode::Local | StorageMode::SharedFs)
+    fn wal_checkpoint_has_local_data(wal_checkpoint: &crate::checkpoint::WalCheckpoint) -> bool {
+        wal_checkpoint
+            .rotated_files
+            .iter()
+            .any(|(_, path, _)| path.exists())
+            || (!wal_checkpoint.file_path.is_empty()
+                && PathBuf::from(&wal_checkpoint.file_path).exists())
     }
 
-    fn durable_store_for_topic(&self) -> Result<Option<CloudStore>, PersistentStorageError> {
+    fn uses_sealed_segment_export(&self) -> bool {
+        matches!(
+            self.mode,
+            StorageMode::Local | StorageMode::SharedFs | StorageMode::CloudNative
+        )
+    }
+
+    fn durable_store_for_topic(&self) -> Result<Option<Arc<dyn DurableStore>>, PersistentStorageError> {
         match self.durable_store.clone() {
             Some(store) => Ok(Some(store)),
             None if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative) => Err(

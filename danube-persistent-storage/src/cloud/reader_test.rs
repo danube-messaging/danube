@@ -2,18 +2,13 @@
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
 
-    use crate::checkpoint::CheckpointStore;
-    use crate::cloud::{CloudReader, CloudStore, Uploader, UploaderConfig};
-    use crate::storage_metadata::StorageMetadata;
-    use crate::wal::{Wal, WalConfig};
-    use crate::{BackendConfig, LocalBackend};
+    use crate::cloud::{DurableHistoryReader, CloudStore};
+    use crate::storage_metadata::{SegmentDescriptor, StorageMetadata};
+    use crate::{BackendConfig, DurableStore, LocalBackend, OpendalDurableStore};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
-    use tempfile::TempDir;
-    use tokio_util::sync::CancellationToken;
 
     fn make_msg(i: u64, topic: &str) -> StreamMessage {
         StreamMessage {
@@ -34,10 +29,62 @@ mod tests {
         }
     }
 
-    /// Test: CloudReader uses sparse offset index for precise ranged reads
+    fn encode_segment(messages: &[StreamMessage]) -> (Vec<u8>, Vec<(u64, u64)>) {
+        let mut bytes = Vec::new();
+        let mut index = Vec::new();
+        for (msg_index, msg) in messages.iter().enumerate() {
+            if msg_index % 1000 == 0 {
+                index.push((msg.msg_id.topic_offset, bytes.len() as u64));
+            }
+            let payload =
+                bincode::serde::encode_to_vec(msg, bincode::config::standard()).expect("serialize");
+            let crc = crc32fast::hash(&payload);
+            bytes.extend_from_slice(&msg.msg_id.topic_offset.to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&crc.to_le_bytes());
+            bytes.extend_from_slice(&payload);
+        }
+        (bytes, index)
+    }
+
+    async fn seed_segment(
+        cloud: Arc<dyn DurableStore>,
+        meta: &StorageMetadata,
+        topic_path: &str,
+        messages: Vec<StreamMessage>,
+    ) {
+        let (bytes, index) = encode_segment(&messages);
+        let start_offset = messages.first().expect("segment start").msg_id.topic_offset;
+        let end_offset = messages.last().expect("segment end").msg_id.topic_offset;
+        let segment_id = format!("data-{}-seed.dnb1", start_offset);
+        let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment_id);
+        let object_meta = cloud
+            .put_segment(&object_path, &bytes)
+            .await
+            .expect("put seeded segment");
+        let desc = SegmentDescriptor {
+            segment_id,
+            start_offset,
+            end_offset,
+            size: bytes.len() as u64,
+            etag: object_meta.etag().map(|etag| etag.to_string()),
+            created_at: 1,
+            completed: true,
+            offset_index: Some(index),
+        };
+        let start_padded = format!("{:020}", start_offset);
+        meta.put_segment_descriptor(topic_path, &start_padded, &desc)
+            .await
+            .expect("put seeded descriptor");
+        meta.put_current_segment(topic_path, &start_padded)
+            .await
+            .expect("put seeded current segment");
+    }
+
+    /// Test: DurableHistoryReader uses sparse offset index for precise ranged reads
     ///
     /// Purpose
-    /// - Ensure that with many messages per object, CloudReader starts near the requested
+    /// - Ensure that with many messages per object, DurableHistoryReader starts near the requested
     ///   range using the sparse offset index written by the uploader.
     ///
     /// Flow
@@ -45,73 +92,27 @@ mod tests {
     /// - Start uploader and wait for object creation
     /// - Read a narrow range near the tail [2500, 2520] and validate output
     #[tokio::test]
-    async fn test_cloud_reader_sparse_index_seek() {
+    async fn test_durable_history_reader_sparse_index_seek() {
         let topic_path = "ns/topic-cloud";
 
-        let tmp = TempDir::new().expect("temp wal dir");
-        let wal_dir = tmp.path().to_path_buf();
-        let cfg = WalConfig {
-            dir: Some(wal_dir.clone()),
-            cache_capacity: Some(128),
-            ..Default::default()
-        };
-        let wal_ckpt = wal_dir.join("wal.ckpt");
-        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
-        let _ = store.load_from_disk().await;
-        let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
-            .await
-            .expect("wal init");
-
-        for i in 0..3000u64 {
-            let m = make_msg(i, topic_path);
-            wal.append(&m).await.expect("append");
-        }
-        wal.flush().await.expect("flush wal");
-
-        let cloud = CloudStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
-            root: "mem-cloud".to_string(),
-        })
-        .expect("cloud store mem");
+        let cloud = Arc::new(OpendalDurableStore::new(
+            CloudStore::new(BackendConfig::Local {
+                backend: LocalBackend::Memory,
+                root: "mem-cloud".to_string(),
+            })
+            .expect("cloud store mem"),
+        )) as Arc<dyn DurableStore>;
 
         let mem = MemoryStore::new().await.expect("memory meta store");
         let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem.clone());
         let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
-
-        let up_cfg = UploaderConfig {
-            interval_seconds: 1,
-            topic_path: topic_path.to_string(),
-            _root_prefix: "/danube".to_string(),
-            max_object_mb: None,
-        };
-        let uploader = Arc::new(
-            Uploader::new(up_cfg, cloud.clone(), meta.clone(), store).expect("uploader"),
-        );
-        let cancel = CancellationToken::new();
-        let handle = uploader.clone().start_with_cancel(cancel.clone());
-
-        // Wait until objects cover the requested end offset (2520), otherwise keep uploading
-        let mut waited = 0u64;
-        let ok = loop {
-            let mut descs = meta.get_segment_descriptors(topic_path).await.unwrap_or_default();
-            descs.sort_by_key(|d| d.end_offset);
-            if let Some(last) = descs.last() {
-                if last.end_offset >= 2520 {
-                    break true;
-                }
-            }
-            if waited >= 10_000 {
-                break false;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            waited += 50;
-        };
-        assert!(ok, "uploader did not create objects in time");
-        cancel.cancel();
-        let _ = handle.await;
+        let messages = (0..3000u64)
+            .map(|i| make_msg(i, topic_path))
+            .collect::<Vec<_>>();
+        seed_segment(cloud.clone(), &meta, topic_path, messages).await;
 
         // Reader should only return requested window
-        let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
+        let reader = DurableHistoryReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
         let stream = reader
             .read_range(2500, Some(2520))
             .await
@@ -126,108 +127,44 @@ mod tests {
         }
     }
 
-    /// Test: CloudReader range reads from memory backend
+    /// Test: DurableHistoryReader range reads from memory backend
     ///
     /// Purpose
-    /// - Validate CloudReader can read historical messages from cloud objects (memory backend)
+    /// - Validate DurableHistoryReader can read historical messages from cloud objects (memory backend)
     /// - Ensure raw WAL frame parsing works correctly for message reconstruction
     /// - Verify range filtering and message ordering from cloud storage
     ///
     /// Flow
     /// - Create WAL and append 3 messages (offsets 0-2)
     /// - Set up uploader to write messages to cloud storage in DNB1 format
-    /// - Use CloudReader to read range [0, 2] and verify message content
+    /// - Use DurableHistoryReader to read range [0, 2] and verify message content
     ///
     /// Expected
     /// - All messages are uploaded to cloud storage successfully
-    /// - CloudReader can parse raw frame format and reconstruct original messages
+    /// - DurableHistoryReader can parse raw frame format and reconstruct original messages
     /// - Messages are returned in correct offset order with proper content
     #[tokio::test]
-    async fn test_cloud_reader_range_reads_memory() {
+    async fn test_durable_history_reader_range_reads_memory() {
         let topic_path = "ns/topic-cloud";
 
-        // WAL durable config: use temp dir + shared CheckpointStore for persisted reads
-        let tmp = TempDir::new().expect("temp wal dir");
-        let wal_dir = tmp.path().to_path_buf();
-        let cfg = WalConfig {
-            dir: Some(wal_dir.clone()),
-            cache_capacity: Some(128),
-            ..Default::default()
-        };
-        let wal_ckpt = wal_dir.join("wal.ckpt");
-        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
-        let _ = store.load_from_disk().await;
-        let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
-            .await
-            .expect("wal init");
-
-        for i in 0..3u64 {
-            let m = make_msg(i, topic_path);
-            wal.append(&m).await.expect("append");
-        }
-        // Ensure checkpoint is written so uploader can read persisted frames
-        wal.flush().await.expect("flush wal");
-
         // CloudStore memory
-        let cloud = CloudStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
-            root: "mem-cloud".to_string(),
-        })
-        .expect("cloud store mem");
+        let cloud = Arc::new(OpendalDurableStore::new(
+            CloudStore::new(BackendConfig::Local {
+                backend: LocalBackend::Memory,
+                root: "mem-cloud".to_string(),
+            })
+            .expect("cloud store mem"),
+        )) as Arc<dyn DurableStore>;
 
         // Metadata store
         let mem = MemoryStore::new().await.expect("memory meta store");
         let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem.clone());
         let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
+        let messages = (0..3u64).map(|i| make_msg(i, topic_path)).collect::<Vec<_>>();
+        seed_segment(cloud.clone(), &meta, topic_path, messages).await;
 
-        // Uploader
-        let up_cfg = UploaderConfig {
-            interval_seconds: 1,
-            topic_path: topic_path.to_string(),
-            _root_prefix: "/danube".to_string(),
-            max_object_mb: None,
-        };
-        let uploader = Arc::new(
-            Uploader::new(up_cfg, cloud.clone(), meta.clone(), store).expect("uploader"),
-        );
-        let cancel = CancellationToken::new();
-        let handle = uploader.clone().start_with_cancel(cancel.clone());
-
-        // Wait for an object to appear deterministically
-        async fn wait_for_objects(
-            mem: MemoryStore,
-            prefix: &str,
-            timeout_ms: u64,
-            interval_ms: u64,
-        ) -> bool {
-            let mut waited = 0u64;
-            while waited <= timeout_ms {
-                let children = mem.get_childrens(prefix).await.unwrap_or_default();
-                let objects: Vec<_> = children
-                    .into_iter()
-                    .filter(|c| c != "cur" && !c.ends_with('/'))
-                    .collect();
-                if !objects.is_empty() {
-                    return true;
-                }
-                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
-                waited += interval_ms;
-            }
-            false
-        }
-        let ok = wait_for_objects(
-            mem.clone(),
-            "/danube/storage/topics/ns/topic-cloud/segments",
-            5000,
-            50,
-        )
-        .await;
-        assert!(ok, "uploader did not create objects in time");
-        cancel.cancel();
-        let _ = handle.await;
-
-        // CloudReader
-        let reader = CloudReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
+        // DurableHistoryReader
+        let reader = DurableHistoryReader::new(cloud.clone(), meta.clone(), topic_path.to_string());
         let stream = reader.read_range(0, Some(2)).await.expect("cloud read");
         let msgs: Vec<StreamMessage> = stream
             .try_collect::<Vec<StreamMessage>>()

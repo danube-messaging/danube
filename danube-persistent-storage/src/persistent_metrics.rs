@@ -36,7 +36,7 @@ pub const WAL_FILE_ROTATE_TOTAL: Metric = Metric {
 
 pub const WAL_READER_CREATE_TOTAL: Metric = Metric {
     name: "danube_wal_reader_create_total",
-    description: "Total WAL readers created (per topic, mode={wal_only,cloud_then_wal})",
+    description: "Total WAL readers created (per topic, mode={wal_only,durable_history_then_hot})",
 };
 
 pub const WAL_DELETE_TOTAL: Metric = Metric {
@@ -72,24 +72,24 @@ pub const CLOUD_LIST_LATENCY_MS: Metric = Metric {
     description: "Latency of cloud list operations (provider)",
 };
 
-pub const CLOUD_HANDOFF_TO_WAL_TOTAL: Metric = Metric {
-    name: "danube_handoff_cloud_to_wal_total",
-    description: "Total number of reader handoffs from cloud to WAL (per topic)",
+pub const DURABLE_HISTORY_TO_HOT_TOTAL: Metric = Metric {
+    name: "danube_handoff_durable_history_to_hot_total",
+    description: "Total number of reader handoffs from durable history to hot state (per topic)",
 };
 
-pub const CLOUD_OBJECTS_READ_TOTAL: Metric = Metric {
-    name: "danube_cloud_objects_read_total",
-    description: "Total number of cloud objects opened for reading (per topic, provider)",
+pub const DURABLE_HISTORY_SEGMENTS_READ_TOTAL: Metric = Metric {
+    name: "danube_durable_history_segments_read_total",
+    description: "Total number of durable history segments opened for reading (per topic, provider)",
 };
 
-pub const CLOUD_READ_BYTES_TOTAL: Metric = Metric {
-    name: "danube_cloud_read_bytes_total",
-    description: "Total bytes read from cloud objects (per topic, provider)",
+pub const DURABLE_HISTORY_READ_BYTES_TOTAL: Metric = Metric {
+    name: "danube_durable_history_read_bytes_total",
+    description: "Total bytes read from durable history segments (per topic, provider)",
 };
 
-pub const CLOUD_READER_ERRORS_TOTAL: Metric = Metric {
-    name: "danube_cloud_reader_errors_total",
-    description: "Total number of cloud reader decode errors (provider, reason)",
+pub const DURABLE_HISTORY_READER_ERRORS_TOTAL: Metric = Metric {
+    name: "danube_durable_history_reader_errors_total",
+    description: "Total number of durable history reader decode errors (provider, reason)",
 };
 
 // Optional registrations if you want arrays for initialization/checks
@@ -104,7 +104,7 @@ pub const COUNTERS: &[Metric] = &[
     CLOUD_UPLOAD_OBJECTS_TOTAL,
     CLOUD_UPLOAD_BYTES_TOTAL,
     CLOUD_LIST_TOTAL,
-    CLOUD_HANDOFF_TO_WAL_TOTAL,
+    DURABLE_HISTORY_TO_HOT_TOTAL,
 ];
 
 #[allow(dead_code)]

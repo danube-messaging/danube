@@ -33,7 +33,7 @@ pub(crate) enum LogCommand {
     #[allow(dead_code)]
     Flush,
     #[allow(dead_code)]
-    Rotate,
+    Rotate(oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -143,6 +143,18 @@ impl WriterState {
                     self.write_checkpoint(off).await.ok();
                 }
             }
+        }
+        Ok(())
+    }
+
+    async fn force_rotate(&mut self) -> Result<(), PersistentStorageError> {
+        self.process_flush().await?;
+        if self.current_file_first_offset.is_none() {
+            return Ok(());
+        }
+        self.rotate_file().await?;
+        if let Some(off) = self.last_offset_written {
+            self.write_checkpoint(off).await?;
         }
         Ok(())
     }
@@ -305,7 +317,11 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
                             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
                             LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) },
                             LogCommand::Flush => state.process_flush().await,
-                            LogCommand::Rotate => state.rotate_if_needed().await,
+                            LogCommand::Rotate(ack_tx) => {
+                                let res = state.force_rotate().await;
+                                let _ = ack_tx.send(());
+                                res
+                            }
                             LogCommand::Shutdown(ack_tx) => {
                                 if let Err(e) = state.process_flush().await {
                                     warn!(target = "wal", error = ?e, "flush on shutdown failed");

@@ -1,17 +1,18 @@
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
-use crate::cloud::{CloudRangeReader, CloudStore};
+use crate::durable_store::{DurableRangeReader, DurableStore};
 use crate::frames::FRAME_HEADER_SIZE;
 use crate::persistent_metrics::{
-    CLOUD_OBJECTS_READ_TOTAL, CLOUD_READER_ERRORS_TOTAL, CLOUD_READ_BYTES_TOTAL,
+    DURABLE_HISTORY_SEGMENTS_READ_TOTAL, DURABLE_HISTORY_READER_ERRORS_TOTAL, DURABLE_HISTORY_READ_BYTES_TOTAL,
 };
 use crate::storage_metadata::StorageMetadata;
 use metrics::counter;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use tracing::error;
 
-/// CloudReader reads historical messages for a topic from cloud objects
+/// DurableHistoryReader reads historical messages for a topic from cloud objects
 /// that contain raw WAL frames as uploaded by the Uploader.
 ///
 /// Frame format per record (little-endian):
@@ -20,18 +21,18 @@ use tracing::error;
 /// - `u32 crc`
 /// - `len` bytes (bincode-serialized `StreamMessage`)
 #[derive(Clone, Debug)]
-pub struct CloudReader {
-    cloud: CloudStore,
+pub struct DurableHistoryReader {
+    cloud: Arc<dyn DurableStore>,
     metadata: StorageMetadata,
     topic_path: String,
 }
 
-impl CloudReader {
-    /// Create a new CloudReader for a given topic path.
+impl DurableHistoryReader {
+    /// Create a new DurableHistoryReader for a given topic path.
     ///
     /// `topic_path` should be the logical topic identifier used in metadata
     /// (e.g., "ns/topic").
-    pub fn new(cloud: CloudStore, metadata: StorageMetadata, topic_path: String) -> Self {
+    pub fn new(cloud: Arc<dyn DurableStore>, metadata: StorageMetadata, topic_path: String) -> Self {
         Self {
             cloud,
             metadata,
@@ -39,7 +40,7 @@ impl CloudReader {
         }
     }
 
-    /// Return the topic path associated with this CloudReader.
+    /// Return the topic path associated with this DurableHistoryReader.
     pub fn topic_path(&self) -> &str {
         &self.topic_path
     }
@@ -75,7 +76,7 @@ impl CloudReader {
         let mut idx = 0usize;
 
         // State for current object
-        let mut cur_reader: Option<CloudRangeReader> = None;
+        let mut cur_reader: Option<DurableRangeReader> = None;
         let mut carry: Vec<u8> = Vec::new();
         let mut emit_buf: VecDeque<StreamMessage> = VecDeque::new();
 
@@ -103,8 +104,8 @@ impl CloudReader {
                         _ => 0u64,
                     };
                     let provider = cloud.provider().to_string();
-                    let reader = cloud.open_ranged_reader(&key, start_byte).await?;
-                    counter!(CLOUD_OBJECTS_READ_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(1);
+                    let reader = cloud.open_segment_reader(&key, start_byte).await?;
+                    counter!(DURABLE_HISTORY_SEGMENTS_READ_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(1);
                     cur_reader = Some(reader);
                     carry.clear();
                 }
@@ -114,7 +115,7 @@ impl CloudReader {
                 let provider = cloud.provider().to_string();
                 let chunk = reader.read_chunk(chunk_size).await?;
                 if !chunk.is_empty() {
-                    counter!(CLOUD_READ_BYTES_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(chunk.len() as u64);
+                    counter!(DURABLE_HISTORY_READ_BYTES_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(chunk.len() as u64);
                 }
                 if chunk.is_empty() {
                     // End of current object
@@ -128,7 +129,7 @@ impl CloudReader {
                 if let Err(e) = parse_frames_from_carry(&mut carry, &mut parsed, &provider) {
                     // Increment error counter with a coarse reason derived below
                     let reason = if e.to_string().contains("CRC mismatch") { "crc" } else { "decode" };
-                    counter!(CLOUD_READER_ERRORS_TOTAL.name, "provider"=> provider.clone(), "reason"=> reason).increment(1);
+                    counter!(DURABLE_HISTORY_READER_ERRORS_TOTAL.name, "provider"=> provider.clone(), "reason"=> reason).increment(1);
                     Err(e)?;
                 }
                 // Filter by requested offset range and push into emit buffer (reverse for pop())
@@ -167,7 +168,7 @@ fn parse_frames_from_carry(
         let computed = crc32fast::hash(rec);
         if computed != crc {
             error!(
-                target = "cloud_reader",
+                target = "durable_history_reader",
                 at_byte = idx,
                 offset = off,
                 expected_crc = crc,
@@ -175,7 +176,7 @@ fn parse_frames_from_carry(
                 "CRC mismatch while decoding cloud object"
             );
             return Err(PersistentStorageError::Other(format!(
-                "cloud_reader: CRC mismatch at offset {} (expected {}, got {})",
+                "durable_history_reader: CRC mismatch at offset {} (expected {}, got {})",
                 off, crc, computed
             )));
         }
@@ -184,7 +185,7 @@ fn parse_frames_from_carry(
                 .map(|(v, _)| v)
                 .map_err(|e| {
                     PersistentStorageError::Other(format!(
-                        "cloud_reader: bincode decode failed: {}",
+                        "durable_history_reader: bincode decode failed: {}",
                         e
                     ))
                 })?;

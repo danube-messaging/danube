@@ -1,9 +1,11 @@
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig,
+    BackendConfig, LocalBackend, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
+    StorageMetadata,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,7 +56,7 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
             backend.clone(),
             None,
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         metadata_store.clone(),
     );
 
@@ -103,7 +105,7 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
             backend,
             None,
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         metadata_store,
     );
 
@@ -136,4 +138,81 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
         .expect("live reader result");
     assert_eq!(live.payload.as_ref(), b"msg-3");
     assert_eq!(live.msg_id.topic_offset, 3);
+}
+
+#[tokio::test]
+async fn cloud_native_recovers_from_catalog_when_checkpoint_points_to_missing_local_files() {
+    let wal_root = tempfile::tempdir().expect("wal root");
+    let durable_root = tempfile::tempdir().expect("cloud durable root");
+    let memory_store = Arc::new(MemoryStore::new().await.expect("memory store"));
+    let metadata_store: Arc<dyn MetadataStore> = memory_store.clone();
+
+    let topic = "/default/cloud-native-recovery";
+    let topic_path = "default/cloud-native-recovery";
+    let backend = BackendConfig::Local {
+        backend: LocalBackend::Fs,
+        root: durable_root.path().to_string_lossy().to_string(),
+    };
+
+    let topic_dir = wal_root.path().join("default").join("cloud-native-recovery");
+    tokio::fs::create_dir_all(&topic_dir)
+        .await
+        .expect("create topic wal dir");
+
+    let ckpt_store = Arc::new(CheckpointStore::new(topic_dir.join("wal.ckpt")));
+    ckpt_store
+        .update_wal(&WalCheckpoint {
+            start_offset: 0,
+            last_offset: 2,
+            file_seq: 0,
+            file_path: topic_dir.join("wal.0.log").to_string_lossy().to_string(),
+            rotated_files: Vec::new(),
+            active_file_name: Some("wal.0.log".to_string()),
+            last_rotation_at: None,
+            active_file_first_offset: Some(0),
+        })
+        .await
+        .expect("seed stale wal checkpoint");
+
+    let storage_metadata = StorageMetadata::new(metadata_store.clone(), "/danube".to_string());
+    let segment = SegmentDescriptor {
+        segment_id: "data-0-test.dnb1".to_string(),
+        start_offset: 0,
+        end_offset: 2,
+        size: 123,
+        etag: None,
+        created_at: 1,
+        completed: true,
+        offset_index: None,
+    };
+    storage_metadata
+        .put_segment_descriptor(topic_path, "00000000000000000000", &segment)
+        .await
+        .expect("seed segment descriptor");
+    storage_metadata
+        .put_current_segment(topic_path, "00000000000000000000")
+        .await
+        .expect("seed current segment descriptor");
+
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::cloud_native(
+            WalConfig {
+                dir: Some(wal_root.path().to_path_buf()),
+                fsync_interval_ms: Some(5_000),
+                ..Default::default()
+            },
+            "/danube",
+            backend,
+            None,
+        )
+        .with_segment_export_interval_seconds(1),
+        metadata_store,
+    );
+
+    let storage = factory.for_topic(topic).await.expect("create storage");
+    let assigned = storage
+        .append_message(topic, make_message(topic, 0))
+        .await
+        .expect("append after catalog recovery");
+    assert_eq!(assigned, 3);
 }

@@ -343,7 +343,7 @@ async fn test_stateful_reader_after_retention() {
                 size_mb: deleter_cfg.retention_size_mb,
             }),
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         memory_store.clone() as Arc<dyn MetadataStore>,
     );
 

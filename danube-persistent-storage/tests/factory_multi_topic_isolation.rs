@@ -59,7 +59,7 @@ async fn test_factory_multi_topic_wal_isolation() {
             backend,
             None,
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         metadata_store,
     );
 
@@ -121,7 +121,7 @@ async fn test_factory_multi_topic_wal_isolation() {
 }
 
 #[tokio::test]
-async fn test_multi_topic_uploader_isolation() {
+async fn test_multi_topic_segment_export_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
     let backend = BackendConfig::Local {
@@ -142,7 +142,7 @@ async fn test_multi_topic_uploader_isolation() {
             backend,
             None,
         )
-        .with_uploader_interval_seconds(1),
+        .with_segment_export_interval_seconds(1),
         metadata_store,
     );
 
