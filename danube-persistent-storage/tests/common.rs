@@ -54,6 +54,15 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
         fsync_interval_ms: Some(5_000),
         ..Default::default()
     };
+    let durable_root = {
+        let mut d = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        d.push(format!("danube-integration-durable-{}", nanos));
+        d
+    };
 
     let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
     let factory = StorageFactory::new(
@@ -61,8 +70,8 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
             wal_cfg,
             "/danube",
             BackendConfig::Local {
-                backend: LocalBackend::Memory,
-                root: "test-memory".to_string(),
+                backend: LocalBackend::Fs,
+                root: durable_root.to_string_lossy().to_string(),
             },
             None,
         )

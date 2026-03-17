@@ -2,9 +2,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{
-    BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig,
-};
+use danube_persistent_storage::{StorageFactory, StorageFactoryConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -37,10 +35,7 @@ async fn shared_fs_seal_takeover_replay_continuity() {
     let metadata_store: Arc<dyn MetadataStore> = memory_store.clone();
 
     let topic = "/default/shared-fs-smoke";
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let durable_root_path = durable_root.path().to_string_lossy().to_string();
 
     let factory_1 = StorageFactory::new(
         StorageFactoryConfig::shared_fs(
@@ -50,7 +45,7 @@ async fn shared_fs_seal_takeover_replay_continuity() {
                 ..Default::default()
             },
             "/danube",
-            backend.clone(),
+            durable_root_path.clone(),
             None,
         ),
         metadata_store.clone(),
@@ -98,7 +93,7 @@ async fn shared_fs_seal_takeover_replay_continuity() {
                 ..Default::default()
             },
             "/danube",
-            backend,
+            durable_root_path,
             None,
         ),
         metadata_store,

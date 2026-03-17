@@ -40,7 +40,7 @@ use crate::{
 use anyhow::{Context, Result};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, CloudBackend, LocalBackend, RetentionConfig, StorageFactory,
+    BackendConfig, CloudBackend, RetentionConfig, StorageFactory,
     StorageFactoryConfig,
 };
 use danube_raft::node::{RaftNode, RaftNodeConfig};
@@ -366,10 +366,7 @@ fn build_storage_factory_config(
             metadata_root
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            BackendConfig::Local {
-                backend: LocalBackend::Fs,
-                root: root.clone(),
-            },
+            root.clone(),
             build_retention_config(wal),
         ),
         StorageConfig::CloudNative {

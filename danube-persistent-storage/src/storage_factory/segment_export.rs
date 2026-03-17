@@ -1,4 +1,4 @@
-use super::{StorageFactory, StorageMode};
+use super::StorageFactory;
 use crate::frames::{decode_next_frame, extract_offsets, scan_safe_frame_boundary};
 use crate::hot_log::HotLog;
 use crate::metadata::SegmentDescriptor;
@@ -12,7 +12,7 @@ impl StorageFactory {
         topic_path: &str,
         hot_log: &HotLog,
     ) -> Result<(), PersistentStorageError> {
-        if self.mode != StorageMode::CloudNative {
+        if !self.mode.is_cloud_native() {
             return Ok(());
         }
         hot_log.rotate().await?;
@@ -30,7 +30,7 @@ impl StorageFactory {
         }
         let durable_store = match self.durable_store.clone() {
             Some(store) => store,
-            None if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative) => {
+            None if self.mode.requires_durable_backend() => {
                 return Err(PersistentStorageError::Other(
                     "durable storage mode requires durable backend for segment export".to_string(),
                 ))
@@ -149,7 +149,7 @@ impl StorageFactory {
     ) -> Result<(), PersistentStorageError> {
         let durable_store = match self.durable_store.clone() {
             Some(store) => store,
-            None if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative) => {
+            None if self.mode.requires_durable_backend() => {
                 return Err(PersistentStorageError::Other(
                     "durable storage mode requires durable backend for segment deletion".to_string(),
                 ))
@@ -180,10 +180,7 @@ impl StorageFactory {
     }
 
     pub(super) fn uses_sealed_segment_export(&self) -> bool {
-        matches!(
-            self.mode,
-            StorageMode::Local | StorageMode::SharedFs | StorageMode::CloudNative
-        )
+        self.mode.is_local() || self.mode.requires_durable_backend()
     }
 }
 

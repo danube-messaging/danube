@@ -1,7 +1,7 @@
-use super::{normalize_topic_path, CommitInfo, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
+use super::{normalize_topic_path, CommitInfo, SealInfo, StorageFactory, StorageFactoryConfig};
 use crate::durable_store::DurableStore;
 use crate::metadata::{StorageMetadata, StorageStateSealed};
-use crate::opendal::{BackendConfig, LocalBackend, OpendalDurableStore};
+use crate::opendal::OpendalDurableStore;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
 use danube_core::metadata::MetadataStore;
@@ -13,16 +13,7 @@ impl StorageFactory {
     pub fn new(config: StorageFactoryConfig, metadata_store: Arc<dyn MetadataStore>) -> Self {
         let segment_export_interval_seconds =
             config.segment_export_interval_seconds.unwrap_or(300);
-        let durable_backend = config.durable_backend.clone().or_else(|| {
-            if config.mode == StorageMode::Local {
-                config.wal.dir.as_ref().map(|dir| BackendConfig::Local {
-                    backend: LocalBackend::Fs,
-                    root: dir.to_string_lossy().to_string(),
-                })
-            } else {
-                None
-            }
-        });
+        let durable_backend = config.durable_backend();
         let durable_store = durable_backend
             .map(OpendalDurableStore::from_backend)
             .transpose()
@@ -78,7 +69,7 @@ impl StorageFactory {
         }
 
         if durable_store.is_some()
-            && self.mode == StorageMode::CloudNative
+            && self.mode.is_cloud_native()
             && !self.segment_exporters.contains_key(&topic_path)
         {
             let factory = self.clone();
@@ -138,7 +129,7 @@ impl StorageFactory {
             self.segment_exporter_tokens.insert(topic_path.clone(), cancel);
         }
 
-        if self.mode == StorageMode::CloudNative && !self.deleters.contains_key(&topic_path) {
+        if self.mode.is_cloud_native() && !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
                 let store = ckpt_store.clone().ok_or_else(|| {
                     PersistentStorageError::Other(
@@ -163,15 +154,14 @@ impl StorageFactory {
         if resumed_from_sealed {
             storage = storage.with_hot_cutover();
         }
-        match (self.mode, durable_store) {
-            (StorageMode::Local, Some(store)) | (StorageMode::SharedFs, Some(store)) => Ok(storage
-                .with_durable_history(store, self.segment_catalog.metadata().clone(), topic_path)),
-            (_, Some(store)) if self.mode != StorageMode::Local => Ok(storage.with_durable_history(
+        if let Some(store) = durable_store {
+            Ok(storage.with_durable_history(
                 store,
                 self.segment_catalog.metadata().clone(),
                 topic_path,
-            )),
-            _ => Ok(storage),
+            ))
+        } else {
+            Ok(storage)
         }
     }
 

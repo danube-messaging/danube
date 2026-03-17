@@ -38,11 +38,11 @@ fn make_msg(topic: &str, i: u64) -> StreamMessage {
 async fn test_factory_multi_topic_wal_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
+    let durable_root = tempfile::tempdir().unwrap();
 
-    // Build BackendConfig (memory) and Metadata store; factory constructs Cloud/StorageMetadata internally
     let backend = BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "mem-prefix".to_string(),
+        backend: LocalBackend::Fs,
+        root: durable_root.path().to_string_lossy().to_string(),
     };
     let meta = MemoryStore::new().await.expect("memory meta");
     let metadata_store: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(meta);
@@ -124,9 +124,10 @@ async fn test_factory_multi_topic_wal_isolation() {
 async fn test_multi_topic_segment_export_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
+    let durable_root = tempfile::tempdir().unwrap();
     let backend = BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "mem-prefix".to_string(),
+        backend: LocalBackend::Fs,
+        root: durable_root.path().to_string_lossy().to_string(),
     };
     let mem = Arc::new(MemoryStore::new().await.expect("meta mem"));
     let metadata_store: Arc<dyn MetadataStore> = mem.clone();

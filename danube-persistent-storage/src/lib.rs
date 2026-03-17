@@ -25,7 +25,10 @@ mod frames;
 pub use metadata::{SegmentDescriptor, StorageMetadata};
 
 mod storage_factory;
-pub use storage_factory::{CommitInfo, RetentionConfig, SealInfo, StorageFactory, StorageFactoryConfig, StorageMode};
+pub use storage_factory::{
+    CloudNativeConfig, CommitInfo, RetentionConfig, SealInfo, SharedFsConfig, StorageFactory,
+    StorageFactoryConfig, StorageMode,
+};
 
 mod persistent_metrics;
 

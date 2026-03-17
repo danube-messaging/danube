@@ -3,7 +3,9 @@ mod lifecycle;
 mod recovery;
 mod segment_export;
 
-pub use config::{RetentionConfig, StorageFactoryConfig, StorageMode};
+pub use config::{
+    CloudNativeConfig, RetentionConfig, SharedFsConfig, StorageFactoryConfig, StorageMode,
+};
 
 use crate::durable_store::DurableStore;
 use crate::hot_log::HotLog;

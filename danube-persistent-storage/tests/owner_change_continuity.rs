@@ -54,7 +54,12 @@ fn build_factory(
         )
     } else {
         StorageFactory::new(
-            StorageFactoryConfig::shared_fs(wal, "/danube", backend, None),
+            StorageFactoryConfig::shared_fs(
+                wal,
+                "/danube",
+                durable_root.to_string_lossy().to_string(),
+                None,
+            ),
             metadata_store,
         )
     }

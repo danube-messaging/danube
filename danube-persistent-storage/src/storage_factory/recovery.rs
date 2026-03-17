@@ -1,4 +1,4 @@
-use super::{StorageFactory, StorageMode};
+use super::StorageFactory;
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crate::durable_store::DurableStore;
 use crate::hot_log::HotLog;
@@ -43,7 +43,7 @@ impl StorageFactory {
                 warn!(target = "storage_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
-        } else if self.mode == StorageMode::CloudNative {
+        } else if self.mode.is_cloud_native() {
             return Err(PersistentStorageError::Other(
                 "cloud_native requires wal.dir for durable WAL state".to_string(),
             ));
@@ -89,8 +89,7 @@ impl StorageFactory {
                 )
             }
             Ok(_) => {
-                if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative)
-                    && !local_wal_state_available
+                if self.mode.requires_durable_backend() && !local_wal_state_available
                 {
                     match catalog_current_segment {
                         Some(segment) => (Some(segment.end_offset.saturating_add(1)), true),
@@ -139,7 +138,7 @@ impl StorageFactory {
     pub(super) fn durable_store_for_topic(&self) -> Result<Option<Arc<dyn DurableStore>>, PersistentStorageError> {
         match self.durable_store.clone() {
             Some(store) => Ok(Some(store)),
-            None if matches!(self.mode, StorageMode::SharedFs | StorageMode::CloudNative) => Err(
+            None if self.mode.requires_durable_backend() => Err(
                 PersistentStorageError::Other(
                     "durable storage mode requires durable backend".to_string(),
                 ),

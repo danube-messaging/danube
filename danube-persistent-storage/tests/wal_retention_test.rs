@@ -319,9 +319,10 @@ async fn test_stateful_reader_after_retention() {
         rotate_max_bytes: Some(64),
         ..Default::default()
     };
+    let durable_root = tempfile::tempdir().expect("durable root");
     let backend = BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "integration-test".to_string(),
+        backend: LocalBackend::Fs,
+        root: durable_root.path().to_string_lossy().to_string(),
     };
     // Use size-based retention to avoid mtime edge-cases for files created moments ago.
     // Setting retention_size_mb to 0 forces deletion of all eligible rotated files once the
