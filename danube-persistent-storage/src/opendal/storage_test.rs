@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::opendal::OpendalStore;
-    use crate::{BackendConfig, CloudBackend, LocalBackend};
+    use crate::opendal::BackendConfig;
+    use crate::ObjectStoreBackend;
     use danube_core::storage::PersistentStorageError;
     use std::collections::HashMap;
 
@@ -53,8 +54,7 @@ mod tests {
     /// - No data corruption during storage/retrieval
     #[tokio::test]
     async fn test_memory_backend_put_get() {
-        let store = OpendalStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
+        let store = OpendalStore::new(BackendConfig::Memory {
             root: "test-prefix".to_string(),
         })
         .expect("create memory store");
@@ -84,8 +84,7 @@ mod tests {
     /// - Data retrieval works with complex paths
     #[tokio::test]
     async fn test_memory_backend_with_prefix() {
-        let store = OpendalStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
+        let store = OpendalStore::new(BackendConfig::Memory {
             root: "my-prefix".to_string(),
         })
         .expect("create memory store");
@@ -118,8 +117,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let root_path = tmp.path().to_string_lossy().to_string();
 
-        let store = OpendalStore::new(BackendConfig::Local {
-            backend: LocalBackend::Fs,
+        let store = OpendalStore::new(BackendConfig::Filesystem {
             root: root_path,
         })
         .expect("create fs store");
@@ -155,8 +153,8 @@ mod tests {
         options.insert("access_key".to_string(), "minioadmin".to_string());
         options.insert("secret_key".to_string(), "minioadmin".to_string());
 
-        let result = OpendalStore::new(BackendConfig::Cloud {
-            backend: CloudBackend::S3,
+        let result = OpendalStore::new(BackendConfig::ObjectStore {
+            backend: ObjectStoreBackend::S3,
             root: "s3://test-bucket/prefix".to_string(),
             options,
         });
@@ -184,8 +182,8 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("endpoint".to_string(), "http://localhost:4443".to_string());
 
-        let result = OpendalStore::new(BackendConfig::Cloud {
-            backend: CloudBackend::Gcs,
+        let result = OpendalStore::new(BackendConfig::ObjectStore {
+            backend: ObjectStoreBackend::Gcs,
             root: "gcs://test-bucket/prefix".to_string(),
             options,
         });
@@ -276,11 +274,10 @@ mod tests {
     /// - Retrieved data matches original
     #[tokio::test]
     async fn test_path_joining() {
-        let store = OpendalStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
+        let store = OpendalStore::new(BackendConfig::Memory {
             root: "root-prefix".to_string(),
         })
-        .expect("create memory store");
+        .expect("create store");
 
         let test_data = b"path joining test".to_vec();
 
@@ -311,11 +308,10 @@ mod tests {
     /// - Operation returns an error
     #[tokio::test]
     async fn test_nonexistent_object() {
-        let store = OpendalStore::new(BackendConfig::Local {
-            backend: LocalBackend::Memory,
+        let store = OpendalStore::new(BackendConfig::Memory {
             root: "test".to_string(),
         })
-        .expect("create memory store");
+        .expect("create store");
 
         let result = get_object(&store, "nonexistent/object.bin").await;
         assert!(result.is_err(), "Should fail to get nonexistent object");

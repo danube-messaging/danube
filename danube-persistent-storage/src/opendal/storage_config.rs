@@ -1,52 +1,49 @@
 use danube_core::storage::PersistentStorageError;
-use opendal::services::{Azblob, Fs, Gcs, Memory, S3};
+use opendal::services::{Azblob, Fs, Gcs, S3};
 use opendal::Operator;
 use std::collections::HashMap;
 use tracing::warn;
+#[cfg(test)]
+use opendal::services::Memory;
 
 #[derive(Debug, Clone)]
-pub enum CloudBackend {
+pub enum ObjectStoreBackend {
     S3,
     Gcs,
     Azblob,
 }
 
 #[derive(Debug, Clone)]
-pub enum LocalBackend {
-    Fs,
-    Memory,
-}
-
-#[derive(Debug, Clone)]
-pub enum BackendConfig {
-    /// Cloud backends hosted out of process (S3, GCS)
-    Cloud {
-        backend: CloudBackend,
+pub(crate) enum BackendConfig {
+    ObjectStore {
+        backend: ObjectStoreBackend,
         /// A URI-like root, e.g. s3://bucket/prefix, gcs://bucket/prefix
         root: String,
         /// Optional backend-specific options (endpoint, region, credentials, etc.)
         options: HashMap<String, String>,
     },
-    /// Local backends colocated with the broker (fs, memory)
-    Local {
-        backend: LocalBackend,
-        /// For fs: an absolute directory like file:///var/lib/danube or /var/lib/danube
-        /// For memory: a logical namespace like memory:// (prefix is used as a virtual root)
+    Filesystem {
+        /// An absolute directory like file:///var/lib/danube or /var/lib/danube
+        root: String,
+    },
+    #[cfg(test)]
+    Memory {
+        /// A logical namespace like memory:// (prefix is used as a virtual root)
         root: String,
     },
 }
 
 impl BackendConfig {
     /// Build an OpenDAL Operator and return it along with an optional root prefix
-    /// to be prepended to object keys (used by some local backends), and a provider string.
+    /// to be prepended to object keys, and a provider string.
     pub fn build_operator(&self) -> Result<(Operator, String, String), PersistentStorageError> {
         match self {
-            BackendConfig::Cloud {
+            BackendConfig::ObjectStore {
                 backend,
                 root,
                 options,
             } => match backend {
-                CloudBackend::S3 => {
+                ObjectStoreBackend::S3 => {
                     // Expect root like s3://bucket or s3://bucket/prefix
                     let (bucket, prefix) =
                         split_bucket_prefix(root).map_err(|e| PersistentStorageError::Other(e))?;
@@ -85,7 +82,7 @@ impl BackendConfig {
                         .finish();
                     Ok((op, String::new(), "s3".to_string()))
                 }
-                CloudBackend::Gcs => {
+                ObjectStoreBackend::Gcs => {
                     // Expect root like gcs://bucket or gcs://bucket/prefix
                     let (bucket, prefix) =
                         split_bucket_prefix(root).map_err(|e| PersistentStorageError::Other(e))?;
@@ -108,7 +105,7 @@ impl BackendConfig {
                         .finish();
                     Ok((op, String::new(), "gcs".to_string()))
                 }
-                CloudBackend::Azblob => {
+                ObjectStoreBackend::Azblob => {
                     // Expect root like "container" or "container/prefix"
                     let (container, prefix) =
                         split_bucket_prefix(root).map_err(|e| PersistentStorageError::Other(e))?;
@@ -140,30 +137,25 @@ impl BackendConfig {
                     Ok((op, String::new(), "azblob".to_string()))
                 }
             },
-            BackendConfig::Local { backend, root } => match backend {
-                LocalBackend::Fs => {
-                    // Accept either file:///abs/path or /abs/path
-                    let (fs_root, prefix) =
-                        split_fs_root(root).map_err(|e| PersistentStorageError::Other(e))?;
-                    let builder = Fs::default().root(&fs_root);
-                    let op = Operator::new(builder)
-                        .map_err(|e| {
-                            PersistentStorageError::Other(format!("opendal fs builder: {}", e))
-                        })?
-                        .finish();
-                    Ok((op, prefix, "fs".to_string()))
-                }
-                LocalBackend::Memory => {
-                    // Memory service ignores root but we keep a logical prefix
-                    let builder = Memory::default();
-                    let op = Operator::new(builder)
-                        .map_err(|e| {
-                            PersistentStorageError::Other(format!("opendal memory builder: {}", e))
-                        })?
-                        .finish();
-                    Ok((op, normalize_prefix(root), "memory".to_string()))
-                }
-            },
+            BackendConfig::Filesystem { root } => {
+                let (fs_root, prefix) =
+                    split_fs_root(root).map_err(|e| PersistentStorageError::Other(e))?;
+                let builder = Fs::default().root(&fs_root);
+                let op = Operator::new(builder)
+                    .map_err(|e| PersistentStorageError::Other(format!("opendal fs builder: {}", e)))?
+                    .finish();
+                Ok((op, prefix, "fs".to_string()))
+            }
+            #[cfg(test)]
+            BackendConfig::Memory { root } => {
+                let builder = Memory::default();
+                let op = Operator::new(builder)
+                    .map_err(|e| {
+                        PersistentStorageError::Other(format!("opendal memory builder: {}", e))
+                    })?
+                    .finish();
+                Ok((op, normalize_prefix(root), "memory".to_string()))
+            }
         }
     }
 }

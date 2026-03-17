@@ -12,7 +12,7 @@ impl StorageFactory {
         topic_path: &str,
         hot_log: &HotLog,
     ) -> Result<(), PersistentStorageError> {
-        if !self.mode.is_cloud_native() {
+        if !self.mode.is_object_store() {
             return Ok(());
         }
         hot_log.rotate().await?;

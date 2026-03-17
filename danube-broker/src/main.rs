@@ -34,14 +34,13 @@ use crate::{
     danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
-    storage_configuration::{CloudConfig, StorageConfig, WalNode},
+    storage_configuration::{ObjectStoreNode, StorageConfig, WalNode},
 };
 
 use anyhow::{Context, Result};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, CloudBackend, RetentionConfig, StorageFactory,
-    StorageFactoryConfig,
+    ObjectStoreBackend, ObjectStoreConfig, RetentionConfig, StorageFactory, StorageFactoryConfig,
 };
 use danube_raft::node::{RaftNode, RaftNodeConfig};
 use danube_raft::BootstrapResult;
@@ -369,24 +368,24 @@ fn build_storage_factory_config(
             root.clone(),
             build_retention_config(wal),
         ),
-        StorageConfig::CloudNative {
-            cloud,
+        StorageConfig::ObjectStore {
+            object_store,
             cache_root,
             metadata_root,
             wal,
-        } => StorageFactoryConfig::cloud_native(
+        } => StorageFactoryConfig::object_store(
             build_wal_config(
                 Some(resolve_cache_root(
                     cache_root.as_ref(),
                     metadata_data_dir,
-                    "cloud-cache",
+                    "object-store-cache",
                 )),
                 wal,
             ),
             metadata_root
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            cloud_config_to_backend(cloud),
+            object_store_node_to_config(object_store),
             build_retention_config(wal),
         ),
     }
@@ -428,9 +427,9 @@ fn resolve_cache_root(cache_root: Option<&String>, metadata_data_dir: &str, suff
     base.to_string_lossy().into_owned()
 }
 
-fn cloud_config_to_backend(cfg: &CloudConfig) -> BackendConfig {
+fn object_store_node_to_config(cfg: &ObjectStoreNode) -> ObjectStoreConfig {
     match cfg {
-        CloudConfig::S3 {
+        ObjectStoreNode::S3 {
             root,
             region,
             endpoint,
@@ -470,13 +469,9 @@ fn cloud_config_to_backend(cfg: &CloudConfig) -> BackendConfig {
             if let Some(v) = virtual_host_style {
                 options.insert("virtual_host_style".into(), v.to_string());
             }
-            BackendConfig::Cloud {
-                backend: CloudBackend::S3,
-                root: root.clone(),
-                options,
-            }
+            ObjectStoreConfig::new(ObjectStoreBackend::S3, root.clone()).with_options(options)
         }
-        CloudConfig::Gcs {
+        ObjectStoreNode::Gcs {
             root,
             project,
             credentials_json,
@@ -492,13 +487,9 @@ fn cloud_config_to_backend(cfg: &CloudConfig) -> BackendConfig {
             if let Some(v) = credentials_path {
                 options.insert("credentials_path".into(), v.clone());
             }
-            BackendConfig::Cloud {
-                backend: CloudBackend::Gcs,
-                root: root.clone(),
-                options,
-            }
+            ObjectStoreConfig::new(ObjectStoreBackend::Gcs, root.clone()).with_options(options)
         }
-        CloudConfig::Azblob {
+        ObjectStoreNode::Azblob {
             root,
             endpoint,
             account_name,
@@ -514,11 +505,7 @@ fn cloud_config_to_backend(cfg: &CloudConfig) -> BackendConfig {
             if let Some(v) = account_key {
                 options.insert("account_key".into(), v.clone());
             }
-            BackendConfig::Cloud {
-                backend: CloudBackend::Azblob,
-                root: root.clone(),
-                options,
-            }
+            ObjectStoreConfig::new(ObjectStoreBackend::Azblob, root.clone()).with_options(options)
         }
     }
 }

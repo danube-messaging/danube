@@ -6,8 +6,8 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{
-    wal::WalConfig, BackendConfig, LocalBackend, RetentionConfig, SegmentDescriptor,
-    StorageFactory, StorageFactoryConfig, StorageMetadata,
+    wal::WalConfig, ObjectStoreConfig, RetentionConfig, SegmentDescriptor, StorageFactory,
+    StorageFactoryConfig, StorageMetadata,
 };
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -320,10 +320,8 @@ async fn test_stateful_reader_after_retention() {
         ..Default::default()
     };
     let durable_root = tempfile::tempdir().expect("durable root");
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
     // Use size-based retention to avoid mtime edge-cases for files created moments ago.
     // Setting retention_size_mb to 0 forces deletion of all eligible rotated files once the
     // uploader watermark has advanced beyond them.
@@ -334,10 +332,10 @@ async fn test_stateful_reader_after_retention() {
     };
     let memory_store: Arc<MemoryStore> = Arc::new(MemoryStore::new().await.expect("mem"));
     let factory = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             wal_cfg.clone(),
             "/danube".to_string(),
-            backend.clone(),
+            object_store.clone(),
             Some(RetentionConfig {
                 check_interval_minutes: deleter_cfg.check_interval_minutes,
                 time_minutes: deleter_cfg.retention_time_minutes,

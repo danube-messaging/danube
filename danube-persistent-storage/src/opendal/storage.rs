@@ -14,7 +14,7 @@ pub struct OpendalStore {
 }
 
 impl OpendalStore {
-    pub fn new(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
+    pub(crate) fn new(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
         let (op, root_prefix, provider) = cfg.build_operator()?;
         Ok(Self { root_prefix, op, provider })
     }

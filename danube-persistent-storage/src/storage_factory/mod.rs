@@ -4,7 +4,7 @@ mod recovery;
 mod segment_export;
 
 pub use config::{
-    CloudNativeConfig, RetentionConfig, SharedFsConfig, StorageFactoryConfig, StorageMode,
+    ObjectStoreConfig, RetentionConfig, SharedFsConfig, StorageFactoryConfig, StorageMode,
 };
 
 use crate::durable_store::DurableStore;

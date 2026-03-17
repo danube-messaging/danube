@@ -2,7 +2,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
+    ObjectStoreConfig, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,13 +66,10 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
 
     let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
     let factory = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             wal_cfg,
             "/danube",
-            BackendConfig::Local {
-                backend: LocalBackend::Fs,
-                root: durable_root.to_string_lossy().to_string(),
-            },
+            ObjectStoreConfig::filesystem_for_tests(durable_root.to_string_lossy().to_string()),
             None,
         )
         .with_segment_export_interval_seconds(1),

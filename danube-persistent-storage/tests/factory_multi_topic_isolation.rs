@@ -12,7 +12,7 @@ use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetadataStore};
 use danube_core::storage::PersistentStorage;
 use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{BackendConfig, LocalBackend, StorageFactory, StorageFactoryConfig};
+use danube_persistent_storage::{ObjectStoreConfig, StorageFactory, StorageFactoryConfig};
 use tokio_stream::StreamExt;
 
 fn make_msg(topic: &str, i: u64) -> StreamMessage {
@@ -40,15 +40,13 @@ async fn test_factory_multi_topic_wal_isolation() {
     let wal_root = tmp.path().to_path_buf();
     let durable_root = tempfile::tempdir().unwrap();
 
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
     let meta = MemoryStore::new().await.expect("memory meta");
     let metadata_store: std::sync::Arc<dyn MetadataStore> = std::sync::Arc::new(meta);
 
     let factory = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.clone()),
                 fsync_interval_ms: Some(50),
@@ -56,7 +54,7 @@ async fn test_factory_multi_topic_wal_isolation() {
                 ..Default::default()
             },
             "/danube",
-            backend,
+            object_store,
             None,
         )
         .with_segment_export_interval_seconds(1),
@@ -125,14 +123,12 @@ async fn test_multi_topic_segment_export_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     let wal_root = tmp.path().to_path_buf();
     let durable_root = tempfile::tempdir().unwrap();
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
     let mem = Arc::new(MemoryStore::new().await.expect("meta mem"));
     let metadata_store: Arc<dyn MetadataStore> = mem.clone();
     let factory = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.clone()),
                 fsync_interval_ms: Some(50),
@@ -140,7 +136,7 @@ async fn test_multi_topic_segment_export_isolation() {
                 ..Default::default()
             },
             "/danube",
-            backend,
+            object_store,
             None,
         )
         .with_segment_export_interval_seconds(1),

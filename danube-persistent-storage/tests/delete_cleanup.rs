@@ -3,7 +3,7 @@ use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
 use danube_core::storage::PersistentStorage;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
+    ObjectStoreConfig, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,10 +34,6 @@ fn build_factory(
     durable_root: &Path,
     metadata_store: Arc<dyn MetadataStore>,
 ) -> StorageFactory {
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.to_string_lossy().to_string(),
-    };
     let wal = WalConfig {
         dir: Some(wal_dir),
         fsync_interval_ms: Some(5_000),
@@ -46,8 +42,13 @@ fn build_factory(
 
     if cloud_native {
         StorageFactory::new(
-            StorageFactoryConfig::cloud_native(wal, "/danube", backend, None)
-                .with_segment_export_interval_seconds(1),
+            StorageFactoryConfig::object_store(
+                wal,
+                "/danube",
+                ObjectStoreConfig::filesystem_for_tests(durable_root.to_string_lossy().to_string()),
+                None,
+            )
+            .with_segment_export_interval_seconds(1),
             metadata_store,
         )
     } else {

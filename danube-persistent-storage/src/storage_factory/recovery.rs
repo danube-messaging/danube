@@ -43,9 +43,9 @@ impl StorageFactory {
                 warn!(target = "storage_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
-        } else if self.mode.is_cloud_native() {
+        } else if self.mode.is_object_store() {
             return Err(PersistentStorageError::Other(
-                "cloud_native requires wal.dir for durable WAL state".to_string(),
+                "object_store requires wal.dir for durable WAL state".to_string(),
             ));
         }
 

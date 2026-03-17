@@ -69,7 +69,7 @@ impl StorageFactory {
         }
 
         if durable_store.is_some()
-            && self.mode.is_cloud_native()
+            && self.mode.is_object_store()
             && !self.segment_exporters.contains_key(&topic_path)
         {
             let factory = self.clone();
@@ -83,7 +83,7 @@ impl StorageFactory {
                     target = "storage_factory",
                     topic = %topic_path_for_task,
                     interval = interval_seconds,
-                    "cloud_native segment exporter started"
+                    "object_store segment exporter started"
                 );
                 if let Err(e) = factory
                     .cut_and_export_topic_segments(&topic_path_for_task, &hot_log)
@@ -93,7 +93,7 @@ impl StorageFactory {
                         target = "storage_factory",
                         topic = %topic_path_for_task,
                         error = %e,
-                        "cloud_native segment exporter cycle failed on startup"
+                        "object_store segment exporter cycle failed on startup"
                     );
                 }
                 let mut ticker =
@@ -104,7 +104,7 @@ impl StorageFactory {
                             info!(
                                 target = "storage_factory",
                                 topic = %topic_path_for_task,
-                                "cloud_native segment exporter stopped"
+                                "object_store segment exporter stopped"
                             );
                             break;
                         }
@@ -117,7 +117,7 @@ impl StorageFactory {
                                     target = "storage_factory",
                                     topic = %topic_path_for_task,
                                     error = %e,
-                                    "cloud_native segment exporter cycle failed"
+                                    "object_store segment exporter cycle failed"
                                 );
                             }
                         }
@@ -129,11 +129,11 @@ impl StorageFactory {
             self.segment_exporter_tokens.insert(topic_path.clone(), cancel);
         }
 
-        if self.mode.is_cloud_native() && !self.deleters.contains_key(&topic_path) {
+        if self.mode.is_object_store() && !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
                 let store = ckpt_store.clone().ok_or_else(|| {
                     PersistentStorageError::Other(
-                        "cloud_native requires wal.dir for deleter state".to_string(),
+                        "object_store requires wal.dir for deleter state".to_string(),
                     )
                 })?;
                 let deleter = Deleter::new(

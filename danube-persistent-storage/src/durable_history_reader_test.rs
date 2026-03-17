@@ -5,9 +5,9 @@ mod tests {
 
     use crate::durable_history_reader::DurableHistoryReader;
     use crate::frames::append_encoded_frame;
-    use crate::opendal::OpendalStore;
     use crate::metadata::{SegmentDescriptor, StorageMetadata};
-    use crate::{BackendConfig, DurableStore, LocalBackend, OpendalDurableStore};
+    use crate::opendal::{BackendConfig, OpendalStore};
+    use crate::{DurableStore, OpendalDurableStore};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
@@ -93,8 +93,7 @@ mod tests {
         let topic_path = "ns/topic-cloud";
 
         let durable_store = Arc::new(OpendalDurableStore::new(
-            OpendalStore::new(BackendConfig::Local {
-                backend: LocalBackend::Memory,
+            OpendalStore::new(BackendConfig::Memory {
                 root: "mem-cloud".to_string(),
             })
             .expect("cloud store mem"),
@@ -149,8 +148,7 @@ mod tests {
 
         // OpendalStore memory
         let durable_store = Arc::new(OpendalDurableStore::new(
-            OpendalStore::new(BackendConfig::Local {
-                backend: LocalBackend::Memory,
+            OpendalStore::new(BackendConfig::Memory {
                 root: "mem-cloud".to_string(),
             })
             .expect("cloud store mem"),

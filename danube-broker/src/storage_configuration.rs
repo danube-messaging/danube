@@ -19,8 +19,8 @@ pub(crate) enum StorageConfig {
         #[serde(default)]
         wal: WalNode,
     },
-    CloudNative {
-        cloud: CloudConfig,
+    ObjectStore {
+        object_store: ObjectStoreNode,
         #[serde(default)]
         cache_root: Option<String>,
         #[serde(default)]
@@ -61,7 +61,7 @@ pub(crate) struct WalRetentionNode {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "backend")]
-pub(crate) enum CloudConfig {
+pub(crate) enum ObjectStoreNode {
     #[serde(rename = "s3")]
     S3 {
         root: String,

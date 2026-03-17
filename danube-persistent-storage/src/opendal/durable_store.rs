@@ -13,7 +13,7 @@ impl OpendalDurableStore {
         Self { inner }
     }
 
-    pub fn from_backend(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
+    pub(crate) fn from_backend(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
         Ok(Self {
             inner: OpendalStore::new(cfg)?,
         })

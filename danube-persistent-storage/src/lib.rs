@@ -18,7 +18,7 @@ mod wal_storage;
 pub use wal_storage::WalStorage;
 
 mod opendal;
-pub use opendal::{BackendConfig, CloudBackend, LocalBackend, OpendalDurableStore};
+pub use opendal::{ObjectStoreBackend, OpendalDurableStore};
 
 mod frames;
 
@@ -26,7 +26,7 @@ pub use metadata::{SegmentDescriptor, StorageMetadata};
 
 mod storage_factory;
 pub use storage_factory::{
-    CloudNativeConfig, CommitInfo, RetentionConfig, SealInfo, SharedFsConfig, StorageFactory,
+    CommitInfo, ObjectStoreConfig, RetentionConfig, SealInfo, SharedFsConfig, StorageFactory,
     StorageFactoryConfig, StorageMode,
 };
 

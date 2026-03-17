@@ -1,11 +1,12 @@
-use crate::opendal::{BackendConfig, LocalBackend};
+use crate::opendal::{BackendConfig, ObjectStoreBackend};
 use crate::wal::WalConfig;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum StorageMode {
     Local,
     SharedFs(SharedFsConfig),
-    CloudNative(CloudNativeConfig),
+    ObjectStore(ObjectStoreConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -20,13 +21,54 @@ impl SharedFsConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct CloudNativeConfig {
-    pub durable_backend: BackendConfig,
+pub enum ObjectStoreConfig {
+    ObjectStore {
+        backend: ObjectStoreBackend,
+        root: String,
+        options: HashMap<String, String>,
+    },
+    TestFilesystem {
+        root: String,
+    },
 }
 
-impl CloudNativeConfig {
-    pub fn new(durable_backend: BackendConfig) -> Self {
-        Self { durable_backend }
+impl ObjectStoreConfig {
+    pub fn new(backend: ObjectStoreBackend, root: impl Into<String>) -> Self {
+        Self::ObjectStore {
+            backend,
+            root: root.into(),
+            options: HashMap::new(),
+        }
+    }
+
+    pub fn filesystem_for_tests(root: impl Into<String>) -> Self {
+        Self::TestFilesystem { root: root.into() }
+    }
+
+    pub fn with_options(mut self, options: HashMap<String, String>) -> Self {
+        if let Self::ObjectStore {
+            options: current_options,
+            ..
+        } = &mut self
+        {
+            *current_options = options;
+        }
+        self
+    }
+
+    pub(crate) fn durable_backend(&self) -> BackendConfig {
+        match self {
+            Self::ObjectStore {
+                backend,
+                root,
+                options,
+            } => BackendConfig::ObjectStore {
+                backend: backend.clone(),
+                root: root.clone(),
+                options: options.clone(),
+            },
+            Self::TestFilesystem { root } => BackendConfig::Filesystem { root: root.clone() },
+        }
     }
 }
 
@@ -35,8 +77,8 @@ impl StorageMode {
         matches!(self, Self::Local)
     }
 
-    pub(crate) fn is_cloud_native(&self) -> bool {
-        matches!(self, Self::CloudNative(_))
+    pub(crate) fn is_object_store(&self) -> bool {
+        matches!(self, Self::ObjectStore(_))
     }
 
     pub(crate) fn requires_durable_backend(&self) -> bool {
@@ -86,14 +128,14 @@ impl StorageFactoryConfig {
         }
     }
 
-    pub fn cloud_native(
+    pub fn object_store(
         wal: WalConfig,
         metadata_root: impl Into<String>,
-        durable_backend: BackendConfig,
+        object_store: ObjectStoreConfig,
         retention: Option<RetentionConfig>,
     ) -> Self {
         Self {
-            mode: StorageMode::CloudNative(CloudNativeConfig::new(durable_backend)),
+            mode: StorageMode::ObjectStore(object_store),
             wal,
             metadata_root: metadata_root.into(),
             retention,
@@ -108,15 +150,13 @@ impl StorageFactoryConfig {
 
     pub(crate) fn durable_backend(&self) -> Option<BackendConfig> {
         match &self.mode {
-            StorageMode::Local => self.wal.dir.as_ref().map(|dir| BackendConfig::Local {
-                backend: LocalBackend::Fs,
+            StorageMode::Local => self.wal.dir.as_ref().map(|dir| BackendConfig::Filesystem {
                 root: dir.to_string_lossy().to_string(),
             }),
-            StorageMode::SharedFs(shared_fs) => Some(BackendConfig::Local {
-                backend: LocalBackend::Fs,
+            StorageMode::SharedFs(shared_fs) => Some(BackendConfig::Filesystem {
                 root: shared_fs.root.clone(),
             }),
-            StorageMode::CloudNative(cloud_native) => Some(cloud_native.durable_backend.clone()),
+            StorageMode::ObjectStore(object_store) => Some(object_store.durable_backend()),
         }
     }
 }

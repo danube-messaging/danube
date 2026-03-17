@@ -4,8 +4,7 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
-    StorageMetadata,
+    ObjectStoreConfig, SegmentDescriptor, StorageFactory, StorageFactoryConfig, StorageMetadata,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,20 +39,18 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
     let metadata_store: Arc<dyn MetadataStore> = memory_store.clone();
 
     let topic = "/default/cloud-native-smoke";
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
 
     let factory_1 = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_owner_1.path().to_path_buf()),
                 fsync_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
-            backend.clone(),
+            object_store.clone(),
             None,
         )
         .with_segment_export_interval_seconds(1),
@@ -95,14 +92,14 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
     );
 
     let factory_2 = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_owner_2.path().to_path_buf()),
                 fsync_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
-            backend,
+            object_store,
             None,
         )
         .with_segment_export_interval_seconds(1),
@@ -149,10 +146,8 @@ async fn cloud_native_recovers_from_catalog_when_checkpoint_points_to_missing_lo
 
     let topic = "/default/cloud-native-recovery";
     let topic_path = "default/cloud-native-recovery";
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Fs,
-        root: durable_root.path().to_string_lossy().to_string(),
-    };
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
 
     let topic_dir = wal_root.path().join("default").join("cloud-native-recovery");
     tokio::fs::create_dir_all(&topic_dir)
@@ -195,14 +190,14 @@ async fn cloud_native_recovers_from_catalog_when_checkpoint_points_to_missing_lo
         .expect("seed current segment descriptor");
 
     let factory = StorageFactory::new(
-        StorageFactoryConfig::cloud_native(
+        StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.path().to_path_buf()),
                 fsync_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
-            backend,
+            object_store,
             None,
         )
         .with_segment_export_interval_seconds(1),
