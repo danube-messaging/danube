@@ -5,7 +5,6 @@ pub use wal::Wal;
 
 pub mod checkpoint;
 
-mod hot_log;
 
 mod metadata;
 

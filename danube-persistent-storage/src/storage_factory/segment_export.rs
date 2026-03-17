@@ -1,7 +1,7 @@
 use super::StorageFactory;
 use crate::frames::{decode_next_frame, extract_offsets, scan_safe_frame_boundary};
-use crate::hot_log::HotLog;
 use crate::metadata::SegmentDescriptor;
+use crate::wal::Wal;
 use danube_core::storage::PersistentStorageError;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -10,19 +10,19 @@ impl StorageFactory {
     pub(super) async fn cut_and_export_topic_segments(
         &self,
         topic_path: &str,
-        hot_log: &HotLog,
+        wal: &Wal,
     ) -> Result<(), PersistentStorageError> {
         if !self.mode.is_object_store() {
             return Ok(());
         }
-        hot_log.rotate().await?;
-        self.export_topic_segments(topic_path, hot_log, false).await
+        wal.rotate().await?;
+        self.export_topic_segments(topic_path, wal, false).await
     }
 
     pub(super) async fn export_topic_segments(
         &self,
         topic_path: &str,
-        hot_log: &HotLog,
+        wal: &Wal,
         include_active_file: bool,
     ) -> Result<(), PersistentStorageError> {
         if !self.uses_sealed_segment_export() {
@@ -37,7 +37,7 @@ impl StorageFactory {
             }
             None => return Ok(()),
         };
-        let wal_ckpt = match hot_log.current_wal_checkpoint().await {
+        let wal_ckpt = match wal.current_wal_checkpoint().await {
             Some(ckpt) => ckpt,
             None => return Ok(()),
         };

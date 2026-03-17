@@ -1,7 +1,7 @@
 use super::StorageFactory;
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crate::durable_store::DurableStore;
-use crate::hot_log::HotLog;
+use crate::wal::Wal;
 use danube_core::storage::PersistentStorageError;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ impl StorageFactory {
         topic_path: &str,
     ) -> Result<
         (
-            HotLog,
+            Wal,
             Option<PathBuf>,
             Option<Arc<CheckpointStore>>,
             bool,
@@ -110,10 +110,9 @@ impl StorageFactory {
             }
         };
 
-        let wal = crate::wal::Wal::with_config_with_store(cfg, ckpt_store.clone(), initial_offset).await?;
-        let hot_log = HotLog::from(wal);
-        self.topics.insert(topic_path.to_string(), hot_log.clone());
-        Ok((hot_log, root_path, ckpt_store, resumed_from_sealed))
+        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone(), initial_offset).await?;
+        self.topics.insert(topic_path.to_string(), wal.clone());
+        Ok((wal, root_path, ckpt_store, resumed_from_sealed))
     }
 
     pub(super) fn topic_wal_dir(&self, topic_path: &str) -> Option<PathBuf> {

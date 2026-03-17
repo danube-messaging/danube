@@ -73,7 +73,7 @@ impl StorageFactory {
             && !self.segment_exporters.contains_key(&topic_path)
         {
             let factory = self.clone();
-            let hot_log = topic_wal.clone();
+            let wal = topic_wal.clone();
             let topic_path_for_task = topic_path.clone();
             let interval_seconds = self.segment_export_interval_seconds;
             let cancel = tokio_util::sync::CancellationToken::new();
@@ -86,7 +86,7 @@ impl StorageFactory {
                     "object_store segment exporter started"
                 );
                 if let Err(e) = factory
-                    .cut_and_export_topic_segments(&topic_path_for_task, &hot_log)
+                    .cut_and_export_topic_segments(&topic_path_for_task, &wal)
                     .await
                 {
                     warn!(
@@ -110,7 +110,7 @@ impl StorageFactory {
                         }
                         _ = ticker.tick() => {
                             if let Err(e) = factory
-                                .cut_and_export_topic_segments(&topic_path_for_task, &hot_log)
+                                .cut_and_export_topic_segments(&topic_path_for_task, &wal)
                                 .await
                             {
                                 warn!(
@@ -150,7 +150,7 @@ impl StorageFactory {
             }
         }
 
-        let mut storage = WalStorage::from_hot_log(topic_wal);
+        let mut storage = WalStorage::from_wal(topic_wal);
         if resumed_from_sealed {
             storage = storage.with_hot_cutover();
         }
@@ -183,7 +183,7 @@ impl StorageFactory {
         topic_name: &str,
     ) -> Result<CommitInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let hot_log = match self.topics.get(&topic_path) {
+        let wal = match self.topics.get(&topic_path) {
             Some(w) => w.clone(),
             None => {
                 return Err(PersistentStorageError::Other(
@@ -193,7 +193,7 @@ impl StorageFactory {
         };
 
         Ok(CommitInfo {
-            last_committed_offset: hot_log.last_committed_offset(),
+            last_committed_offset: wal.last_committed_offset(),
         })
     }
 
@@ -203,7 +203,7 @@ impl StorageFactory {
         broker_id: u64,
     ) -> Result<SealInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let hot_log = match self.topics.remove(&topic_path) {
+        let wal = match self.topics.remove(&topic_path) {
             Some((_, w)) => w,
             None => {
                 return Err(PersistentStorageError::Other(
@@ -212,11 +212,11 @@ impl StorageFactory {
             }
         };
 
-        let last_committed_offset = hot_log.last_committed_offset();
-        hot_log.shutdown().await;
+        let last_committed_offset = wal.last_committed_offset();
+        wal.shutdown().await;
         self.stop_topic_background_tasks(&topic_path).await;
         if self.uses_sealed_segment_export() {
-            self.export_topic_segments(&topic_path, &hot_log, true).await?;
+            self.export_topic_segments(&topic_path, &wal, true).await?;
         }
         self.clear_topic_wal_state(&topic_path).await?;
 
@@ -238,8 +238,8 @@ impl StorageFactory {
         topic_name: &str,
     ) -> Result<(), PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        if let Some((_, hot_log)) = self.topics.remove(&topic_path) {
-            hot_log.shutdown().await;
+        if let Some((_, wal)) = self.topics.remove(&topic_path) {
+            wal.shutdown().await;
         }
         self.stop_topic_background_tasks(&topic_path).await;
         self.delete_topic_durable_segments(&topic_path).await?;

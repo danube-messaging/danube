@@ -444,6 +444,10 @@ impl Wal {
         self.inner.next_offset.load(Ordering::Acquire)
     }
 
+    pub fn last_committed_offset(&self) -> u64 {
+        self.current_offset().saturating_sub(1)
+    }
+
     /// Graceful shutdown: flush pending buffered data and stop the background writer task.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();

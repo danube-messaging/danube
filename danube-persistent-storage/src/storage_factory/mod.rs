@@ -8,8 +8,8 @@ pub use config::{
 };
 
 use crate::durable_store::DurableStore;
-use crate::hot_log::HotLog;
 use crate::metadata::{MobilityState, SegmentCatalog};
+use crate::wal::Wal;
 use crate::wal::deleter::DeleterConfig;
 use dashmap::DashMap;
 use danube_core::storage::PersistentStorageError;
@@ -24,7 +24,7 @@ pub struct StorageFactory {
     segment_catalog: SegmentCatalog,
     mobility_state: MobilityState,
     durable_store: Option<Arc<dyn DurableStore>>,
-    topics: Arc<DashMap<String, HotLog>>,
+    topics: Arc<DashMap<String, Wal>>,
     segment_exporters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     segment_exporter_tokens: Arc<DashMap<String, CancellationToken>>,
     segment_export_interval_seconds: u64,

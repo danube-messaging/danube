@@ -12,12 +12,12 @@ use tracing::{info, warn};
 
 use crate::durable_history_reader::DurableHistoryReader;
 use crate::durable_store::DurableStore;
-use crate::hot_log::HotLog;
 use crate::metadata::StorageMetadata;
+use crate::wal::Wal;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
-    hot_log: HotLog,
+    wal: Wal,
     durable_store: Option<Arc<dyn DurableStore>>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
@@ -25,9 +25,9 @@ pub struct WalStorage {
 }
 
 impl WalStorage {
-    pub fn from_hot_log(hot_log: HotLog) -> Self {
+    pub fn from_wal(wal: Wal) -> Self {
         Self {
-            hot_log,
+            wal,
             durable_store: None,
             metadata: None,
             topic_path: None,
@@ -35,9 +35,6 @@ impl WalStorage {
         }
     }
 
-    pub fn from_wal(wal: crate::wal::Wal) -> Self {
-        Self::from_hot_log(wal.into())
-    }
 
     /// Enable durable historical reads by wiring DurableStore + StorageMetadata and logical topic path.
     pub(crate) fn with_durable_history(
@@ -66,7 +63,7 @@ impl WalStorage {
     /// This method is extremely lightweight (atomic load, no locking) and can be called
     /// frequently for lag detection without performance concerns.
     pub fn current_offset(&self) -> u64 {
-        self.hot_log.current_offset()
+        self.wal.current_offset()
     }
 
     /// Convenience: append a message directly to the underlying WAL.
@@ -74,7 +71,7 @@ impl WalStorage {
     /// Note: Integration tests use `storage.append(&msg)`; this helper forwards to `Wal::append`.
     #[allow(dead_code)]
     pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
-        self.hot_log.append(msg).await
+        self.wal.append(msg).await
     }
 
     async fn create_hot_reader(
@@ -83,7 +80,7 @@ impl WalStorage {
         from: u64,
         live: bool,
     ) -> Result<TopicStream, PersistentStorageError> {
-        let stream = self.hot_log.tail_reader(from, live).await;
+        let stream = self.wal.tail_reader(from, live).await;
         if stream.is_ok() {
             counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
         }
@@ -92,12 +89,12 @@ impl WalStorage {
 
     async fn hot_start_offset(&self) -> u64 {
         if self.history_cutover_from_hot {
-            self.hot_log
+            self.wal
                 .earliest_cached_offset()
                 .await
-                .unwrap_or_else(|| self.hot_log.current_offset())
+                .unwrap_or_else(|| self.wal.current_offset())
         } else {
-            let wal_checkpoint = self.hot_log.current_wal_checkpoint().await;
+            let wal_checkpoint = self.wal.current_wal_checkpoint().await;
             wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset)
         }
     }
@@ -115,7 +112,7 @@ impl WalStorage {
         let durable_stream = reader
             .read_range(start_offset, Some(hot_start_offset - 1))
             .await?;
-        let hot_stream = self.hot_log.tail_reader(hot_start_offset, false).await?;
+        let hot_stream = self.wal.tail_reader(hot_start_offset, false).await?;
         let chained = durable_stream.chain(hot_stream);
         counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "durable_history_then_hot").increment(1);
         counter!(DURABLE_HISTORY_TO_HOT_TOTAL.name, "topic"=> topic_name.to_string())
@@ -131,9 +128,9 @@ impl PersistentStorage for WalStorage {
         topic_name: &str,
         msg: StreamMessage,
     ) -> Result<u64, PersistentStorageError> {
-        self.hot_log.set_topic_for_metrics(topic_name.to_string()).await;
+        self.wal.set_topic_for_metrics(topic_name.to_string()).await;
         let payload_len = msg.payload.len() as u64;
-        let res = self.hot_log.append(&msg).await;
+        let res = self.wal.append(&msg).await;
         if let Ok(_off) = res {
             counter!(WAL_APPEND_TOTAL.name, "topic"=> topic_name.to_string()).increment(1);
             counter!(WAL_APPEND_BYTES_TOTAL.name, "topic"=> topic_name.to_string())
@@ -156,7 +153,7 @@ impl PersistentStorage for WalStorage {
             (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
             _ => {
                 let (from, live) = match start {
-                    StartPosition::Latest => (self.hot_log.current_offset(), true),
+                    StartPosition::Latest => (self.wal.current_offset(), true),
                     StartPosition::Offset(o) => (o, false),
                 };
                 warn!(
@@ -169,7 +166,7 @@ impl PersistentStorage for WalStorage {
         };
 
         let (start_offset, live) = match start {
-            StartPosition::Latest => (self.hot_log.current_offset(), true),
+            StartPosition::Latest => (self.wal.current_offset(), true),
             StartPosition::Offset(o) => (o, false),
         };
 
@@ -213,6 +210,6 @@ impl PersistentStorage for WalStorage {
     }
 
     async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
-        self.hot_log.flush().await
+        self.wal.flush().await
     }
 }
