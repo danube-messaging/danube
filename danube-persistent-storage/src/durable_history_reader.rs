@@ -56,6 +56,18 @@ impl DurableHistoryReader {
     /// `[start_offset, end_offset]` overlap. Each selected segment is decoded
     /// as a sequence of raw WAL frames. Frames outside the requested range
     /// are filtered out. The resulting stream yields messages ordered by offset.
+    ///
+    /// Functional flow
+    /// - Load and sort all segment descriptors that overlap the requested offset range.
+    /// - Open each durable object lazily, using the sparse offset index to seek near `start` when
+    ///   available.
+    /// - Read the object in chunks, parsing only complete frames and carrying any trailing partial
+    ///   frame bytes into the next read.
+    /// - Buffer decoded messages temporarily so the stream can yield one item at a time while the
+    ///   parser works in chunk-sized batches.
+    ///
+    /// This reader is intentionally sequential across segment objects: it preserves on-disk segment
+    /// order and avoids overlapping reads from multiple durable objects at once.
     pub async fn read_range(
         &self,
         start: u64,
@@ -153,6 +165,10 @@ impl DurableHistoryReader {
 /// Parse a cloud object composed of concatenated raw WAL frames and return
 /// a vector of `(offset, StreamMessage)` pairs. Stops gracefully at the first
 /// partial frame at the end of the object.
+///
+/// The caller reuses `carry` across chunk reads. This helper consumes only the prefix made of full
+/// valid frames, appends decoded messages into `out`, and leaves any trailing partial frame bytes in
+/// `carry` so the next object read can complete them.
 fn parse_frames_from_carry(
     carry: &mut Vec<u8>,
     out: &mut Vec<(u64, StreamMessage)>,
@@ -204,6 +220,9 @@ fn parse_frames_from_carry(
 
 /// Find the byte position from a sparse `(offset, byte_pos)` index for a target `start_offset`.
 /// Returns the `byte_pos` of the greatest entry with `offset <= start_offset`, or 0 if none.
+///
+/// This is a lower-cost seek hint, not an exact frame lookup. The caller still scans forward from
+/// the returned byte position until it reaches the first requested message offset.
 fn find_start_byte(index: &[(u64, u64)], start_offset: u64) -> u64 {
     if index.is_empty() {
         return 0;

@@ -39,6 +39,14 @@ pub(crate) struct CheckPoint;
 
 impl CheckPoint {
     /// Write WAL checkpoint to the specified path (typically <dir>/wal.ckpt).
+    ///
+    /// Persistence model
+    /// - Serialize the full checkpoint with `bincode`.
+    /// - Write it to a sibling temporary file.
+    /// - Flush the temp file and atomically rename it into place.
+    ///
+    /// Using tmp+rename prevents readers from observing a partially written checkpoint file during
+    /// crashes or concurrent recovery.
     pub async fn write_wal_to_path(
         wal: &WalCheckpoint,
         path: &std::path::PathBuf,
@@ -132,6 +140,9 @@ impl CheckpointStore {
     }
 
     /// Optionally pre-load the WAL checkpoint from disk into cache.
+    ///
+    /// This is a startup optimization: later readers can use `get_wal()` without immediately
+    /// re-reading the checkpoint file from disk.
     pub async fn load_from_disk(&self) -> Result<(), PersistentStorageError> {
         if let Some(wal) = CheckPoint::read_wal_from_path(&self.wal_ckpt_path).await? {
             *self.wal_cache.write().await = Some(wal);
@@ -143,6 +154,11 @@ impl CheckpointStore {
         self.wal_cache.read().await.clone()
     }
 
+    /// Update the in-memory checkpoint cache and persist the same snapshot to disk.
+    ///
+    /// The cache is updated first so in-process readers immediately observe the newest topology even
+    /// before the filesystem write completes. Disk persistence then makes that snapshot recoverable
+    /// across process restarts.
     pub async fn update_wal(&self, ckpt: &WalCheckpoint) -> Result<(), PersistentStorageError> {
         // Update cache first for readers, then atomically persist to disk
         *self.wal_cache.write().await = Some(ckpt.clone());

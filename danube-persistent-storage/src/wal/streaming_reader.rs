@@ -11,6 +11,9 @@ use crate::frames::{decode_next_frame, scan_safe_frame_boundary};
 use tracing::info;
 
 /// Build ordered list of WAL files from checkpoint: rotated files + active file, sorted by seq.
+///
+/// The checkpoint already records replay order, so this helper simply reconstructs the linear file
+/// sequence the reader should walk from oldest rotated file to current active file.
 fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
     // Map rotated_files (seq, path, first_offset) -> (seq, path) for streaming
     let mut files: Vec<(u64, PathBuf)> = wal_ckpt
@@ -27,6 +30,17 @@ fn build_ordered_wal_files(wal_ckpt: &WalCheckpoint) -> Vec<(u64, PathBuf)> {
 
 /// Stream frames from local WAL files starting at `from_offset`, parsing incrementally in chunks.
 /// Returns a stream of `StreamMessage` items (boxed) with per-item `Result`.
+///
+/// Functional behavior
+/// - Walk files in checkpoint order, oldest first.
+/// - Read bytes in fixed-size chunks and append them into a carry buffer.
+/// - Parse only up to the last safe frame boundary so partial trailing frames stay in `carry`
+///   until the next read completes them.
+/// - Skip frames below `from_offset` and restamp yielded messages with the WAL frame offset.
+///
+/// Failure model
+/// - Missing files are skipped so replay can continue if older files were concurrently pruned.
+/// - Read or decode failures are surfaced through the stream and terminate replay.
 pub(crate) async fn stream_from_wal_files(
     checkpoint: &WalCheckpoint,
     from_offset: u64,

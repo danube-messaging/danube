@@ -25,6 +25,23 @@ struct RecoveryStartDecision {
 }
 
 impl StorageFactory {
+    /// Get the existing topic WAL or create a new one with the correct recovery starting point.
+    ///
+    /// Functional flow
+    /// - Reuse an already-open WAL if the topic was previously initialized in this process.
+    /// - Derive a per-topic local WAL directory and preload checkpoint state when local staging is
+    ///   enabled.
+    /// - Inspect both local WAL continuity and durable segment metadata to decide where the next
+    ///   append offset should start.
+    /// - Return the WAL together with local-path/checkpoint details needed by lifecycle code.
+    ///
+    /// Recovery inputs
+    /// - Local WAL continuity is only considered valid if the checkpoint references files that
+    ///   still exist on disk.
+    /// - Durable segment catalog state is used as a fallback when the mode requires durable
+    ///   history and local staged WAL state is unavailable.
+    /// - A sealed mobility marker takes precedence over both and resumes from the stored committed
+    ///   offset + 1.
     pub(super) async fn get_or_create_wal(
         &self,
         topic_path: &str,
@@ -125,6 +142,10 @@ impl StorageFactory {
         Some(root)
     }
 
+    /// Return whether a checkpoint still points at usable local WAL files.
+    ///
+    /// A checkpoint alone is not enough to claim local continuity: the active file or at least one
+    /// rotated file it references must still exist on disk.
     fn wal_checkpoint_has_local_data(wal_checkpoint: &WalCheckpoint) -> bool {
         wal_checkpoint
             .rotated_files
@@ -146,6 +167,17 @@ impl StorageFactory {
         }
     }
 
+    /// Resolve the initial WAL offset for topic startup or ownership handoff.
+    ///
+    /// Decision order
+    /// - **Sealed mobility state**: resume from the last sealed committed offset + 1.
+    /// - **Durable segment catalog**: in modes that require a separate durable backend and lack
+    ///   local WAL continuity, resume from the durable segment end offset + 1.
+    /// - **Local WAL continuity**: let the WAL recover from its existing local files/checkpoint.
+    /// - **Empty topic**: start from an empty WAL when no durable or local continuity exists.
+    ///
+    /// The returned `resumed_from_sealed` flag tells higher layers whether readers should treat
+    /// durable history as authoritative for the already-committed prefix.
     async fn resolve_recovery_start(
         &self,
         topic_path: &str,

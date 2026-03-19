@@ -55,6 +55,22 @@ impl StorageFactory {
         })
     }
 
+    /// Build or retrieve per-topic storage and start any required background services.
+    ///
+    /// Functional flow
+    /// - Normalize the logical topic name into the metadata/storage path shape used internally.
+    /// - Recover or create the topic WAL, including recovery start-offset resolution.
+    /// - Clear any stale sealed mobility marker once the topic is actively owned again.
+    /// - Start background segment export and retention tasks when the selected storage mode uses
+    ///   them.
+    /// - Wrap the WAL in `WalStorage`, optionally wiring durable-history reads and hot-cutover
+    ///   behavior for sealed recovery.
+    ///
+    /// Important behavior
+    /// - `resumed_from_sealed` enables `with_hot_cutover()`, which tells readers to prefer durable
+    ///   history for the already-sealed prefix and use the hot WAL only for new local progress.
+    /// - Export/deleter tasks are started once per topic and reused across repeated `for_topic()`
+    ///   calls in the same process.
     pub async fn for_topic(&self, topic_name: &str) -> Result<WalStorage, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed) =
@@ -209,6 +225,18 @@ impl StorageFactory {
         })
     }
 
+    /// Seal a topic for ownership transfer or shutdown.
+    ///
+    /// Functional flow
+    /// - Remove the WAL from the factory's active-topic map so no new callers reuse it.
+    /// - Capture the last locally committed offset before shutdown.
+    /// - Flush and stop the WAL plus any background exporter/deleter tasks.
+    /// - Export any remaining local WAL data into durable segments when the mode supports sealed
+    ///   segment export.
+    /// - Clear local WAL state and persist a sealed mobility marker so the next owner can resume at
+    ///   `last_committed_offset + 1`.
+    ///
+    /// The returned `SealInfo` reports the final local WAL boundary captured into sealed state.
     pub async fn seal(
         &self,
         topic_name: &str,
@@ -245,6 +273,16 @@ impl StorageFactory {
         })
     }
 
+    /// Remove all persistent state associated with a topic.
+    ///
+    /// Cleanup order
+    /// - Stop and remove any live WAL instance for the topic.
+    /// - Stop background export/deletion tasks so they do not race the cleanup.
+    /// - Delete durable segment objects and their catalog metadata.
+    /// - Delete any remaining local WAL directory state.
+    ///
+    /// This is the destructive full-cleanup path used when a topic's storage footprint should be
+    /// removed completely, not just sealed for later recovery.
     pub async fn delete_storage_metadata(
         &self,
         topic_name: &str,

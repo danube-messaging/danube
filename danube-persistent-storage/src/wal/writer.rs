@@ -141,6 +141,13 @@ impl WriterState {
         Ok(())
     }
 
+    /// Force the current buffered state into a sealed rotated file.
+    ///
+    /// Functional behavior
+    /// - Flushes any buffered frames first so the rotated file is complete on disk.
+    /// - Skips rotation entirely if the active file never accepted a write.
+    /// - Persists a checkpoint after rotation so external readers/exporters can observe the new
+    ///   active file boundary.
     async fn force_rotate(&mut self) -> Result<(), PersistentStorageError> {
         self.process_flush().await?;
         if self.current_file_first_offset.is_none() {
@@ -154,6 +161,11 @@ impl WriterState {
     }
 
     /// Check rotate thresholds and rotate to a new `wal.<seq>.log` if needed.
+    ///
+    /// Functional note
+    /// - Size rotation is evaluated against bytes accepted into the current active file.
+    /// - Time rotation is evaluated only when a new write arrives; there is no separate rotation
+    ///   timer that rotates idle files in the background.
     async fn rotate_if_needed(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(max_bytes) = self.rotate_max_bytes {
             if self.bytes_in_file >= max_bytes {
@@ -181,6 +193,10 @@ impl WriterState {
     }
 
     /// Open a new rotated file, update path, reset counters and timers.
+    ///
+    /// The previous active file is first recorded into `rotated_files` together with the first
+    /// offset known to belong to that file. That metadata is later used for replay ordering,
+    /// retention eligibility, and checkpoint reconstruction.
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
         // Record the previous file into rotation history before switching
         if let Some(prev_path) = self.wal_path.clone() {
@@ -222,6 +238,10 @@ impl WriterState {
     }
 
     /// Atomically write `WalCheckpoint` with `bincode` into `<dir>/wal.ckpt` via tmp+rename.
+    ///
+    /// The checkpoint is the writer's summary of local WAL topology: last written offset, active
+    /// file identity, and the ordered list of rotated files. Recovery and retention both rely on
+    /// this view rather than rescanning the directory structure on every operation.
     async fn write_checkpoint(&self, last_offset: u64) -> Result<(), PersistentStorageError> {
         let ckpt_path = match &self.checkpoint_path {
             Some(p) => p.clone(),
@@ -264,6 +284,13 @@ impl WriterState {
 /// Lifecycle
 /// - Initializes `WriterState` from `WriterInit` (including opening the active file, if any).
 /// - Processes commands until `Shutdown`, flushing on demand and writing checkpoints.
+/// - Uses a periodic ticker only for buffer flush/checkpoint advancement; rotation is still checked
+///   on writes via `process_write()`.
+///
+/// Event-loop model
+/// - `Write` appends into the in-memory buffer and may trigger immediate flush/rotation by size.
+/// - `Flush`, `Rotate`, and `Shutdown` are acknowledged explicitly so callers can observe failure.
+/// - Channel closure triggers one final best-effort flush before exit.
 pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     let writer = if let Some(p) = &init.wal_path {
         match OpenOptions::new()

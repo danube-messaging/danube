@@ -54,6 +54,16 @@ pub fn append_encoded_frame(out: &mut Vec<u8>, offset: u64, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
+/// Decode exactly one WAL frame from the start of `buf`.
+///
+/// Return model
+/// - `Ok(Some(frame))` when a full frame is present and its CRC matches.
+/// - `Ok(None)` when `buf` ends in a partial header or partial payload, so the caller should wait
+///   for more bytes.
+/// - `Err(FrameDecodeError::CrcMismatch)` when a full frame is present but corrupted.
+///
+/// This three-way result lets stream readers distinguish incomplete trailing bytes from true data
+/// corruption without guessing from buffer length alone.
 pub fn decode_next_frame(buf: &[u8]) -> Result<Option<DecodedFrame<'_>>, FrameDecodeError> {
     if buf.len() < FRAME_HEADER_SIZE {
         return Ok(None);
@@ -87,6 +97,9 @@ pub fn decode_next_frame(buf: &[u8]) -> Result<Option<DecodedFrame<'_>>, FrameDe
 /// Scan the buffer and return the largest prefix length that ends exactly on a full frame.
 /// Validates CRC for each full frame. On CRC mismatch, stops and returns the last
 /// known-safe boundary (defensive).
+///
+/// This helper is used before exporting or replaying bytes from files that may end with a partially
+/// flushed frame. It trims the buffer to the longest prefix that is both frame-aligned and CRC-clean.
 pub fn scan_safe_frame_boundary(buf: &[u8]) -> usize {
     let mut idx = 0usize;
     while idx < buf.len() {
@@ -100,6 +113,9 @@ pub fn scan_safe_frame_boundary(buf: &[u8]) -> usize {
 
 /// Extract first and last offsets inside a complete-frames prefix. Assumes `buf`
 /// ends on a valid frame boundary (or will ignore trailing partial data).
+///
+/// This is a lightweight way to recover a file or segment's inclusive offset range without fully
+/// decoding the embedded `StreamMessage` payloads.
 pub fn extract_offsets(buf: &[u8]) -> (Option<u64>, Option<u64>) {
     let mut idx = 0usize;
     let mut first: Option<u64> = None;

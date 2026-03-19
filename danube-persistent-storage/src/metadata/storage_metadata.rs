@@ -104,6 +104,11 @@ impl StorageMetadata {
         }
     }
 
+    /// Resolve the current durable segment through the `cur` pointer indirection.
+    ///
+    /// The `segments/cur` key stores only the padded start offset of the latest published
+    /// segment. This helper first reads that pointer and then loads the full descriptor from the
+    /// corresponding `segments/<start_offset_padded>` entry.
     pub async fn get_current_segment_descriptor(
         &self,
         topic_path: &str,
@@ -126,6 +131,11 @@ impl StorageMetadata {
         }
     }
 
+    /// List all durable segment descriptors stored for a topic.
+    ///
+    /// This performs a prefix scan over the topic's segment metadata and returns descriptors sorted
+    /// by `start_offset`, giving callers a deterministic logical history order regardless of backend
+    /// enumeration order.
     pub async fn get_segment_descriptors(
         &self,
         topic_path: &str,
@@ -149,6 +159,11 @@ impl StorageMetadata {
 
     /// Fetch descriptors starting at or after `from_padded` (inclusive). If `to_padded` is Some,
     /// it will stop at keys <= `to_padded`.
+    ///
+    /// Range matching is done lexicographically on zero-padded start-offset keys, which preserves
+    /// numeric ordering while still using simple string comparison against backend keys.
+    /// The `cur` pointer entry is explicitly skipped because it is metadata indirection, not a
+    /// descriptor payload.
     pub async fn get_segment_descriptors_range(
         &self,
         topic_path: &str,
@@ -230,6 +245,9 @@ impl StorageMetadata {
 
     /// Delete all storage metadata for a topic under `/storage/topics/<topic_path>/`.
     /// This includes object descriptors, current pointer, and sealed state.
+    ///
+    /// This is a prefix-based metadata sweep. It removes every metadata key for the topic rather
+    /// than trying to delete descriptor, pointer, and state entries individually.
     pub async fn delete_storage_topic(
         &self,
         topic_path: &str,

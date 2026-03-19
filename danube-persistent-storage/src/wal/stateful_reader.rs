@@ -29,6 +29,14 @@ impl Stream for StatefulReader {
 }
 
 impl StatefulReader {
+    /// Create a continuity-preserving WAL reader.
+    ///
+    /// Functional flow
+    /// - Snapshot the earliest cached offset to decide whether file replay is needed.
+    /// - Subscribe to the live broadcast stream before any replay begins so new appends are not
+    ///   missed during the Files/Cache catch-up phases.
+    /// - Spawn a task that drives Files → Cache → Live and forwards results through an
+    ///   `mpsc` channel exposed as the reader stream.
     pub(crate) async fn new(
         wal_inner: Arc<WalInner>,
         checkpoint_opt: Option<WalCheckpoint>,
@@ -81,6 +89,25 @@ impl StatefulReader {
         })
     }
 
+    /// Drive the full replay lifecycle for a WAL reader.
+    ///
+    /// Functional phases
+    /// - **Files**: if the request starts before the cache window and a checkpoint exists, replay
+    ///   historical WAL files first.
+    /// - **Cache**: drain any contiguous in-memory messages starting at `next_offset`.
+    /// - **Live**: consume broadcast updates once the reader has caught up.
+    ///
+    /// Continuity invariant
+    /// - `next_offset` is always the exact offset the reader expects next.
+    /// - Offsets lower than `next_offset` are duplicates and are ignored.
+    /// - Offsets greater than `next_offset` indicate a gap; the reader first tries to repair the
+    ///   gap from cache before surfacing an error.
+    ///
+    /// Why this task exists
+    /// - It centralizes the replay state machine in one async task instead of spreading it across
+    ///   manual `poll_next` transitions.
+    /// - It preserves ordering while still allowing the reader to recover from brief live-stream
+    ///   lag if the missing messages are still present in cache.
     async fn run(
         wal_inner: Arc<WalInner>,
         checkpoint_opt: Option<WalCheckpoint>,
@@ -184,6 +211,11 @@ impl StatefulReader {
         }
     }
 
+    /// Drain all currently available contiguous cache entries starting at `next_offset`.
+    ///
+    /// This helper reads the cache in bounded batches so lock hold times stay short. It keeps
+    /// re-checking the cache until a pass yields no new items, which lets the caller catch up to
+    /// the current cache frontier before switching back to live delivery.
     async fn drain_cache(
         wal_inner: &Arc<WalInner>,
         tx: &mpsc::Sender<Result<StreamMessage, PersistentStorageError>>,

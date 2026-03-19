@@ -17,6 +17,12 @@ pub(crate) struct Cache {
 
 /// Build a cache replay stream that yields messages starting at `from_offset` in bounded batches.
 /// This keeps lock hold times short and memory per reader bounded.
+///
+/// Functional behavior
+/// - Snapshot at most `batch_size` messages per cache lock acquisition.
+/// - Convert each snapshot into a small stream segment, then chain the segments together.
+/// - Stop after a bounded number of segments so a single reader cannot accumulate unbounded memory
+///   if the cache is very large.
 pub(crate) async fn build_cache_stream(
     wal_inner: Arc<super::WalInner>,
     mut from_offset: u64,

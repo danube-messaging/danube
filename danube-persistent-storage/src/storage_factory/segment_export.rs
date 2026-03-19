@@ -8,6 +8,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 impl StorageFactory {
+    /// Rotate the active WAL file and export any newly sealed segments.
+    ///
+    /// This is the periodic export path used by background exporters. Rotation happens first so the
+    /// exporter works on immutable sealed files instead of racing the actively written file.
     pub(super) async fn cut_and_export_topic_segments(
         &self,
         topic_path: &str,
@@ -20,6 +24,21 @@ impl StorageFactory {
         self.export_topic_segments(topic_path, wal, false).await
     }
 
+    /// Export eligible local WAL files into durable segment objects.
+    ///
+    /// Functional flow
+    /// - Load the current WAL checkpoint to discover rotated files and, optionally, the active file.
+    /// - Query the segment catalog to avoid re-exporting a segment whose `start_offset` is already
+    ///   published.
+    /// - Read each candidate file, trim it to the last safe frame boundary, and derive its start/end
+    ///   offsets from the intact frame sequence.
+    /// - Upload the safe byte prefix as a durable segment and publish the descriptor into metadata.
+    ///
+    /// Safety notes
+    /// - Only the safe prefix up to `scan_safe_frame_boundary()` is exported, so partially written
+    ///   trailing frames are never published as durable history.
+    /// - `include_active_file` is reserved for explicit seal/export flows; the periodic exporter
+    ///   normally works on rotated files only.
     pub(super) async fn export_topic_segments(
         &self,
         topic_path: &str,
@@ -167,6 +186,10 @@ impl StorageFactory {
         self.mode.is_local() || self.mode.requires_separate_durable_backend()
     }
 
+    /// Persist one sealed WAL byte range as a durable segment object and construct its descriptor.
+    ///
+    /// The descriptor records the durable object identity, inclusive offset bounds, object size,
+    /// optional ETag, and a sparse offset index that accelerates historical reads.
     async fn persist_durable_segment(
         &self,
         durable_store: &std::sync::Arc<dyn crate::durable_store::DurableStore>,
@@ -197,6 +220,10 @@ impl StorageFactory {
         })
     }
 
+    /// Publish a durable segment descriptor and advance the current-segment pointer.
+    ///
+    /// The descriptor is written under its padded `start_offset` key first, then the `cur` pointer
+    /// is updated to reference that same key so readers can discover the latest durable frontier.
     async fn publish_durable_segment(
         &self,
         topic_path: &str,
@@ -212,6 +239,10 @@ impl StorageFactory {
     }
 }
 
+/// Build a sparse `(offset, byte_position)` index over a sealed WAL byte slice.
+///
+/// The index samples every 1000th message frame rather than every message to keep metadata small
+/// while still giving historical readers periodic seek anchors into the segment payload.
 fn build_offset_index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
     let mut idx = 0usize;
     let mut offsets = Vec::new();

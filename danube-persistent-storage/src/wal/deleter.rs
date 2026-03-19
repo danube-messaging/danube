@@ -80,6 +80,18 @@ impl Deleter {
         })
     }
 
+    /// Run one WAL retention pass for this topic.
+    ///
+    /// Functional flow
+    /// - Load the local WAL checkpoint and the current durable segment descriptor.
+    /// - Derive deletion candidates only from rotated files that are fully covered by durable
+    ///   history.
+    /// - Apply the configured time/size retention rules.
+    /// - Delete selected files and rewrite the checkpoint's `rotated_files`/`start_offset` view.
+    ///
+    /// Safety boundary
+    /// - The active file is never considered here.
+    /// - A rotated file is only eligible if its whole offset range is known to be safely exported.
     pub(crate) async fn run_cycle(&self) -> Result<(), PersistentStorageError> {
         let wal_ckpt_opt = self.ckpt_store.get_wal().await;
         let durable_segment = self
@@ -146,6 +158,12 @@ impl Deleter {
         Ok(())
     }
 
+    /// Collect rotated WAL files that are structurally eligible for deletion.
+    ///
+    /// For each rotated file, this reconstructs that file's offset range from the checkpoint's
+    /// `first_offset` markers. A file only becomes a candidate if its computed end offset is at or
+    /// below the durable segment's end offset, meaning durable history already covers the whole
+    /// file.
     async fn collect_candidates(
         &self,
         wal_ckpt: &WalCheckpoint,
@@ -189,6 +207,14 @@ impl Deleter {
         Ok(out)
     }
 
+    /// Apply retention policies to an already-safe candidate set.
+    ///
+    /// Policy behavior
+    /// - Time retention selects files older than the configured TTL.
+    /// - Size retention then adds the oldest remaining files until total retained size falls under
+    ///   the configured cap.
+    ///
+    /// The input is assumed to already satisfy the durable-safety checks from `collect_candidates`.
     fn apply_retention_policy(
         &self,
         candidates: &[(u64, PathBuf, u64, u64, Option<SystemTime>)],

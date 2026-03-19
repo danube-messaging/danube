@@ -94,6 +94,15 @@ impl WalStorage {
         stream
     }
 
+    /// Compute the first offset that should be served from the hot WAL path.
+    ///
+    /// Functional behavior
+    /// - After sealed-owner recovery (`history_cutover_from_hot`), the hot path begins at the
+    ///   earliest cached offset, because durable history is authoritative for everything before the
+    ///   new owner's locally reconstructed cache window.
+    /// - In normal operation, the hot path begins at the WAL checkpoint's `start_offset`, which is
+    ///   the oldest offset still retained locally.
+    /// - If no cache/checkpoint state is available, the method falls back to the current WAL head.
     async fn hot_start_offset(&self) -> u64 {
         if self.history_cutover_from_hot {
             self.wal
@@ -106,6 +115,11 @@ impl WalStorage {
         }
     }
 
+    /// Create a tiered reader that serves durable history first, then continues from the hot WAL.
+    ///
+    /// The durable reader covers `[start_offset, hot_start_offset - 1]` and the WAL reader resumes
+    /// at `hot_start_offset`, so the chained stream preserves continuity without overlapping the
+    /// boundary between durable and hot storage.
     async fn create_durable_history_reader(
         &self,
         topic_name: &str,
@@ -146,6 +160,14 @@ impl PersistentStorage for WalStorage {
         res
     }
 
+    /// Create a reader for either WAL-only or durable-history-plus-hot playback.
+    ///
+    /// Reader selection policy
+    /// - If durable history is not configured, always fall back to the WAL path.
+    /// - If the requested offset is still within locally retained WAL history, read entirely from
+    ///   the WAL path.
+    /// - Otherwise, replay the missing historical prefix from durable segments and then hand off
+    ///   to the hot WAL at `hot_start_offset`.
     async fn create_reader(
         &self,
         topic_name: &str,
