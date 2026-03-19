@@ -36,11 +36,20 @@ pub struct StorageFactory {
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
+    /// Highest offset already accepted by the local WAL for the topic.
+    ///
+    /// In export-later modes this is local WAL progress, not the durable export
+    /// boundary in the segment catalog.
     pub last_committed_offset: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct SealInfo {
+    /// Highest offset already accepted by the local WAL before sealing.
+    ///
+    /// In export-later modes this is the local WAL boundary captured into sealed
+    /// mobility state, not a claim that all offsets were already exported before
+    /// `seal()` returned.
     pub last_committed_offset: u64,
 }
 

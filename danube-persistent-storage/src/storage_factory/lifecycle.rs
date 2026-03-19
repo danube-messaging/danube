@@ -11,14 +11,9 @@ use tracing::{info, warn};
 
 impl StorageFactory {
     pub fn new(config: StorageFactoryConfig, metadata_store: Arc<dyn MetadataStore>) -> Self {
-        let segment_export_interval_seconds =
-            config.segment_export_interval_seconds.unwrap_or(300);
-        let durable_backend = config.durable_backend();
-        let durable_store = durable_backend
-            .map(OpendalDurableStore::from_backend)
-            .transpose()
-            .expect("init durable store")
-            .map(|store| Arc::new(store) as Arc<dyn DurableStore>);
+        let segment_export_interval_seconds = Self::segment_export_interval_seconds(&config);
+        let durable_store = Self::build_durable_store(&config);
+        let deleter_cfg = Self::build_deleter_config(&config);
         let metadata = StorageMetadata::new(metadata_store, config.metadata_root.clone());
         let segment_catalog = crate::metadata::SegmentCatalog::new(metadata.clone());
         let mobility_state = crate::metadata::MobilityState::new(metadata.clone());
@@ -32,15 +27,32 @@ impl StorageFactory {
             segment_exporters: Arc::new(dashmap::DashMap::new()),
             segment_exporter_tokens: Arc::new(dashmap::DashMap::new()),
             segment_export_interval_seconds,
-            deleter_cfg: config.retention.map(|retention| DeleterConfig {
-                check_interval_minutes: retention.check_interval_minutes,
-                retention_time_minutes: retention.time_minutes,
-                retention_size_mb: retention.size_mb,
-            }),
+            deleter_cfg,
             deleters: Arc::new(dashmap::DashMap::new()),
             deleter_tokens: Arc::new(dashmap::DashMap::new()),
             metadata_root: config.metadata_root,
         }
+    }
+
+    fn segment_export_interval_seconds(config: &StorageFactoryConfig) -> u64 {
+        config.segment_export_interval_seconds.unwrap_or(300)
+    }
+
+    fn build_durable_store(config: &StorageFactoryConfig) -> Option<Arc<dyn DurableStore>> {
+        config
+            .durable_backend()
+            .map(OpendalDurableStore::from_backend)
+            .transpose()
+            .expect("init durable store")
+            .map(|store| Arc::new(store) as Arc<dyn DurableStore>)
+    }
+
+    fn build_deleter_config(config: &StorageFactoryConfig) -> Option<DeleterConfig> {
+        config.retention.as_ref().map(|retention| DeleterConfig {
+            check_interval_minutes: retention.check_interval_minutes,
+            retention_time_minutes: retention.time_minutes,
+            retention_size_mb: retention.size_mb,
+        })
     }
 
     pub async fn for_topic(&self, topic_name: &str) -> Result<WalStorage, PersistentStorageError> {
@@ -69,7 +81,7 @@ impl StorageFactory {
         }
 
         if durable_store.is_some()
-            && self.mode.uses_export_later_durable_mode()
+            && self.mode.uses_background_export()
             && !self.segment_exporters.contains_key(&topic_path)
         {
             let factory = self.clone();
@@ -129,7 +141,7 @@ impl StorageFactory {
             self.segment_exporter_tokens.insert(topic_path.clone(), cancel);
         }
 
-        if self.mode.uses_export_later_durable_mode() && !self.deleters.contains_key(&topic_path) {
+        if self.mode.uses_retention_deleter() && !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
                 let store = ckpt_store.clone().ok_or_else(|| {
                     PersistentStorageError::Other(
@@ -212,7 +224,7 @@ impl StorageFactory {
             }
         };
 
-        let last_committed_offset = wal.last_committed_offset();
+        let last_local_wal_offset = wal.last_committed_offset();
         wal.shutdown().await;
         self.stop_topic_background_tasks(&topic_path).await;
         if self.uses_sealed_segment_export() {
@@ -222,14 +234,14 @@ impl StorageFactory {
 
         let state = StorageStateSealed {
             sealed: true,
-            last_committed_offset,
+            last_committed_offset: last_local_wal_offset,
             broker_id,
             timestamp: chrono::Utc::now().timestamp() as u64,
         };
         self.mobility_state.store(&topic_path, &state).await?;
 
         Ok(SealInfo {
-            last_committed_offset,
+            last_committed_offset: last_local_wal_offset,
         })
     }
 

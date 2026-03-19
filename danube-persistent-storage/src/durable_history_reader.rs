@@ -1,7 +1,7 @@
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorageError, TopicStream};
 
-use crate::durable_store::{DurableRangeReader, DurableStore};
+use crate::durable_store::{segment_object_path, DurableRangeReader, DurableStore};
 use crate::frames::{decode_next_frame, FrameDecodeError};
 use crate::persistent_metrics::{
     DURABLE_HISTORY_SEGMENTS_READ_TOTAL, DURABLE_HISTORY_READER_ERRORS_TOTAL, DURABLE_HISTORY_READ_BYTES_TOTAL,
@@ -99,7 +99,7 @@ impl DurableHistoryReader {
                     }
                     let desc = &descriptors[idx];
                     idx += 1;
-                    let key = format!("storage/topics/{}/segments/{}", topic_path, desc.segment_id);
+                    let key = segment_object_path(&topic_path, &desc.segment_id);
                     // Use sparse index if present to jump near the requested start offset.
                     let start_byte = match &desc.offset_index {
                         Some(index) if !index.is_empty() => {

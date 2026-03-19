@@ -57,13 +57,20 @@ impl WalStorage {
         self
     }
 
-    /// Returns the current committed offset (head of the log).
-    /// This is the offset that will be assigned to the NEXT message.
+    /// Return the next offset that will be assigned to the next appended message.
     ///
     /// This method is extremely lightweight (atomic load, no locking) and can be called
     /// frequently for lag detection without performance concerns.
     pub fn current_offset(&self) -> u64 {
         self.wal.current_offset()
+    }
+
+    /// Return the highest offset already accepted by the local WAL.
+    ///
+    /// In export-later modes this is local WAL progress, not the durable export
+    /// boundary recorded in segment metadata.
+    pub fn last_committed_offset(&self) -> u64 {
+        self.wal.last_committed_offset()
     }
 
     /// Convenience: append a message directly to the underlying WAL.

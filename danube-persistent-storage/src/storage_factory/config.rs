@@ -81,7 +81,21 @@ impl StorageMode {
         matches!(self, Self::SharedFs(_) | Self::ObjectStore(_))
     }
 
-    pub(crate) fn requires_durable_backend(&self) -> bool {
+    pub(crate) fn uses_background_export(&self) -> bool {
+        self.uses_export_later_durable_mode()
+    }
+
+    pub(crate) fn uses_retention_deleter(&self) -> bool {
+        self.uses_export_later_durable_mode()
+    }
+
+    pub(crate) fn requires_local_wal_staging(&self) -> bool {
+        self.uses_export_later_durable_mode()
+    }
+
+    /// Return whether this mode requires a separate non-local durable segment
+    /// backend instead of reusing local `wal.dir` segment storage.
+    pub(crate) fn requires_separate_durable_backend(&self) -> bool {
         !self.is_local()
     }
 }
@@ -148,6 +162,12 @@ impl StorageFactoryConfig {
         self
     }
 
+    /// Build the segment-store backend used for sealed/exported segment I/O.
+    ///
+    /// In `Local` mode this reuses `wal.dir` as a filesystem-backed segment
+    /// store for sealed export and historical reads. In `SharedFs` and
+    /// `ObjectStore` modes the durable segment backend is provided by the mode
+    /// itself.
     pub(crate) fn durable_backend(&self) -> Option<BackendConfig> {
         match &self.mode {
             StorageMode::Local => self.wal.dir.as_ref().map(|dir| BackendConfig::Filesystem {

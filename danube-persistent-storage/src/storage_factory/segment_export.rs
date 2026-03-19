@@ -1,4 +1,5 @@
 use super::StorageFactory;
+use crate::durable_store::segment_object_path;
 use crate::frames::{decode_next_frame, extract_offsets, scan_safe_frame_boundary};
 use crate::metadata::SegmentDescriptor;
 use crate::wal::Wal;
@@ -12,7 +13,7 @@ impl StorageFactory {
         topic_path: &str,
         wal: &Wal,
     ) -> Result<(), PersistentStorageError> {
-        if !self.mode.uses_export_later_durable_mode() {
+        if !self.mode.uses_background_export() {
             return Ok(());
         }
         wal.rotate().await?;
@@ -30,9 +31,9 @@ impl StorageFactory {
         }
         let durable_store = match self.durable_store.clone() {
             Some(store) => store,
-            None if self.mode.requires_durable_backend() => {
+            None if self.mode.requires_separate_durable_backend() => {
                 return Err(PersistentStorageError::Other(
-                    "durable storage mode requires durable backend for segment export".to_string(),
+                    "storage mode requires separate durable backend for segment export".to_string(),
                 ))
             }
             None => return Ok(()),
@@ -91,33 +92,16 @@ impl StorageFactory {
                 (Some(start), Some(end)) => (start, end),
                 _ => continue,
             };
-            let segment_id = format!(
-                "data-{}-{}.dnb1",
-                start_offset,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            );
-            let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment_id);
-            let meta = durable_store.put_segment(&object_path, safe_bytes).await?;
-            let desc = SegmentDescriptor {
-                segment_id: segment_id.clone(),
-                start_offset,
-                end_offset,
-                size: safe_len as u64,
-                etag: meta.etag().map(|s| s.to_string()),
-                created_at: chrono::Utc::now().timestamp() as u64,
-                completed: true,
-                offset_index: build_offset_index(safe_bytes),
-            };
-            let start_padded = format!("{:020}", start_offset);
-            self.segment_catalog
-                .put_segment(topic_path, &start_padded, &desc)
+            let desc = self
+                .persist_durable_segment(
+                    &durable_store,
+                    topic_path,
+                    safe_bytes,
+                    start_offset,
+                    end_offset,
+                )
                 .await?;
-            self.segment_catalog
-                .set_current_segment(topic_path, &start_padded)
-                .await?;
+            self.publish_durable_segment(topic_path, &desc).await?;
         }
 
         Ok(())
@@ -149,16 +133,16 @@ impl StorageFactory {
     ) -> Result<(), PersistentStorageError> {
         let durable_store = match self.durable_store.clone() {
             Some(store) => store,
-            None if self.mode.requires_durable_backend() => {
+            None if self.mode.requires_separate_durable_backend() => {
                 return Err(PersistentStorageError::Other(
-                    "durable storage mode requires durable backend for segment deletion".to_string(),
+                    "storage mode requires separate durable backend for segment deletion".to_string(),
                 ))
             }
             None => return Ok(()),
         };
         let segments = self.segment_catalog.list_segments(topic_path).await?;
         for segment in segments {
-            let object_path = format!("storage/topics/{}/segments/{}", topic_path, segment.segment_id);
+            let object_path = segment_object_path(topic_path, &segment.segment_id);
             durable_store.delete_segment(&object_path).await?;
         }
         Ok(())
@@ -180,7 +164,51 @@ impl StorageFactory {
     }
 
     pub(super) fn uses_sealed_segment_export(&self) -> bool {
-        self.mode.is_local() || self.mode.requires_durable_backend()
+        self.mode.is_local() || self.mode.requires_separate_durable_backend()
+    }
+
+    async fn persist_durable_segment(
+        &self,
+        durable_store: &std::sync::Arc<dyn crate::durable_store::DurableStore>,
+        topic_path: &str,
+        bytes: &[u8],
+        start_offset: u64,
+        end_offset: u64,
+    ) -> Result<SegmentDescriptor, PersistentStorageError> {
+        let segment_id = format!(
+            "data-{}-{}.dnb1",
+            start_offset,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+        let object_path = segment_object_path(topic_path, &segment_id);
+        let meta = durable_store.put_segment(&object_path, bytes).await?;
+        Ok(SegmentDescriptor {
+            segment_id,
+            start_offset,
+            end_offset,
+            size: bytes.len() as u64,
+            etag: meta.etag().map(|s| s.to_string()),
+            created_at: chrono::Utc::now().timestamp() as u64,
+            completed: true,
+            offset_index: build_offset_index(bytes),
+        })
+    }
+
+    async fn publish_durable_segment(
+        &self,
+        topic_path: &str,
+        desc: &SegmentDescriptor,
+    ) -> Result<(), PersistentStorageError> {
+        let start_padded = format!("{:020}", desc.start_offset);
+        self.segment_catalog
+            .put_segment(topic_path, &start_padded, desc)
+            .await?;
+        self.segment_catalog
+            .set_current_segment(topic_path, &start_padded)
+            .await
     }
 }
 

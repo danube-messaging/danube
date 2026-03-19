@@ -444,6 +444,10 @@ impl Wal {
         self.inner.next_offset.load(Ordering::Acquire)
     }
 
+    /// Return the highest offset already accepted by the local WAL.
+    ///
+    /// In export-later modes this reflects local WAL progress, not the highest
+    /// durable segment export boundary.
     pub fn last_committed_offset(&self) -> u64 {
         self.current_offset().saturating_sub(1)
     }

@@ -36,6 +36,10 @@ pub struct SegmentDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageStateSealed {
     pub sealed: bool,
+    /// Highest offset already accepted by the local WAL at the time of seal.
+    ///
+    /// This is used to resume from the next offset on takeover when sealed
+    /// continuity is authoritative.
     pub last_committed_offset: u64,
     pub broker_id: u64,
     pub timestamp: u64,
