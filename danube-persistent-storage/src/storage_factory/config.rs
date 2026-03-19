@@ -77,8 +77,8 @@ impl StorageMode {
         matches!(self, Self::Local)
     }
 
-    pub(crate) fn is_object_store(&self) -> bool {
-        matches!(self, Self::ObjectStore(_))
+    pub(crate) fn uses_export_later_durable_mode(&self) -> bool {
+        matches!(self, Self::SharedFs(_) | Self::ObjectStore(_))
     }
 
     pub(crate) fn requires_durable_backend(&self) -> bool {

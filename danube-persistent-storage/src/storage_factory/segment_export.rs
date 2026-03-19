@@ -12,7 +12,7 @@ impl StorageFactory {
         topic_path: &str,
         wal: &Wal,
     ) -> Result<(), PersistentStorageError> {
-        if !self.mode.is_object_store() {
+        if !self.mode.uses_export_later_durable_mode() {
             return Ok(());
         }
         wal.rotate().await?;

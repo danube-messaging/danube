@@ -43,9 +43,9 @@ impl StorageFactory {
                 warn!(target = "storage_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
-        } else if self.mode.is_object_store() {
+        } else if self.mode.uses_export_later_durable_mode() {
             return Err(PersistentStorageError::Other(
-                "object_store requires wal.dir for durable WAL state".to_string(),
+                "export-later durable mode requires wal.dir for durable WAL state".to_string(),
             ));
         }
 
