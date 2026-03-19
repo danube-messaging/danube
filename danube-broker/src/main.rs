@@ -396,8 +396,8 @@ fn build_wal_config(root: Option<String>, wal: &WalNode) -> WalConfig {
         dir: wal.dir.clone().or(root).map(Into::into),
         file_name: wal.file_name.clone(),
         cache_capacity: wal.cache_capacity,
-        fsync_interval_ms: wal.file_sync.as_ref().and_then(|f| f.interval_ms),
-        fsync_max_batch_bytes: wal.file_sync.as_ref().and_then(|f| f.max_batch_bytes),
+        flush_interval_ms: wal.file_sync.as_ref().and_then(|f| f.interval_ms),
+        flush_max_batch_bytes: wal.file_sync.as_ref().and_then(|f| f.max_batch_bytes),
         rotate_max_bytes: wal.rotation.as_ref().and_then(|r| r.max_bytes),
         rotate_max_seconds: wal
             .rotation

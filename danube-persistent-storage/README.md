@@ -5,7 +5,7 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
 - A Write-Ahead Log (WAL) with:
   - In-memory replay cache for hot reads
   - Optional file-backed durability with CRC32 framing
-  - Batched fsync with configurable batch size and flush interval
+  - Batched buffer flush with configurable batch size and flush interval
   - File replay to serve offsets not in cache
 - A `PersistentStorage` implementation (`WalStorage`) used by the broker’s `TopicStore`
 - A `WalStorageFactory` that encapsulates all storage internals and returns per-topic `WalStorage`:
@@ -18,8 +18,8 @@ This crate implements the WAL-first persistent model for the Danube messaging pl
 - Replay-from-offset combines file replay and in-memory cache, then switches to live tailing
 - Configurable knobs via `WalConfig`:
   - `cache_capacity`: in-memory ring buffer size (messages)
-  - `fsync_interval_ms`: max interval before flushing the write buffer
-  - `max_batch_bytes`: max batched bytes before forcing a flush
+  - `flush_interval_ms`: max interval before flushing the write buffer
+  - `flush_max_batch_bytes`: max buffered bytes before forcing a flush
   - `dir`, `file_name`: enable file-backed WAL
 - `WalStorageFactory`:
   - `new(WalConfig, BackendConfig, MetadataStorage, metadata_root, UploaderBaseConfig, DeleterConfig) -> WalStorageFactory`
@@ -119,11 +119,11 @@ Producer -> Wal::append(msg) ->
   - enqueue LogCommand::Write {offset, bytes}  --->  [Buf]
                                                      | accumulate framed entries until:
                                                      | - batch size reached OR
-                                                     | - fsync interval elapsed
+                                                     | - flush interval elapsed
                                                      v
-                                                write()/flush() -> fsync
+                                                write()/flush()
                                                      |
-                                                     | rotate if size/time thresholds met
+                                                     | rotate if size threshold is met or the time threshold has elapsed by the next write
                                                      v
                                                 wal.<seq>.log (CRC-framed)
                                                      |
@@ -146,7 +146,7 @@ Wal::tail_reader(from) ->
 Key details
 - Frame format: `[u64 offset][u32 len][u32 crc][bincode(StreamMessage)]`; CRC mismatch is treated as end-of-log.
 - Cache is ordered (BTreeMap), so replay stitching requires no extra sorting.
-- Rotation policy is optional (size/time); checkpoints record `last_offset`, `file_seq`, and current file path.
+- Rotation policy is optional (size/time-on-next-write); checkpoints record `last_offset`, `file_seq`, and current file path.
 
 ## Components
 
@@ -187,7 +187,7 @@ cargo test -p danube-persistent-storage --tests
 
 ## Tracing and Notes
 
-- Durability: CRC-protected frames and batched fsync; file replay truncates at first CRC mismatch for safety.
+- Durability: CRC-protected frames and batched buffer flush; file replay truncates at first CRC mismatch for safety.
 - Tracing targets:
   - `wal_factory`: per-topic WAL created/reused, uploader started, backend summary
   - `wal_storage`: cloud handoff enabled; reader path (Cloud→WAL vs WAL-only)

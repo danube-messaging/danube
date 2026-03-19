@@ -24,9 +24,9 @@ pub const WAL_FLUSH_LATENCY_MS: Metric = Metric {
     description: "Latency to flush WAL buffers to disk (write+flush) (per topic)",
 };
 
-pub const WAL_FSYNC_TOTAL: Metric = Metric {
-    name: "danube_wal_fsync_total",
-    description: "Total number of WAL flush/fsync operations (per topic)",
+pub const WAL_FLUSH_TOTAL: Metric = Metric {
+    name: "danube_wal_flush_total",
+    description: "Total number of WAL buffer flush operations (per topic)",
 };
 
 pub const WAL_FILE_ROTATE_TOTAL: Metric = Metric {
@@ -97,7 +97,7 @@ pub const DURABLE_HISTORY_READER_ERRORS_TOTAL: Metric = Metric {
 pub const COUNTERS: &[Metric] = &[
     WAL_APPEND_TOTAL,
     WAL_APPEND_BYTES_TOTAL,
-    WAL_FSYNC_TOTAL,
+    WAL_FLUSH_TOTAL,
     WAL_FILE_ROTATE_TOTAL,
     WAL_READER_CREATE_TOTAL,
     WAL_DELETE_TOTAL,

@@ -46,7 +46,7 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
         StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_owner_1.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
@@ -95,7 +95,7 @@ async fn cloud_native_seal_takeover_replay_and_live_continuity() {
         StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_owner_2.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
@@ -193,7 +193,7 @@ async fn cloud_native_recovers_from_catalog_when_checkpoint_points_to_missing_lo
         StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",

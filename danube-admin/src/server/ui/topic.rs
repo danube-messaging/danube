@@ -92,7 +92,7 @@ pub struct LatencyAndSize {
 pub struct ReliableTopicMetrics {
     pub wal_append_total: u64,
     pub wal_append_bytes_total: u64,
-    pub wal_fsync_total: u64,
+    pub wal_flush_total: u64,
     pub wal_flush_latency_ms_p50: f64,
     pub wal_flush_latency_ms_p95: f64,
     pub wal_flush_latency_ms_p99: f64,
@@ -301,7 +301,7 @@ async fn query_topic_metrics(
     let reliable = reliable_data.map(|r| ReliableTopicMetrics {
         wal_append_total: r.wal_append_total,
         wal_append_bytes_total: r.wal_append_bytes_total,
-        wal_fsync_total: r.wal_fsync_total,
+        wal_flush_total: r.wal_flush_total,
         wal_flush_latency_ms_p50: r.wal_flush_latency_p50_ms,
         wal_flush_latency_ms_p95: r.wal_flush_latency_p95_ms,
         wal_flush_latency_ms_p99: r.wal_flush_latency_p99_ms,

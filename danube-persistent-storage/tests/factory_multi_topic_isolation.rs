@@ -49,8 +49,8 @@ async fn test_factory_multi_topic_wal_isolation() {
         StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.clone()),
-                fsync_interval_ms: Some(50),
-                fsync_max_batch_bytes: Some(1),
+                flush_interval_ms: Some(50),
+                flush_max_batch_bytes: Some(1),
                 ..Default::default()
             },
             "/danube",
@@ -131,8 +131,8 @@ async fn test_multi_topic_segment_export_isolation() {
         StorageFactoryConfig::object_store(
             WalConfig {
                 dir: Some(wal_root.clone()),
-                fsync_interval_ms: Some(50),
-                fsync_max_batch_bytes: Some(1),
+                flush_interval_ms: Some(50),
+                flush_max_batch_bytes: Some(1),
                 ..Default::default()
             },
             "/danube",

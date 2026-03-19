@@ -225,7 +225,7 @@ impl StorageFactory {
         };
 
         let last_local_wal_offset = wal.last_committed_offset();
-        wal.shutdown().await;
+        wal.shutdown().await?;
         self.stop_topic_background_tasks(&topic_path).await;
         if self.uses_sealed_segment_export() {
             self.export_topic_segments(&topic_path, &wal, true).await?;
@@ -251,7 +251,7 @@ impl StorageFactory {
     ) -> Result<(), PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         if let Some((_, wal)) = self.topics.remove(&topic_path) {
-            wal.shutdown().await;
+            wal.shutdown().await?;
         }
         self.stop_topic_background_tasks(&topic_path).await;
         self.delete_topic_durable_segments(&topic_path).await?;

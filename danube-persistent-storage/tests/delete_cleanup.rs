@@ -36,7 +36,7 @@ fn build_factory(
 ) -> StorageFactory {
     let wal = WalConfig {
         dir: Some(wal_dir),
-        fsync_interval_ms: Some(5_000),
+        flush_interval_ms: Some(5_000),
         ..Default::default()
     };
 

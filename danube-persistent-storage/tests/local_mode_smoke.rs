@@ -36,7 +36,7 @@ async fn local_mode_append_read_seal_reload_continuity() {
         StorageFactoryConfig::local(
             WalConfig {
                 dir: Some(tmp.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",

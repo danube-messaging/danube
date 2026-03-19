@@ -784,13 +784,7 @@ impl TopicStore {
         Ok(stream)
     }
 
-    /// Returns the last committed offset in the WAL for this topic.
-    /// This represents the "head" of the topic - the highest offset written.
-    /// The next message will be assigned offset = head + 1.
-    ///
-    /// This is used by the lag detection mechanism to determine if a subscription
-    /// is behind the current state of the topic.
-    pub(crate) fn get_last_committed_offset(&self) -> u64 {
-        self.storage.last_committed_offset()
+    pub(crate) fn current_offset(&self) -> u64 {
+        self.storage.current_offset()
     }
 }

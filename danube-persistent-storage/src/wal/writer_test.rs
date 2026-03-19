@@ -53,8 +53,8 @@ mod tests {
         let writer_init = WriterInit {
             wal_path: Some(wal_path.clone()),
             checkpoint_path: Some(checkpoint_path.clone()),
-            fsync_interval_ms: 100,
-            fsync_max_batch_bytes: 1024,
+            flush_interval_ms: 100,
+            flush_max_batch_bytes: 1024,
             rotate_max_bytes: Some(2048),
             rotate_max_seconds: Some(10),
             ckpt_store: None,
@@ -62,8 +62,8 @@ mod tests {
 
         assert_eq!(writer_init.wal_path, Some(wal_path));
         assert_eq!(writer_init.checkpoint_path, Some(checkpoint_path));
-        assert_eq!(writer_init.fsync_interval_ms, 100);
-        assert_eq!(writer_init.fsync_max_batch_bytes, 1024);
+        assert_eq!(writer_init.flush_interval_ms, 100);
+        assert_eq!(writer_init.flush_max_batch_bytes, 1024);
         assert_eq!(writer_init.rotate_max_bytes, Some(2048));
         assert_eq!(writer_init.rotate_max_seconds, Some(10));
 
@@ -102,16 +102,17 @@ mod tests {
         }
 
         // Test Flush command
-        let flush_cmd = LogCommand::Flush;
+        let (flush_tx, _flush_rx) = oneshot::channel::<Result<(), String>>();
+        let flush_cmd = LogCommand::Flush(flush_tx);
         match flush_cmd {
-            LogCommand::Flush => {
+            LogCommand::Flush(_) => {
                 // Successfully created flush command
             }
             _ => panic!("Expected Flush command"),
         }
 
         // Test Shutdown command
-        let (tx, _rx) = oneshot::channel::<()>();
+        let (tx, _rx) = oneshot::channel::<Result<(), String>>();
         let shutdown_cmd = LogCommand::Shutdown(tx);
         match shutdown_cmd {
             LogCommand::Shutdown(_) => {
@@ -151,8 +152,8 @@ mod tests {
         let init = WriterInit {
             wal_path: Some(wal_path.clone()),
             checkpoint_path: None,
-            fsync_interval_ms: 100,
-            fsync_max_batch_bytes: 1024,
+            flush_interval_ms: 100,
+            flush_max_batch_bytes: 1024,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
             ckpt_store: None,
@@ -175,14 +176,16 @@ mod tests {
             .await?;
 
         // Send flush command
-        cmd_tx.send(LogCommand::Flush).await?;
+        let (flush_tx, flush_rx) = oneshot::channel::<Result<(), String>>();
+        cmd_tx.send(LogCommand::Flush(flush_tx)).await?;
+        flush_rx.await??;
 
         // Send shutdown command
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<Result<(), String>>();
         cmd_tx.send(LogCommand::Shutdown(shutdown_tx)).await?;
 
         // Wait for shutdown acknowledgment
-        shutdown_rx.await?;
+        shutdown_rx.await??;
 
         // Wait for writer task to complete
         writer_handle.await?;
@@ -222,8 +225,8 @@ mod tests {
         let init = WriterInit {
             wal_path: Some(wal_path.clone()),
             checkpoint_path: None,
-            fsync_interval_ms: 10,
-            fsync_max_batch_bytes: 64,
+            flush_interval_ms: 10,
+            flush_max_batch_bytes: 64,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
             ckpt_store: None,
@@ -249,9 +252,9 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Send shutdown
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<Result<(), String>>();
         cmd_tx.send(LogCommand::Shutdown(shutdown_tx)).await?;
-        shutdown_rx.await?;
+        shutdown_rx.await??;
         writer_handle.await?;
 
         // Read and verify frame format: [u64 offset][u32 len][u32 crc][bytes]

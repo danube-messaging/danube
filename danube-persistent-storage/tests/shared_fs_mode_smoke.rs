@@ -43,7 +43,7 @@ async fn shared_fs_seal_takeover_replay_continuity() {
         StorageFactoryConfig::shared_fs(
             WalConfig {
                 dir: Some(wal_owner_1.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
@@ -91,7 +91,7 @@ async fn shared_fs_seal_takeover_replay_continuity() {
         StorageFactoryConfig::shared_fs(
             WalConfig {
                 dir: Some(wal_owner_2.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
@@ -135,7 +135,7 @@ async fn shared_fs_periodically_exports_segments_during_active_ownership() {
         StorageFactoryConfig::shared_fs(
             WalConfig {
                 dir: Some(wal_root.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",
@@ -266,7 +266,7 @@ async fn shared_fs_recovers_from_catalog_when_checkpoint_points_to_missing_local
         StorageFactoryConfig::shared_fs(
             WalConfig {
                 dir: Some(wal_root.path().to_path_buf()),
-                fsync_interval_ms: Some(5_000),
+                flush_interval_ms: Some(5_000),
                 ..Default::default()
             },
             "/danube",

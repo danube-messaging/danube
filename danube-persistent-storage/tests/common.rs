@@ -51,7 +51,7 @@ pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
     };
     let wal_cfg = WalConfig {
         dir: Some(unique_dir),
-        fsync_interval_ms: Some(5_000),
+        flush_interval_ms: Some(5_000),
         ..Default::default()
     };
     let durable_root = {

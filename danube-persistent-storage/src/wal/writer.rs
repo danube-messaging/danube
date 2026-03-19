@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use metrics::{counter, histogram};
 use crate::persistent_metrics::{
     WAL_FLUSH_LATENCY_MS,
-    WAL_FSYNC_TOTAL,
+    WAL_FLUSH_TOTAL,
     WAL_FILE_ROTATE_TOTAL,
 };
 use std::time::Instant;
@@ -20,7 +20,7 @@ use std::time::Instant;
 ///
 /// Rationale
 /// - Keep the hot path (`append`) non-blocking by enqueueing a lightweight command.
-/// - The writer task owns all I/O state and applies batching, fsync, rotation, and checkpoints.
+/// - The writer task owns all I/O state and applies batching, flush, rotation, and checkpoints.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum LogCommand {
@@ -31,10 +31,10 @@ pub(crate) enum LogCommand {
     /// Set the topic name used for labeling writer metrics (optional).
     SetTopic(String),
     #[allow(dead_code)]
-    Flush,
+    Flush(oneshot::Sender<Result<(), String>>),
     #[allow(dead_code)]
-    Rotate(oneshot::Sender<()>),
-    Shutdown(oneshot::Sender<()>),
+    Rotate(oneshot::Sender<Result<(), String>>),
+    Shutdown(oneshot::Sender<Result<(), String>>),
 }
 
 /// Init parameters for the writer task captured at WAL startup.
@@ -43,8 +43,8 @@ pub(crate) enum LogCommand {
 pub(crate) struct WriterInit {
     pub wal_path: Option<PathBuf>,
     pub checkpoint_path: Option<PathBuf>,
-    pub fsync_interval_ms: u64,
-    pub fsync_max_batch_bytes: usize,
+    pub flush_interval_ms: u64,
+    pub flush_max_batch_bytes: usize,
     pub rotate_max_bytes: Option<u64>,
     pub rotate_max_seconds: Option<u64>,
     pub ckpt_store: Option<Arc<CheckpointStore>>,
@@ -53,8 +53,8 @@ pub(crate) struct WriterInit {
 /// Writer-owned state (no locking). Lives entirely inside the writer task.
 ///
 /// Responsibilities
-/// - Buffer frames and periodically flush to disk according to `fsync_interval_ms` and `max_batch_bytes`.
-/// - Rotate WAL files based on size/time thresholds (`rotate_max_bytes` / `rotate_max_seconds`).
+/// - Buffer frames and periodically flush to disk according to `flush_interval_ms` and `flush_max_batch_bytes`.
+/// - Rotate WAL files based on size thresholds and time thresholds checked on writes.
 /// - Persist `WalCheckpoint` atomically on flush to record `last_offset`, `file_seq`, and current file path.
 struct WriterState {
     writer: Option<BufWriter<tokio::fs::File>>,
@@ -65,7 +65,7 @@ struct WriterState {
     file_seq: u64,
     wal_path: Option<PathBuf>,
     checkpoint_path: Option<PathBuf>,
-    fsync_max_batch_bytes: usize,
+    flush_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
     rotated_files: Vec<(u64, PathBuf, u64)>,
@@ -80,7 +80,7 @@ struct WriterState {
 
 impl WriterState {
     /// Handle a single `Write` command by framing and appending into the in-memory buffer;
-    /// flush (write + fsync) if batch/time thresholds are exceeded and write a checkpoint.
+    /// flush buffered writes if batch thresholds are exceeded and write a checkpoint.
     async fn process_write(
         &mut self,
         offset: u64,
@@ -99,9 +99,9 @@ impl WriterState {
         self.last_offset_written = Some(offset);
 
         // Time-based flushing is handled by the periodic ticker in run(); only enforce byte threshold here
-        let should_flush_by_bytes = self.write_buf.len() >= self.fsync_max_batch_bytes;
+        let should_flush_by_bytes = self.write_buf.len() >= self.flush_max_batch_bytes;
         if should_flush_by_bytes {
-            // This will write the buffer, fsync, clear, update timers, and persist a checkpoint
+            // This will write the buffer, flush it, clear it, update timers, and persist a checkpoint
             // using `last_offset_written`.
             self.process_flush().await?;
         }
@@ -123,14 +123,14 @@ impl WriterState {
                     .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
-                // Metrics: flush latency and fsync count
+                // Metrics: flush latency and flush count
                 let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                 if let Some(t) = &self.topic_name {
                     histogram!(WAL_FLUSH_LATENCY_MS.name, "topic"=> t.clone()).record(elapsed_ms);
-                    counter!(WAL_FSYNC_TOTAL.name, "topic"=> t.clone()).increment(1);
+                    counter!(WAL_FLUSH_TOTAL.name, "topic"=> t.clone()).increment(1);
                 } else {
                     histogram!(WAL_FLUSH_LATENCY_MS.name).record(elapsed_ms);
-                    counter!(WAL_FSYNC_TOTAL.name).increment(1);
+                    counter!(WAL_FLUSH_TOTAL.name).increment(1);
                 }
                 // On explicit flush, also persist a checkpoint if we know a last offset
                 if let Some(off) = self.last_offset_written {
@@ -266,13 +266,18 @@ impl WriterState {
 /// - Processes commands until `Shutdown`, flushing on demand and writing checkpoints.
 pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     let writer = if let Some(p) = &init.wal_path {
-        let f = OpenOptions::new()
+        match OpenOptions::new()
             .create(true)
             .append(true)
             .open(p)
             .await
-            .ok();
-        f.map(BufWriter::new)
+        {
+            Ok(f) => Some(BufWriter::new(f)),
+            Err(e) => {
+                warn!(target = "wal", file = %p.display(), error = %e, "failed to open configured wal file; writer task exiting");
+                return;
+            }
+        }
     } else {
         None
     };
@@ -282,14 +287,14 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
 
     let mut state = WriterState {
         writer,
-        write_buf: Vec::with_capacity(init.fsync_max_batch_bytes),
+        write_buf: Vec::with_capacity(init.flush_max_batch_bytes),
         last_flush: std::time::Instant::now(),
         bytes_in_file: 0,
         file_started: std::time::Instant::now(),
         file_seq: 0,
         wal_path: init.wal_path,
         checkpoint_path: init.checkpoint_path,
-        fsync_max_batch_bytes: init.fsync_max_batch_bytes,
+        flush_max_batch_bytes: init.flush_max_batch_bytes,
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
         rotated_files: Vec::new(),
@@ -299,9 +304,9 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         topic_name: None,
     };
 
-    debug!(target = "wal", has_file = has_file, fsync_ms = init.fsync_interval_ms, max_batch = init.fsync_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
+    debug!(target = "wal", has_file = has_file, flush_ms = init.flush_interval_ms, max_batch = init.flush_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
     let mut ticker =
-        tokio::time::interval(std::time::Duration::from_millis(init.fsync_interval_ms));
+        tokio::time::interval(std::time::Duration::from_millis(init.flush_interval_ms));
     loop {
         tokio::select! {
             maybe_cmd = rx.recv() => {
@@ -310,17 +315,34 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
                         let res = match cmd {
                             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
                             LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) },
-                            LogCommand::Flush => state.process_flush().await,
+                            LogCommand::Flush(ack_tx) => {
+                                let res = state.process_flush().await;
+                                let ack_res = res
+                                    .as_ref()
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string());
+                                let _ = ack_tx.send(ack_res);
+                                res
+                            }
                             LogCommand::Rotate(ack_tx) => {
                                 let res = state.force_rotate().await;
-                                let _ = ack_tx.send(());
+                                let ack_res = res
+                                    .as_ref()
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string());
+                                let _ = ack_tx.send(ack_res);
                                 res
                             }
                             LogCommand::Shutdown(ack_tx) => {
-                                if let Err(e) = state.process_flush().await {
+                                let res = state.process_flush().await;
+                                if let Err(e) = &res {
                                     warn!(target = "wal", error = ?e, "flush on shutdown failed");
                                 }
-                                let _ = ack_tx.send(());
+                                let ack_res = res
+                                    .as_ref()
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string());
+                                let _ = ack_tx.send(ack_res);
                                 debug!(target = "wal", "writer task shutting down");
                                 break;
                             }

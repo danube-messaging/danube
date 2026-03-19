@@ -313,8 +313,8 @@ async fn test_stateful_reader_after_retention() {
 
     let wal_cfg = WalConfig {
         dir: Some(unique_dir),
-        fsync_interval_ms: Some(50),
-        fsync_max_batch_bytes: Some(1),
+        flush_interval_ms: Some(50),
+        flush_max_batch_bytes: Some(1),
         // Make rotation more aggressive to ensure multiple rotated files
         rotate_max_bytes: Some(64),
         ..Default::default()
