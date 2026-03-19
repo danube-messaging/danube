@@ -2,7 +2,7 @@
 
 **A self-contained, lightweight Cloud-Native Messaging Platform, built in Rust**
 
-Danube is an open-source distributed messaging broker platform, designed to be cloud-native and cost-effective. It features embedded Raft consensus for metadata replication, built on Tokio and openraft. Paired with a Write-Ahead Log (WAL) architecture and cloud object storage, Danube delivers sub-second dispatch with operational simplicity and cloud economics.
+Danube is an open-source distributed messaging broker platform designed to be cloud-native and cost-effective. It features embedded Raft consensus for metadata replication, built on Tokio and openraft. For reliable topics, Danube combines a local Write-Ahead Log (WAL), durable segment storage, and metadata-driven recovery so it can deliver low-latency dispatch while supporting local disks, shared filesystems, and object stores.
 
 [![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
@@ -74,13 +74,13 @@ docker-compose exec -it danube-cli danube-cli consume \
 - **Broker resilience**: Automatic leader election, failover, and topic reconciliation on restart
 - **Security-ready**: TLS/mTLS support in Admin and data paths
 
-### 🌩️ **Write-Ahead Log + Cloud Persistence**
+### 🌩️ **Write-Ahead Log + Durable Storage**
 
-- **Cloud-Native by Design** - Danube's architecture separates compute from storage
-- **Multi-cloud support**: AWS S3, Google Cloud Storage, Azure Blob, MinIO
-- **Hot path optimization**: Messages served from in-memory WAL cache
-- **Stream per subscription**: WAL + cloud storage from selected offset
-- **Asynchronous background uploads** to S3/GCS/Azure object storage
+- **Flexible storage modes**: `local`, `shared_fs`, and `object_store`
+- **Cloud-ready durable history**: AWS S3, Google Cloud Storage, Azure Blob, or shared filesystems depending on mode
+- **Hot path optimization**: Messages served from in-memory WAL cache and local WAL files
+- **Tiered historical replay**: Durable segments for older offsets with seamless handoff to the WAL tail
+- **Metadata-driven recovery and topic moves**: Continuous offsets across restarts and broker transfers
 
 ### 🎯 **Intelligent Load Management**
 
@@ -94,13 +94,13 @@ docker-compose exec -it danube-cli danube-cli consume \
 
 ### 📨 **Message Delivery**
 
-- **[Topics](https://danube-docs.dev-state.com/architecture/topics/)**: Partitioned and non-partitioned with automatic load balancing
-- **[Reliable Dispatch](https://danube-docs.dev-state.com/architecture/dispatch_strategy/)**: At-least-once delivery with configurable storage backends
+- **[Topics](https://danube-docs.dev-state.com/concepts/topics/)**: Partitioned and non-partitioned with automatic load balancing
+- **[Reliable Dispatch](https://danube-docs.dev-state.com/concepts/dispatch_strategy/)**: At-least-once delivery with configurable storage modes
 - **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
 
 ### 🔄 **Subscription Models**
 
-- **[Exclusive](https://danube-docs.dev-state.com/architecture/subscriptions/)**: Single consumer per subscription
+- **[Exclusive](https://danube-docs.dev-state.com/concepts/subscriptions/)**: Single consumer per subscription
 - **Shared**: Load-balanced message distribution across consumers
 - **Failover**: Automatic consumer failover with ordered delivery
 
@@ -116,7 +116,7 @@ docker-compose exec -it danube-cli danube-cli consume \
 Danube features **the AI-native messaging platform administration** through the Model Context Protocol (MCP):
 
 - **Natural language cluster management**: Manage your cluster by talking to AI assistants (Claude, Cursor, Windsurf)
-- **40 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
+- **32 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
 - **Automated troubleshooting**: AI-guided workflows for consumer lag analysis, health checks, and performance optimization
 - **Multiple interfaces**: CLI commands, Web UI, or AI conversation - your choice
 
@@ -144,7 +144,7 @@ Contributions in **NodeJs**, **C / C++ / C#**, **Ruby**, and other languages are
 ### Project Structure
 
 - **[danube-broker](danube-broker/)** - Core messaging platform
-- **[danube-persistent-storage](danube-persistent-storage/)** - WAL and cloud storage integration
+- **[danube-persistent-storage](danube-persistent-storage/)** - WAL and durable storage engine for reliable topics
 - **[danube-client](danube-client/)** - Async Rust client library  
 - **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
 - **[danube-admin](danube-admin/)** - Unified admin tool (CLI + AI/MCP + Web UI)
