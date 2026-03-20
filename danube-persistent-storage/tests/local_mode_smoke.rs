@@ -40,6 +40,7 @@ async fn local_mode_append_read_seal_reload_continuity() {
                 ..Default::default()
             },
             "/danube",
+            None,
         ),
         metadata_store,
     );
@@ -83,16 +84,13 @@ async fn local_mode_append_read_seal_reload_continuity() {
         .into_iter()
         .filter(|child| child != "cur" && !child.ends_with('/'))
         .collect();
-    assert!(
-        !segments.is_empty(),
-        "local seal should export durable segment descriptors"
-    );
+    assert!(segments.is_empty(), "local mode should not export durable segment descriptors");
     let topic_dir = tmp.path().join("default").join("local-smoke");
     assert!(
-        !tokio::fs::try_exists(&topic_dir)
+        tokio::fs::try_exists(&topic_dir)
             .await
             .expect("check topic wal dir"),
-        "local seal should remove per-topic wal directory after segment export"
+        "local seal should preserve per-topic wal directory"
     );
 
     let storage = factory.for_topic(topic).await.expect("recreate storage");

@@ -55,6 +55,14 @@ impl StorageFactory {
         })
     }
 
+    pub(crate) fn should_start_background_export(&self) -> bool {
+        self.mode.uses_background_export()
+    }
+
+    fn should_run_retention_deleter(&self) -> bool {
+        self.deleter_cfg.is_some()
+    }
+
     /// Build or retrieve per-topic storage and start any required background services.
     ///
     /// Functional flow
@@ -96,10 +104,10 @@ impl StorageFactory {
             }
         }
 
-        if durable_store.is_some()
-            && self.mode.uses_background_export()
-            && !self.segment_exporters.contains_key(&topic_path)
-        {
+        let should_spawn_segment_exporter = durable_store.is_some()
+            && self.should_start_background_export()
+            && !self.segment_exporters.contains_key(&topic_path);
+        if should_spawn_segment_exporter {
             let factory = self.clone();
             let wal = topic_wal.clone();
             let topic_path_for_task = topic_path.clone();
@@ -157,11 +165,11 @@ impl StorageFactory {
             self.segment_exporter_tokens.insert(topic_path.clone(), cancel);
         }
 
-        if self.mode.uses_retention_deleter() && !self.deleters.contains_key(&topic_path) {
+        if self.should_run_retention_deleter() && !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
                 let store = ckpt_store.clone().ok_or_else(|| {
                     PersistentStorageError::Other(
-                        "export-later durable mode requires wal.dir for deleter state".to_string(),
+                        "retention deleter requires wal.dir for checkpoint state".to_string(),
                     )
                 })?;
                 let deleter = Deleter::new(
@@ -255,10 +263,10 @@ impl StorageFactory {
         let last_local_wal_offset = wal.last_committed_offset();
         wal.shutdown().await?;
         self.stop_topic_background_tasks(&topic_path).await;
-        if self.uses_sealed_segment_export() {
+        if self.mode.requires_separate_durable_backend() {
             self.export_topic_segments(&topic_path, &wal, true).await?;
+            self.clear_topic_wal_state(&topic_path).await?;
         }
-        self.clear_topic_wal_state(&topic_path).await?;
 
         let state = StorageStateSealed {
             sealed: true,

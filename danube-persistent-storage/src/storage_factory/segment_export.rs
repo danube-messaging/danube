@@ -17,7 +17,7 @@ impl StorageFactory {
         topic_path: &str,
         wal: &Wal,
     ) -> Result<(), PersistentStorageError> {
-        if !self.mode.uses_background_export() {
+        if !self.should_start_background_export() {
             return Ok(());
         }
         wal.rotate().await?;
@@ -183,7 +183,7 @@ impl StorageFactory {
     }
 
     pub(super) fn uses_sealed_segment_export(&self) -> bool {
-        self.mode.is_local() || self.mode.requires_separate_durable_backend()
+        self.mode.requires_separate_durable_backend()
     }
 
     /// Persist one sealed WAL byte range as a durable segment object and construct its descriptor.

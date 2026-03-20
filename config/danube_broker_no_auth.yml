@@ -117,19 +117,15 @@ load_manager:
 # Storage Configuration
 storage:
   mode: local
-  root: "./danube-data/wal"
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
   wal:
-    file_name: "wal.log"
-    cache_capacity: 1024
-    file_sync:
-      interval_ms: 5000
-      max_batch_bytes: 10485760
     rotation:
       max_bytes: 536870912
-    retention:
-      time_minutes: 2880
-      size_mb: 20480
-      check_interval_minutes: 5
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

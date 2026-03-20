@@ -16,13 +16,13 @@ mod rate_limiter;
 mod resources;
 mod schema;
 mod service_configuration;
+mod storage_configuration;
 mod subscription;
 mod topic;
 mod topic_cluster;
 mod topic_control;
 mod topic_schema;
 mod topic_registry;
-mod storage_configuration;
 mod utils;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
@@ -34,7 +34,7 @@ use crate::{
     danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
-    storage_configuration::{ObjectStoreNode, StorageConfig, WalNode},
+    storage_configuration::{LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode},
 };
 
 use anyhow::{Context, Result};
@@ -339,85 +339,97 @@ fn build_storage_factory_config(
 ) -> StorageFactoryConfig {
     match storage {
         StorageConfig::Local {
-            root,
-            metadata_root,
+            local_wal_root,
+            metadata_prefix,
+            local_retention,
             wal,
         } => StorageFactoryConfig::local(
-            build_wal_config(Some(root.clone()), wal),
-            metadata_root
+            build_wal_config(Some(local_wal_root.clone()), wal),
+            metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
+            build_local_retention_config(local_retention.as_ref(), wal),
         ),
         StorageConfig::SharedFs {
-            root,
-            cache_root,
-            metadata_root,
+            local_wal_root,
+            metadata_prefix,
+            durable,
+            legacy_root,
+            local_retention,
             wal,
         } => StorageFactoryConfig::shared_fs(
             build_wal_config(
-                Some(resolve_cache_root(
-                    cache_root.as_ref(),
+                Some(resolve_local_wal_root(
+                    local_wal_root.as_ref(),
                     metadata_data_dir,
                     "shared-fs-cache",
                 )),
                 wal,
             ),
-            metadata_root
+            metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            root.clone(),
-            build_retention_config(wal),
+            resolve_shared_fs_durable_root(durable.as_ref(), legacy_root.as_ref()),
+            build_local_retention_config(local_retention.as_ref(), wal),
         ),
         StorageConfig::ObjectStore {
-            object_store,
-            cache_root,
-            metadata_root,
+            local_wal_root,
+            metadata_prefix,
+            durable,
+            legacy_object_store,
+            local_retention,
             wal,
         } => StorageFactoryConfig::object_store(
             build_wal_config(
-                Some(resolve_cache_root(
-                    cache_root.as_ref(),
+                Some(resolve_local_wal_root(
+                    local_wal_root.as_ref(),
                     metadata_data_dir,
                     "object-store-cache",
                 )),
                 wal,
             ),
-            metadata_root
+            metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            object_store_node_to_config(object_store),
-            build_retention_config(wal),
+            resolve_object_store_config(durable.as_ref(), legacy_object_store.as_ref()),
+            build_local_retention_config(local_retention.as_ref(), wal),
         ),
     }
 }
 
 fn build_wal_config(root: Option<String>, wal: &WalNode) -> WalConfig {
     WalConfig {
-        dir: wal.dir.clone().or(root).map(Into::into),
+        dir: root.or_else(|| wal.dir.clone()).map(Into::into),
         file_name: wal.file_name.clone(),
-        cache_capacity: wal.cache_capacity,
-        flush_interval_ms: wal.file_sync.as_ref().and_then(|f| f.interval_ms),
-        flush_max_batch_bytes: wal.file_sync.as_ref().and_then(|f| f.max_batch_bytes),
-        rotate_max_bytes: wal.rotation.as_ref().and_then(|r| r.max_bytes),
-        rotate_max_seconds: wal
-            .rotation
-            .as_ref()
-            .and_then(|r| r.max_hours.map(|h| h.saturating_mul(3600))),
+        cache_capacity: wal.cache_capacity(),
+        flush_interval_ms: wal.file_sync().and_then(|f| f.interval_ms),
+        flush_max_batch_bytes: wal.file_sync().and_then(|f| f.max_batch_bytes),
+        rotate_max_bytes: wal.rotate_max_bytes(),
+        rotate_max_seconds: wal.rotate_max_hours().map(|h| h.saturating_mul(3600)),
         ..Default::default()
     }
 }
 
-fn build_retention_config(wal: &WalNode) -> Option<RetentionConfig> {
-    wal.retention.as_ref().map(|ret| RetentionConfig {
-        check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
-        time_minutes: ret.time_minutes,
-        size_mb: ret.size_mb,
-    })
+fn build_local_retention_config(
+    local_retention: Option<&LocalRetentionNode>,
+    wal: &WalNode,
+) -> Option<RetentionConfig> {
+    local_retention
+        .or_else(|| wal.legacy_local_retention())
+        .map(|ret| RetentionConfig {
+            check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
+            time_minutes: ret.time_minutes,
+            size_mb: ret.size_mb,
+        })
 }
 
-fn resolve_cache_root(cache_root: Option<&String>, metadata_data_dir: &str, suffix: &str) -> String {
-    if let Some(cache_root) = cache_root {
-        return cache_root.clone();
+fn resolve_local_wal_root(
+    local_wal_root: Option<&String>,
+    metadata_data_dir: &str,
+    suffix: &str,
+) -> String {
+    if let Some(local_wal_root) = local_wal_root {
+        return local_wal_root.clone();
     }
     let mut base = PathBuf::from(metadata_data_dir);
     if base.file_name().is_some() {
@@ -425,6 +437,27 @@ fn resolve_cache_root(cache_root: Option<&String>, metadata_data_dir: &str, suff
     }
     base.push(suffix);
     base.to_string_lossy().into_owned()
+}
+
+fn resolve_shared_fs_durable_root(
+    durable: Option<&SharedFsDurableNode>,
+    legacy_root: Option<&String>,
+) -> String {
+    durable
+        .map(|cfg| cfg.root.clone())
+        .or_else(|| legacy_root.cloned())
+        .expect("shared_fs storage requires durable.root or legacy root")
+}
+
+fn resolve_object_store_config(
+    durable: Option<&ObjectStoreNode>,
+    legacy_object_store: Option<&ObjectStoreNode>,
+) -> ObjectStoreConfig {
+    object_store_node_to_config(
+        durable
+            .or(legacy_object_store)
+            .expect("object_store storage requires durable backend or legacy object_store"),
+    )
 }
 
 fn object_store_node_to_config(cfg: &ObjectStoreNode) -> ObjectStoreConfig {

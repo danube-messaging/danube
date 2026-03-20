@@ -85,10 +85,6 @@ impl StorageMode {
         self.uses_export_later_durable_mode()
     }
 
-    pub(crate) fn uses_retention_deleter(&self) -> bool {
-        self.uses_export_later_durable_mode()
-    }
-
     pub(crate) fn requires_local_wal_staging(&self) -> bool {
         self.uses_export_later_durable_mode()
     }
@@ -117,12 +113,16 @@ pub struct RetentionConfig {
 }
 
 impl StorageFactoryConfig {
-    pub fn local(wal: WalConfig, metadata_root: impl Into<String>) -> Self {
+    pub fn local(
+        wal: WalConfig,
+        metadata_root: impl Into<String>,
+        retention: Option<RetentionConfig>,
+    ) -> Self {
         Self {
             mode: StorageMode::Local,
             wal,
             metadata_root: metadata_root.into(),
-            retention: None,
+            retention,
             segment_export_interval_seconds: None,
         }
     }
@@ -170,9 +170,7 @@ impl StorageFactoryConfig {
     /// itself.
     pub(crate) fn durable_backend(&self) -> Option<BackendConfig> {
         match &self.mode {
-            StorageMode::Local => self.wal.dir.as_ref().map(|dir| BackendConfig::Filesystem {
-                root: dir.to_string_lossy().to_string(),
-            }),
+            StorageMode::Local => None,
             StorageMode::SharedFs(shared_fs) => Some(BackendConfig::Filesystem {
                 root: shared_fs.root.clone(),
             }),

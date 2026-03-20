@@ -340,9 +340,10 @@ Update `../config/danube_broker.yml`:
 
 ```yaml
 storage:
-  mode: cloud_native
-  cache_root: "./danube-data/wal"
-  cloud:
+  mode: object_store
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  durable:
     backend: "s3"
     root: "s3://your-bucket/danube"
     region: "us-west-2"

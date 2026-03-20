@@ -191,7 +191,8 @@ impl StorageFactory {
                 source: RecoveryStartSource::SealedMobilityState,
             },
             Ok(_) => {
-                if self.mode.requires_separate_durable_backend() && !local_wal_state_available {
+                let can_recover_from_durable_catalog = self.mode.requires_separate_durable_backend();
+                if can_recover_from_durable_catalog && !local_wal_state_available {
                     match catalog_current_segment {
                         Some(segment) => RecoveryStartDecision {
                             initial_offset: Some(segment.end_offset.saturating_add(1)),
