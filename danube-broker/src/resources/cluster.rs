@@ -54,7 +54,22 @@ impl ClusterResources {
     ) -> Result<()> {
         let marker = serde_json::json!({
             "reason": "unload",
-            "from_broker": from_broker_id
+            "from_broker": from_broker_id,
+            "ready": false
+        });
+        let path = join_path(&[BASE_UNASSIGNED_PATH, topic_name]);
+        self.create(&path, marker).await
+    }
+
+    pub(crate) async fn mark_topic_unload_ready(
+        &self,
+        topic_name: &str,
+        from_broker_id: u64,
+    ) -> Result<()> {
+        let marker = serde_json::json!({
+            "reason": "unload",
+            "from_broker": from_broker_id,
+            "ready": true
         });
         let path = join_path(&[BASE_UNASSIGNED_PATH, topic_name]);
         self.create(&path, marker).await

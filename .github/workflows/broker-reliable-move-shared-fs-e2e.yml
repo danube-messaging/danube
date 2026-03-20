@@ -1,0 +1,163 @@
+name: Broker Reliable Move SharedFS E2E
+
+on:
+  pull_request:
+    paths:
+      - 'danube-broker/**'
+      - 'config/for_tests/danube_broker_shared_fs.yml'
+      - '.github/workflows/broker-reliable-move-shared-fs-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  reliable_move_shared_fs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build broker and admin binaries
+        run: cargo build --release -p danube-broker -p danube-admin
+
+      - name: Start Broker 1
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p temp danube-data
+          nohup ./target/release/danube-broker \
+            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/broker-0/raft \
+            --prom-exporter 0.0.0.0:9040 \
+            > temp/broker-0.log 2>&1 &
+
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 50051 && nc -zv 127.0.0.1 6650; then
+              echo "Broker 1 is ready."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "Broker 1 failed to start."
+              cat temp/broker-0.log
+              exit 1
+            fi
+            echo "Waiting for Broker 1 to start... ($i/15)"
+            sleep 3
+          done
+
+      - name: Start Brokers 2 and 3 with --join
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          nohup ./target/release/danube-broker \
+            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+            --broker-addr 0.0.0.0:6651 \
+            --admin-addr 0.0.0.0:50052 \
+            --raft-addr 0.0.0.0:7651 \
+            --data-dir ./danube-data/broker-1/raft \
+            --prom-exporter 0.0.0.0:9041 \
+            --join \
+            > temp/broker-1.log 2>&1 &
+
+          nohup ./target/release/danube-broker \
+            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+            --broker-addr 0.0.0.0:6652 \
+            --admin-addr 0.0.0.0:50053 \
+            --raft-addr 0.0.0.0:7652 \
+            --data-dir ./danube-data/broker-2/raft \
+            --prom-exporter 0.0.0.0:9042 \
+            --join \
+            > temp/broker-2.log 2>&1 &
+
+          for port in 50052 50053; do
+            for i in {1..15}; do
+              if nc -zv 127.0.0.1 $port; then
+                echo "Admin port $port is ready."
+                break
+              elif [ $i -eq 15 ]; then
+                echo "Admin port $port failed to start."
+                cat temp/broker-1.log temp/broker-2.log
+                exit 1
+              fi
+              echo "Waiting for admin port $port... ($i/15)"
+              sleep 3
+            done
+          done
+
+      - name: Add Brokers 2 and 3 to cluster via admin CLI
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          BROKER_2_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
+            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_3_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50053 \
+            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          echo "Broker 2 node_id: $BROKER_2_NODE_ID"
+          echo "Broker 3 node_id: $BROKER_3_NODE_ID"
+
+          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50052
+          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50053
+          sleep 2
+
+          ./target/release/danube-admin cluster promote-node --node-id $BROKER_2_NODE_ID
+          ./target/release/danube-admin cluster promote-node --node-id $BROKER_3_NODE_ID
+
+          for port in 6651 6652; do
+            for i in {1..15}; do
+              if nc -zv 127.0.0.1 $port; then
+                echo "Broker port $port is ready."
+                break
+              elif [ $i -eq 15 ]; then
+                echo "Broker port $port failed to start."
+                cat temp/broker-1.log temp/broker-2.log
+                exit 1
+              fi
+              echo "Waiting for broker port $port... ($i/15)"
+              sleep 3
+            done
+          done
+
+          ./target/release/danube-admin brokers activate --broker-id $BROKER_2_NODE_ID --reason "shared-fs-move-test"
+          ./target/release/danube-admin brokers activate --broker-id $BROKER_3_NODE_ID --reason "shared-fs-move-test"
+          sleep 10
+
+      - name: Run shared_fs reliable move integration tests
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ADMIN_BIN: ./target/release/danube-admin
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --release -p danube-broker --test reliable_topic_move_shared_fs -- --ignored --test-threads=1 --nocapture
+
+      - name: Print broker logs on failure
+        if: failure()
+        run: |
+          echo '--- broker-0.log ---'
+          sed -n '1,220p' temp/broker-0.log || true
+          echo '--- broker-1.log ---'
+          sed -n '1,220p' temp/broker-1.log || true
+          echo '--- broker-2.log ---'
+          sed -n '1,220p' temp/broker-2.log || true
+
+      - name: Stop brokers
+        if: always()
+        run: |
+          pkill -f danube-broker || true

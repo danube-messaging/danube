@@ -342,7 +342,12 @@ impl TopicManager {
             .unwrap_or(false);
 
         if is_reliable {
-            self.unload_reliable_topic(topic_name).await
+            self.unload_reliable_topic(topic_name).await?;
+            self.resources
+                .cluster
+                .mark_topic_unload_ready(topic_name, self.broker_id)
+                .await?;
+            Ok(())
         } else {
             self.unload_non_reliable_topic(topic_name).await
         }
