@@ -16,6 +16,18 @@ struct TopicDescription {
     delivery: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BrokerSummary {
+    broker_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrokerTopicEntry {
+    name: String,
+    broker_id: String,
+    delivery: String,
+}
+
 fn admin_cli() -> Command {
     let mut cmd = if let Ok(bin) = std::env::var("DANUBE_ADMIN_BIN") {
         Command::new(bin)
@@ -59,6 +71,31 @@ fn describe_topic(topic: &str) -> Result<TopicDescription> {
     serde_json::from_str(&body).with_context(|| format!("failed to parse topic description for {topic}"))
 }
 
+fn list_brokers() -> Result<Vec<BrokerSummary>> {
+    let body = run_admin(&["brokers", "list", "--output", "json"])?;
+    serde_json::from_str(&body).context("failed to parse broker list")
+}
+
+fn list_topics_for_broker(broker_id: &str) -> Result<Vec<BrokerTopicEntry>> {
+    let body = run_admin(&["topics", "list", "--broker", broker_id, "--output", "json"])?;
+    serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse topics for broker {broker_id}"))
+}
+
+fn find_topic_assignment(topic: &str) -> Result<Option<TopicDescription>> {
+    for broker in list_brokers()? {
+        let topics = list_topics_for_broker(&broker.broker_id)?;
+        if let Some(entry) = topics.into_iter().find(|entry| entry.name == topic) {
+            return Ok(Some(TopicDescription {
+                broker_id: entry.broker_id,
+                delivery: entry.delivery,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
 fn unload_topic(topic: &str) -> Result<()> {
     let _ = run_admin(&["topics", "unload", topic])?;
     Ok(())
@@ -66,24 +103,42 @@ fn unload_topic(topic: &str) -> Result<()> {
 
 async fn wait_for_assignment(topic: &str, previous_broker_id: Option<&str>) -> Result<TopicDescription> {
     let deadline = Instant::now() + Duration::from_secs(45);
+    let mut last_error = None;
 
     loop {
-        if let Ok(description) = describe_topic(topic) {
-            let assigned = !description.broker_id.is_empty();
-            let changed = previous_broker_id
-                .map(|previous| description.broker_id != previous)
-                .unwrap_or(true);
+        match find_topic_assignment(topic) {
+            Ok(Some(description)) => {
+                let assigned = !description.broker_id.is_empty();
+                let changed = previous_broker_id
+                    .map(|previous| description.broker_id != previous)
+                    .unwrap_or(true);
 
-            if assigned && changed {
-                return Ok(description);
+                if assigned && changed {
+                    return Ok(description);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                last_error = Some(err.to_string());
             }
         }
 
         if Instant::now() >= deadline {
-            bail!(
-                "timed out waiting for topic assignment change for {topic} (previous broker: {:?})",
-                previous_broker_id
-            );
+            if let Some(description) = describe_topic(topic).ok() {
+                bail!(
+                    "timed out waiting for topic assignment change for {topic} (previous broker: {:?}, last observed broker: {}, delivery: {}, last admin error: {:?})",
+                    previous_broker_id,
+                    description.broker_id,
+                    description.delivery,
+                    last_error
+                );
+            } else {
+                bail!(
+                    "timed out waiting for topic assignment change for {topic} (previous broker: {:?}, last admin error: {:?})",
+                    previous_broker_id,
+                    last_error
+                );
+            }
         }
 
         sleep(Duration::from_secs(1)).await;
