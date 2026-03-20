@@ -1,59 +1,76 @@
 use crate::persistent_metrics::{
-    CLOUD_HANDOFF_TO_WAL_TOTAL, WAL_APPEND_BYTES_TOTAL, WAL_APPEND_TOTAL, WAL_READER_CREATE_TOTAL,
+    DURABLE_HISTORY_TO_HOT_TOTAL, WAL_APPEND_BYTES_TOTAL, WAL_APPEND_TOTAL,
+    WAL_READER_CREATE_TOTAL,
 };
 use async_trait::async_trait;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use metrics::counter;
+use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
-use crate::cloud::{CloudReader, CloudStore};
-use crate::storage_metadata::StorageMetadata;
+use crate::durable_history_reader::DurableHistoryReader;
+use crate::durable_store::DurableStore;
+use crate::metadata::StorageMetadata;
 use crate::wal::Wal;
 
 #[derive(Debug, Default, Clone)]
 pub struct WalStorage {
     wal: Wal,
-    cloud: Option<CloudStore>,
+    durable_store: Option<Arc<dyn DurableStore>>,
     metadata: Option<StorageMetadata>,
     topic_path: Option<String>,
+    history_cutover_from_hot: bool,
 }
 
 impl WalStorage {
-    /// Construct from a pre-configured WAL
     pub fn from_wal(wal: Wal) -> Self {
         Self {
             wal,
-            cloud: None,
+            durable_store: None,
             metadata: None,
             topic_path: None,
+            history_cutover_from_hot: false,
         }
     }
 
-    /// Enable cloud historical reads by wiring CloudStore + StorageMetadata and logical topic path.
-    pub fn with_cloud(
+
+    /// Enable durable historical reads by wiring DurableStore + StorageMetadata and logical topic path.
+    pub(crate) fn with_durable_history(
         mut self,
-        cloud: CloudStore,
+        durable_store: Arc<dyn DurableStore>,
         metadata: StorageMetadata,
         topic_path: String,
     ) -> Self {
-        self.cloud = Some(cloud);
+        self.durable_store = Some(durable_store);
         self.metadata = Some(metadata);
         self.topic_path = Some(topic_path);
         if let Some(tp) = &self.topic_path {
-            info!(target = "wal_storage", topic = %tp, "cloud handoff enabled for topic");
+            info!(target = "wal_storage", topic = %tp, "durable history enabled for topic");
         }
         self
     }
 
-    /// Returns the current committed offset (head of the log).
-    /// This is the offset that will be assigned to the NEXT message.
+    pub(crate) fn with_hot_cutover(mut self) -> Self {
+        self.history_cutover_from_hot = true;
+        self
+    }
+
+    /// Return the next offset that will be assigned to the next appended message.
     ///
     /// This method is extremely lightweight (atomic load, no locking) and can be called
     /// frequently for lag detection without performance concerns.
     pub fn current_offset(&self) -> u64 {
         self.wal.current_offset()
+    }
+
+    /// Return the highest offset already accepted by the local WAL.
+    ///
+    /// In export-later modes this is local WAL progress, not the durable export
+    /// boundary recorded in segment metadata.
+    pub fn last_committed_offset(&self) -> u64 {
+        self.wal.last_committed_offset()
     }
 
     /// Convenience: append a message directly to the underlying WAL.
@@ -62,6 +79,66 @@ impl WalStorage {
     #[allow(dead_code)]
     pub(crate) async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
         self.wal.append(msg).await
+    }
+
+    async fn create_hot_reader(
+        &self,
+        topic_name: &str,
+        from: u64,
+        live: bool,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let stream = self.wal.tail_reader(from, live).await;
+        if stream.is_ok() {
+            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
+        }
+        stream
+    }
+
+    /// Compute the first offset that should be served from the hot WAL path.
+    ///
+    /// Functional behavior
+    /// - After sealed-owner recovery (`history_cutover_from_hot`), the hot path begins at the
+    ///   earliest cached offset, because durable history is authoritative for everything before the
+    ///   new owner's locally reconstructed cache window.
+    /// - In normal operation, the hot path begins at the WAL checkpoint's `start_offset`, which is
+    ///   the oldest offset still retained locally.
+    /// - If no cache/checkpoint state is available, the method falls back to the current WAL head.
+    async fn hot_start_offset(&self) -> u64 {
+        if self.history_cutover_from_hot {
+            self.wal
+                .earliest_cached_offset()
+                .await
+                .unwrap_or_else(|| self.wal.current_offset())
+        } else {
+            let wal_checkpoint = self.wal.current_wal_checkpoint().await;
+            wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset)
+        }
+    }
+
+    /// Create a tiered reader that serves durable history first, then continues from the hot WAL.
+    ///
+    /// The durable reader covers `[start_offset, hot_start_offset - 1]` and the WAL reader resumes
+    /// at `hot_start_offset`, so the chained stream preserves continuity without overlapping the
+    /// boundary between durable and hot storage.
+    async fn create_durable_history_reader(
+        &self,
+        topic_name: &str,
+        durable_store: Arc<dyn DurableStore>,
+        metadata: StorageMetadata,
+        topic_path: String,
+        start_offset: u64,
+        hot_start_offset: u64,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let reader = DurableHistoryReader::new(durable_store, metadata, topic_path);
+        let durable_stream = reader
+            .read_range(start_offset, Some(hot_start_offset - 1))
+            .await?;
+        let hot_stream = self.wal.tail_reader(hot_start_offset, false).await?;
+        let chained = durable_stream.chain(hot_stream);
+        counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "durable_history_then_hot").increment(1);
+        counter!(DURABLE_HISTORY_TO_HOT_TOTAL.name, "topic"=> topic_name.to_string())
+            .increment(1);
+        Ok(Box::pin(chained))
     }
 }
 
@@ -72,7 +149,6 @@ impl PersistentStorage for WalStorage {
         topic_name: &str,
         msg: StreamMessage,
     ) -> Result<u64, PersistentStorageError> {
-        // Ensure writer has topic for metrics
         self.wal.set_topic_for_metrics(topic_name.to_string()).await;
         let payload_len = msg.payload.len() as u64;
         let res = self.wal.append(&msg).await;
@@ -84,92 +160,70 @@ impl PersistentStorage for WalStorage {
         res
     }
 
+    /// Create a reader for either WAL-only or durable-history-plus-hot playback.
+    ///
+    /// Reader selection policy
+    /// - If durable history is not configured, always fall back to the WAL path.
+    /// - If the requested offset is still within locally retained WAL history, read entirely from
+    ///   the WAL path.
+    /// - Otherwise, replay the missing historical prefix from durable segments and then hand off
+    ///   to the hot WAL at `hot_start_offset`.
     async fn create_reader(
         &self,
         topic_name: &str,
         start: StartPosition,
     ) -> Result<TopicStream, PersistentStorageError> {
+        let (start_offset, live) = match start {
+            StartPosition::Latest => (self.wal.current_offset(), true),
+            StartPosition::Offset(offset) => (offset, false),
+        };
+
         // This function requires cloud and metadata to be configured for the tiered reading logic.
-        let (cloud, metadata, topic_path) = match (
-            self.cloud.as_ref(),
+        let (durable_store, metadata, topic_path) = match (
+            self.durable_store.as_ref(),
             self.metadata.as_ref(),
             self.topic_path.as_ref(),
         ) {
             (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
             _ => {
-                // Fallback to WAL-only behavior if cloud integration is not configured.
-                let (from, live) = match start {
-                    StartPosition::Latest => (self.wal.current_offset(), true),
-                    StartPosition::Offset(o) => (o, false),
-                };
                 warn!(
                     target = "wal_storage",
-                    start = from,
-                    "cloud is not configured; creating reader from WAL only"
+                    start = start_offset,
+                    "durable history is not configured; creating reader from WAL only"
                 );
-                let stream = self.wal.tail_reader(from, live).await;
-                if stream.is_ok() {
-                    counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
-                }
-                return stream;
+                return self.create_hot_reader(topic_name, start_offset, live).await;
             }
         };
 
-        // 1. Determine the concrete start offset and whether we are in live mode.
-        let (start_offset, live) = match start {
-            StartPosition::Latest => (self.wal.current_offset(), true),
-            StartPosition::Offset(o) => (o, false),
-        };
+        let hot_start_offset = self.hot_start_offset().await;
 
-        // 2. Get the WAL's start offset from its checkpoint. This tells us the oldest
-        // offset available in the local WAL files.
-        let wal_checkpoint = self.wal.current_wal_checkpoint().await;
-        let wal_start_offset = wal_checkpoint.map_or(0, |ckpt| ckpt.start_offset);
-
-        // 3. Implement the tiered reading logic.
-        if start_offset >= wal_start_offset {
-            // CASE 1: The entire read can be served from the local WAL.
-            // This is the most efficient path for active consumers.
+        if start_offset >= hot_start_offset {
             info!(
                 target = "wal_storage",
                 topic = %topic_path,
                 start = start_offset,
-                wal_start = wal_start_offset,
+                hot_start = hot_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            let stream = self.wal.tail_reader(start_offset, live).await;
-            if stream.is_ok() {
-                counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "wal_only").increment(1);
-            }
-            stream
-        } else {
-            // CASE 2: The read must start from the cloud and then hand off to the WAL.
-            let handoff_offset = wal_start_offset;
-            info!(
-                target = "wal_storage",
-                topic = %topic_path,
-                start = start_offset,
-                handoff = handoff_offset,
-                "creating reader with Cloud->WAL chaining"
-            );
-
-            // Create a stream for the historical data from the cloud.
-            // This will read from start_offset up to (but not including) handoff_offset.
-            let reader = CloudReader::new(cloud, metadata, topic_path.clone());
-            let cloud_stream = reader
-                .read_range(start_offset, Some(handoff_offset - 1))
-                .await?;
-
-            // Create a stream for the recent data from the WAL, starting at the handoff point.
-            let wal_stream = self.wal.tail_reader(handoff_offset, false).await?;
-
-            // Chain them together to provide a single, seamless stream to the consumer.
-            let chained = cloud_stream.chain(wal_stream);
-            counter!(WAL_READER_CREATE_TOTAL.name, "topic"=> topic_name.to_string(), "mode"=> "cloud_then_wal").increment(1);
-            counter!(CLOUD_HANDOFF_TO_WAL_TOTAL.name, "topic"=> topic_name.to_string())
-                .increment(1);
-            Ok(Box::pin(chained))
+            return self.create_hot_reader(topic_name, start_offset, live).await;
         }
+
+        info!(
+            target = "wal_storage",
+            topic = %topic_path,
+            start = start_offset,
+            hot_start = hot_start_offset,
+            "creating reader from durable history plus hot state"
+        );
+        self.create_durable_history_reader(
+            topic_name,
+            durable_store,
+            metadata,
+            topic_path,
+            start_offset,
+            hot_start_offset,
+        )
+        .await
     }
 
     async fn ack_checkpoint(

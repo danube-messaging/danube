@@ -269,7 +269,7 @@ pub async fn fetch_reliable_metrics(
 
     let q_wal_app = format!("sum(danube_wal_append_total{{topic=\"{}\"}})", topic);
     let q_wal_bytes = format!("sum(danube_wal_append_bytes_total{{topic=\"{}\"}})", topic);
-    let q_wal_fsync = format!("sum(danube_wal_fsync_total{{topic=\"{}\"}})", topic);
+    let q_wal_flush = format!("sum(danube_wal_flush_total{{topic=\"{}\"}})", topic);
     let q_wal_p50 = format!(
         "danube_wal_flush_latency_ms{{topic=\"{}\",quantile=\"0.5\"}}",
         topic
@@ -305,7 +305,7 @@ pub async fn fetch_reliable_metrics(
     let data = ReliableMetrics {
         wal_append_total,
         wal_append_bytes_total: sum_u64(client.query_instant(&q_wal_bytes).await, &mut errors),
-        wal_fsync_total: sum_u64(client.query_instant(&q_wal_fsync).await, &mut errors),
+        wal_flush_total: sum_u64(client.query_instant(&q_wal_flush).await, &mut errors),
         wal_flush_latency_p50_ms: wal_p50,
         wal_flush_latency_p95_ms: wal_p95,
         wal_flush_latency_p99_ms: wal_p99,

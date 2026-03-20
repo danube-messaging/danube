@@ -20,13 +20,12 @@ mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
-// Re-export for external users: crate::wal::{Wal, UploaderCheckpoint}
-pub use crate::checkpoint::{CheckPoint, CheckpointStore, UploaderCheckpoint, WalCheckpoint};
+use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
 
 /// Write-Ahead Log (WAL) with:
 /// - In-memory ordered replay cache
 /// - CRC32-protected frames `[u64 offset][u32 len][u32 crc][bytes]`
-/// - Batched writes with periodic fsync
+/// - Batched writes with periodic buffer flush
 /// - Optional rotation by size/time and durable checkpoints
 /// - Replay from file + cache and live tail via broadcast channel
 ///
@@ -40,12 +39,11 @@ pub struct Wal {
 pub(crate) struct WalInner {
     next_offset: AtomicU64,
     tx: broadcast::Sender<(u64, StreamMessage)>,
-    wal_path: Mutex<Option<PathBuf>>,
     // In-memory ordered cache for replay (offset -> message)
     cache: Mutex<Cache>,
     cache_capacity: usize,
-    fsync_interval_ms: u64,
-    fsync_max_batch_bytes: usize,
+    flush_interval_ms: u64,
+    flush_max_batch_bytes: usize,
     // Rotation state
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
@@ -78,17 +76,19 @@ pub struct WalConfig {
     /// Default when `None`: `1024` messages
     pub cache_capacity: Option<usize>,
 
-    /// Maximum time between flushes (ms) for the background writer. A flush is triggered
-    /// if either this interval elapses or `fsync_max_batch_bytes` is reached, whichever comes first.
+    /// Maximum time between write-buffer flushes (ms) for the background writer.
+    ///
+    /// A flush is triggered if either this interval elapses or
+    /// `flush_max_batch_bytes` is reached, whichever comes first.
     ///
     /// Default when `None`: `5_000` ms (5 s)
-    pub fsync_interval_ms: Option<u64>,
+    pub flush_interval_ms: Option<u64>,
 
     /// Maximum buffered bytes in the writer before forcing a flush. This bounds write latency
     /// and memory usage for the write buffer.
     ///
     /// Default when `None`: `10 * 1024 * 1024` bytes (10 MiB)
-    pub fsync_max_batch_bytes: Option<usize>,
+    pub flush_max_batch_bytes: Option<usize>,
 
     /// Size-based rotation threshold in bytes. When set, the writer rotates to a new
     /// `wal.<seq>.log` file after at least this many bytes have been written to the current file.
@@ -96,9 +96,11 @@ pub struct WalConfig {
     /// Default when `None`: rotation by size is disabled
     pub rotate_max_bytes: Option<u64>,
 
-    /// Time-based rotation threshold in seconds. When set, the writer rotates to a new
-    /// `wal.<seq>.log` if the current file has been open longer than this duration, even if
-    /// the size threshold hasn't been reached (useful for low-traffic topics and operational hygiene).
+    /// Time-based rotation threshold in seconds.
+    ///
+    /// When set, the writer checks this threshold before each write and rotates to a
+    /// new `wal.<seq>.log` on the next write after the current file has been open
+    /// longer than this duration, even if the size threshold hasn't been reached.
     ///
     /// Default when `None`: rotation by time is disabled
     pub rotate_max_seconds: Option<u64>,
@@ -131,11 +133,10 @@ impl Default for Wal {
             inner: Arc::new(WalInner {
                 next_offset: AtomicU64::new(0),
                 tx,
-                wal_path: Mutex::new(None),
                 cache: Mutex::new(Cache::new()),
                 cache_capacity: 1024,
-                fsync_interval_ms: 5_000, // 5s default flush interval
-                fsync_max_batch_bytes: 10 * 1024 * 1024, // 10 MiB default batch
+                flush_interval_ms: 5_000, // 5s default flush interval
+                flush_max_batch_bytes: 10 * 1024 * 1024, // 10 MiB default batch
                 rotate_max_bytes: None,
                 rotate_max_seconds: None,
                 checkpoint_path: None,
@@ -147,8 +148,8 @@ impl Default for Wal {
         let init = WriterInit {
             wal_path: None,
             checkpoint_path: None,
-            fsync_interval_ms: wal.inner.fsync_interval_ms,
-            fsync_max_batch_bytes: wal.inner.fsync_max_batch_bytes,
+            flush_interval_ms: wal.inner.flush_interval_ms,
+            flush_max_batch_bytes: wal.inner.flush_max_batch_bytes,
             rotate_max_bytes: wal.inner.rotate_max_bytes,
             rotate_max_seconds: wal.inner.rotate_max_seconds,
             ckpt_store: None,
@@ -194,6 +195,17 @@ impl Wal {
                 wal_file = %path.display(),
                 "initialized WAL file"
             );
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+                .map_err(|e| {
+                    PersistentStorageError::Io(format!(
+                        "open wal file during startup validation failed: {}",
+                        e
+                    ))
+                })?;
             Some(path)
         } else {
             warn!(
@@ -204,14 +216,29 @@ impl Wal {
         };
 
         let capacity = cfg.cache_capacity.unwrap_or(1024);
-        let fsync_interval_ms = cfg.fsync_interval_ms.unwrap_or(5_000); // 5s default
-        let fsync_max_batch_bytes = cfg.fsync_max_batch_bytes.unwrap_or(10 * 1024 * 1024); // 10 MiB default
+        let flush_interval_ms = cfg.flush_interval_ms.unwrap_or(5_000); // 5s default
+        let flush_max_batch_bytes = cfg.flush_max_batch_bytes.unwrap_or(10 * 1024 * 1024); // 10 MiB default
         let rotate_max_bytes = cfg.rotate_max_bytes;
         let rotate_max_seconds = cfg.rotate_max_seconds;
         let checkpoint_path = cfg.wal_dir().map(|mut d| {
             d.push("wal.ckpt");
             d
         });
+        let mut ckpt_store = ckpt_store;
+        if ckpt_store.is_none() {
+            if let Some(wal_ckpt_path) = checkpoint_path.clone() {
+                let store = Arc::new(CheckpointStore::new(wal_ckpt_path.clone()));
+                if let Err(e) = store.load_from_disk().await {
+                    warn!(
+                        target = "wal",
+                        path = %wal_ckpt_path.display(),
+                        error = %e,
+                        "failed to preload wal checkpoint store"
+                    );
+                }
+                ckpt_store = Some(store);
+            }
+        }
 
         // Determine starting offset: use initial_offset if provided, otherwise 0
         let start_offset = initial_offset.unwrap_or(0);
@@ -222,8 +249,8 @@ impl Wal {
                 target = "wal",
                 wal_dir = %dir.display(),
                 cache_capacity = capacity,
-                fsync_interval_ms,
-                fsync_max_batch_bytes,
+                flush_interval_ms,
+                flush_max_batch_bytes,
                 rotate_max_bytes = rotate_max_bytes.unwrap_or(0),
                 rotate_max_seconds = rotate_max_seconds.unwrap_or(0),
                 checkpoint = %checkpoint_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".to_string()),
@@ -234,8 +261,8 @@ impl Wal {
             info!(
                 target = "wal",
                 cache_capacity = capacity,
-                fsync_interval_ms,
-                fsync_max_batch_bytes,
+                flush_interval_ms,
+                flush_max_batch_bytes,
                 initial_offset = start_offset,
                 "WAL configuration applied (no dir)"
             );
@@ -245,11 +272,10 @@ impl Wal {
             inner: Arc::new(WalInner {
                 next_offset: AtomicU64::new(start_offset),
                 tx,
-                wal_path: Mutex::new(wal_path_opt),
                 cache: Mutex::new(Cache::new()),
                 cache_capacity: capacity,
-                fsync_interval_ms,
-                fsync_max_batch_bytes,
+                flush_interval_ms,
+                flush_max_batch_bytes,
                 rotate_max_bytes,
                 rotate_max_seconds,
                 checkpoint_path,
@@ -258,12 +284,11 @@ impl Wal {
             }),
         };
         // Spawn background writer task
-        let wal_path_for_init = wal.inner.wal_path.lock().await.clone();
         let init = WriterInit {
-            wal_path: wal_path_for_init,
+            wal_path: wal_path_opt,
             checkpoint_path: wal.inner.checkpoint_path.clone(),
-            fsync_interval_ms,
-            fsync_max_batch_bytes,
+            flush_interval_ms,
+            flush_max_batch_bytes,
             rotate_max_bytes,
             rotate_max_seconds,
             ckpt_store,
@@ -287,9 +312,13 @@ impl Wal {
     /// - Broadcasts `(offset, message)` to live tailing readers.
     ///
     /// Durability
-    /// - The background writer batches frames and fsyncs periodically; rotation/checkpointing handled there.
+    /// - The background writer batches frames and flushes buffered writes periodically; rotation/checkpointing handled there.
     /// - On-disk frame layout: `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 over `bytes`.
     pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
+        let permit = self.inner.cmd_tx.reserve().await.map_err(|_| {
+            PersistentStorageError::Other("wal writer channel closed".to_string())
+        })?;
+
         let offset = self.inner.next_offset.fetch_add(1, Ordering::AcqRel);
         // Clone and stamp the message with its assigned offset so all downstream paths
         // (cache, disk, broadcast) see the correct topic_offset without rewriting later.
@@ -298,23 +327,14 @@ impl Wal {
         // Serialize the stamped message for durability and enqueue to background writer
         let bytes = bincode::serde::encode_to_vec(&stamped, bincode::config::standard())
             .map_err(|e| PersistentStorageError::Io(format!("bincode serialize failed: {}", e)))?;
+
+        permit.send(LogCommand::Write { offset, bytes });
+
         // Update in-memory cache with single lock and evict oldest if over capacity
         {
             let mut cache = self.inner.cache.lock().await;
             cache.insert(offset, stamped.clone());
             cache.evict_to(self.inner.cache_capacity);
-        }
-
-        // Enqueue write command (non-blocking I/O path)
-        if let Err(_e) = self
-            .inner
-            .cmd_tx
-            .send(LogCommand::Write { offset, bytes })
-            .await
-        {
-            return Err(PersistentStorageError::Other(
-                "wal writer channel closed".to_string(),
-            ));
         }
 
         // Notify tailing readers (if any are subscribed)
@@ -384,6 +404,11 @@ impl Wal {
         Ok((items, watermark))
     }
 
+    pub async fn earliest_cached_offset(&self) -> Option<u64> {
+        let cache = self.inner.cache.lock().await;
+        cache.first_offset()
+    }
+
     /// Read the current WAL checkpoint from disk if available.
     pub async fn read_wal_checkpoint(
         &self,
@@ -398,16 +423,6 @@ impl Wal {
         CheckPoint::read_wal_from_path(&ckpt_path).await
     }
 
-    /// Return the active WAL file path if durability is enabled.
-    pub async fn active_wal_path(&self) -> Option<PathBuf> {
-        self.inner.wal_path.lock().await.clone()
-    }
-
-    /// Expose the path to `<dir>/wal.ckpt` if durability is enabled.
-    pub async fn wal_checkpoint_path(&self) -> Option<PathBuf> {
-        self.inner.checkpoint_path.clone()
-    }
-
     /// Return the latest in-memory WAL checkpoint if available (writer-updated), avoiding disk I/O.
     pub async fn current_wal_checkpoint(&self) -> Option<WalCheckpoint> {
         match &self.inner.ckpt_store {
@@ -416,10 +431,44 @@ impl Wal {
         }
     }
 
-    /// Trigger a writer flush. This is best-effort and does not wait for an ack.
+    fn writer_control_send_error(command: &str) -> PersistentStorageError {
+        PersistentStorageError::Wal(format!("wal writer channel closed before {}", command))
+    }
+
+    fn writer_control_ack_error(command: &str) -> PersistentStorageError {
+        PersistentStorageError::Wal(format!("wal writer dropped {} acknowledgement", command))
+    }
+
+    fn writer_control_result(command: &str, result: Result<(), String>) -> Result<(), PersistentStorageError> {
+        result.map_err(|e| PersistentStorageError::Wal(format!("wal {} failed: {}", command, e)))
+    }
+
+    /// Trigger a writer flush and wait for the writer to acknowledge the result.
     pub async fn flush(&self) -> Result<(), PersistentStorageError> {
-        let _ = self.inner.cmd_tx.send(LogCommand::Flush).await;
-        Ok(())
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .cmd_tx
+            .send(LogCommand::Flush(tx))
+            .await
+            .map_err(|_| Self::writer_control_send_error("flush"))?;
+        let result = rx
+            .await
+            .map_err(|_| Self::writer_control_ack_error("flush"))?;
+        Self::writer_control_result("flush", result)
+    }
+
+    /// Force the active WAL file to rotate so it can be treated as an immutable segment.
+    pub async fn rotate(&self) -> Result<(), PersistentStorageError> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .cmd_tx
+            .send(LogCommand::Rotate(tx))
+            .await
+            .map_err(|_| Self::writer_control_send_error("rotate"))?;
+        let result = rx
+            .await
+            .map_err(|_| Self::writer_control_ack_error("rotate"))?;
+        Self::writer_control_result("rotate", result)
     }
 
     /// Return the next offset that will be assigned on append (i.e., current tip + 1).
@@ -427,18 +476,26 @@ impl Wal {
         self.inner.next_offset.load(Ordering::Acquire)
     }
 
-    /// Expose the underlying checkpoint store if configured for this WAL.
-    pub fn checkpoint_store(&self) -> Option<Arc<CheckpointStore>> {
-        self.inner.ckpt_store.clone()
+    /// Return the highest offset already accepted by the local WAL.
+    ///
+    /// In export-later modes this reflects local WAL progress, not the highest
+    /// durable segment export boundary.
+    pub fn last_committed_offset(&self) -> u64 {
+        self.current_offset().saturating_sub(1)
     }
 
     /// Graceful shutdown: flush pending buffered data and stop the background writer task.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), PersistentStorageError> {
         let (tx, rx) = oneshot::channel();
-        // Ignore send error if writer already stopped
-        let _ = self.inner.cmd_tx.send(LogCommand::Shutdown(tx)).await;
-        // Await ack; ignore error if task already gone
-        let _ = rx.await;
+        self.inner
+            .cmd_tx
+            .send(LogCommand::Shutdown(tx))
+            .await
+            .map_err(|_| Self::writer_control_send_error("shutdown"))?;
+        let result = rx
+            .await
+            .map_err(|_| Self::writer_control_ack_error("shutdown"))?;
+        Self::writer_control_result("shutdown", result)
     }
 }
 

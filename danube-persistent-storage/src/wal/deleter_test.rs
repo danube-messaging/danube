@@ -1,10 +1,13 @@
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
+    use danube_core::metadata::{MemoryStore, MetadataStore};
     use tempfile::TempDir;
 
-    use crate::checkpoint::{CheckpointStore, UploaderCheckpoint, WalCheckpoint};
+    use crate::checkpoint::{CheckpointStore, WalCheckpoint};
+    use crate::metadata::{SegmentDescriptor, StorageMetadata};
     use crate::wal::deleter::{Deleter, DeleterConfig};
 
     // Helper to create a small file and return its PathBuf and size
@@ -14,14 +17,37 @@ mod tests {
         p
     }
 
-    fn default_uploader_ckpt(seq: u64, committed: u64) -> UploaderCheckpoint {
-        UploaderCheckpoint {
-            last_committed_offset: committed,
-            last_read_file_seq: seq,
-            last_read_byte_position: 0,
-            last_object_id: None,
-            updated_at: 0,
-        }
+    async fn build_metadata() -> StorageMetadata {
+        let mem = MemoryStore::new().await.expect("memory store");
+        let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem);
+        StorageMetadata::new(mem_arc, "/danube".to_string())
+    }
+
+    async fn seed_durable_segment(
+        metadata: &StorageMetadata,
+        topic_path: &str,
+        start_offset: u64,
+        end_offset: u64,
+    ) {
+        let start_padded = format!("{:020}", start_offset);
+        let segment = SegmentDescriptor {
+            segment_id: format!("data-{}-seed.dnb1", start_offset),
+            start_offset,
+            end_offset,
+            size: 0,
+            etag: None,
+            created_at: 0,
+            completed: true,
+            offset_index: None,
+        };
+        metadata
+            .put_segment_descriptor(topic_path, &start_padded, &segment)
+            .await
+            .expect("seed segment descriptor");
+        metadata
+            .put_current_segment(topic_path, &start_padded)
+            .await
+            .expect("seed current segment");
     }
 
     /// Test: Deleter respects uploader safety watermark
@@ -44,8 +70,7 @@ mod tests {
         let tmp = TempDir::new().expect("temp dir");
         let root = tmp.path().to_path_buf();
         let wal_ckpt_path = root.join("wal.ckpt");
-        let up_ckpt_path = root.join("uploader.ckpt");
-        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt_path, up_ckpt_path));
+        let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt_path));
 
         // Create two rotated files: seq 1 and seq 2, active file seq 3
         let f1 = touch_file(&root, "wal.1.log", b"a").await;
@@ -64,9 +89,9 @@ mod tests {
         };
         store.update_wal(&wal_ckpt).await.expect("update wal");
 
-        // Set uploader watermark to seq=2 (meaning seq < 2 can be deleted; seq 2 cannot)
-        let up = default_uploader_ckpt(2, 100);
-        store.update_uploader(&up).await.expect("update up");
+        // Set uploader watermark so only the first rotated file's inferred range is fully durable.
+        let metadata = build_metadata().await;
+        seed_durable_segment(&metadata, "ns/topic", 0, 9).await;
 
         // Configure deleter with time-based retention (0 minutes) to trigger deletion of eligible files
         let cfg = DeleterConfig {
@@ -74,9 +99,14 @@ mod tests {
             retention_time_minutes: Some(0),
             retention_size_mb: None,
         };
-        let deleter = std::sync::Arc::new(Deleter::new("ns/topic".into(), store.clone(), cfg));
+        let deleter = std::sync::Arc::new(Deleter::new(
+            "ns/topic".into(),
+            store.clone(),
+            metadata,
+            cfg,
+        ));
 
-        // Run cycle: only seq 1 is eligible (seq < uploader.last_read_file_seq)
+        // Run cycle: only seq 1 is eligible.
         deleter.run_cycle().await.expect("run cycle");
 
         // Reload wal checkpoint and assert that seq 1 was removed, seq 2 remains
@@ -98,7 +128,7 @@ mod tests {
     /// Flow
     /// - Create rotated files seq 1 (2 bytes) and seq 2 (3 bytes); active seq 3.
     /// - Set uploader watermark beyond both files to make them eligible.
-    /// - Configure size limit to 0 MB (0 bytes) to force pruning of all rotated files.
+    /// - Configure `retention_size_mb = 0` so any candidate is considered old.
     /// - Run one deleter cycle.
     ///
     /// Expected
@@ -108,10 +138,7 @@ mod tests {
     async fn test_deleter_size_based_prunes_oldest_until_under_limit() {
         let tmp = TempDir::new().expect("temp dir");
         let root = tmp.path().to_path_buf();
-        let store = std::sync::Arc::new(CheckpointStore::new(
-            root.join("wal.ckpt"),
-            root.join("uploader.ckpt"),
-        ));
+        let store = std::sync::Arc::new(CheckpointStore::new(root.join("wal.ckpt")));
 
         // Rotated: seq 1 (2 bytes), seq 2 (3 bytes), active seq 3
         let f1 = touch_file(&root, "wal.1.log", b"aa").await; // 2 bytes
@@ -131,11 +158,8 @@ mod tests {
             })
             .await
             .expect("update wal");
-        // Uploader watermark beyond both rotated files
-        store
-            .update_uploader(&default_uploader_ckpt(99, 999))
-            .await
-            .expect("up");
+        let metadata = build_metadata().await;
+        seed_durable_segment(&metadata, "ns/topic", 0, 999).await;
 
         // Force pruning of all rotated files by setting retention_size_mb to 0 MB (0 bytes).
         let cfg = DeleterConfig {
@@ -143,7 +167,12 @@ mod tests {
             retention_time_minutes: None,
             retention_size_mb: Some(0),
         };
-        let deleter = std::sync::Arc::new(Deleter::new("ns/topic".into(), store.clone(), cfg));
+        let deleter = std::sync::Arc::new(Deleter::new(
+            "ns/topic".into(),
+            store.clone(),
+            metadata,
+            cfg,
+        ));
         deleter.run_cycle().await.expect("run");
 
         let after = store.get_wal().await.expect("wal after");
@@ -176,10 +205,7 @@ mod tests {
     async fn test_deleter_time_based_prunes_when_age_exceeds() {
         let tmp = TempDir::new().expect("temp dir");
         let root = tmp.path().to_path_buf();
-        let store = std::sync::Arc::new(CheckpointStore::new(
-            root.join("wal.ckpt"),
-            root.join("uploader.ckpt"),
-        ));
+        let store = std::sync::Arc::new(CheckpointStore::new(root.join("wal.ckpt")));
 
         let f1 = touch_file(&root, "wal.1.log", b"x").await;
         let active = touch_file(&root, "wal.2.log", b"y").await;
@@ -197,10 +223,8 @@ mod tests {
             })
             .await
             .expect("wal");
-        store
-            .update_uploader(&default_uploader_ckpt(99, 999))
-            .await
-            .expect("up");
+        let metadata = build_metadata().await;
+        seed_durable_segment(&metadata, "ns/topic", 0, 999).await;
 
         // Set retention_time_minutes = 0 to treat any file as older than threshold
         let cfg = DeleterConfig {
@@ -208,7 +232,12 @@ mod tests {
             retention_time_minutes: Some(0),
             retention_size_mb: None,
         };
-        let deleter = std::sync::Arc::new(Deleter::new("ns/topic".into(), store.clone(), cfg));
+        let deleter = std::sync::Arc::new(Deleter::new(
+            "ns/topic".into(),
+            store.clone(),
+            metadata,
+            cfg,
+        ));
         deleter.run_cycle().await.expect("run");
 
         let after = store.get_wal().await.expect("after");
@@ -239,10 +268,7 @@ mod tests {
     async fn test_deleter_handles_missing_file_gracefully() {
         let tmp = TempDir::new().expect("temp dir");
         let root = tmp.path().to_path_buf();
-        let store = std::sync::Arc::new(CheckpointStore::new(
-            root.join("wal.ckpt"),
-            root.join("uploader.ckpt"),
-        ));
+        let store = std::sync::Arc::new(CheckpointStore::new(root.join("wal.ckpt")));
 
         // Reference a non-existent rotated file (seq 1)
         let missing_path = root.join("wal.1.log");
@@ -261,18 +287,20 @@ mod tests {
             })
             .await
             .expect("wal");
-        // Watermark allows deletion of seq 1
-        store
-            .update_uploader(&default_uploader_ckpt(99, 999))
-            .await
-            .expect("up");
+        let metadata = build_metadata().await;
+        seed_durable_segment(&metadata, "ns/topic", 0, 999).await;
 
         let cfg = DeleterConfig {
             check_interval_minutes: 5,
             retention_time_minutes: Some(0),
             retention_size_mb: None,
         };
-        let deleter = std::sync::Arc::new(Deleter::new("ns/topic".into(), store.clone(), cfg));
+        let deleter = std::sync::Arc::new(Deleter::new(
+            "ns/topic".into(),
+            store.clone(),
+            metadata,
+            cfg,
+        ));
         // Should not panic; deletion of missing file should be handled gracefully
         deleter.run_cycle().await.expect("run");
 

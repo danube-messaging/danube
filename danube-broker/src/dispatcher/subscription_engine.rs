@@ -398,7 +398,7 @@ impl SubscriptionEngine {
     /// }
     /// ```
     pub(crate) fn has_lag(&self) -> bool {
-        let wal_head = self.topic_store.get_last_committed_offset();
+        let wal_head = self.topic_store.current_offset();
 
         // If WAL is empty (head = 0), no lag
         if wal_head == 0 {
@@ -442,7 +442,7 @@ impl SubscriptionEngine {
     /// gauge!("subscription_lag_messages").set(info.lag_messages as f64);
     /// ```
     pub(crate) fn get_lag_info(&self) -> LagInfo {
-        let wal_head = self.topic_store.get_last_committed_offset();
+        let wal_head = self.topic_store.current_offset();
         let cursor = self.last_acked;
 
         let lag = match cursor {

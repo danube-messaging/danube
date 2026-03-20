@@ -339,8 +339,11 @@ For production deployment:
 Update `../config/danube_broker.yml`:
 
 ```yaml
-wal_cloud:
-  cloud:
+storage:
+  mode: object_store
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  durable:
     backend: "s3"
     root: "s3://your-bucket/danube"
     region: "us-west-2"

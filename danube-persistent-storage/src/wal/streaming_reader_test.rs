@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::checkpoint::WalCheckpoint;
+    use crate::frames::encode_frame;
     use crate::wal::streaming_reader::stream_from_wal_files;
-    use crc32fast;
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::storage::PersistentStorageError;
     use std::collections::HashMap;
@@ -38,21 +38,10 @@ mod tests {
     ) -> Result<(), PersistentStorageError> {
         let bytes = bincode::serde::encode_to_vec(msg, bincode::config::standard())
             .map_err(|e| PersistentStorageError::Io(format!("serialize failed: {}", e)))?;
-        let len = bytes.len() as u32;
-        let crc = crc32fast::hash(&bytes);
-
-        file.write_all(&offset.to_le_bytes())
+        let frame = encode_frame(offset, &bytes);
+        file.write_all(&frame)
             .await
-            .map_err(|e| PersistentStorageError::Io(format!("write offset failed: {}", e)))?;
-        file.write_all(&len.to_le_bytes())
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("write len failed: {}", e)))?;
-        file.write_all(&crc.to_le_bytes())
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("write crc failed: {}", e)))?;
-        file.write_all(&bytes)
-            .await
-            .map_err(|e| PersistentStorageError::Io(format!("write bytes failed: {}", e)))?;
+            .map_err(|e| PersistentStorageError::Io(format!("write frame failed: {}", e)))?;
         file.flush()
             .await
             .map_err(|e| PersistentStorageError::Io(format!("flush failed: {}", e)))?;

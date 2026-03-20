@@ -1,193 +1,151 @@
-# Danube Persistent Storage (WAL-first)
+# Danube Persistent Storage
 
-This crate implements the WAL-first persistent model for the Danube messaging platform. It provides:
+`danube-persistent-storage` is the storage engine behind reliable topics in Danube.
 
-- A Write-Ahead Log (WAL) with:
-  - In-memory replay cache for hot reads
-  - Optional file-backed durability with CRC32 framing
-  - Batched fsync with configurable batch size and flush interval
-  - File replay to serve offsets not in cache
-- A `PersistentStorage` implementation (`WalStorage`) used by the broker’s `TopicStore`
-- A `WalStorageFactory` that encapsulates all storage internals and returns per-topic `WalStorage`:
-  - Per-topic WAL instances under `<wal_root>/<ns>/<topic>/`
-  - Per-topic background `Uploader` writing objects to cloud and descriptors to metadata
+At a high level, it gives Danube three things:
 
-## Features
+- a **local per-topic WAL** for fast writes and recent reads
+- a **durable segment history** for recovery, replay, and topic moves
+- **metadata-backed recovery** so offsets remain continuous across restarts and broker transfers
 
-- WAL frame format: `[u64 offset][u32 len][u32 crc][bincode(StreamMessage)]`
-- Replay-from-offset combines file replay and in-memory cache, then switches to live tailing
-- Configurable knobs via `WalConfig`:
-  - `cache_capacity`: in-memory ring buffer size (messages)
-  - `fsync_interval_ms`: max interval before flushing the write buffer
-  - `max_batch_bytes`: max batched bytes before forcing a flush
-  - `dir`, `file_name`: enable file-backed WAL
-- `WalStorageFactory`:
-  - `new(WalConfig, BackendConfig, MetadataStorage, metadata_root, UploaderBaseConfig, DeleterConfig) -> WalStorageFactory`
-  - `for_topic("/ns/topic") -> WalStorage` (starts per-topic uploader once)
+If you are operating Danube, you will usually use this crate indirectly through the broker `storage:` configuration rather than by embedding it yourself.
 
-## Usage
+## What this crate provides
 
-### Broker wiring via WalStorageFactory (recommended)
+- `StorageFactory`
+  - creates and recovers per-topic storage instances
+- `WalStorage`
+  - broker-facing persistent storage implementation for reliable topics
+- `Wal`
+  - the hot-path append log used for fast local writes and recent replay
+- `StorageFactoryConfig`
+  - storage-mode configuration for `local`, `shared_fs`, and `object_store`
+- `StorageMetadata` and `SegmentDescriptor`
+  - metadata abstractions used to track durable segment history
 
-```rust
-use danube_persistent_storage::wal::WalConfig;
-use danube_persistent_storage::{BackendConfig, LocalBackend, WalStorageFactory, UploaderBaseConfig};
-use danube_persistent_storage::wal::deleter::DeleterConfig;
-use danube_metadata_store::MetadataStorage;
+## How persistence works
 
-// Base WAL config: factory will create per-topic WALs under <wal_root>/<ns>/<topic>/
-let wal_base_cfg = WalConfig {
-    dir: Some(std::path::PathBuf::from("/var/lib/danube/wal")),
-    cache_capacity: Some(1024),
-    ..Default::default()
-};
+Reliable-topic data flows through three layers:
 
-// Cloud backend for objects
-let backend = BackendConfig::Local { backend: LocalBackend::Fs, root: "/tmp/danube-cloud".to_string() };
+1. **Hot local state**
+   - new messages are appended to a local WAL
+2. **Durable historical state**
+   - sealed WAL history is published as immutable durable segments
+3. **Metadata state**
+   - segment descriptors and sealed topic state are stored in the metadata store
 
-// Metadata storage for object descriptors (e.g., Raft metadata store or in-memory)
-let metadata_store: MetadataStorage = /* constructed in broker */;
+This lets Danube keep the write path local and efficient while still supporting:
 
-// Uploader base config (per-topic uploader interval)
-let uploader_base = UploaderBaseConfig { interval_seconds: 300 };
+- long-range replay
+- broker restarts
+- reliable topic movement
+- storage backends beyond the current broker disk
 
-// Deleter (WAL retention) config
-let deleter_cfg = DeleterConfig { check_interval_minutes: 5, retention_time_minutes: None, retention_size_mb: None };
+## Storage modes
 
-// Create factory (constructs CloudStore + StorageMetadata internally)
-let factory = WalStorageFactory::new(
-    wal_base_cfg,
-    backend,
-    metadata_store.clone(),
-    "/danube",
-    uploader_base,
-    deleter_cfg,
-);
+The crate supports the same three storage modes exposed by the broker.
 
-// Per-topic storage used by TopicStore
-let topic_name = "/default/my-topic";
-let storage = factory.for_topic(topic_name).await?;
-```
+### `local`
 
-### Per-topic append and reader
+- keeps WAL and durable segments on the local filesystem
+- simplest setup
+- good for single-broker deployments and development
 
-```rust
-use danube_core::storage::{PersistentStorage, StartPosition};
-use danube_core::message::{MessageID, StreamMessage};
+### `shared_fs`
 
-let msg = StreamMessage {
-    request_id: 1,
-    msg_id: MessageID {
-        producer_id: 1,
-        topic_name: topic_name.to_string(),
-        broker_addr: "127.0.0.1:6650".into(),
-        topic_offset: 0,
-    },
-    payload: b"hello".to_vec(),
-    publish_time: 0,
-    producer_name: "p1".into(),
-    subscription_name: None,
-    attributes: Default::default(),
-};
+- writes locally first
+- exports durable segments to a shared filesystem
+- good when multiple brokers can access the same filesystem
 
-// Append
-storage.append_message(topic_name, msg).await?;
+### `object_store`
 
-// Reader from offset 0 (Cloud→WAL chaining if historical objects exist)
-let mut reader = storage.create_reader(topic_name, StartPosition::Offset(0)).await?;
-while let Some(item) = reader.next().await.transpose()? {
-    // process item.payload
-}
-```
+- writes locally first
+- exports durable segments to object storage via OpenDAL
+- good for cloud-native multi-broker deployments
 
-## Recommended usage (summary)
+## Read behavior
 
-- Use `WalStorageFactory` at the broker level to provision per-topic `WalStorage` on demand.
-- Configure a base `WalConfig` with a root directory (e.g. `/var/lib/danube/wal`); the factory will create
-  per-topic directories `<root>/<ns>/<topic>/` automatically.
-- Keep the writer path hot: `Wal::append()` is non-blocking and offloads I/O to a background task.
-- For observability, start with `RUST_LOG=info` and raise to `wal=debug` when troubleshooting WAL flows.
+Reads are tiered automatically.
 
-## WAL architecture (overview)
+- if the requested offset is still in local WAL coverage
+  - data is served from WAL/cache
+- if the requested offset is older than the hot local window
+  - data is streamed from durable segments and then handed off to the live WAL tail
 
-```
-Writer hot path (append)                             Background writer task (I/O)
-------------------------------------------------     -----------------------------------------------
-Producer -> Wal::append(msg) ->
-  - assign offset
-  - insert into in-memory Cache (bounded)
-  - enqueue LogCommand::Write {offset, bytes}  --->  [Buf]
-                                                     | accumulate framed entries until:
-                                                     | - batch size reached OR
-                                                     | - fsync interval elapsed
-                                                     v
-                                                write()/flush() -> fsync
-                                                     |
-                                                     | rotate if size/time thresholds met
-                                                     v
-                                                wal.<seq>.log (CRC-framed)
-                                                     |
-                                                     v
-                                                write wal.ckpt (bincode) atomically
-```
+That same behavior is what allows consumers to continue reading after topic movement or local WAL cleanup.
 
-```
-Reader path (catch-up + live tail)
-----------------------------------
-Wal::tail_reader(from) ->
-  - snapshot cache (ordered)
-  - if from < cache_start:
-      read_file_range(<file>, [from, cache_start))
-  - append cache items >= max(from, cache_start)
-  - inject WAL offsets into MessageID.topic_offset
-  - chain with live broadcast for new appends
-```
+## Topic mobility and recovery
 
-Key details
-- Frame format: `[u64 offset][u32 len][u32 crc][bincode(StreamMessage)]`; CRC mismatch is treated as end-of-log.
-- Cache is ordered (BTreeMap), so replay stitching requires no extra sorting.
-- Rotation policy is optional (size/time); checkpoints record `last_offset`, `file_seq`, and current file path.
+This crate is also responsible for the persistence side of reliable topic moves.
 
-## Components
+When a topic is sealed on one broker and resumed on another:
 
-- `Wal`/`WalConfig`: per-topic WAL instances with optional file durability, replay cache, rotation, checkpoints
-- `WalStorage`: per-topic `PersistentStorage` implementing append and reader with Cloud→WAL chaining
-- `WalStorageFactory`: process-global facade that creates per-topic `WalStorage` and starts per-topic uploaders
-- `CloudStore`: backed by OpenDAL with `S3`, `Gcs`, `Azblob`, `Fs`, `Memory` implementations
-- `StorageMetadata`: writes/reads per-object descriptors using `danube-metadata-store::MetadataStorage`
-- `Uploader`: periodic batches from WAL cache to cloud objects and descriptor updates (single-writer per topic)
+- the old broker records the `last_committed_offset`
+- durable segment metadata remains available to the new owner
+- the new broker resumes at `last_committed_offset + 1`
 
-### Cloud uploader behavior
+This preserves a single continuous offset space for the topic.
 
-- Each uploader tick creates at most one cloud object per topic.
-- Frames are streamed sequentially across multiple WAL files into a single object per tick.
-- Optional cap `max_object_mb` bounds object size (e.g., 1024 for ~1 GiB).
-- Object naming: `data-<start_offset>-<timestamp>.dnb1` for uniqueness (end offset stored in metadata store).
-- No copy/rename operations - objects written directly with final name for 33% faster uploads.
+## Using it in Danube
 
-Example YAML (broker uploader):
+Most users should configure persistence through the broker YAML.
 
-```yaml
-wal_cloud:
-  uploader:
-    interval_seconds: 300
-    root_prefix: "/danube-data"
-    max_object_mb: 1024
-```
+Typical usage looks like:
+
+- choose `storage.mode`
+  - `local`
+  - `shared_fs`
+  - `object_store`
+- set WAL options under `storage.wal`
+- set `cache_root`, `root`, or `object_store` fields depending on the selected mode
+
+For configuration guidance, examples, and operational trade-offs, use the documentation links below.
+
+## Using it programmatically
+
+If you are embedding the crate directly, the main entry point is `StorageFactory`.
+
+Typical integration flow:
+
+1. build a `StorageFactoryConfig`
+2. create a `StorageFactory` with your metadata store
+3. call `for_topic("/namespace/topic")`
+4. use the returned `WalStorage` as the topic’s persistent storage
+5. call `seal()` during topic handoff when ownership changes
+
+The most important exported configuration types are:
+
+- `StorageFactoryConfig`
+- `StorageMode`
+- `SharedFsConfig`
+- `ObjectStoreConfig`
+- `RetentionConfig`
+- `wal::WalConfig`
+
+## Operational notes
+
+- new writes always land in the local WAL first
+- `shared_fs` and `object_store` use background segment export
+- local WAL retention applies to staged WAL files after durable history safely covers them
+- durable history uses the same framed WAL data model rather than a separate message format
+
+## Documentation
+
+- **Persistence & Storage**
+  - <https://danube-docs.dev-state.com/concepts/persistence/>
+- **Persistence Architecture**
+  - <https://danube-docs.dev-state.com/architecture/persistence/>
+- **Reliable Topic Moves**
+  - <https://danube-docs.dev-state.com/architecture/reliable_topic_move/>
+- **Broker Configuration Reference**
+  - <https://danube-docs.dev-state.com/reference/broker_configuration/>
+
+Use the documentation for configuration examples, architecture details, and implementation behavior. This README is intentionally kept at the “what it does and when to use it” level.
 
 ## Tests
 
-Run unit/integration tests for this crate:
+Run unit and integration tests for this crate:
 
 ```bash
 cargo test -p danube-persistent-storage --tests
 ```
-
-## Tracing and Notes
-
-- Durability: CRC-protected frames and batched fsync; file replay truncates at first CRC mismatch for safety.
-- Tracing targets:
-  - `wal_factory`: per-topic WAL created/reused, uploader started, backend summary
-  - `wal_storage`: cloud handoff enabled; reader path (Cloud→WAL vs WAL-only)
-  - `wal`: WAL file initialized; effective configuration applied
-  - `uploader`: uploader started; resume-from-checkpoint

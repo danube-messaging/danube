@@ -120,8 +120,8 @@ async fn test_single_topic_wal_rotation_and_upload() {
 
     let desc = descriptor.unwrap();
     assert!(desc.start_offset <= desc.end_offset);
-    assert!(desc.object_id.starts_with("data-"));
-    assert!(desc.object_id.ends_with(".dnb1"));
+    assert!(desc.segment_id.starts_with("data-"));
+    assert!(desc.segment_id.ends_with(".dnb1"));
 }
 
 /// Test: Single topic cloud handoff reading
@@ -140,7 +140,7 @@ async fn test_single_topic_wal_rotation_and_upload() {
 /// - All messages are delivered in correct offset order
 /// - No gaps or duplicates in message stream
 #[tokio::test]
-async fn test_single_topic_cloud_handoff_reading() {
+async fn test_single_topic_durable_history_handoff_reading() {
     let (factory, memory_store) = create_test_factory().await;
     let topic_name = "integration/handoff";
 

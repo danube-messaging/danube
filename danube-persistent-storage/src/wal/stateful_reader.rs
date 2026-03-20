@@ -1,14 +1,14 @@
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{broadcast, mpsc};
 use tokio_stream::{Stream, StreamExt};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
 use danube_core::message::StreamMessage;
-use danube_core::storage::{PersistentStorageError, TopicStream};
+use danube_core::storage::PersistentStorageError;
 
 use crate::checkpoint::WalCheckpoint;
 
@@ -16,162 +16,40 @@ use super::cache::build_cache_stream;
 use super::streaming_reader;
 use super::WalInner;
 
-enum ReaderPhase {
-    Files { stream: TopicStream },
-    Cache { stream: TopicStream },
-    Live { stream: TopicStream },
-}
-
 pub(crate) struct StatefulReader {
-    wal_inner: Arc<WalInner>,
-    phase: ReaderPhase,
-    last_yielded: u64, // u64::MAX means "none yielded yet"
+    inner: ReceiverStream<Result<StreamMessage, PersistentStorageError>>,
 }
 
 impl Stream for StatefulReader {
     type Item = Result<StreamMessage, PersistentStorageError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        loop {
-            match &mut self.phase {
-                ReaderPhase::Files { stream } => match Pin::new(stream).poll_next(cx) {
-                    Poll::Ready(Some(Ok(msg))) => {
-                        self.update_last_yielded(&msg);
-                        return Poll::Ready(Some(Ok(msg)));
-                    }
-                    Poll::Ready(Some(Err(_e))) => {
-                        // If files fail (e.g., pruned), try cache from next needed offset; otherwise propagate
-                        let from = self.last_yielded.saturating_add(1);
-                        warn!(
-                            target = "stateful_reader",
-                            last_yielded = self.last_yielded,
-                            next_from = from,
-                            "file phase errored, transitioning to cache"
-                        );
-                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
-                            continue;
-                        }
-                        // Can't build now, re-poll
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(None) => {
-                        // Files exhausted. Transition to Cache from next needed or current cache start
-                        let from = self.last_yielded.saturating_add(1);
-                        info!(
-                            target = "stateful_reader",
-                            last_yielded = self.last_yielded,
-                            next_from = from,
-                            "file phase exhausted, transitioning to cache"
-                        );
-                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
-                            continue;
-                        }
-                        return Poll::Pending;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                },
-
-                ReaderPhase::Cache { stream } => match Pin::new(stream).poll_next(cx) {
-                    Poll::Ready(Some(Ok(msg))) => {
-                        self.update_last_yielded(&msg);
-                        return Poll::Ready(Some(Ok(msg)));
-                    }
-                    Poll::Ready(Some(Err(e))) => {
-                        // Cache should be reliable; propagate error
-                        return Poll::Ready(Some(Err(e)));
-                    }
-                    Poll::Ready(None) => {
-                        // Cache exhausted; before going live, attempt to refill from cache
-                        // in case new items were appended between our last batch and now.
-                        let from = self.last_yielded.saturating_add(1);
-                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
-                            // Successfully built another cache stream; continue consuming cache
-                            continue;
-                        }
-                        // Could not immediately build (Pending), or none available: proceed to live
-                        info!(
-                            target = "stateful_reader",
-                            last_yielded = self.last_yielded,
-                            "cache exhausted (or pending refill), transitioning to live"
-                        );
-                        self.transition_to_live();
-                        return Poll::Pending;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                },
-
-                ReaderPhase::Live { stream } => match Pin::new(stream).poll_next(cx) {
-                    Poll::Ready(Some(Ok(msg))) => {
-                        // Drop duplicates only if we have yielded at least once.
-                        if self.last_yielded != u64::MAX
-                            && msg.msg_id.topic_offset <= self.last_yielded
-                        {
-                            continue;
-                        }
-                        // Detect gaps due to late subscription to broadcast: if we observe an
-                        // offset greater than the next expected, fall back to cache to fill the gap
-                        // starting from last_yielded + 1. We intentionally drop this broadcast item
-                        // because it is present in the cache (cache is updated before broadcast in append()).
-                        let expected = if self.last_yielded == u64::MAX {
-                            0
-                        } else {
-                            self.last_yielded + 1
-                        };
-                        if msg.msg_id.topic_offset > expected {
-                            warn!(
-                                target = "stateful_reader",
-                                last_yielded = self.last_yielded,
-                                observed = msg.msg_id.topic_offset,
-                                expected,
-                                "gap detected in live stream; transitioning to cache to fill"
-                            );
-                            if let Poll::Ready(()) = self.poll_transition_to_cache(cx, expected) {
-                                // Now consuming from cache; do not yield the current broadcast item
-                                continue;
-                            }
-                            return Poll::Pending;
-                        }
-                        // Exactly next: yield normally
-                        self.update_last_yielded(&msg);
-                        return Poll::Ready(Some(Ok(msg)));
-                    }
-                    Poll::Ready(Some(Err(_e))) => {
-                        // On broadcast lag, fall back to cache to catch up
-                        let from = self.last_yielded.saturating_add(1);
-                        warn!(
-                            target = "stateful_reader",
-                            last_yielded = self.last_yielded,
-                            next_from = from,
-                            "live phase lag/error, transitioning to cache"
-                        );
-                        if let Poll::Ready(()) = self.poll_transition_to_cache(cx, from) {
-                            continue;
-                        }
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(None) => return Poll::Ready(None),
-                    Poll::Pending => return Poll::Pending,
-                },
-            }
-        }
+        Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
 impl StatefulReader {
+    /// Create a continuity-preserving WAL reader.
+    ///
+    /// Functional flow
+    /// - Snapshot the earliest cached offset to decide whether file replay is needed.
+    /// - Subscribe to the live broadcast stream before any replay begins so new appends are not
+    ///   missed during the Files/Cache catch-up phases.
+    /// - Spawn a task that drives Files → Cache → Live and forwards results through an
+    ///   `mpsc` channel exposed as the reader stream.
     pub(crate) async fn new(
         wal_inner: Arc<WalInner>,
         checkpoint_opt: Option<WalCheckpoint>,
         from_offset: u64,
     ) -> Result<Self, PersistentStorageError> {
-        // Decide first phase: if requested offset within cache, start with Cache; otherwise Files.
         let cache_start = {
             let cache = wal_inner.cache.lock().await;
-            let mut it = cache.range_from(0);
-            it.next().map(|(off, _)| off).unwrap_or(u64::MAX)
+            cache.first_offset().unwrap_or(u64::MAX)
         };
 
-        let phase = if from_offset >= cache_start {
-            // Cache → Live
+        let live_rx = wal_inner.tx.subscribe();
+
+        if from_offset >= cache_start {
             info!(
                 target = "stateful_reader",
                 from_offset,
@@ -179,13 +57,8 @@ impl StatefulReader {
                 decision = "Cache→Live",
                 "replay decision: using cache, then live (skip files)"
             );
-            let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
-            ReaderPhase::Cache {
-                stream: cache_stream,
-            }
         } else {
-            // Files (from requested) → Cache → Live
-            if let Some(ckpt) = checkpoint_opt.as_ref() {
+            if checkpoint_opt.is_some() {
                 info!(
                     target = "stateful_reader",
                     from_offset,
@@ -193,10 +66,6 @@ impl StatefulReader {
                     decision = "Files→Cache→Live",
                     "replay decision: using files first, then cache, then live"
                 );
-                let fs =
-                    streaming_reader::stream_from_wal_files(ckpt, from_offset, 10 * 1024 * 1024)
-                        .await?;
-                ReaderPhase::Files { stream: fs }
             } else {
                 info!(
                     target = "stateful_reader",
@@ -205,60 +74,179 @@ impl StatefulReader {
                     decision = "Cache→Live",
                     "replay decision: no checkpoint; using cache, then live"
                 );
-                // No files available, start from cache directly
-                let cache_stream = build_cache_stream(wal_inner.clone(), from_offset, 512).await;
-                ReaderPhase::Cache {
-                    stream: cache_stream,
-                }
             }
-        };
+        }
 
-        // Initialize last_yielded to sentinel when starting from 0 so we can compute expected correctly.
-        let last = if from_offset == 0 {
-            u64::MAX
-        } else {
-            from_offset - 1
-        };
+        let (tx, rx) = mpsc::channel(1024);
+        tokio::spawn(async move {
+            if let Err(e) = Self::run(wal_inner, checkpoint_opt, from_offset, cache_start, live_rx, tx.clone()).await {
+                let _ = tx.send(Err(e)).await;
+            }
+        });
+
         Ok(Self {
-            wal_inner,
-            phase,
-            last_yielded: last,
+            inner: ReceiverStream::new(rx),
         })
     }
 
-    #[inline]
-    fn update_last_yielded(&mut self, msg: &StreamMessage) {
-        self.last_yielded = msg.msg_id.topic_offset;
-    }
+    /// Drive the full replay lifecycle for a WAL reader.
+    ///
+    /// Functional phases
+    /// - **Files**: if the request starts before the cache window and a checkpoint exists, replay
+    ///   historical WAL files first.
+    /// - **Cache**: drain any contiguous in-memory messages starting at `next_offset`.
+    /// - **Live**: consume broadcast updates once the reader has caught up.
+    ///
+    /// Continuity invariant
+    /// - `next_offset` is always the exact offset the reader expects next.
+    /// - Offsets lower than `next_offset` are duplicates and are ignored.
+    /// - Offsets greater than `next_offset` indicate a gap; the reader first tries to repair the
+    ///   gap from cache before surfacing an error.
+    ///
+    /// Why this task exists
+    /// - It centralizes the replay state machine in one async task instead of spreading it across
+    ///   manual `poll_next` transitions.
+    /// - It preserves ordering while still allowing the reader to recover from brief live-stream
+    ///   lag if the missing messages are still present in cache.
+    async fn run(
+        wal_inner: Arc<WalInner>,
+        checkpoint_opt: Option<WalCheckpoint>,
+        from_offset: u64,
+        cache_start: u64,
+        mut live_rx: broadcast::Receiver<(u64, StreamMessage)>,
+        tx: mpsc::Sender<Result<StreamMessage, PersistentStorageError>>,
+    ) -> Result<(), PersistentStorageError> {
+        let mut next_offset = from_offset;
 
-    #[inline]
-    fn transition_to_live(&mut self) {
-        let rx = self.wal_inner.tx.subscribe();
-        let live = BroadcastStream::new(rx).map(|item| match item {
-            Ok((_off, msg)) => Ok(msg),
-            Err(e) => Err(PersistentStorageError::Other(format!(
-                "broadcast error: {}",
-                e
-            ))),
-        });
-        self.phase = ReaderPhase::Live {
-            stream: Box::pin(live),
-        };
-    }
-
-    /// Asynchronously build a cache stream from the given offset and transition when ready.
-    fn poll_transition_to_cache(&mut self, cx: &mut Context<'_>, from: u64) -> Poll<()> {
-        let wal_inner = self.wal_inner.clone();
-        let fut = async move { build_cache_stream(wal_inner, from, 512).await };
-        let mut fut = Box::pin(fut);
-        match fut.as_mut().poll(cx) {
-            Poll::Ready(cache_stream) => {
-                self.phase = ReaderPhase::Cache {
-                    stream: cache_stream,
-                };
-                Poll::Ready(())
+        if from_offset < cache_start {
+            if let Some(ckpt) = checkpoint_opt.as_ref() {
+                let mut file_stream =
+                    streaming_reader::stream_from_wal_files(ckpt, from_offset, 10 * 1024 * 1024)
+                        .await?;
+                while let Some(item) = file_stream.next().await {
+                    match item {
+                        Ok(msg) => {
+                            let observed = msg.msg_id.topic_offset;
+                            if observed < next_offset {
+                                continue;
+                            }
+                            if observed > next_offset {
+                                warn!(
+                                    target = "stateful_reader",
+                                    next_offset,
+                                    observed,
+                                    "file replay produced a gap; falling back to cache/live catch-up"
+                                );
+                                break;
+                            }
+                            if tx.send(Ok(msg)).await.is_err() {
+                                return Ok(());
+                            }
+                            next_offset = next_offset.saturating_add(1);
+                        }
+                        Err(e) => {
+                            warn!(
+                                target = "stateful_reader",
+                                error = %e,
+                                next_offset,
+                                "file replay failed; falling back to cache/live catch-up"
+                            );
+                            break;
+                        }
+                    }
+                }
             }
-            Poll::Pending => Poll::Pending,
+        }
+
+        loop {
+            Self::drain_cache(&wal_inner, &tx, &mut next_offset).await?;
+
+            match live_rx.recv().await {
+                Ok((_off, msg)) => {
+                    let observed = msg.msg_id.topic_offset;
+                    if observed < next_offset {
+                        continue;
+                    }
+                    if observed > next_offset {
+                        warn!(
+                            target = "stateful_reader",
+                            next_offset,
+                            observed,
+                            "gap detected in live stream; refilling from cache"
+                        );
+                        Self::drain_cache(&wal_inner, &tx, &mut next_offset).await?;
+                        if observed < next_offset {
+                            continue;
+                        }
+                        if observed > next_offset {
+                            return Err(PersistentStorageError::Other(format!(
+                                "wal live gap could not be repaired from cache: expected {}, observed {}",
+                                next_offset, observed
+                            )));
+                        }
+                    }
+                    if tx.send(Ok(msg)).await.is_err() {
+                        return Ok(());
+                    }
+                    next_offset = next_offset.saturating_add(1);
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(
+                        target = "stateful_reader",
+                        next_offset,
+                        skipped,
+                        "live stream lagged; refilling from cache"
+                    );
+                    let before = next_offset;
+                    Self::drain_cache(&wal_inner, &tx, &mut next_offset).await?;
+                    if next_offset == before {
+                        return Err(PersistentStorageError::Other(format!(
+                            "wal live lag could not be repaired from cache at offset {}",
+                            next_offset
+                        )));
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
+    }
+
+    /// Drain all currently available contiguous cache entries starting at `next_offset`.
+    ///
+    /// This helper reads the cache in bounded batches so lock hold times stay short. It keeps
+    /// re-checking the cache until a pass yields no new items, which lets the caller catch up to
+    /// the current cache frontier before switching back to live delivery.
+    async fn drain_cache(
+        wal_inner: &Arc<WalInner>,
+        tx: &mpsc::Sender<Result<StreamMessage, PersistentStorageError>>,
+        next_offset: &mut u64,
+    ) -> Result<(), PersistentStorageError> {
+        loop {
+            let mut cache_stream = build_cache_stream(wal_inner.clone(), *next_offset, 512).await;
+            let mut drained_any = false;
+
+            while let Some(item) = cache_stream.next().await {
+                let msg = item?;
+                let observed = msg.msg_id.topic_offset;
+                if observed < *next_offset {
+                    continue;
+                }
+                if observed > *next_offset {
+                    return Err(PersistentStorageError::Other(format!(
+                        "wal cache gap: expected {}, observed {}",
+                        *next_offset, observed
+                    )));
+                }
+                if tx.send(Ok(msg)).await.is_err() {
+                    return Ok(());
+                }
+                *next_offset = next_offset.saturating_add(1);
+                drained_any = true;
+            }
+
+            if !drained_any {
+                return Ok(());
+            }
         }
     }
 }

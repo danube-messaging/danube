@@ -126,7 +126,7 @@ pub struct SubscriptionLag {
 pub struct ReliableMetrics {
     pub wal_append_total: u64,
     pub wal_append_bytes_total: u64,
-    pub wal_fsync_total: u64,
+    pub wal_flush_total: u64,
     pub wal_flush_latency_p50_ms: f64,
     pub wal_flush_latency_p95_ms: f64,
     pub wal_flush_latency_p99_ms: f64,

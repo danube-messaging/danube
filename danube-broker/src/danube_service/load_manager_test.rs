@@ -765,6 +765,66 @@ async fn test_assign_topic_fallback_when_hint_inactive() {
 */
 
 #[tokio::test]
+async fn test_assign_topic_unload_marker_waits_until_ready() {
+    let mut lm = create_test_load_manager().await;
+
+    let mut rankings = lm.rankings.lock().await;
+    *rankings = vec![(1, 5), (2, 10)];
+    drop(rankings);
+
+    let mut brokers = lm.brokers_usage.lock().await;
+    brokers.insert(
+        1,
+        LoadReport {
+            broker_id: 1,
+            topics: vec![],
+            resources_usage: vec![],
+            total_throughput_mbps: 0.0,
+            total_message_rate: 0,
+            total_lag_messages: 0,
+            timestamp: 0,
+        },
+    );
+    brokers.insert(
+        2,
+        LoadReport {
+            broker_id: 2,
+            topics: vec![],
+            resources_usage: vec![],
+            total_throughput_mbps: 0.0,
+            total_message_rate: 0,
+            total_lag_messages: 0,
+            timestamp: 0,
+        },
+    );
+    drop(brokers);
+
+    let marker = serde_json::json!({
+        "reason": "unload",
+        "from_broker": 1,
+        "ready": false
+    });
+
+    let event = WatchEvent::Put {
+        key: format!("{}/default/unload-topic", BASE_UNASSIGNED_PATH)
+            .as_bytes()
+            .to_vec(),
+        value: serde_json::to_vec(&marker).unwrap(),
+        mod_revision: None,
+        version: None,
+    };
+
+    lm.assign_topic_to_broker(event).await;
+
+    let assignment_path = format!("{}/2/default/unload-topic", BASE_BROKER_PATH);
+    let result = lm.meta_store.get(&assignment_path, MetaOptions::None).await;
+    assert!(
+        result.unwrap().is_none(),
+        "unload topic should not be assigned before ready=true"
+    );
+}
+
+#[tokio::test]
 async fn test_assign_topic_unload_marker_still_works() {
     let mut lm = create_test_load_manager().await;
 
@@ -803,7 +863,8 @@ async fn test_assign_topic_unload_marker_still_works() {
     // Create unload marker (Phase D) - should exclude broker 1
     let marker = serde_json::json!({
         "reason": "unload",
-        "from_broker": 1
+        "from_broker": 1,
+        "ready": true
     });
 
     let event = WatchEvent::Put {

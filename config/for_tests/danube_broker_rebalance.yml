@@ -60,31 +60,18 @@ load_manager:
     min_topic_age_seconds: 30 # Wait 30s after topic creation before rebalancing
     blacklist_topics: []
 
-# WAL and Cloud Storage Configuration
-wal_cloud:
+# Storage Configuration
+storage:
+  mode: local
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
   wal:
-    dir: "./danube-data/wal"
-    file_name: "wal.log"
-    cache_capacity: 1024
-    file_sync:
-      interval_ms: 5000
-      max_batch_bytes: 10485760
     rotation:
       max_bytes: 536870912
-    retention:
-      time_minutes: 2880
-      size_mb: 20480
-      check_interval_minutes: 5
-
-  uploader:
-    enabled: true
-    interval_seconds: 30
-    root_prefix: "/danube-data"
-    max_object_mb: 256
-
-  cloud:
-    backend: "fs"
-    root: "./danube-data/cloud-storage"
 
 # Broker policies
 policies:

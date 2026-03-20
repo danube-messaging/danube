@@ -211,8 +211,8 @@ mod tests {
             dir: Some(dir.clone()),
             file_name: Some("wal.log".to_string()),
             cache_capacity: Some(16),
-            fsync_interval_ms: Some(1),
-            fsync_max_batch_bytes: Some(1024),
+            flush_interval_ms: Some(1),
+            flush_max_batch_bytes: Some(1024),
             rotate_max_bytes: None,
             rotate_max_seconds: None,
         };
@@ -263,12 +263,32 @@ mod tests {
             dir: Some(dir.clone()),
             file_name: Some("wal.log".to_string()),
             cache_capacity: Some(1024),
-            fsync_interval_ms: Some(1),
-            fsync_max_batch_bytes: Some(1024),
+            flush_interval_ms: Some(1),
+            flush_max_batch_bytes: Some(1024),
             rotate_max_bytes,
             rotate_max_seconds: None,
         };
         Wal::with_config(cfg).await
+    }
+
+    #[tokio::test]
+    async fn test_file_backed_startup_fails_for_invalid_wal_path(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let cfg = WalConfig {
+            dir: Some(tmp.path().to_path_buf()),
+            file_name: Some(".".to_string()),
+            cache_capacity: Some(16),
+            flush_interval_ms: Some(1),
+            flush_max_batch_bytes: Some(1024),
+            rotate_max_bytes: None,
+            rotate_max_seconds: None,
+        };
+
+        let err = Wal::with_config(cfg).await;
+        assert!(err.is_err(), "invalid file-backed wal path should fail during startup");
+
+        Ok(())
     }
 
     /// Test: WAL file replay (fresh reader over existing WAL directory)
@@ -292,7 +312,7 @@ mod tests {
         for i in 0..3u64 {
             writer.append(&make_message(i)).await?;
         }
-        writer.shutdown().await;
+        writer.shutdown().await?;
 
         // New reader instance
         let reader = make_wal_with_dir(&dir, None).await?;
@@ -338,7 +358,7 @@ mod tests {
         for i in 0..5u64 {
             writer.append(&make_message(i)).await?;
         }
-        writer.shutdown().await;
+        writer.shutdown().await?;
 
         let reader = make_wal_with_dir(&dir, None).await?;
         let mut stream = reader.tail_reader(3, false).await?;
@@ -381,7 +401,7 @@ mod tests {
         }
 
         // Ensure data is flushed
-        wal.shutdown().await;
+        wal.shutdown().await?;
 
         // Read from offset 0 and collect all
         let mut stream = wal.tail_reader(0, false).await?;
@@ -429,7 +449,7 @@ mod tests {
             wal.append(&m).await?;
         }
 
-        wal.shutdown().await;
+        wal.shutdown().await?;
 
         // Read from offset 10 and collect next 15
         let mut stream = wal.tail_reader(10, false).await?;
@@ -450,6 +470,26 @@ mod tests {
             assert_eq!(msg.payload, format!("msg-{}", expected_off).into_bytes());
             assert_eq!(msg.msg_id.topic_offset, expected_off);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_append_after_shutdown_does_not_leak_visibility(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, None).await?;
+
+        wal.shutdown().await?;
+
+        let err = wal.append(&make_message(0)).await;
+        assert!(err.is_err(), "append should fail after shutdown");
+        assert_eq!(wal.current_offset(), 0, "failed append must not consume an offset");
+
+        let (items, watermark) = wal.read_cached_since(0).await?;
+        assert!(items.is_empty(), "failed append must not leak into cache visibility");
+        assert_eq!(watermark, 0);
 
         Ok(())
     }

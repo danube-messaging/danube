@@ -513,6 +513,7 @@ impl LoadManager {
                 // Parse unload/rebalance marker to determine assignment strategy
                 let mut exclude_broker: Option<u64> = None;
                 let mut target_broker_hint: Option<u64> = None;
+                let mut unload_ready = true;
 
                 if !value.is_empty() {
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
@@ -526,6 +527,10 @@ impl LoadManager {
                                 {
                                     exclude_broker = Some(from_broker);
                                 }
+                                unload_ready = obj
+                                    .get("ready")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                             }
 
                             // Handle rebalance (prefer target broker)
@@ -543,6 +548,10 @@ impl LoadManager {
                             }
                         }
                     }
+                }
+
+                if exclude_broker.is_some() && !unload_ready {
+                    return;
                 }
 
                 // Select broker based on marker type and hints

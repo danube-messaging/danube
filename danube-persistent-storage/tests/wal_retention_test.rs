@@ -6,10 +6,12 @@ use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{
-    wal::WalConfig, BackendConfig, LocalBackend, UploaderBaseConfig, WalStorageFactory,
+    wal::WalConfig, ObjectStoreConfig, RetentionConfig, SegmentDescriptor, StorageFactory,
+    StorageFactoryConfig, StorageMetadata,
 };
 use std::time::Duration;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 // Reuse shared test utilities
 mod common;
@@ -20,6 +22,33 @@ async fn touch_file(dir: &PathBuf, name: &str, bytes: &[u8]) -> PathBuf {
     let p = dir.join(name);
     tokio::fs::write(&p, bytes).await.expect("write file");
     p
+}
+
+async fn seed_durable_segment(
+    metadata: &StorageMetadata,
+    topic_path: &str,
+    start_offset: u64,
+    end_offset: u64,
+) {
+    let start_padded = format!("{:020}", start_offset);
+    let segment = SegmentDescriptor {
+        segment_id: format!("data-{}-seed.dnb1", start_offset),
+        start_offset,
+        end_offset,
+        size: 0,
+        etag: None,
+        created_at: 0,
+        completed: true,
+        offset_index: None,
+    };
+    metadata
+        .put_segment_descriptor(topic_path, &start_padded, &segment)
+        .await
+        .expect("seed segment descriptor");
+    metadata
+        .put_current_segment(topic_path, &start_padded)
+        .await
+        .expect("seed current segment");
 }
 
 /// Test: Retention end-to-end (time-based) deletes eligible files and advances start_offset
@@ -42,8 +71,10 @@ async fn test_retention_time_based_end_to_end() {
     let tmp = tempfile::TempDir::new().expect("temp wal root");
     let root = tmp.path().to_path_buf();
     let wal_ckpt = root.join("wal.ckpt");
-    let up_ckpt = root.join("uploader.ckpt");
-    let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt, up_ckpt));
+    let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
+    let mem = MemoryStore::new().await.expect("memory store");
+    let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem);
+    let metadata = StorageMetadata::new(mem_arc, "/danube".to_string());
 
     // Files
     let f1 = touch_file(&root, "wal.1.log", b"a").await; // seq 1
@@ -65,17 +96,7 @@ async fn test_retention_time_based_end_to_end() {
         .await
         .expect("update wal");
 
-    // Uploader watermark: seq < 2 is safe to delete; seq 2 is not.
-    store
-        .update_uploader(&danube_persistent_storage::checkpoint::UploaderCheckpoint {
-            last_committed_offset: 999,
-            last_read_file_seq: 2,
-            last_read_byte_position: 0,
-            last_object_id: None,
-            updated_at: 0,
-        })
-        .await
-        .expect("update up");
+    seed_durable_segment(&metadata, "ns/topic", 0, 99).await;
 
     // Start deleter: time-based retention 0 minutes, runs one cycle immediately
     let cfg = DeleterConfig {
@@ -83,8 +104,14 @@ async fn test_retention_time_based_end_to_end() {
         retention_time_minutes: Some(0),
         retention_size_mb: None,
     };
-    let deleter = std::sync::Arc::new(Deleter::new("ns/topic".into(), store.clone(), cfg));
-    let handle = deleter.clone().start();
+    let deleter = std::sync::Arc::new(Deleter::new(
+        "ns/topic".into(),
+        store.clone(),
+        metadata,
+        cfg,
+    ));
+    let cancel = CancellationToken::new();
+    let handle = deleter.clone().start_with_cancel(cancel.clone());
 
     // Wait until rotated_files length == 1 and file wal.1.log removed
     let ok = wait_for_condition(
@@ -115,7 +142,8 @@ async fn test_retention_time_based_end_to_end() {
     );
 
     // Stop background task
-    handle.abort();
+    cancel.cancel();
+    let _ = handle.await;
 }
 
 /// Test: Retention end-to-end for multiple topics runs independently
@@ -136,10 +164,10 @@ async fn test_retention_multi_topic_independence() {
     // Topic A
     let tmp_a = tempfile::TempDir::new().expect("tmp A");
     let root_a = tmp_a.path().to_path_buf();
-    let store_a = std::sync::Arc::new(CheckpointStore::new(
-        root_a.join("wal.ckpt"),
-        root_a.join("uploader.ckpt"),
-    ));
+    let store_a = std::sync::Arc::new(CheckpointStore::new(root_a.join("wal.ckpt")));
+    let mem = MemoryStore::new().await.expect("memory store");
+    let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem);
+    let metadata = StorageMetadata::new(mem_arc, "/danube".to_string());
     let a1 = touch_file(&root_a, "wal.1.log", b"a").await;
     let a2 = touch_file(&root_a, "wal.2.log", b"bb").await;
     let a3 = touch_file(&root_a, "wal.3.log", b"ccc").await;
@@ -156,24 +184,12 @@ async fn test_retention_multi_topic_independence() {
         })
         .await
         .expect("wal a");
-    store_a
-        .update_uploader(&danube_persistent_storage::checkpoint::UploaderCheckpoint {
-            last_committed_offset: 999,
-            last_read_file_seq: 2,
-            last_read_byte_position: 0,
-            last_object_id: None,
-            updated_at: 0,
-        })
-        .await
-        .expect("up a");
+    seed_durable_segment(&metadata, "ns/a", 0, 49).await;
 
     // Topic B
     let tmp_b = tempfile::TempDir::new().expect("tmp B");
     let root_b = tmp_b.path().to_path_buf();
-    let store_b = std::sync::Arc::new(CheckpointStore::new(
-        root_b.join("wal.ckpt"),
-        root_b.join("uploader.ckpt"),
-    ));
+    let store_b = std::sync::Arc::new(CheckpointStore::new(root_b.join("wal.ckpt")));
     let b1 = touch_file(&root_b, "wal.10.log", b"xx").await;
     let b2 = touch_file(&root_b, "wal.11.log", b"yyy").await;
     let b3 = touch_file(&root_b, "wal.12.log", b"zzzz").await;
@@ -190,27 +206,29 @@ async fn test_retention_multi_topic_independence() {
         })
         .await
         .expect("wal b");
-    // B watermark prevents deletion (strictly less than 11 only)
-    store_b
-        .update_uploader(&danube_persistent_storage::checkpoint::UploaderCheckpoint {
-            last_committed_offset: 999,
-            last_read_file_seq: 11, // seq < 11 eligible -> only 10
-            last_read_byte_position: 0,
-            last_object_id: None,
-            updated_at: 0,
-        })
-        .await
-        .expect("up b");
+    seed_durable_segment(&metadata, "ns/b", 5, 14).await;
 
     let cfg = DeleterConfig {
         check_interval_minutes: 5,
         retention_time_minutes: Some(0),
         retention_size_mb: None,
     };
-    let del_a = std::sync::Arc::new(Deleter::new("ns/a".into(), store_a.clone(), cfg.clone()));
-    let del_b = std::sync::Arc::new(Deleter::new("ns/b".into(), store_b.clone(), cfg));
-    let ha = del_a.clone().start();
-    let hb = del_b.clone().start();
+    let del_a = std::sync::Arc::new(Deleter::new(
+        "ns/a".into(),
+        store_a.clone(),
+        metadata.clone(),
+        cfg.clone(),
+    ));
+    let del_b = std::sync::Arc::new(Deleter::new(
+        "ns/b".into(),
+        store_b.clone(),
+        metadata,
+        cfg,
+    ));
+    let cancel_a = CancellationToken::new();
+    let cancel_b = CancellationToken::new();
+    let ha = del_a.clone().start_with_cancel(cancel_a.clone());
+    let hb = del_b.clone().start_with_cancel(cancel_b.clone());
 
     // Wait for A: seq 10 removed, seq 11 remains with start_offset 15
     let a_ok = wait_for_condition(
@@ -256,8 +274,10 @@ async fn test_retention_multi_topic_independence() {
     .await;
     assert!(b_ok, "topic B did not prune as expected");
 
-    ha.abort();
-    hb.abort();
+    cancel_a.cancel();
+    cancel_b.cancel();
+    let _ = ha.await;
+    let _ = hb.await;
 }
 
 /// Test: StatefulReader works after retention (public-API flow)
@@ -293,14 +313,15 @@ async fn test_stateful_reader_after_retention() {
 
     let wal_cfg = WalConfig {
         dir: Some(unique_dir),
+        flush_interval_ms: Some(50),
+        flush_max_batch_bytes: Some(1),
         // Make rotation more aggressive to ensure multiple rotated files
         rotate_max_bytes: Some(64),
         ..Default::default()
     };
-    let backend = BackendConfig::Local {
-        backend: LocalBackend::Memory,
-        root: "integration-test".to_string(),
-    };
+    let durable_root = tempfile::tempdir().expect("durable root");
+    let object_store =
+        ObjectStoreConfig::filesystem_for_tests(durable_root.path().to_string_lossy().to_string());
     // Use size-based retention to avoid mtime edge-cases for files created moments ago.
     // Setting retention_size_mb to 0 forces deletion of all eligible rotated files once the
     // uploader watermark has advanced beyond them.
@@ -310,16 +331,19 @@ async fn test_stateful_reader_after_retention() {
         retention_size_mb: Some(0),
     };
     let memory_store: Arc<MemoryStore> = Arc::new(MemoryStore::new().await.expect("mem"));
-    let factory = WalStorageFactory::new(
-        wal_cfg.clone(),
-        backend.clone(),
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::object_store(
+            wal_cfg.clone(),
+            "/danube".to_string(),
+            object_store.clone(),
+            Some(RetentionConfig {
+                check_interval_minutes: deleter_cfg.check_interval_minutes,
+                time_minutes: deleter_cfg.retention_time_minutes,
+                size_mb: deleter_cfg.retention_size_mb,
+            }),
+        )
+        .with_segment_export_interval_seconds(1),
         memory_store.clone() as Arc<dyn MetadataStore>,
-        "/danube".to_string(),
-        UploaderBaseConfig {
-            interval_seconds: 1,
-            ..Default::default()
-        },
-        deleter_cfg.clone(),
     );
 
     let topic = "integration/retention-reader";

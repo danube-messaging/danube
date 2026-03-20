@@ -1,0 +1,106 @@
+name: Broker Reliable Move SharedFS E2E
+
+on:
+  pull_request:
+    paths:
+      - 'danube-broker/**'
+      - 'config/for_tests/danube_broker_shared_fs.yml'
+      - '.github/workflows/broker-reliable-move-shared-fs-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  reliable_move_shared_fs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build broker and admin binaries
+        run: cargo build --release -p danube-broker -p danube-admin
+
+      - name: Start 3 brokers
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p temp danube-data
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
+
+          for i in 0 1 2; do
+            broker_port=$((6650 + i))
+            admin_port=$((50051 + i))
+            raft_port=$((7650 + i))
+            prom_port=$((9040 + i))
+
+            nohup ./target/release/danube-broker \
+              --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+              --broker-addr 0.0.0.0:$broker_port \
+              --admin-addr 0.0.0.0:$admin_port \
+              --raft-addr 0.0.0.0:$raft_port \
+              --data-dir ./danube-data/broker-$i/raft \
+              --seed-nodes "$SEED_NODES" \
+              --prom-exporter 0.0.0.0:$prom_port \
+              > temp/broker-$i.log 2>&1 &
+          done
+
+      - name: Wait for all brokers to be ready
+        run: |
+          for i in 0 1 2; do
+            broker_port=$((6650 + i))
+            admin_port=$((50051 + i))
+
+            for attempt in $(seq 1 20); do
+              if nc -zv 127.0.0.1 $admin_port && nc -zv 127.0.0.1 $broker_port; then
+                echo "Broker $i is ready."
+                break
+              elif [ $attempt -eq 20 ]; then
+                echo "Broker $i failed to start."
+                cat temp/broker-$i.log
+                exit 1
+              fi
+              echo "Waiting for broker $i to start... ($attempt/20)"
+              sleep 3
+            done
+          done
+
+          sleep 10
+
+      - name: Run shared_fs reliable move integration tests
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ADMIN_BIN: ./target/release/danube-admin
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --release -p danube-broker --test reliable_topic_move_shared_fs -- --ignored --test-threads=1 --nocapture
+
+      - name: Print broker logs on failure
+        if: failure()
+        run: |
+          echo '--- broker-0.log ---'
+          sed -n '1,220p' temp/broker-0.log || true
+          echo '--- broker-1.log ---'
+          sed -n '1,220p' temp/broker-1.log || true
+          echo '--- broker-2.log ---'
+          sed -n '1,220p' temp/broker-2.log || true
+
+      - name: Stop brokers
+        if: always()
+        run: |
+          pkill -f danube-broker || true

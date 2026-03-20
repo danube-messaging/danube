@@ -240,7 +240,7 @@ async fn test_multiple_subscriptions_concurrent_reading() {
 }
 
 #[tokio::test]
-async fn test_multiple_subscriptions_with_cloud_handoff() {
+async fn test_multiple_subscriptions_with_durable_history_handoff() {
     let (factory, memory_store) = create_test_factory().await;
     let topic_name = "integration/multi-subsc-cloud";
 

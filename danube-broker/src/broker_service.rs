@@ -2,7 +2,7 @@ use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 use crate::danube_service::metrics_collector::MetricsCollector;
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
-use danube_persistent_storage::WalStorageFactory;
+use danube_persistent_storage::StorageFactory;
 use metrics::counter;
 use std::sync::Arc;
 use tonic::Status;
@@ -56,7 +56,7 @@ impl BrokerService {
     pub(crate) fn new(
         broker_id: u64,
         resources: Resources,
-        wal_factory: WalStorageFactory,
+        storage_factory: StorageFactory,
         auto_create_topics: bool,
     ) -> Self {
         let producers = ProducerRegistry::new();
@@ -68,7 +68,7 @@ impl BrokerService {
         let topic_manager = TopicManager::new(
             broker_id,
             topic_registry.clone(),
-            wal_factory.clone(),
+            storage_factory.clone(),
             resources_arc.clone(),
             producers.clone(),
             consumers.clone(),

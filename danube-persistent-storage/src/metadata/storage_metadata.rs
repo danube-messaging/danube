@@ -19,8 +19,8 @@ impl std::fmt::Debug for StorageMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObjectDescriptor {
-    pub object_id: String,
+pub struct SegmentDescriptor {
+    pub segment_id: String,
     pub start_offset: u64,
     pub end_offset: u64,
     pub size: u64,
@@ -36,6 +36,10 @@ pub struct ObjectDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageStateSealed {
     pub sealed: bool,
+    /// Highest offset already accepted by the local WAL at the time of seal.
+    ///
+    /// This is used to resume from the next offset on takeover when sealed
+    /// continuity is authoritative.
     pub last_committed_offset: u64,
     pub broker_id: u64,
     pub timestamp: u64,
@@ -46,14 +50,14 @@ impl StorageMetadata {
         Self { store, root }
     }
 
-    pub async fn put_object_descriptor(
+    pub async fn put_segment_descriptor(
         &self,
         topic_path: &str,
         start_offset_padded: &str,
-        desc: &ObjectDescriptor,
+        desc: &SegmentDescriptor,
     ) -> Result<(), PersistentStorageError> {
         let key = format!(
-            "{}/storage/topics/{}/objects/{}",
+            "{}/storage/topics/{}/segments/{}",
             self.root, topic_path, start_offset_padded
         );
         let value =
@@ -66,12 +70,12 @@ impl StorageMetadata {
     }
 
     /// Optional pointer to the current rolling object key (stores the start_offset_padded).
-    pub async fn put_current_pointer(
+    pub async fn put_current_segment(
         &self,
         topic_path: &str,
         start_offset_padded: &str,
     ) -> Result<(), PersistentStorageError> {
-        let key = format!("{}/storage/topics/{}/objects/cur", self.root, topic_path);
+        let key = format!("{}/storage/topics/{}/segments/cur", self.root, topic_path);
         let val = serde_json::json!({ "start": start_offset_padded });
         self.store
             .put(&key, val, MetaOptions::None)
@@ -80,11 +84,63 @@ impl StorageMetadata {
         Ok(())
     }
 
-    pub async fn get_object_descriptors(
+    pub async fn get_segment_descriptor(
         &self,
         topic_path: &str,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
-        let prefix = format!("{}/storage/topics/{}/objects/", self.root, topic_path);
+        start_offset_padded: &str,
+    ) -> Result<Option<SegmentDescriptor>, PersistentStorageError> {
+        let key = format!(
+            "{}/storage/topics/{}/segments/{}",
+            self.root, topic_path, start_offset_padded
+        );
+        match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => {
+                let desc = serde_json::from_value::<SegmentDescriptor>(value)
+                    .map_err(|e| PersistentStorageError::Other(e.to_string()))?;
+                Ok(Some(desc))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PersistentStorageError::Metadata(e.to_string())),
+        }
+    }
+
+    /// Resolve the current durable segment through the `cur` pointer indirection.
+    ///
+    /// The `segments/cur` key stores only the padded start offset of the latest published
+    /// segment. This helper first reads that pointer and then loads the full descriptor from the
+    /// corresponding `segments/<start_offset_padded>` entry.
+    pub async fn get_current_segment_descriptor(
+        &self,
+        topic_path: &str,
+    ) -> Result<Option<SegmentDescriptor>, PersistentStorageError> {
+        let key = format!("{}/storage/topics/{}/segments/cur", self.root, topic_path);
+        let start_offset_padded = match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => value
+                .get("start")
+                .and_then(|start| start.as_str())
+                .map(|start| start.to_string()),
+            Ok(None) => None,
+            Err(e) => return Err(PersistentStorageError::Metadata(e.to_string())),
+        };
+        match start_offset_padded {
+            Some(start_offset_padded) => {
+                self.get_segment_descriptor(topic_path, &start_offset_padded)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all durable segment descriptors stored for a topic.
+    ///
+    /// This performs a prefix scan over the topic's segment metadata and returns descriptors sorted
+    /// by `start_offset`, giving callers a deterministic logical history order regardless of backend
+    /// enumeration order.
+    pub async fn get_segment_descriptors(
+        &self,
+        topic_path: &str,
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/{}/segments/", self.root, topic_path);
         let kvs = self
             .store
             .get_bulk(&prefix)
@@ -92,7 +148,7 @@ impl StorageMetadata {
             .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
         let mut out = Vec::new();
         for kv in kvs {
-            if let Ok(desc) = serde_json::from_slice::<ObjectDescriptor>(&kv.value) {
+            if let Ok(desc) = serde_json::from_slice::<SegmentDescriptor>(&kv.value) {
                 out.push(desc)
             }
         }
@@ -103,13 +159,18 @@ impl StorageMetadata {
 
     /// Fetch descriptors starting at or after `from_padded` (inclusive). If `to_padded` is Some,
     /// it will stop at keys <= `to_padded`.
-    pub async fn get_object_descriptors_range(
+    ///
+    /// Range matching is done lexicographically on zero-padded start-offset keys, which preserves
+    /// numeric ordering while still using simple string comparison against backend keys.
+    /// The `cur` pointer entry is explicitly skipped because it is metadata indirection, not a
+    /// descriptor payload.
+    pub async fn get_segment_descriptors_range(
         &self,
         topic_path: &str,
         from_padded: &str,
         to_padded: Option<&str>,
-    ) -> Result<Vec<ObjectDescriptor>, PersistentStorageError> {
-        let prefix = format!("{}/storage/topics/{}/objects/", self.root, topic_path);
+    ) -> Result<Vec<SegmentDescriptor>, PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/{}/segments/", self.root, topic_path);
         let kvs = self
             .store
             .get_bulk(&prefix)
@@ -124,7 +185,7 @@ impl StorageMetadata {
                     continue;
                 }
                 if idx >= from_padded && to_padded.map(|t| idx <= t).unwrap_or(true) {
-                    if let Ok(desc) = serde_json::from_slice::<ObjectDescriptor>(&kv.value) {
+                    if let Ok(desc) = serde_json::from_slice::<SegmentDescriptor>(&kv.value) {
                         out.push(desc);
                     }
                 }
@@ -184,6 +245,9 @@ impl StorageMetadata {
 
     /// Delete all storage metadata for a topic under `/storage/topics/<topic_path>/`.
     /// This includes object descriptors, current pointer, and sealed state.
+    ///
+    /// This is a prefix-based metadata sweep. It removes every metadata key for the topic rather
+    /// than trying to delete descriptor, pointer, and state entries individually.
     pub async fn delete_storage_topic(
         &self,
         topic_path: &str,

@@ -1,9 +1,8 @@
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetaOptions, MetadataStore};
-use danube_persistent_storage::wal::deleter::DeleterConfig;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
-    BackendConfig, LocalBackend, ObjectDescriptor, UploaderBaseConfig, WalStorageFactory,
+    ObjectStoreConfig, SegmentDescriptor, StorageFactory, StorageFactoryConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,7 +36,7 @@ pub fn make_test_message(
 
 /// Creates a test setup with in-memory backends
 #[allow(dead_code)]
-pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
+pub async fn create_test_factory() -> (StorageFactory, Arc<MemoryStore>) {
     let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
 
     // Use a unique WAL directory per test run to avoid interference with previous runs.
@@ -50,25 +49,31 @@ pub async fn create_test_factory() -> (WalStorageFactory, Arc<MemoryStore>) {
         d.push(format!("danube-integration-test-{}", nanos));
         d
     };
+    let wal_cfg = WalConfig {
+        dir: Some(unique_dir),
+        flush_interval_ms: Some(5_000),
+        ..Default::default()
+    };
+    let durable_root = {
+        let mut d = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        d.push(format!("danube-integration-durable-{}", nanos));
+        d
+    };
 
     let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
-    let factory = WalStorageFactory::new(
-        WalConfig {
-            dir: Some(unique_dir),
-            fsync_interval_ms: Some(200),
-            ..Default::default()
-        },
-        BackendConfig::Local {
-            backend: LocalBackend::Memory,
-            root: "integration-test".to_string(),
-        },
+    let factory = StorageFactory::new(
+        StorageFactoryConfig::object_store(
+            wal_cfg,
+            "/danube",
+            ObjectStoreConfig::filesystem_for_tests(durable_root.to_string_lossy().to_string()),
+            None,
+        )
+        .with_segment_export_interval_seconds(1),
         store_arc,
-        "/danube",
-        UploaderBaseConfig {
-            interval_seconds: 1,
-            ..Default::default()
-        },
-        DeleterConfig::default(),
     );
 
     (factory, memory_store)
@@ -96,7 +101,7 @@ where
 /// Counts objects in cloud storage for a topic
 #[allow(dead_code)]
 pub async fn count_cloud_objects(memory_store: &MemoryStore, topic_path: &str) -> usize {
-    let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
+    let prefix = format!("/danube/storage/topics/{}/segments", topic_path);
     let children = memory_store
         .get_childrens(&prefix)
         .await
@@ -112,8 +117,8 @@ pub async fn count_cloud_objects(memory_store: &MemoryStore, topic_path: &str) -
 pub async fn get_latest_object_descriptor(
     memory_store: &MemoryStore,
     topic_path: &str,
-) -> Option<ObjectDescriptor> {
-    let prefix = format!("/danube/storage/topics/{}/objects", topic_path);
+) -> Option<SegmentDescriptor> {
+    let prefix = format!("/danube/storage/topics/{}/segments", topic_path);
     let children = memory_store.get_childrens(&prefix).await.ok()?;
     let mut objects: Vec<_> = children
         .into_iter()
@@ -133,7 +138,7 @@ pub async fn get_latest_object_descriptor(
             .await
             .ok()??;
 
-        serde_json::from_value(desc_value).ok()
+        serde_json::from_value::<SegmentDescriptor>(desc_value).ok()
     } else {
         None
     }

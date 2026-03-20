@@ -9,7 +9,8 @@ use tracing::{debug, info, warn};
 use metrics::counter;
 use crate::persistent_metrics::WAL_DELETE_TOTAL;
 
-use crate::checkpoint::{CheckpointStore, UploaderCheckpoint, WalCheckpoint};
+use crate::checkpoint::{CheckpointStore, WalCheckpoint};
+use crate::metadata::StorageMetadata;
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]
@@ -33,14 +34,21 @@ impl Default for DeleterConfig {
 pub struct Deleter {
     topic_path: String,
     ckpt_store: Arc<CheckpointStore>,
+    metadata: StorageMetadata,
     cfg: DeleterConfig,
 }
 
 impl Deleter {
-    pub fn new(topic_path: String, ckpt_store: Arc<CheckpointStore>, cfg: DeleterConfig) -> Self {
+    pub fn new(
+        topic_path: String,
+        ckpt_store: Arc<CheckpointStore>,
+        metadata: StorageMetadata,
+        cfg: DeleterConfig,
+    ) -> Self {
         Self {
             topic_path,
             ckpt_store,
+            metadata,
             cfg,
         }
     }
@@ -72,25 +80,32 @@ impl Deleter {
         })
     }
 
-    /// Backward-compatible start without explicit cancellation token (used by tests).
-    pub fn start(self: Arc<Self>) -> JoinHandle<Result<(), PersistentStorageError>> {
-        let token = CancellationToken::new();
-        self.start_with_cancel(token)
-    }
-
+    /// Run one WAL retention pass for this topic.
+    ///
+    /// Functional flow
+    /// - Load the local WAL checkpoint and the current durable segment descriptor.
+    /// - Derive deletion candidates only from rotated files that are fully covered by durable
+    ///   history.
+    /// - Apply the configured time/size retention rules.
+    /// - Delete selected files and rewrite the checkpoint's `rotated_files`/`start_offset` view.
+    ///
+    /// Safety boundary
+    /// - The active file is never considered here.
+    /// - A rotated file is only eligible if its whole offset range is known to be safely exported.
     pub(crate) async fn run_cycle(&self) -> Result<(), PersistentStorageError> {
         let wal_ckpt_opt = self.ckpt_store.get_wal().await;
-        let uploader_ckpt_opt = self.ckpt_store.get_uploader().await;
-        let (mut wal_ckpt, uploader_ckpt) = match (wal_ckpt_opt, uploader_ckpt_opt) {
-            (Some(w), Some(u)) => (w, u),
+        let durable_segment = self
+            .metadata
+            .get_current_segment_descriptor(&self.topic_path)
+            .await?;
+        let (mut wal_ckpt, durable_end_offset) = match (wal_ckpt_opt, durable_segment) {
+            (Some(w), Some(segment)) => (w, segment.end_offset),
             _ => {
-                // Nothing to do without checkpoints
                 return Ok(());
             }
         };
 
-        // Build candidate list from rotated_files: exclude active and files not fully processed by uploader
-        let candidates = self.collect_candidates(&wal_ckpt, &uploader_ckpt).await?;
+        let candidates = self.collect_candidates(&wal_ckpt, durable_end_offset).await?;
         if candidates.is_empty() {
             debug!(target = "wal_deleter", topic = %self.topic_path, "no candidates eligible for retention");
             return Ok(());
@@ -143,10 +158,16 @@ impl Deleter {
         Ok(())
     }
 
+    /// Collect rotated WAL files that are structurally eligible for deletion.
+    ///
+    /// For each rotated file, this reconstructs that file's offset range from the checkpoint's
+    /// `first_offset` markers. A file only becomes a candidate if its computed end offset is at or
+    /// below the durable segment's end offset, meaning durable history already covers the whole
+    /// file.
     async fn collect_candidates(
         &self,
         wal_ckpt: &WalCheckpoint,
-        uploader_ckpt: &UploaderCheckpoint,
+        durable_end_offset: u64,
     ) -> Result<
         Vec<(
             u64,
@@ -158,12 +179,21 @@ impl Deleter {
         PersistentStorageError,
     > {
         let mut out = Vec::new();
-        // Only rotated files strictly older than the uploader's current file are eligible
-        for (seq, path, first) in wal_ckpt.rotated_files.iter() {
-            if *seq >= uploader_ckpt.last_read_file_seq {
+        let mut rotated_files = wal_ckpt.rotated_files.clone();
+        rotated_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (idx, (seq, path, first)) in rotated_files.iter().enumerate() {
+            let next_first_offset = rotated_files
+                .get(idx + 1)
+                .map(|(_, _, next_first)| *next_first)
+                .or(wal_ckpt.active_file_first_offset);
+            let end_offset = match next_first_offset {
+                Some(next_first) if next_first > *first => next_first.saturating_sub(1),
+                _ => continue,
+            };
+            if end_offset > durable_end_offset {
                 continue;
             }
-            // metadata
             let meta = match tokio::fs::metadata(path).await {
                 Ok(m) => m,
                 Err(_) => continue,
@@ -177,6 +207,14 @@ impl Deleter {
         Ok(out)
     }
 
+    /// Apply retention policies to an already-safe candidate set.
+    ///
+    /// Policy behavior
+    /// - Time retention selects files older than the configured TTL.
+    /// - Size retention then adds the oldest remaining files until total retained size falls under
+    ///   the configured cap.
+    ///
+    /// The input is assumed to already satisfy the durable-safety checks from `collect_candidates`.
     fn apply_retention_policy(
         &self,
         candidates: &[(u64, PathBuf, u64, u64, Option<SystemTime>)],

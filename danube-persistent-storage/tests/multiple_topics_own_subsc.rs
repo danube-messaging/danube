@@ -79,7 +79,7 @@ async fn test_multiple_topics_isolated_storage() {
 }
 
 #[tokio::test]
-async fn test_multiple_topics_independent_uploaders() {
+async fn test_multiple_topics_independent_segment_exports() {
     let (factory, memory_store) = create_test_factory().await;
 
     let topics = vec!["upload/topic-1", "upload/topic-2", "upload/topic-3"];
@@ -128,7 +128,7 @@ async fn test_multiple_topics_independent_uploaders() {
         );
 
         // Verify objects contain correct topic data
-        let prefix = format!("/danube/storage/topics/{}/objects", topic);
+        let prefix = format!("/danube/storage/topics/{}/segments", topic);
         let children = memory_store
             .get_childrens(&prefix)
             .await
@@ -140,7 +140,7 @@ async fn test_multiple_topics_independent_uploaders() {
 
         assert!(
             !objects.is_empty(),
-            "Topic {} should have object descriptors",
+            "Topic {} should have segment descriptors",
             topic
         );
     }
