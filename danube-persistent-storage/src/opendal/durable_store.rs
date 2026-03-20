@@ -31,10 +31,11 @@ impl DurableStore for OpendalDurableStore {
         path: &str,
         bytes: &[u8],
     ) -> Result<DurableObjectMetadata, PersistentStorageError> {
-        self.inner
-            .put_object_meta(path, bytes)
-            .await
-            .map(DurableObjectMetadata::from_opendal)
+        let meta = self.inner.put_object_meta(path, bytes).await?;
+        Ok(DurableObjectMetadata::new(
+            meta.content_length(),
+            meta.etag().map(|etag| etag.to_string()),
+        ))
     }
 
     async fn open_segment_reader(
@@ -43,11 +44,7 @@ impl DurableStore for OpendalDurableStore {
         start_byte: u64,
     ) -> Result<DurableRangeReader, PersistentStorageError> {
         let reader = self.inner.open_ranged_reader(path, start_byte).await?;
-        Ok(DurableRangeReader::from_raw_parts(
-            reader.inner,
-            reader.offset,
-            reader.size,
-        ))
+        Ok(DurableRangeReader::new(reader))
     }
 
     async fn delete_segment(&self, path: &str) -> Result<(), PersistentStorageError> {

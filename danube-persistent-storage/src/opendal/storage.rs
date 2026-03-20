@@ -1,7 +1,9 @@
 use crate::opendal::storage_config::BackendConfig;
+use crate::durable_store::DurableChunkReader;
 // Re-export split helpers for backward compatibility with existing tests
 use danube_core::storage::PersistentStorageError;
 use opendal::Operator;
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct OpendalStore {
@@ -117,6 +119,20 @@ impl OpendalRangeReader {
             .map_err(|e| PersistentStorageError::Other(format!("opendal read: {}", e)))?;
         self.offset += buf.len() as u64;
         Ok(buf.to_vec())
+    }
+}
+
+#[async_trait]
+impl DurableChunkReader for OpendalRangeReader {
+    fn remaining_bytes(&self) -> u64 {
+        self.size.saturating_sub(self.offset)
+    }
+
+    async fn read_chunk(
+        &mut self,
+        chunk_size: usize,
+    ) -> Result<Vec<u8>, PersistentStorageError> {
+        OpendalRangeReader::read_chunk(self, chunk_size).await
     }
 }
 

@@ -12,10 +12,10 @@ pub(crate) fn segment_object_path(topic_path: &str, segment_id: &str) -> String 
 }
 
 impl DurableObjectMetadata {
-    pub(crate) fn from_opendal(meta: opendal::Metadata) -> Self {
+    pub fn new(content_length: u64, etag: Option<String>) -> Self {
         Self {
-            content_length: meta.content_length(),
-            etag: meta.etag().map(|etag| etag.to_string()),
+            content_length,
+            etag,
         }
     }
 
@@ -34,24 +34,28 @@ impl DurableObjectMetadata {
 /// `DurableStore::open_segment_reader()` and advances its internal cursor after
 /// each successful `read_chunk()` call. Callers should continue reading until
 /// `read_chunk()` returns an empty buffer, which indicates end-of-object.
+#[async_trait]
+pub(crate) trait DurableChunkReader: Send {
+    fn remaining_bytes(&self) -> u64;
+
+    async fn read_chunk(
+        &mut self,
+        chunk_size: usize,
+    ) -> Result<Vec<u8>, PersistentStorageError>;
+}
+
 pub struct DurableRangeReader {
-    inner: opendal::Reader,
-    offset: u64,
-    size: u64,
+    inner: Box<dyn DurableChunkReader>,
 }
 
 impl DurableRangeReader {
-    pub(crate) fn from_raw_parts(inner: opendal::Reader, offset: u64, size: u64) -> Self {
-        Self {
-            inner,
-            offset,
-            size,
-        }
+    pub(crate) fn new(inner: impl DurableChunkReader + 'static) -> Self {
+        Self { inner: Box::new(inner) }
     }
 
     /// Return the number of unread bytes remaining in this range reader.
     pub fn remaining_bytes(&self) -> u64 {
-        self.size.saturating_sub(self.offset)
+        self.inner.remaining_bytes()
     }
 
     /// Read the next chunk of bytes and advance the internal cursor.
@@ -62,17 +66,7 @@ impl DurableRangeReader {
         &mut self,
         chunk_size: usize,
     ) -> Result<Vec<u8>, PersistentStorageError> {
-        if self.offset >= self.size {
-            return Ok(Vec::new());
-        }
-        let end = std::cmp::min(self.offset + chunk_size as u64, self.size);
-        let buf = self
-            .inner
-            .read(self.offset..end)
-            .await
-            .map_err(|e| PersistentStorageError::Other(format!("durable read: {}", e)))?;
-        self.offset += buf.len() as u64;
-        Ok(buf.to_vec())
+        self.inner.read_chunk(chunk_size).await
     }
 }
 
