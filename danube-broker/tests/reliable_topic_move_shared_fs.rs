@@ -1,9 +1,26 @@
+//! Shared-fs end-to-end coverage for reliable topic unload and reassignment.
+//!
+//! These ignored integration tests exercise reliable topics running on a
+//! multi-broker cluster configured with `shared_fs` durable storage. The goal is
+//! to verify that an explicit unload moves topic ownership to a different broker
+//! without losing durable state or breaking reliable-dispatch semantics.
+//!
+//! The scenarios covered here are:
+//!
+//! 1. Offset continuity across a broker move. Messages acknowledged before the
+//!    move must stay acknowledged, messages not yet consumed must remain
+//!    available, and newly produced messages on the new owner must continue the
+//!    existing topic offset sequence.
+//! 2. Redelivery of an unacked message across a broker move. A message delivered
+//!    before unload but left unacknowledged must be replayed after reassignment
+//!    before the rest of the remaining stream is consumed.
+
 extern crate danube_client;
 
 use anyhow::{bail, Context, Result};
 use danube_client::SubType;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -28,36 +45,79 @@ struct BrokerTopicEntry {
     delivery: String,
 }
 
-fn admin_cli() -> Command {
-    let mut cmd = if let Ok(bin) = std::env::var("DANUBE_ADMIN_BIN") {
-        Command::new(bin)
-    } else if Path::new("./target/release/danube-admin").exists() {
-        Command::new("./target/release/danube-admin")
-    } else if Path::new("./target/debug/danube-admin").exists() {
-        Command::new("./target/debug/danube-admin")
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+        .to_path_buf()
+}
+
+fn resolve_existing_path(path: impl AsRef<Path>) -> Option<PathBuf> {
+    let path = path.as_ref();
+    let candidates = if path.is_absolute() {
+        vec![path.to_path_buf()]
+    } else {
+        let mut candidates = Vec::new();
+        if let Ok(current_dir) = std::env::current_dir() {
+            candidates.push(current_dir.join(path));
+        }
+        candidates.push(PathBuf::from(path));
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path));
+        candidates.push(workspace_root().join(path));
+        candidates
+    };
+
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
+fn admin_cli() -> (Command, String) {
+    let mut resolved_program = None;
+
+    if let Ok(bin) = std::env::var("DANUBE_ADMIN_BIN") {
+        resolved_program = resolve_existing_path(&bin).or_else(|| Some(PathBuf::from(bin)));
+    }
+
+    if resolved_program.is_none() {
+        resolved_program = resolve_existing_path("./target/release/danube-admin");
+    }
+    if resolved_program.is_none() {
+        resolved_program = resolve_existing_path("./target/debug/danube-admin");
+    }
+
+    let (mut cmd, program_description) = if let Some(program) = resolved_program {
+        let description = program.display().to_string();
+        (Command::new(&program), description)
     } else {
         let mut cargo = Command::new("cargo");
+        cargo.current_dir(workspace_root());
         cargo.args(["run", "-p", "danube-admin", "--bin", "danube-admin", "--"]);
-        cargo
+        (cargo, "cargo run -p danube-admin --bin danube-admin --".to_string())
     };
 
     cmd.env(
         "DANUBE_ADMIN_ENDPOINT",
         std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
     );
-    cmd
+    (cmd, program_description)
 }
 
 fn run_admin(args: &[&str]) -> Result<String> {
-    let output = admin_cli()
+    let (mut cmd, program_description) = admin_cli();
+    let output = cmd
         .args(args)
         .output()
-        .with_context(|| format!("failed to execute danube-admin {:?}", args))?;
+        .with_context(|| {
+            format!(
+                "failed to execute danube-admin {:?} using {}",
+                args, program_description
+            )
+        })?;
 
     if !output.status.success() {
         bail!(
-            "danube-admin {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            "danube-admin {:?} failed using {}\nstdout:\n{}\nstderr:\n{}",
             args,
+            program_description,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -150,6 +210,22 @@ fn assert_offsets(offsets: &[u64], expected: std::ops::Range<u64>) {
     assert_eq!(offsets, expected_offsets, "unexpected offset sequence");
 }
 
+/// Verifies that a reliable topic can be unloaded from one broker and assigned
+/// to another broker under `shared_fs` storage without breaking message
+/// continuity.
+///
+/// The test produces ten identical messages, consumes and acknowledges the first
+/// five, unloads the topic, waits for ownership to move to a different broker,
+/// then produces eight more messages on the new owner. After resubscribing, it
+/// expects to read the unconsumed tail of the original stream followed by the
+/// newly produced messages with a continuous offset range of `5..18`.
+///
+/// This confirms that:
+/// - acknowledged messages before the move are not replayed,
+/// - unconsumed durable data survives reassignment,
+/// - the delivery mode remains reliable after reassignment, and
+/// - offset allocation continues from the pre-move durable state instead of
+///   restarting from an empty topic.
 #[tokio::test]
 #[ignore = "requires shared_fs e2e workflow"]
 async fn reliable_topic_move_shared_fs_continues_offsets() -> Result<()> {
@@ -253,6 +329,22 @@ async fn reliable_topic_move_shared_fs_continues_offsets() -> Result<()> {
     Ok(())
 }
 
+/// Verifies that a reliable topic move preserves pending-delivery semantics for
+/// an unacknowledged message under `shared_fs` storage.
+///
+/// The test produces ten messages, acknowledges offsets `0..3`, receives offset
+/// `3` without acknowledging it, unloads the topic, waits for reassignment, and
+/// then produces five more messages on the new owner. After resubscribing with
+/// the same consumer identity and subscription, it expects the previously
+/// unacked message to be redelivered first, followed by the remaining messages
+/// in order with offsets `4..15`.
+///
+/// This confirms that:
+/// - consumer cursor progress acknowledged before the move is preserved,
+/// - pending reliable-delivery state is not lost during reassignment,
+/// - the same unacked message is replayed after the move, and
+/// - the remaining stream continues in order from durable state on the new
+///   broker.
 #[tokio::test]
 #[ignore = "requires shared_fs e2e workflow"]
 async fn reliable_topic_move_shared_fs_redelivers_unacked_message() -> Result<()> {

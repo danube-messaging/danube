@@ -36,107 +36,50 @@ jobs:
       - name: Build broker and admin binaries
         run: cargo build --release -p danube-broker -p danube-admin
 
-      - name: Start Broker 1
+      - name: Start 3 brokers
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p temp danube-data
-          nohup ./target/release/danube-broker \
-            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
-            --broker-addr 0.0.0.0:6650 \
-            --admin-addr 0.0.0.0:50051 \
-            --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/broker-0/raft \
-            --prom-exporter 0.0.0.0:9040 \
-            > temp/broker-0.log 2>&1 &
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 
-          for i in {1..15}; do
-            if nc -zv 127.0.0.1 50051 && nc -zv 127.0.0.1 6650; then
-              echo "Broker 1 is ready."
-              break
-            elif [ $i -eq 15 ]; then
-              echo "Broker 1 failed to start."
-              cat temp/broker-0.log
-              exit 1
-            fi
-            echo "Waiting for Broker 1 to start... ($i/15)"
-            sleep 3
+          for i in 0 1 2; do
+            broker_port=$((6650 + i))
+            admin_port=$((50051 + i))
+            raft_port=$((7650 + i))
+            prom_port=$((9040 + i))
+
+            nohup ./target/release/danube-broker \
+              --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+              --broker-addr 0.0.0.0:$broker_port \
+              --admin-addr 0.0.0.0:$admin_port \
+              --raft-addr 0.0.0.0:$raft_port \
+              --data-dir ./danube-data/broker-$i/raft \
+              --seed-nodes "$SEED_NODES" \
+              --prom-exporter 0.0.0.0:$prom_port \
+              > temp/broker-$i.log 2>&1 &
           done
 
-      - name: Start Brokers 2 and 3 with --join
-        env:
-          RUST_LOG: info,openraft::replication=off,openraft=error
+      - name: Wait for all brokers to be ready
         run: |
-          nohup ./target/release/danube-broker \
-            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
-            --broker-addr 0.0.0.0:6651 \
-            --admin-addr 0.0.0.0:50052 \
-            --raft-addr 0.0.0.0:7651 \
-            --data-dir ./danube-data/broker-1/raft \
-            --prom-exporter 0.0.0.0:9041 \
-            --join \
-            > temp/broker-1.log 2>&1 &
+          for i in 0 1 2; do
+            broker_port=$((6650 + i))
+            admin_port=$((50051 + i))
 
-          nohup ./target/release/danube-broker \
-            --config-file ./config/for_tests/danube_broker_shared_fs.yml \
-            --broker-addr 0.0.0.0:6652 \
-            --admin-addr 0.0.0.0:50053 \
-            --raft-addr 0.0.0.0:7652 \
-            --data-dir ./danube-data/broker-2/raft \
-            --prom-exporter 0.0.0.0:9042 \
-            --join \
-            > temp/broker-2.log 2>&1 &
-
-          for port in 50052 50053; do
-            for i in {1..15}; do
-              if nc -zv 127.0.0.1 $port; then
-                echo "Admin port $port is ready."
+            for attempt in $(seq 1 20); do
+              if nc -zv 127.0.0.1 $admin_port && nc -zv 127.0.0.1 $broker_port; then
+                echo "Broker $i is ready."
                 break
-              elif [ $i -eq 15 ]; then
-                echo "Admin port $port failed to start."
-                cat temp/broker-1.log temp/broker-2.log
+              elif [ $attempt -eq 20 ]; then
+                echo "Broker $i failed to start."
+                cat temp/broker-$i.log
                 exit 1
               fi
-              echo "Waiting for admin port $port... ($i/15)"
+              echo "Waiting for broker $i to start... ($attempt/20)"
               sleep 3
             done
           done
 
-      - name: Add Brokers 2 and 3 to cluster via admin CLI
-        env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
-        run: |
-          BROKER_2_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
-            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
-          BROKER_3_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50053 \
-            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
-          echo "Broker 2 node_id: $BROKER_2_NODE_ID"
-          echo "Broker 3 node_id: $BROKER_3_NODE_ID"
-
-          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50052
-          ./target/release/danube-admin cluster add-node --node-addr http://127.0.0.1:50053
-          sleep 2
-
-          ./target/release/danube-admin cluster promote-node --node-id $BROKER_2_NODE_ID
-          ./target/release/danube-admin cluster promote-node --node-id $BROKER_3_NODE_ID
-
-          for port in 6651 6652; do
-            for i in {1..15}; do
-              if nc -zv 127.0.0.1 $port; then
-                echo "Broker port $port is ready."
-                break
-              elif [ $i -eq 15 ]; then
-                echo "Broker port $port failed to start."
-                cat temp/broker-1.log temp/broker-2.log
-                exit 1
-              fi
-              echo "Waiting for broker port $port... ($i/15)"
-              sleep 3
-            done
-          done
-
-          ./target/release/danube-admin brokers activate --broker-id $BROKER_2_NODE_ID --reason "shared-fs-move-test"
-          ./target/release/danube-admin brokers activate --broker-id $BROKER_3_NODE_ID --reason "shared-fs-move-test"
           sleep 10
 
       - name: Run shared_fs reliable move integration tests
