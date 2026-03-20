@@ -173,6 +173,11 @@ impl PersistentStorage for WalStorage {
         topic_name: &str,
         start: StartPosition,
     ) -> Result<TopicStream, PersistentStorageError> {
+        let (start_offset, live) = match start {
+            StartPosition::Latest => (self.wal.current_offset(), true),
+            StartPosition::Offset(offset) => (offset, false),
+        };
+
         // This function requires cloud and metadata to be configured for the tiered reading logic.
         let (durable_store, metadata, topic_path) = match (
             self.durable_store.as_ref(),
@@ -181,22 +186,13 @@ impl PersistentStorage for WalStorage {
         ) {
             (Some(c), Some(e), Some(tp)) => (c.clone(), e.clone(), tp.clone()),
             _ => {
-                let (from, live) = match start {
-                    StartPosition::Latest => (self.wal.current_offset(), true),
-                    StartPosition::Offset(o) => (o, false),
-                };
                 warn!(
                     target = "wal_storage",
-                    start = from,
+                    start = start_offset,
                     "durable history is not configured; creating reader from WAL only"
                 );
-                return self.create_hot_reader(topic_name, from, live).await;
+                return self.create_hot_reader(topic_name, start_offset, live).await;
             }
-        };
-
-        let (start_offset, live) = match start {
-            StartPosition::Latest => (self.wal.current_offset(), true),
-            StartPosition::Offset(o) => (o, false),
         };
 
         let hot_start_offset = self.hot_start_offset().await;
@@ -209,25 +205,25 @@ impl PersistentStorage for WalStorage {
                 hot_start = hot_start_offset,
                 "creating reader from WAL only (request is within local retention)"
             );
-            self.create_hot_reader(topic_name, start_offset, live).await
-        } else {
-            info!(
-                target = "wal_storage",
-                topic = %topic_path,
-                start = start_offset,
-                hot_start = hot_start_offset,
-                "creating reader from durable history plus hot state"
-            );
-            self.create_durable_history_reader(
-                topic_name,
-                durable_store,
-                metadata,
-                topic_path,
-                start_offset,
-                hot_start_offset,
-            )
-            .await
+            return self.create_hot_reader(topic_name, start_offset, live).await;
         }
+
+        info!(
+            target = "wal_storage",
+            topic = %topic_path,
+            start = start_offset,
+            hot_start = hot_start_offset,
+            "creating reader from durable history plus hot state"
+        );
+        self.create_durable_history_reader(
+            topic_name,
+            durable_store,
+            metadata,
+            topic_path,
+            start_offset,
+            hot_start_offset,
+        )
+        .await
     }
 
     async fn ack_checkpoint(
