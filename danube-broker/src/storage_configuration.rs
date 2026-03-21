@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -41,6 +42,61 @@ pub(crate) enum StorageConfig {
         #[serde(default)]
         wal: WalNode,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageConfig;
+    use std::path::Path;
+
+    #[test]
+    fn builds_single_node_local_storage_config() {
+        let storage = StorageConfig::single_node(Path::new("local-data"));
+
+        match storage {
+            StorageConfig::Local {
+                local_wal_root,
+                metadata_prefix,
+                local_retention,
+                wal,
+            } => {
+                assert_eq!(
+                    local_wal_root,
+                    Path::new("local-data").join("wal").to_string_lossy()
+                );
+                assert_eq!(metadata_prefix.as_deref(), Some("/danube"));
+                let retention = local_retention.expect("local retention");
+                assert_eq!(retention.time_minutes, Some(2880));
+                assert_eq!(retention.size_mb, Some(20480));
+                assert_eq!(retention.check_interval_minutes, Some(5));
+                let rotation = wal.rotation.expect("rotation");
+                assert_eq!(rotation.max_bytes, Some(536870912));
+                assert_eq!(rotation.max_hours, None);
+            }
+            _ => panic!("single-node storage must be local"),
+        }
+    }
+}
+
+impl StorageConfig {
+    pub(crate) fn single_node(base_dir: &Path) -> Self {
+        Self::Local {
+            local_wal_root: base_dir.join("wal").to_string_lossy().into_owned(),
+            metadata_prefix: Some("/danube".to_string()),
+            local_retention: Some(LocalRetentionNode {
+                time_minutes: Some(2880),
+                size_mb: Some(20480),
+                check_interval_minutes: Some(5),
+            }),
+            wal: WalNode {
+                rotation: Some(WalRotationNode {
+                    max_bytes: Some(536870912),
+                    max_hours: None,
+                }),
+                ..Default::default()
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -55,17 +55,36 @@ use tracing_subscriber;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(
+                        "warn,danube_broker=info,danube_raft=info,danube_persistent_storage=info,danube_client=info",
+                    )
+                }),
+        )
+        .init();
 
     // Parse command line arguments
     let args = Args::parse()?;
 
-    // Load the configuration from the specified YAML file
-    let config_content = read_to_string(Path::new(&args.config_file))?;
-    let load_config: LoadConfiguration = serde_yaml::from_str(&config_content)?;
-
-    // Attempt to transform LoadConfiguration into ServiceConfiguration
-    let mut service_config: ServiceConfiguration = load_config.try_into()?;
+    let mut service_config: ServiceConfiguration = if args.single_node {
+        ServiceConfiguration::single_node(Path::new(
+            args.data_dir
+                .as_deref()
+                .expect("single-node mode requires data-dir"),
+        ))?
+    } else {
+        let config_file = args
+            .config_file
+            .as_deref()
+            .expect("config-file mode requires config file");
+        let config_content = read_to_string(Path::new(config_file))?;
+        let load_config: LoadConfiguration = serde_yaml::from_str(&config_content)?;
+        load_config.try_into()?
+    };
 
     // If `broker_addr` is provided via command-line args, override the value from the config file
     if let Some(broker_addr) = args.broker_addr {
@@ -142,8 +161,10 @@ async fn main() -> Result<()> {
     }
 
     // If `data_dir` is provided via command-line args, override meta_store.data_dir
-    if let Some(data_dir) = args.data_dir {
+    if !args.single_node {
+        if let Some(data_dir) = args.data_dir {
         service_config.meta_store.data_dir = data_dir;
+        }
     }
 
     // If `seed_nodes` is provided via command-line args, override meta_store.seed_nodes

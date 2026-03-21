@@ -272,7 +272,18 @@ impl RaftNode {
                 "no seed_nodes configured — auto-initializing single-node cluster"
             );
             self.init_cluster(self_addr).await?;
-            return Ok(BootstrapResult::Initialized);
+            loop {
+                let m = self.raft.metrics().borrow().clone();
+                if m.current_leader == Some(self.node_id) {
+                    info!(
+                        node_id = self.node_id,
+                        leader = ?m.current_leader,
+                        "single-node cluster leader established"
+                    );
+                    return Ok(BootstrapResult::Initialized);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
         }
 
         // Multi-node: discover all seed peers
