@@ -14,7 +14,7 @@ pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
 pub(crate) use syncronizer::Syncronizer;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
 use danube_raft::leadership::LeadershipHandle;
@@ -443,11 +443,25 @@ impl DanubeService {
         // Wait for the server to signal that it has started
         ready_rx.await?;
 
-        // it is needed by syncronizer in order to publish messages on meta_topic
-        let danube_client = DanubeClient::builder()
-            .service_url("http://127.0.0.1:6650")
-            .build()
-            .await?;
+        let broker_client_url = self.service_config.broker_url.clone();
+        let danube_client = loop {
+            match DanubeClient::builder()
+                .service_url(&broker_client_url)
+                .build()
+                .await
+            {
+                Ok(client) => break client,
+                Err(err) => {
+                    if broker_client_url.starts_with("https://") {
+                        return Err(err).context(format!(
+                            "Failed to connect internal broker client to {}. The synchronizer requires a locally reachable broker URL.",
+                            broker_client_url
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        };
 
         let _ = self.syncronizer.with_client(danube_client);
 

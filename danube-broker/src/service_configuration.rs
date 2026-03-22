@@ -1,11 +1,14 @@
 use crate::auth::{AuthConfig, AuthMode};
-use crate::danube_service::load_manager::config::LoadManagerConfig;
+use crate::danube_service::load_manager::config::{
+    AssignmentStrategy, LoadManagerConfig, RebalancingConfig,
+};
 use crate::policies::Policies;
 use crate::storage_configuration::StorageConfig;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::Path;
 
 /// configuration settings loaded from the config file
 #[derive(Debug, Deserialize)]
@@ -124,6 +127,50 @@ pub(crate) struct MetaStoreConfig {
     pub(crate) seed_nodes: Vec<String>,
 }
 
+impl ServiceConfiguration {
+    pub(crate) fn single_node(base_dir: &Path) -> Result<Self> {
+        let broker_addr: SocketAddr = "127.0.0.1:6650"
+            .parse()
+            .context("Failed to create single-node broker_addr")?;
+        let admin_addr: SocketAddr = "127.0.0.1:50051"
+            .parse()
+            .context("Failed to create single-node admin_addr")?;
+
+        Ok(Self {
+            cluster_name: "SINGLE_NODE".to_string(),
+            broker_addr,
+            broker_url: format!("http://{}", broker_addr),
+            connect_url: format!("http://{}", broker_addr),
+            proxy_enabled: false,
+            admin_addr,
+            prom_exporter: None,
+            raft_port: 7650,
+            meta_store: MetaStoreConfig {
+                data_dir: base_dir.join("raft").to_string_lossy().into_owned(),
+                seed_nodes: Vec::new(),
+            },
+            bootstrap_namespaces: vec!["default".to_string()],
+            auto_create_topics: true,
+            policies: Policies::new(),
+            storage: StorageConfig::single_node(base_dir),
+            auth: AuthConfig {
+                mode: AuthMode::None,
+                tls: None,
+                jwt: None,
+            },
+            admin_tls: false,
+            load_manager: Some(LoadManagerConfig {
+                assignment_strategy: AssignmentStrategy::Fair,
+                load_report_interval_seconds: 30,
+                rebalancing: RebalancingConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            }),
+        })
+    }
+}
+
 /// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
 impl TryFrom<LoadConfiguration> for ServiceConfiguration {
     type Error = anyhow::Error;
@@ -212,5 +259,46 @@ fn ensure_scheme(url: &str, default_scheme: &str) -> String {
         url.to_string()
     } else {
         format!("{}://{}", default_scheme, url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServiceConfiguration;
+    use crate::auth::AuthMode;
+    use crate::danube_service::load_manager::config::AssignmentStrategy;
+    use crate::storage_configuration::StorageConfig;
+    use std::path::Path;
+
+    #[test]
+    fn builds_single_node_service_configuration() {
+        let config = ServiceConfiguration::single_node(Path::new("local-data"))
+            .expect("single-node config");
+
+        assert_eq!(config.cluster_name, "SINGLE_NODE");
+        assert_eq!(config.broker_addr.to_string(), "127.0.0.1:6650");
+        assert_eq!(config.admin_addr.to_string(), "127.0.0.1:50051");
+        assert_eq!(config.raft_port, 7650);
+        assert_eq!(config.meta_store.seed_nodes, Vec::<String>::new());
+        assert_eq!(config.meta_store.data_dir, Path::new("local-data").join("raft").to_string_lossy());
+        assert_eq!(config.bootstrap_namespaces, vec!["default".to_string()]);
+        assert!(config.auto_create_topics);
+        assert_eq!(config.auth.mode, AuthMode::None);
+        assert!(!config.admin_tls);
+        assert!(config.prom_exporter.is_none());
+
+        let load_manager = config.load_manager.expect("load manager config");
+        assert_eq!(load_manager.assignment_strategy, AssignmentStrategy::Fair);
+        assert!(!load_manager.rebalancing.enabled);
+
+        match config.storage {
+            StorageConfig::Local { local_wal_root, .. } => {
+                assert_eq!(
+                    local_wal_root,
+                    Path::new("local-data").join("wal").to_string_lossy()
+                );
+            }
+            _ => panic!("single-node storage must be local"),
+        }
     }
 }
