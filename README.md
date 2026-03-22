@@ -11,7 +11,7 @@ Danube is an open-source distributed messaging broker platform designed to be cl
 
 ## 🚀 Get Started with Danube
 
-**Quick Start with Docker Compose** - Deploy a cluster in seconds:
+### Quick Start with Docker Compose - Deploy a cluster in seconds:
 
 Create a directory and download the required files:
 
@@ -41,7 +41,7 @@ This launches a complete Danube cluster with:
 
 **Test the setup:**
 
-### Produce messages with reliable delivery
+**Produce messages with reliable delivery**
 
 ```bash
 docker-compose exec -it danube-cli danube-cli produce \
@@ -52,7 +52,7 @@ docker-compose exec -it danube-cli danube-cli produce \
   --reliable
 ```
 
-### Consume messages from the topic
+**Consume messages from the topic**
 
 ```bash
 docker-compose exec -it danube-cli danube-cli consume \
@@ -63,6 +63,28 @@ docker-compose exec -it danube-cli danube-cli consume \
 ```
 
 📖 **[Complete Docker Setup Guide →](docker/README.md)**
+
+
+### Run a Single-Node Broker Locally - No Docker, no config file needed:
+
+Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases), then:
+
+```bash
+./danube-broker --single-node --data-dir ~/danube-data
+```
+
+This starts a self-contained single-broker cluster with sensible local defaults:
+
+- Broker on `127.0.0.1:6650`, Admin on `127.0.0.1:50051`
+- Embedded Raft metadata store persisted under `~/danube-data/raft`
+- Local WAL storage under `~/danube-data/wal`
+- No authentication, no TLS — ready for local development and testing
+
+Data is preserved across restarts. To start fresh, remove the data directory:
+
+```bash
+rm -rf ~/danube-data && ./target/debug/danube-broker --single-node --data-dir ~/danube-data
+```
 
 ## Architecture
 
