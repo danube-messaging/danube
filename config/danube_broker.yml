@@ -120,17 +120,99 @@ load_manager:
     blacklist_topics: []
 
 # Storage Configuration
+# Controls how reliable topics persist messages.
+# Three modes available: local, shared_fs, object_store.
+#
+# - local:        WAL-only on broker disk. No background export. Best for single-node / dev.
+# - shared_fs:    Local WAL + background export to a shared filesystem. Best for on-prem multi-broker.
+# - object_store: Local WAL + background export to S3/GCS/Azure Blob. Best for cloud-native multi-broker.
+#
+# See docs/concepts/persistence.md for full guidance.
+
 storage:
+  # Storage mode (required): local | shared_fs | object_store
   mode: local
+
+  # Root directory for per-topic WAL files (required for local; auto-derived for shared_fs/object_store).
+  # For shared_fs/object_store, if omitted the broker derives a cache path from meta_store.data_dir.
   local_wal_root: "./danube-data/wal"
+
+  # Prefix for storage metadata keys in the Raft metadata store.
+  # Default: "/danube". Change only if running multiple independent clusters on the same Raft group.
   metadata_prefix: "/danube"
+
+  # Local WAL retention: prunes local WAL files after durable segments safely cover them.
+  # Most useful in shared_fs and object_store modes where background export runs.
+  # In local mode, files are only pruned if proven safely covered by durable metadata.
   local_retention:
+    # Delete local WAL files older than this (minutes). Default: 2880 (48 hours).
     time_minutes: 2880
+    # Delete oldest local WAL files when total size exceeds this (MB). Default: 20480 (20 GB).
     size_mb: 20480
+    # How often to check the retention policy (minutes). Default: 5.
     check_interval_minutes: 5
+
+  # WAL settings: controls file rotation thresholds.
+  # Rotation creates new WAL files; sealed files become eligible for export and retention.
   wal:
     rotation:
+      # Rotate WAL file when it reaches this size (bytes). Default: 536870912 (512 MB).
       max_bytes: 536870912
+      # Rotate WAL file after this many hours (optional, no default).
+      # Useful for low-traffic topics to ensure files don't grow indefinitely old.
+      # max_hours: 24
+
+    # Advanced WAL tuning (optional). These are rarely needed for most deployments.
+    # advanced:
+    #   # In-memory replay cache capacity (number of messages).
+    #   # Higher = better consumer cache hit rates, more memory usage.
+    #   # cache_capacity: 1024
+    #
+    #   # Background flush settings. Controls how often buffered writes are fsynced to disk.
+    #   # This is NOT per-message sync — it's background batch flush cadence.
+    #   # file_sync:
+    #   #   # Flush interval in milliseconds. Default: 5000 (5s).
+    #   #   interval_ms: 5000
+    #   #   # Force flush when buffered bytes exceed this. Default: 10485760 (10 MB).
+    #   #   max_batch_bytes: 10485760
+
+  # --- Durable backend (required for shared_fs and object_store, not used in local) ---
+
+  # shared_fs durable backend example:
+  # durable:
+  #   # Shared filesystem directory visible to all brokers (e.g. NFS mount).
+  #   # This is NOT the local WAL directory — it's where exported segments are stored.
+  #   root: "/mnt/danube-shared-segments"
+
+  # object_store durable backend example (S3):
+  # durable:
+  #   backend: s3
+  #   root: "s3://my-bucket/danube"
+  #   region: "us-east-1"
+  #   # endpoint: "https://s3.us-east-1.amazonaws.com"  # optional, for custom endpoints / MinIO
+  #   # access_key: "<access-key>"                       # prefer env vars or IAM roles in production
+  #   # secret_key: "<secret-key>"
+  #   # profile: "default"                               # AWS profile name (optional)
+  #   # role_arn: "arn:aws:iam::..."                      # IAM role to assume (optional)
+  #   # session_token: "<token>"                          # temporary session token (optional)
+  #   # anonymous: false                                  # anonymous access (optional, for public buckets)
+  #   # virtual_host_style: false                         # S3 virtual-hosted-style URLs (optional)
+
+  # object_store durable backend example (GCS):
+  # durable:
+  #   backend: gcs
+  #   root: "gcs://my-bucket/danube"
+  #   # project: "my-gcp-project"
+  #   # credentials_path: "/path/to/credentials.json"
+  #   # credentials_json: '{"type":"service_account",...}'
+
+  # object_store durable backend example (Azure Blob):
+  # durable:
+  #   backend: azblob
+  #   root: "my-container/danube"
+  #   # endpoint: "https://<account>.blob.core.windows.net"
+  #   # account_name: "<account-name>"
+  #   # account_key: "<account-key>"
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

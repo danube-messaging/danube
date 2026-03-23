@@ -37,11 +37,16 @@ load_manager:
     min_topic_age_seconds: 300
     blacklist_topics: []
 
+# Storage Configuration (shared_fs mode for testing)
 storage:
   mode: shared_fs
   metadata_prefix: "/danube"
   durable:
     root: "./danube-data/shared-fs"
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
   wal:
     rotation:
       max_bytes: 536870912

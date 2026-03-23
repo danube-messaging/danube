@@ -60,7 +60,7 @@ load_manager:
     min_topic_age_seconds: 30 # Wait 30s after topic creation before rebalancing
     blacklist_topics: []
 
-# Storage Configuration
+# Storage Configuration (local mode for testing)
 storage:
   mode: local
   local_wal_root: "./danube-data/wal"

@@ -115,6 +115,8 @@ load_manager:
     blacklist_topics: []
 
 # Storage Configuration
+# Modes: local | shared_fs | object_store
+# See config/danube_broker.yml for full field documentation.
 storage:
   mode: local
   local_wal_root: "./danube-data/wal"
@@ -126,6 +128,7 @@ storage:
   wal:
     rotation:
       max_bytes: 536870912
+      # max_hours: 24
 
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:

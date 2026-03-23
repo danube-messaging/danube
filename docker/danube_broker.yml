@@ -108,6 +108,7 @@ load_manager:
     blacklist_topics: []
 
 # Storage Configuration
+# Modes: local | shared_fs | object_store
 storage:
   mode: local
   local_wal_root: "./danube-data/wal"

@@ -41,6 +41,7 @@ load_manager:
     min_topic_age_seconds: 300
     blacklist_topics: []
 
+# Storage Configuration (object_store mode with MinIO S3)
 storage:
   mode: object_store
   local_wal_root: "./danube-data/wal"
