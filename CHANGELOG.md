@@ -1,3 +1,25 @@
+<!-- v0.9.0 START -->
+## v0.9.0 - 2026-03-23
+
+**Persistent Storage Revamp & Zero-Config Single-Node Mode**
+
+This release rebuilds the `danube-persistent-storage` crate around a sealed-segment architecture and introduces a zero-config single-node mode so you can start a broker with a single command.
+
+### 💾 Persistent Storage Revamp
+
+* **Sealed-segment storage engine** (#208) — Rebuilt `danube-persistent-storage` around a three-layer model: per-topic local WAL for fast writes, immutable durable segments for historical reads and recovery, and Raft metadata for segment descriptors and topic mobility. Replaces the previous cloud-object storage path. by @danrusei in 7cbea0d
+
+* **Three storage modes** (#208) — `local` (WAL-only), `shared_fs` (WAL + shared filesystem), `object_store` (WAL + S3/GCS/Azure Blob via OpenDAL). Background segment export, tiered reads, and local WAL retention run automatically in `shared_fs` and `object_store` modes. by @danrusei in 7cbea0d
+
+* **Topic mobility** (#208) — Topics move between brokers with full offset continuity. The old broker seals and exports remaining WAL data; the new broker resumes from durable segments and metadata. by @danrusei in 7cbea0d
+
+### 🚀 Zero-Config Single-Node Mode
+
+* **`--single-node --data-dir` CLI** (#209) — Run a broker without a config file. Auto-generates defaults (broker `127.0.0.1:6650`, admin `127.0.0.1:50051`, Raft `127.0.0.1:7650`, local storage). Bootstraps a single-node Raft cluster on first boot; data persists across restarts. by @danrusei in 5e4a9e9
+
+* **Default logging** (#209) — Info-level logs on stderr by default, OpenRaft noise suppressed. Overridable via `RUST_LOG`. by @danrusei in 5e4a9e9
+<!-- v0.9.0 END -->
+
 <!-- v0.8.1 START -->
 ## v0.8.1 - 2026-03-14
 ### Performance Highlights
