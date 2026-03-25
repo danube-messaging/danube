@@ -12,7 +12,7 @@ use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaRefere
 
 use crate::{
     consumer::Consumer,
-    message::AckMessage,
+    message::{AckMessage, NackMessage},
     resources::Resources,
     subscription::SubscriptionOptions,
     topic_cluster::TopicCluster,
@@ -430,6 +430,10 @@ impl BrokerService {
     /// Acknowledges a message asynchronously via the topic registry.
     pub(crate) async fn ack_message_async(&self, ack_msg: AckMessage) -> Result<()> {
         self.topic_registry.ack_message_async(ack_msg).await
+    }
+
+    pub(crate) async fn nack_message_async(&self, nack_msg: NackMessage) -> Result<()> {
+        self.topic_registry.nack_message_async(nack_msg).await
     }
 
     // unsubscribe subscription from topic

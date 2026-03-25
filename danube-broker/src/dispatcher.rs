@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, Mutex};
 
-use crate::{consumer::Consumer, message::AckMessage};
+use crate::{consumer::Consumer, message::{AckMessage, NackMessage}};
 
 // Module declarations
 pub(crate) mod commands;
@@ -132,6 +132,16 @@ impl Dispatcher {
                 .send(DispatcherCommand::MessageAcked(ack_msg))
                 .await
                 .map_err(|_| anyhow!("Failed to send ack command")),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => control_tx
+                .send(DispatcherCommand::MessageNacked(nack_msg))
+                .await
+                .map_err(|_| anyhow!("Failed to send nack command")),
             _ => Ok(()),
         }
     }

@@ -200,6 +200,26 @@ pub struct AckResponse {
     pub request_id: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NackRequest {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    /// Identifies the message, associated with a unique topic, subscription and the broker
+    #[prost(message, optional, tag = "2")]
+    pub msg_id: ::core::option::Option<MsgId>,
+    /// Subscription name the consumer is subscribed to
+    #[prost(string, tag = "3")]
+    pub subscription_name: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "4")]
+    pub delay_ms: ::core::option::Option<u64>,
+    #[prost(string, optional, tag = "5")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NackResponse {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TopicLookupRequest {
     #[prost(uint64, tag = "1")]
     pub request_id: u64,
@@ -964,6 +984,28 @@ pub mod consumer_service_client {
                 .insert(GrpcMethod::new("danube.ConsumerService", "Ack"));
             self.inner.unary(req, path, codec).await
         }
+        /// Negative acknowledgment for a message from the Consumer
+        pub async fn nack(
+            &mut self,
+            request: impl tonic::IntoRequest<super::NackRequest>,
+        ) -> std::result::Result<tonic::Response<super::NackResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.ConsumerService/Nack",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.ConsumerService", "Nack"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1006,6 +1048,11 @@ pub mod consumer_service_server {
             &self,
             request: tonic::Request<super::AckRequest>,
         ) -> std::result::Result<tonic::Response<super::AckResponse>, tonic::Status>;
+        /// Negative acknowledgment for a message from the Consumer
+        async fn nack(
+            &self,
+            request: tonic::Request<super::NackRequest>,
+        ) -> std::result::Result<tonic::Response<super::NackResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct ConsumerServiceServer<T> {
@@ -1204,6 +1251,50 @@ pub mod consumer_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AckSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.ConsumerService/Nack" => {
+                    #[allow(non_camel_case_types)]
+                    struct NackSvc<T: ConsumerService>(pub Arc<T>);
+                    impl<
+                        T: ConsumerService,
+                    > tonic::server::UnaryService<super::NackRequest> for NackSvc<T> {
+                        type Response = super::NackResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::NackRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ConsumerService>::nack(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = NackSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

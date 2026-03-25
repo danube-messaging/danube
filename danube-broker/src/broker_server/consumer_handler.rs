@@ -1,9 +1,9 @@
 use crate::broker_server::DanubeServerImpl;
-use crate::message::AckMessage;
+use crate::message::{AckMessage, NackMessage};
 use crate::subscription::SubscriptionOptions;
 use danube_core::proto::{
     consumer_service_server::ConsumerService, AckRequest, AckResponse, ConsumerRequest,
-    ConsumerResponse, ReceiveRequest, StreamMessage,
+    ConsumerResponse, NackRequest, NackResponse, ReceiveRequest, StreamMessage,
 };
 
 use crate::broker_metrics::BROKER_RPC_TOTAL;
@@ -265,6 +265,40 @@ impl ConsumerService for DanubeServerImpl {
             Err(err) => {
                 let status = Status::internal(format!("Error acknowledging message: {}", err));
                 counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"ack", "result"=>"error").increment(1);
+                Err(status)
+            }
+        }
+    }
+
+    async fn nack(
+        &self,
+        request: tonic::Request<NackRequest>,
+    ) -> std::result::Result<tonic::Response<NackResponse>, tonic::Status> {
+        let nack_request = request.into_inner();
+        let nack = NackMessage {
+            request_id: nack_request.request_id,
+            msg_id: nack_request.msg_id.unwrap().into(),
+            subscription_name: nack_request.subscription_name,
+            delay_ms: nack_request.delay_ms,
+            reason: nack_request.reason,
+        };
+
+        let request_id = nack.request_id;
+        let msg_id = nack.msg_id.clone();
+
+        trace!(message_id = %nack.msg_id, "received nack request");
+
+        let service = self.service.as_ref();
+
+        match service.nack_message_async(nack).await {
+            Ok(()) => {
+                trace!(message_id = %msg_id, "message negatively acknowledged");
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"nack", "result"=>"ok").increment(1);
+                Ok(tonic::Response::new(NackResponse { request_id }))
+            }
+            Err(err) => {
+                let status = Status::internal(format!("Error negatively acknowledging message: {}", err));
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"nack", "result"=>"error").increment(1);
                 Err(status)
             }
         }

@@ -12,7 +12,7 @@ use crate::{
     dispatcher::subscription_engine::SubscriptionEngine,
     dispatcher::DispatchStrategy,
     dispatcher::Dispatcher,
-    message::AckMessage,
+    message::{AckMessage, NackMessage},
     rate_limiter::RateLimiter,
     resources::TopicResources,
     topic::TopicStore,
@@ -276,6 +276,15 @@ impl Subscription {
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         if let Some(dispatcher) = self.dispatcher.as_ref() {
             dispatcher.ack_message(ack_msg).await?;
+        } else {
+            return Err(anyhow!("Dispatcher not initialized"));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        if let Some(dispatcher) = self.dispatcher.as_ref() {
+            dispatcher.nack_message(nack_msg).await?;
         } else {
             return Err(anyhow!("Dispatcher not initialized"));
         }

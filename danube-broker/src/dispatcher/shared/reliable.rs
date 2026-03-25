@@ -98,7 +98,7 @@ use tracing::{trace, warn};
 use crate::broker_metrics::{
     DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL, SUBSCRIPTION_LAG_MESSAGES,
 };
-use crate::message::AckMessage;
+use crate::message::{AckMessage, NackMessage};
 
 use super::super::commands::DispatcherCommand;
 use super::super::shared::SharedConsumerState;
@@ -192,6 +192,10 @@ async fn handle_command(
             handle_ack(engine, ack_msg, pending, pending_message).await;
             handle_poll_and_dispatch(state, engine, pending, pending_message).await;
         }
+        DispatcherCommand::MessageNacked(nack_msg) => {
+            handle_nack(nack_msg, pending, pending_message).await;
+            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+        }
         DispatcherCommand::PollAndDispatch => {
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
             handle_poll_and_dispatch(state, engine, pending, pending_message).await;
@@ -208,6 +212,36 @@ async fn handle_command(
                 warn!(error = %e, "FlushProgressNow: failed");
             }
         }
+    }
+}
+
+async fn handle_nack(
+    nack_msg: NackMessage,
+    pending: &mut bool,
+    pending_message: &mut Option<StreamMessage>,
+) {
+    let nacked_offset = nack_msg.msg_id.topic_offset;
+
+    let matches_pending = pending_message
+        .as_ref()
+        .map(|msg| msg.msg_id.topic_offset == nacked_offset)
+        .unwrap_or(false);
+
+    if matches_pending {
+        trace!(
+            request_id = %nack_msg.request_id,
+            offset = %nacked_offset,
+            delay_ms = ?nack_msg.delay_ms,
+            reason = ?nack_msg.reason,
+            "nack received for pending message, preserving buffer for retry"
+        );
+        *pending = false;
+    } else {
+        trace!(
+            request_id = %nack_msg.request_id,
+            offset = %nacked_offset,
+            "ignoring late nack (not the pending message)"
+        );
     }
 }
 

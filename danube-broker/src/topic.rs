@@ -19,7 +19,7 @@ use crate::{
     },
     danube_service::metrics_collector::MetricsCollector,
     dispatcher::{DispatchStrategy, Dispatcher},
-    message::AckMessage,
+    message::{AckMessage, NackMessage},
     policies::Policies,
     producer::Producer,
     rate_limiter::RateLimiter,
@@ -375,6 +375,15 @@ impl Topic {
             .get_mut(ack_msg.subscription_name.as_str())
             .ok_or_else(|| anyhow!("Subscription not found"))?;
         subscription.ack_message(ack_msg).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        let mut subscriptions = self.subscriptions.lock().await;
+        let subscription = subscriptions
+            .get_mut(nack_msg.subscription_name.as_str())
+            .ok_or_else(|| anyhow!("Subscription not found"))?;
+        subscription.nack_message(nack_msg).await?;
         Ok(())
     }
 
