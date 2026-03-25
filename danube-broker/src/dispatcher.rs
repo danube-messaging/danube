@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use danube_core::message::{MessageID, StreamMessage};
 use metrics::{counter, gauge};
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{Duration, Instant};
@@ -14,10 +14,10 @@ use crate::{
     },
     consumer::Consumer,
     message::{AckMessage, NackMessage},
+    replicator::Replicator,
     subscription::{
         SubscriptionBackoffStrategy, SubscriptionFailurePolicy, SubscriptionPoisonPolicy,
     },
-    topic_registry::TopicRegistry,
 };
 
 // Module declarations
@@ -30,32 +30,6 @@ use commands::DispatcherCommand;
 use exclusive::ExclusiveDispatcher;
 use shared::SharedDispatcher;
 use subscription_engine::SubscriptionEngine;
-
-#[derive(Debug, Clone)]
-pub(crate) struct InternalPublisher {
-    topic_registry: Weak<TopicRegistry>,
-}
-
-impl InternalPublisher {
-    pub(crate) fn new(topic_registry: Weak<TopicRegistry>) -> Self {
-        Self { topic_registry }
-    }
-
-    pub(crate) async fn publish_message_async(
-        &self,
-        topic_name: &str,
-        message: StreamMessage,
-    ) -> Result<()> {
-        let topic_registry = self
-            .topic_registry
-            .upgrade()
-            .ok_or_else(|| anyhow!("topic registry unavailable for internal publish"))?;
-        let topic = topic_registry
-            .get_topic(topic_name)
-            .ok_or_else(|| anyhow!("Topic {} not found in local registry", topic_name))?;
-        topic.publish_message_internal_async(message).await
-    }
-}
 
 fn poison_policy_label(poison_policy: &SubscriptionPoisonPolicy) -> &'static str {
     match poison_policy {
@@ -192,7 +166,7 @@ fn build_dead_letter_message(
 pub(super) async fn handle_retry_exhausted_pending(
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
-    internal_publisher: Option<&InternalPublisher>,
+    replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) -> Result<bool> {
     let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
@@ -212,8 +186,8 @@ pub(super) async fn handle_retry_exhausted_pending(
                 .dead_letter_topic
                 .as_deref()
                 .ok_or_else(|| anyhow!("dead_letter_topic must be configured for DeadLetter"))?;
-            let publisher = internal_publisher
-                .ok_or_else(|| anyhow!("internal publisher unavailable for dead-letter routing"))?;
+            let publisher = replicator
+                .ok_or_else(|| anyhow!("replicator unavailable for dead-letter routing"))?;
             let dead_letter_message = build_dead_letter_message(
                 pending,
                 &engine._subscription_name,
@@ -401,7 +375,6 @@ impl PendingDelivery {
         self.target_consumer_id = None;
         self.status = PendingDeliveryStatus::WaitingToRetry;
     }
-
 }
 
 /// Single dispatcher handle — a thin facade over an mpsc command channel.
@@ -435,14 +408,14 @@ impl Dispatcher {
     pub(crate) fn reliable_exclusive(
         engine: SubscriptionEngine,
         failure_policy: SubscriptionFailurePolicy,
-        internal_publisher: Option<InternalPublisher>,
+        replicator: Option<Arc<Replicator>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
         ExclusiveDispatcher::start_reliable(
             engine,
             failure_policy,
-            internal_publisher,
+            replicator,
             control_rx,
             ready_tx,
         );
@@ -458,14 +431,14 @@ impl Dispatcher {
     pub(crate) fn reliable_shared(
         engine: SubscriptionEngine,
         failure_policy: SubscriptionFailurePolicy,
-        internal_publisher: Option<InternalPublisher>,
+        replicator: Option<Arc<Replicator>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
         SharedDispatcher::start_reliable(
             engine,
             failure_policy,
-            internal_publisher,
+            replicator,
             control_rx,
             ready_tx,
         );

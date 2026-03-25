@@ -10,16 +10,27 @@ use tokio::time::timeout;
 
 use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
+use crate::replicator::Replicator;
 use crate::resources::{SchemaResources, TopicResources};
 use crate::subscription::{
     SubscriptionFailurePolicy, SubscriptionOptions, SubscriptionPoisonPolicy,
 };
 use crate::topic::Topic;
 use crate::topic::TopicStore;
+use crate::topic_registry::TopicRegistry;
 use anyhow::Result as AnyResult;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::metadata::MemoryStore;
 use serde_json::{Number, Value};
+use std::sync::Arc;
+
+fn mk_replicator(store: &MetadataStorage) -> Arc<Replicator> {
+    Arc::new(Replicator::new(
+        0,
+        Arc::new(TopicRegistry::new(None)),
+        Arc::new(crate::resources::Resources::new(store.clone(), None)),
+    ))
+}
 
 fn mk_policies(entries: &[(&str, u32)]) -> Policies {
     let mut map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -64,9 +75,8 @@ async fn mk_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store.clone());
-    let schema_resources = SchemaResources::new(store);
+    let schema_resources = SchemaResources::new(store.clone());
     use crate::danube_service::metrics_collector::MetricsCollector;
-    use std::sync::Arc;
 
     Topic::new(
         name,
@@ -75,6 +85,7 @@ async fn mk_topic(name: &str) -> Topic {
         topic_resources,
         schema_resources,
         Arc::new(MetricsCollector::new()),
+        mk_replicator(&store),
     )
 }
 
@@ -82,9 +93,8 @@ async fn mk_reliable_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store.clone());
-    let schema_resources = SchemaResources::new(store);
+    let schema_resources = SchemaResources::new(store.clone());
     use crate::danube_service::metrics_collector::MetricsCollector;
-    use std::sync::Arc;
 
     let wal = Wal::with_config(WalConfig::default())
         .await
@@ -98,6 +108,7 @@ async fn mk_reliable_topic(name: &str) -> Topic {
         topic_resources,
         schema_resources,
         Arc::new(MetricsCollector::new()),
+        mk_replicator(&store),
     )
 }
 

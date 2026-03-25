@@ -7,7 +7,7 @@ use danube_core::{
 use danube_persistent_storage::WalStorage;
 use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -18,15 +18,15 @@ use crate::{
         TOPIC_MESSAGE_SIZE_BYTES,
     },
     danube_service::metrics_collector::MetricsCollector,
-    dispatcher::{DispatchStrategy, Dispatcher, InternalPublisher},
+    dispatcher::{DispatchStrategy, Dispatcher},
     message::{AckMessage, NackMessage},
     policies::Policies,
     producer::Producer,
     rate_limiter::RateLimiter,
+    replicator::Replicator,
     resources::{SchemaResources, TopicResources},
     subscription::{Subscription, SubscriptionFailurePolicy, SubscriptionOptions},
     topic_schema::TopicSchemaContext,
-    topic_registry::TopicRegistry,
 };
 
 #[cfg(test)]
@@ -41,8 +41,6 @@ pub(crate) enum TopicState {
     Draining,
     Closed,
 }
-
-// (moved helper/validation methods after struct definition)
 
 // Topic
 //
@@ -71,7 +69,7 @@ pub(crate) struct Topic {
     resources_topic: TopicResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
-    topic_registry: Mutex<Option<Weak<TopicRegistry>>>,
+    replicator: Arc<Replicator>,
     // topic state for orchestrations like unload
     state: Mutex<TopicState>,
     // optional topic-level publish rate limiter (messages/sec)
@@ -88,6 +86,7 @@ impl Topic {
         resources_topic: TopicResources,
         resources_schema: SchemaResources,
         metrics_collector: Arc<MetricsCollector>,
+        replicator: Arc<Replicator>,
     ) -> Self {
         let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
@@ -104,21 +103,11 @@ impl Topic {
             dispatch_strategy,
             resources_topic,
             topic_store,
-            topic_registry: Mutex::new(None),
+            replicator,
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
             metrics_collector,
         }
-    }
-
-    pub(crate) async fn attach_topic_registry(&self, topic_registry: Weak<TopicRegistry>) {
-        let mut registry = self.topic_registry.lock().await;
-        *registry = Some(topic_registry);
-    }
-
-    async fn dispatcher_internal_publisher(&self) -> Option<InternalPublisher> {
-        let registry = self.topic_registry.lock().await.clone()?;
-        Some(InternalPublisher::new(registry))
     }
 
     /// Get current producer count for metrics
@@ -478,7 +467,7 @@ impl Topic {
                         &self.dispatch_strategy,
                         self.topic_store.clone(),
                         Some(self.resources_topic.clone()),
-                        self.dispatcher_internal_publisher().await,
+                        Some(self.replicator.clone()),
                         Some(Duration::from_secs(10)),
                     )
                     .await?;

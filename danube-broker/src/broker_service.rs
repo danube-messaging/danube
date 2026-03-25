@@ -13,6 +13,7 @@ use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaRefere
 use crate::{
     consumer::Consumer,
     message::{AckMessage, NackMessage},
+    replicator::Replicator,
     resources::Resources,
     subscription::SubscriptionOptions,
     topic_cluster::TopicCluster,
@@ -46,6 +47,8 @@ pub(crate) struct BrokerService {
 
     /// Internal metrics collector for LoadReport generation
     pub(crate) metrics_collector: Arc<MetricsCollector>,
+    /// Shared broker-level Replicator
+    pub(crate) replicator: Arc<Replicator>,
 }
 
 impl BrokerService {
@@ -64,6 +67,11 @@ impl BrokerService {
         let topic_registry = Arc::new(TopicRegistry::new(None));
         let resources_arc = Arc::new(resources);
         let metrics_collector = Arc::new(MetricsCollector::new());
+        let replicator = Arc::new(Replicator::new(
+            broker_id,
+            topic_registry.clone(),
+            resources_arc.clone(),
+        ));
 
         let topic_manager = TopicManager::new(
             broker_id,
@@ -73,6 +81,7 @@ impl BrokerService {
             producers.clone(),
             consumers.clone(),
             metrics_collector.clone(),
+            replicator.clone(),
         );
 
         let topic_cluster = TopicCluster::new(resources_arc.clone());
@@ -88,6 +97,7 @@ impl BrokerService {
             resources: resources_arc,
             auto_create_topics,
             metrics_collector,
+            replicator,
         }
     }
 

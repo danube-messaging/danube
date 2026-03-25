@@ -3,14 +3,15 @@
 //! Routes messages to a single active consumer. If the active consumer fails,
 //! failover to the next available consumer.
 
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 use crate::consumer::Consumer;
+use crate::replicator::Replicator;
 use crate::subscription::SubscriptionFailurePolicy;
 
 use super::commands::DispatcherCommand;
 use super::subscription_engine::SubscriptionEngine;
-use super::InternalPublisher;
 
 // Import the specific implementations
 pub(super) mod non_reliable;
@@ -78,14 +79,14 @@ impl ExclusiveDispatcher {
     pub(super) fn start_reliable(
         engine: SubscriptionEngine,
         failure_policy: SubscriptionFailurePolicy,
-        internal_publisher: Option<InternalPublisher>,
+        replicator: Option<Arc<Replicator>>,
         control_rx: mpsc::Receiver<DispatcherCommand>,
         ready_tx: watch::Sender<bool>,
     ) {
         reliable::start(
             engine,
             failure_policy,
-            internal_publisher,
+            replicator,
             control_rx,
             ready_tx,
         );

@@ -13,6 +13,7 @@ mod metadata_storage;
 mod policies;
 mod producer;
 mod rate_limiter;
+mod replicator;
 mod resources;
 mod schema;
 mod service_configuration;

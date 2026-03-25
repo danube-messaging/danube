@@ -100,6 +100,7 @@ use crate::broker_metrics::{
     SUBSCRIPTION_REDELIVERY_TOTAL,
 };
 use crate::message::{AckMessage, NackMessage};
+use crate::replicator::Replicator;
 use crate::subscription::SubscriptionFailurePolicy;
 
 use super::super::commands::DispatcherCommand;
@@ -107,7 +108,7 @@ use super::super::shared::SharedConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
 use super::super::{
     handle_retry_exhausted_pending, record_retry_exhausted_metric, subscription_metric_context,
-    subscription_metric_topic, update_pending_delivery_metrics, InternalPublisher, PendingDelivery,
+    subscription_metric_topic, update_pending_delivery_metrics, PendingDelivery,
     SubscriptionMetricContext,
 };
 
@@ -115,19 +116,19 @@ use super::super::{
 pub(super) fn start(
     engine: SubscriptionEngine,
     failure_policy: SubscriptionFailurePolicy,
-    internal_publisher: Option<InternalPublisher>,
+    replicator: Option<Arc<Replicator>>,
     control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
-        run_reliable_loop(engine, failure_policy, internal_publisher, control_rx, ready_tx).await;
+        run_reliable_loop(engine, failure_policy, replicator, control_rx, ready_tx).await;
     });
 }
 
 async fn run_reliable_loop(
     mut engine: SubscriptionEngine,
     failure_policy: SubscriptionFailurePolicy,
-    internal_publisher: Option<InternalPublisher>,
+    replicator: Option<Arc<Replicator>>,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
@@ -160,7 +161,7 @@ async fn run_reliable_loop(
                             &mut state,
                             &mut engine,
                             &failure_policy,
-                            internal_publisher.as_ref(),
+                            replicator.as_deref(),
                             &mut pending_delivery,
                         ).await;
                     }
@@ -173,7 +174,7 @@ async fn run_reliable_loop(
                     &mut state,
                     &mut engine,
                     &failure_policy,
-                    internal_publisher.as_ref(),
+                    replicator.as_deref(),
                     &mut pending_delivery,
                 ).await;
             }
@@ -186,7 +187,7 @@ async fn handle_command(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
-    internal_publisher: Option<&InternalPublisher>,
+    replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     match cmd {
@@ -197,7 +198,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -216,7 +217,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -227,7 +228,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -238,7 +239,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -249,7 +250,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -259,7 +260,7 @@ async fn handle_command(
                 state,
                 engine,
                 failure_policy,
-                internal_publisher,
+                replicator,
                 pending_delivery,
             ).await;
         }
@@ -410,7 +411,7 @@ async fn handle_poll_and_dispatch(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
-    internal_publisher: Option<&InternalPublisher>,
+    replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
@@ -437,7 +438,7 @@ async fn handle_poll_and_dispatch(
     match handle_retry_exhausted_pending(
         engine,
         failure_policy,
-        internal_publisher,
+        replicator,
         pending_delivery,
     )
     .await
@@ -535,7 +536,7 @@ async fn handle_heartbeat(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
-    internal_publisher: Option<&InternalPublisher>,
+    replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     if state.is_empty() {
@@ -564,7 +565,7 @@ async fn handle_heartbeat(
             state,
             engine,
             failure_policy,
-            internal_publisher,
+            replicator,
             pending_delivery,
         )
         .await;
@@ -583,7 +584,7 @@ async fn handle_heartbeat(
             state,
             engine,
             failure_policy,
-            internal_publisher,
+            replicator,
             pending_delivery,
         ).await;
     }

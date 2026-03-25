@@ -10,9 +10,10 @@ use crate::{
     broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
     consumer::{Consumer, ConsumerSession},
     dispatcher::subscription_engine::SubscriptionEngine,
-    dispatcher::{DispatchStrategy, Dispatcher, InternalPublisher},
+    dispatcher::{DispatchStrategy, Dispatcher},
     message::{AckMessage, NackMessage},
     rate_limiter::RateLimiter,
+    replicator::Replicator,
     resources::TopicResources,
     topic::TopicStore,
     utils::get_random_id,
@@ -191,7 +192,7 @@ impl Subscription {
         dispatch_strategy: &DispatchStrategy,
         topic_store: Option<TopicStore>,
         topic_resources: Option<TopicResources>,
-        internal_publisher: Option<InternalPublisher>,
+        replicator: Option<Arc<Replicator>>,
         sub_progress_flush_interval: Option<Duration>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
@@ -230,7 +231,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             self.failure_policy.clone(),
-                            internal_publisher.clone(),
+                            replicator.clone(),
                         );
                         dispatcher.ready().await;
                         dispatcher
@@ -252,7 +253,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_shared(
                             engine,
                             self.failure_policy.clone(),
-                            internal_publisher.clone(),
+                            replicator.clone(),
                         );
                         dispatcher.ready().await;
                         dispatcher
@@ -274,7 +275,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             self.failure_policy.clone(),
-                            internal_publisher.clone(),
+                            replicator.clone(),
                         );
                         dispatcher
                     }
