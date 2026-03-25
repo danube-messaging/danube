@@ -24,7 +24,7 @@ use crate::{
     producer::Producer,
     rate_limiter::RateLimiter,
     resources::{SchemaResources, TopicResources},
-    subscription::{Subscription, SubscriptionOptions},
+    subscription::{Subscription, SubscriptionFailurePolicy, SubscriptionOptions},
     topic_schema::TopicSchemaContext,
 };
 
@@ -408,9 +408,21 @@ impl Topic {
             // Policy: max_subscriptions_per_topic (only when creating a new subscription)
             self.can_add_subscription().await?;
 
+            let failure_policy = if let DispatchStrategy::Reliable = &self.dispatch_strategy {
+                self.resources_topic
+                    .ensure_subscription_failure_policy(&options.subscription_name, &self.topic_name)
+                    .await?
+            } else {
+                SubscriptionFailurePolicy::new(&self.topic_name)
+            };
+
             // Build the subscription and dispatcher without holding the lock
-            let mut new_subscription =
-                Subscription::new(options.clone(), &self.topic_name, sub_metadata);
+            let mut new_subscription = Subscription::new(
+                options.clone(),
+                &self.topic_name,
+                failure_policy,
+                sub_metadata,
+            );
             // install per-subscription dispatch limiter if configured
             if let Some(pol) = &self.topic_policies {
                 let sub_rate = pol.get_max_subscription_dispatch_rate();

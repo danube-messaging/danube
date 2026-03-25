@@ -23,6 +23,65 @@ use crate::{
 // Consumers that reconnect within this window reuse their identity.
 pub(crate) const SUBSCRIPTION_IDLE_GRACE: Duration = Duration::from_secs(60);
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) enum SubscriptionBackoffStrategy {
+    #[default]
+    Fixed,
+    Exponential,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) enum SubscriptionPoisonPolicy {
+    #[default]
+    DeadLetter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct SubscriptionFailurePolicy {
+    pub(crate) max_redelivery_count: u32,
+    pub(crate) ack_timeout_ms: u64,
+    pub(crate) base_redelivery_delay_ms: u64,
+    pub(crate) max_redelivery_delay_ms: u64,
+    pub(crate) backoff_strategy: SubscriptionBackoffStrategy,
+    pub(crate) dead_letter_topic: Option<String>,
+    pub(crate) poison_policy: SubscriptionPoisonPolicy,
+}
+
+impl Default for SubscriptionFailurePolicy {
+    fn default() -> Self {
+        Self {
+            max_redelivery_count: 5,
+            ack_timeout_ms: 30_000,
+            base_redelivery_delay_ms: 1_000,
+            max_redelivery_delay_ms: 60_000,
+            backoff_strategy: SubscriptionBackoffStrategy::Exponential,
+            dead_letter_topic: None,
+            poison_policy: SubscriptionPoisonPolicy::DeadLetter,
+        }
+    }
+}
+
+impl SubscriptionFailurePolicy {
+    pub(crate) fn new(topic_name: &str) -> Self {
+        Self::default().with_default_dead_letter_topic(topic_name)
+    }
+
+    pub(crate) fn with_default_dead_letter_topic(mut self, topic_name: &str) -> Self {
+        let needs_default_topic = self
+            .dead_letter_topic
+            .as_deref()
+            .map(|topic| topic.is_empty())
+            .unwrap_or(true);
+
+        if needs_default_topic {
+            self.dead_letter_topic = Some(format!("{topic_name}-DLQ"));
+        }
+
+        self
+    }
+}
+
 // Subscriptions manage the consumers that are subscribed to them.
 // They also handle dispatchers that manage the distribution of messages to these consumers.
 #[derive(Debug)]
@@ -35,6 +94,7 @@ pub(crate) struct Subscription {
     pub(crate) consumers: HashMap<u64, Consumer>,
     // optional per-subscription dispatch limiter (messages/sec)
     pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
+    pub(crate) failure_policy: SubscriptionFailurePolicy,
     // When all consumers became inactive (non-reliable only). None = active.
     pub(crate) idle_since: Option<Instant>,
 }
@@ -54,6 +114,7 @@ impl Subscription {
     pub(crate) fn new(
         sub_options: SubscriptionOptions,
         topic_name: &str,
+        failure_policy: SubscriptionFailurePolicy,
         _meta_properties: HashMap<String, String>,
     ) -> Self {
         Subscription {
@@ -63,6 +124,7 @@ impl Subscription {
             dispatcher: None,
             consumers: HashMap::new(),
             dispatch_rate_limiter: None,
+            failure_policy,
             idle_since: None,
         }
     }

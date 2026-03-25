@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     policies::Policies, resources::BASE_TOPICS_PATH, schema::types::ValidationPolicy,
-    utils::join_path,
+    subscription::SubscriptionFailurePolicy, utils::join_path,
 };
 
 #[derive(Debug, Clone)]
@@ -160,6 +160,20 @@ impl TopicResources {
         subscription_name: &str,
         topic_name: &str,
     ) -> Result<()> {
+        let cursor_path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let failure_policy_path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "failure_policy",
+        ]);
         let path = join_path(&[
             BASE_TOPICS_PATH,
             topic_name,
@@ -167,6 +181,8 @@ impl TopicResources {
             subscription_name,
         ]);
 
+        let _ = self.delete(&cursor_path).await;
+        let _ = self.delete(&failure_policy_path).await;
         self.delete(&path).await?;
 
         Ok(())
@@ -243,6 +259,79 @@ impl TopicResources {
             }
         }
         Ok(None)
+    }
+
+    pub(crate) async fn set_subscription_failure_policy(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        failure_policy: &SubscriptionFailurePolicy,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "failure_policy",
+        ]);
+        let data = serde_json::to_value(failure_policy)?;
+        self.store.put(&path, data, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_subscription_failure_policy(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<SubscriptionFailurePolicy>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "failure_policy",
+        ]);
+
+        match self.store.get(&path, MetaOptions::None).await? {
+            Some(value) => {
+                let policy: SubscriptionFailurePolicy = serde_json::from_value(value)
+                    .map_err(|e| anyhow!("Failed to deserialize subscription failure policy: {}", e))?;
+                Ok(Some(policy))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn ensure_subscription_failure_policy(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<SubscriptionFailurePolicy> {
+        match self
+            .get_subscription_failure_policy(subscription_name, topic_name)
+            .await?
+        {
+            Some(policy) => {
+                let resolved_policy = policy
+                    .clone()
+                    .with_default_dead_letter_topic(topic_name);
+                if resolved_policy != policy {
+                    self.set_subscription_failure_policy(
+                        subscription_name,
+                        topic_name,
+                        &resolved_policy,
+                    )
+                    .await?;
+                }
+                Ok(resolved_policy)
+            }
+            None => {
+                let policy = SubscriptionFailurePolicy::new(topic_name);
+                self.set_subscription_failure_policy(subscription_name, topic_name, &policy)
+                    .await?;
+                Ok(policy)
+            }
+        }
     }
 
     /// Store schema subject reference for a topic

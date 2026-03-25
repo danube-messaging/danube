@@ -512,6 +512,26 @@ impl TopicManager {
             )
             .await?;
 
+        if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
+            let failure_policy = {
+                let subscriptions = topic.subscriptions.lock().await;
+                subscriptions
+                    .get(&subscription_options.subscription_name)
+                    .map(|subscription| subscription.failure_policy.clone())
+            };
+
+            if let Some(failure_policy) = failure_policy {
+                self.resources
+                    .topic
+                    .set_subscription_failure_policy(
+                        &subscription_options.subscription_name,
+                        &topic_name,
+                        &failure_policy,
+                    )
+                    .await?;
+            }
+        }
+
         Ok(consumer_id)
     }
 
