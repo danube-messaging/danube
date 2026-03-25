@@ -11,7 +11,9 @@ use tokio::time::timeout;
 use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
 use crate::resources::{SchemaResources, TopicResources};
-use crate::subscription::{SubscriptionFailurePolicy, SubscriptionOptions};
+use crate::subscription::{
+    SubscriptionFailurePolicy, SubscriptionOptions, SubscriptionPoisonPolicy,
+};
 use crate::topic::Topic;
 use crate::topic::TopicStore;
 use anyhow::Result as AnyResult;
@@ -109,7 +111,7 @@ fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
 }
 
 #[tokio::test]
-async fn ensure_subscription_failure_policy_backfills_default_dlq_topic() -> AnyResult<()> {
+async fn ensure_subscription_failure_policy_does_not_backfill_default_dlq_topic() -> AnyResult<()> {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store);
@@ -133,13 +135,32 @@ async fn ensure_subscription_failure_policy_backfills_default_dlq_topic() -> Any
         .await?
         .expect("stored failure policy");
 
-    assert_eq!(
-        ensured_policy.dead_letter_topic.as_deref(),
-        Some("/default/failure-policy-backfill-DLQ")
-    );
+    assert_eq!(ensured_policy.dead_letter_topic, None);
     assert_eq!(stored_policy, ensured_policy);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn set_subscription_failure_policy_rejects_dead_letter_without_topic() {
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let topic_resources = TopicResources::new(store);
+
+    let invalid_policy = SubscriptionFailurePolicy {
+        dead_letter_topic: None,
+        poison_policy: SubscriptionPoisonPolicy::DeadLetter,
+        ..SubscriptionFailurePolicy::default()
+    };
+
+    let err = topic_resources
+        .set_subscription_failure_policy("sub-a", "/default/invalid-dead-letter-policy", &invalid_policy)
+        .await
+        .expect_err("dead letter policy without topic should be rejected");
+
+    assert!(err
+        .to_string()
+        .contains("dead_letter_topic must be configured when poison_policy is DeadLetter"));
 }
 
 #[tokio::test]
@@ -161,10 +182,7 @@ async fn reliable_subscription_materializes_with_persisted_failure_policy() -> A
     let subscription = subscriptions.get("sub-a").expect("subscription exists");
 
     assert_eq!(subscription.failure_policy, stored_policy);
-    assert_eq!(
-        subscription.failure_policy.dead_letter_topic.as_deref(),
-        Some("/default/reliable-failure-policy-DLQ")
-    );
+    assert_eq!(subscription.failure_policy.dead_letter_topic, None);
     assert_eq!(subscription.failure_policy.max_redelivery_count, 5);
     assert_eq!(subscription.failure_policy.ack_timeout_ms, 30_000);
 

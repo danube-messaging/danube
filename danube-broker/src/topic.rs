@@ -7,7 +7,7 @@ use danube_core::{
 use danube_persistent_storage::WalStorage;
 use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -18,7 +18,7 @@ use crate::{
         TOPIC_MESSAGE_SIZE_BYTES,
     },
     danube_service::metrics_collector::MetricsCollector,
-    dispatcher::{DispatchStrategy, Dispatcher},
+    dispatcher::{DispatchStrategy, Dispatcher, InternalPublisher},
     message::{AckMessage, NackMessage},
     policies::Policies,
     producer::Producer,
@@ -26,6 +26,7 @@ use crate::{
     resources::{SchemaResources, TopicResources},
     subscription::{Subscription, SubscriptionFailurePolicy, SubscriptionOptions},
     topic_schema::TopicSchemaContext,
+    topic_registry::TopicRegistry,
 };
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ pub(crate) struct Topic {
     resources_topic: TopicResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
+    topic_registry: Mutex<Option<Weak<TopicRegistry>>>,
     // topic state for orchestrations like unload
     state: Mutex<TopicState>,
     // optional topic-level publish rate limiter (messages/sec)
@@ -102,10 +104,21 @@ impl Topic {
             dispatch_strategy,
             resources_topic,
             topic_store,
+            topic_registry: Mutex::new(None),
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
             metrics_collector,
         }
+    }
+
+    pub(crate) async fn attach_topic_registry(&self, topic_registry: Weak<TopicRegistry>) {
+        let mut registry = self.topic_registry.lock().await;
+        *registry = Some(topic_registry);
+    }
+
+    async fn dispatcher_internal_publisher(&self) -> Option<InternalPublisher> {
+        let registry = self.topic_registry.lock().await.clone()?;
+        Some(InternalPublisher::new(registry))
     }
 
     /// Get current producer count for metrics
@@ -205,6 +218,21 @@ impl Topic {
 
     // Asynchronous version of publish_message for better performance
     pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
+        self.publish_message_inner(stream_message, true).await
+    }
+
+    pub(crate) async fn publish_message_internal_async(
+        &self,
+        stream_message: StreamMessage,
+    ) -> Result<()> {
+        self.publish_message_inner(stream_message, false).await
+    }
+
+    async fn publish_message_inner(
+        &self,
+        stream_message: StreamMessage,
+        validate_producer: bool,
+    ) -> Result<()> {
         // Block publishes when draining
         {
             let state = self.state.lock().await;
@@ -239,16 +267,17 @@ impl Topic {
             .validate_message(&stream_message, &self.topic_name)
             .await?;
 
-        // Validate producer without blocking
-        let producer_id = stream_message.msg_id.producer_id;
-        {
-            let producers = self.producers.lock().await;
-            if !producers.contains_key(&producer_id) {
-                return Err(anyhow!(
-                    "the producer with id {} is not attached to topic name: {}",
-                    producer_id,
-                    self.topic_name
-                ));
+        if validate_producer {
+            let producer_id = stream_message.msg_id.producer_id;
+            {
+                let producers = self.producers.lock().await;
+                if !producers.contains_key(&producer_id) {
+                    return Err(anyhow!(
+                        "the producer with id {} is not attached to topic name: {}",
+                        producer_id,
+                        self.topic_name
+                    ));
+                }
             }
         }
 
@@ -424,6 +453,7 @@ impl Topic {
             } else {
                 SubscriptionFailurePolicy::new(&self.topic_name)
             };
+            failure_policy.validate()?;
 
             // Build the subscription and dispatcher without holding the lock
             let mut new_subscription = Subscription::new(
@@ -448,6 +478,7 @@ impl Topic {
                         &self.dispatch_strategy,
                         self.topic_store.clone(),
                         Some(self.resources_topic.clone()),
+                        self.dispatcher_internal_publisher().await,
                         Some(Duration::from_secs(10)),
                     )
                     .await?;
@@ -456,6 +487,7 @@ impl Topic {
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,
+                        None,
                         None,
                         None,
                         None,

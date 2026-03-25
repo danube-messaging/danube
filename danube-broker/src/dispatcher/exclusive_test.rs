@@ -92,6 +92,7 @@ async fn reliable_single_ack_gating() {
     let dispatcher = Dispatcher::reliable_exclusive(
         engine,
         SubscriptionFailurePolicy::new(topic),
+        None,
     );
 
     // Consumer wiring: use a channel to capture dispatched messages

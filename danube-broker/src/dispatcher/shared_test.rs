@@ -94,6 +94,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
     let dispatcher = Dispatcher::reliable_shared(
         engine,
         SubscriptionFailurePolicy::new(topic),
+        None,
     );
 
     // Two consumers capture messages

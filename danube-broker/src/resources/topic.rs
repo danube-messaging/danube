@@ -267,6 +267,7 @@ impl TopicResources {
         topic_name: &str,
         failure_policy: &SubscriptionFailurePolicy,
     ) -> Result<()> {
+        failure_policy.validate()?;
         let path = join_path(&[
             BASE_TOPICS_PATH,
             topic_name,
@@ -312,21 +313,12 @@ impl TopicResources {
             .await?
         {
             Some(policy) => {
-                let resolved_policy = policy
-                    .clone()
-                    .with_default_dead_letter_topic(topic_name);
-                if resolved_policy != policy {
-                    self.set_subscription_failure_policy(
-                        subscription_name,
-                        topic_name,
-                        &resolved_policy,
-                    )
-                    .await?;
-                }
-                Ok(resolved_policy)
+                policy.validate()?;
+                Ok(policy)
             }
             None => {
                 let policy = SubscriptionFailurePolicy::new(topic_name);
+                policy.validate()?;
                 self.set_subscription_failure_policy(subscription_name, topic_name, &policy)
                     .await?;
                 Ok(policy)

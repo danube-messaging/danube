@@ -187,7 +187,10 @@ impl TopicManager {
 
         // Add topic to the registry (single source of truth)
         self.topic_registry
-            .add_topic(topic_name.to_string(), new_topic_arc);
+            .add_topic(topic_name.to_string(), new_topic_arc.clone());
+        new_topic_arc
+            .attach_topic_registry(Arc::downgrade(&self.topic_registry))
+            .await;
 
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 

@@ -87,23 +87,25 @@ use crate::subscription::SubscriptionFailurePolicy;
 use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
-use super::super::PendingDelivery;
+use super::super::{handle_retry_exhausted_pending, InternalPublisher, PendingDelivery};
 
 /// Spawn the reliable exclusive dispatcher background task.
 pub(super) fn start(
     engine: SubscriptionEngine,
     failure_policy: SubscriptionFailurePolicy,
+    internal_publisher: Option<InternalPublisher>,
     control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
-        run_reliable_loop(engine, failure_policy, control_rx, ready_tx).await;
+        run_reliable_loop(engine, failure_policy, internal_publisher, control_rx, ready_tx).await;
     });
 }
 
 async fn run_reliable_loop(
     mut engine: SubscriptionEngine,
     failure_policy: SubscriptionFailurePolicy,
+    internal_publisher: Option<InternalPublisher>,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
@@ -134,6 +136,7 @@ async fn run_reliable_loop(
                             &mut state,
                             &mut engine,
                             &failure_policy,
+                            internal_publisher.as_ref(),
                             &mut pending_delivery,
                         ).await;
                     }
@@ -146,6 +149,7 @@ async fn run_reliable_loop(
                     &mut state,
                     &mut engine,
                     &failure_policy,
+                    internal_publisher.as_ref(),
                     &mut pending_delivery,
                 ).await;
             }
@@ -158,6 +162,7 @@ async fn handle_command(
     state: &mut ExclusiveConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
+    internal_publisher: Option<&InternalPublisher>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     match cmd {
@@ -167,7 +172,13 @@ async fn handle_command(
                 "consumer added to reliable exclusive dispatcher"
             );
             state.add_consumer(c);
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::RemoveConsumer(id) => {
             state.remove_consumer(id);
@@ -180,25 +191,55 @@ async fn handle_command(
         }
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(engine, ack_msg, pending_delivery).await;
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
             handle_nack(nack_msg, failure_policy, pending_delivery).await;
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::RetryNow(reason) => {
             handle_retry_now(reason, pending_delivery).await;
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::AckTimedOut => {
             handle_ack_timed_out(failure_policy, pending_delivery).await;
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::PollAndDispatch => {
             // Increment notifier poll counter (fast path)
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
 
-            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                failure_policy,
+                internal_publisher,
+                pending_delivery,
+            ).await;
         }
         DispatcherCommand::FlushProgressNow => {
             if let Err(e) = engine.flush_progress_now().await {
@@ -317,6 +358,7 @@ async fn handle_poll_and_dispatch(
     state: &mut ExclusiveConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
+    internal_publisher: Option<&InternalPublisher>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     if let Some(cons) = state.active_consumer_mut() {
@@ -339,6 +381,39 @@ async fn handle_poll_and_dispatch(
             }
         }
 
+        match handle_retry_exhausted_pending(
+            engine,
+            failure_policy,
+            internal_publisher,
+            pending_delivery,
+        )
+        .await
+        {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                warn!(error = %e, "retry-exhausted terminal handling failed");
+                return;
+            }
+        }
+
+        let is_retry_exhausted = pending_delivery
+            .as_ref()
+            .map(|pending| pending.is_retry_exhausted())
+            .unwrap_or(false);
+
+        if is_retry_exhausted {
+            if let Some(pending) = pending_delivery.as_ref() {
+                warn!(
+                    offset = %pending.message.msg_id.topic_offset,
+                    delivery_attempt = %pending.delivery_attempt,
+                    max_redelivery_count = %failure_policy.max_redelivery_count,
+                    "pending message is retry-exhausted; dispatch is paused pending terminal handling"
+                );
+            }
+            return;
+        }
+
         let now = Instant::now();
         let should_send = pending_delivery
             .as_ref()
@@ -351,16 +426,6 @@ async fn handle_poll_and_dispatch(
 
         if let Some(pending) = pending_delivery.as_mut() {
             let offset = pending.message.msg_id.topic_offset;
-
-            if pending.is_retry_exhausted() {
-                warn!(
-                    offset = %offset,
-                    delivery_attempt = %pending.delivery_attempt,
-                    max_redelivery_count = %failure_policy.max_redelivery_count,
-                    "pending message is retry-exhausted; dispatch is paused pending terminal handling"
-                );
-                return;
-            }
 
             let msg = pending.message.clone();
 
@@ -385,6 +450,7 @@ async fn handle_heartbeat(
     state: &mut ExclusiveConsumerState,
     engine: &mut SubscriptionEngine,
     failure_policy: &SubscriptionFailurePolicy,
+    internal_publisher: Option<&InternalPublisher>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     if !state.has_active_consumer() {
@@ -413,6 +479,7 @@ async fn handle_heartbeat(
             state,
             engine,
             failure_policy,
+            internal_publisher,
             pending_delivery,
         )
         .await;
@@ -430,6 +497,12 @@ async fn handle_heartbeat(
             "heartbeat detected lag"
         );
         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
-        handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+        handle_poll_and_dispatch(
+            state,
+            engine,
+            failure_policy,
+            internal_publisher,
+            pending_delivery,
+        ).await;
     }
 }

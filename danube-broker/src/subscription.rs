@@ -10,8 +10,7 @@ use crate::{
     broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
     consumer::{Consumer, ConsumerSession},
     dispatcher::subscription_engine::SubscriptionEngine,
-    dispatcher::DispatchStrategy,
-    dispatcher::Dispatcher,
+    dispatcher::{DispatchStrategy, Dispatcher, InternalPublisher},
     message::{AckMessage, NackMessage},
     rate_limiter::RateLimiter,
     resources::TopicResources,
@@ -32,8 +31,10 @@ pub(crate) enum SubscriptionBackoffStrategy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) enum SubscriptionPoisonPolicy {
-    #[default]
     DeadLetter,
+    #[default]
+    Block,
+    Drop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,28 +58,32 @@ impl Default for SubscriptionFailurePolicy {
             max_redelivery_delay_ms: 60_000,
             backoff_strategy: SubscriptionBackoffStrategy::Exponential,
             dead_letter_topic: None,
-            poison_policy: SubscriptionPoisonPolicy::DeadLetter,
+            poison_policy: SubscriptionPoisonPolicy::Block,
         }
     }
 }
 
 impl SubscriptionFailurePolicy {
-    pub(crate) fn new(topic_name: &str) -> Self {
-        Self::default().with_default_dead_letter_topic(topic_name)
+    pub(crate) fn new(_topic_name: &str) -> Self {
+        Self::default()
     }
 
-    pub(crate) fn with_default_dead_letter_topic(mut self, topic_name: &str) -> Self {
-        let needs_default_topic = self
-            .dead_letter_topic
-            .as_deref()
-            .map(|topic| topic.is_empty())
-            .unwrap_or(true);
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.poison_policy == SubscriptionPoisonPolicy::DeadLetter {
+            let has_dead_letter_topic = self
+                .dead_letter_topic
+                .as_deref()
+                .map(|topic| !topic.trim().is_empty())
+                .unwrap_or(false);
 
-        if needs_default_topic {
-            self.dead_letter_topic = Some(format!("{topic_name}-DLQ"));
+            if !has_dead_letter_topic {
+                return Err(anyhow!(
+                    "dead_letter_topic must be configured when poison_policy is DeadLetter"
+                ));
+            }
         }
 
-        self
+        Ok(())
     }
 }
 
@@ -186,6 +191,7 @@ impl Subscription {
         dispatch_strategy: &DispatchStrategy,
         topic_store: Option<TopicStore>,
         topic_resources: Option<TopicResources>,
+        internal_publisher: Option<InternalPublisher>,
         sub_progress_flush_interval: Option<Duration>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
@@ -224,6 +230,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             self.failure_policy.clone(),
+                            internal_publisher.clone(),
                         );
                         dispatcher.ready().await;
                         dispatcher
@@ -245,6 +252,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_shared(
                             engine,
                             self.failure_policy.clone(),
+                            internal_publisher.clone(),
                         );
                         dispatcher.ready().await;
                         dispatcher
@@ -266,6 +274,7 @@ impl Subscription {
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             self.failure_policy.clone(),
+                            internal_publisher.clone(),
                         );
                         dispatcher
                     }

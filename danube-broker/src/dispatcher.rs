@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
-use danube_core::message::StreamMessage;
-use std::sync::Arc;
+use danube_core::message::{MessageID, StreamMessage};
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{Duration, Instant};
@@ -8,7 +9,10 @@ use tokio::time::{Duration, Instant};
 use crate::{
     consumer::Consumer,
     message::{AckMessage, NackMessage},
-    subscription::{SubscriptionBackoffStrategy, SubscriptionFailurePolicy},
+    subscription::{
+        SubscriptionBackoffStrategy, SubscriptionFailurePolicy, SubscriptionPoisonPolicy,
+    },
+    topic_registry::TopicRegistry,
 };
 
 // Module declarations
@@ -21,6 +25,139 @@ use commands::DispatcherCommand;
 use exclusive::ExclusiveDispatcher;
 use shared::SharedDispatcher;
 use subscription_engine::SubscriptionEngine;
+
+#[derive(Debug, Clone)]
+pub(crate) struct InternalPublisher {
+    topic_registry: Weak<TopicRegistry>,
+}
+
+impl InternalPublisher {
+    pub(crate) fn new(topic_registry: Weak<TopicRegistry>) -> Self {
+        Self { topic_registry }
+    }
+
+    pub(crate) async fn publish_message_async(
+        &self,
+        topic_name: &str,
+        message: StreamMessage,
+    ) -> Result<()> {
+        let topic_registry = self
+            .topic_registry
+            .upgrade()
+            .ok_or_else(|| anyhow!("topic registry unavailable for internal publish"))?;
+        let topic = topic_registry
+            .get_topic(topic_name)
+            .ok_or_else(|| anyhow!("Topic {} not found in local registry", topic_name))?;
+        topic.publish_message_internal_async(message).await
+    }
+}
+
+fn poison_policy_label(poison_policy: &SubscriptionPoisonPolicy) -> &'static str {
+    match poison_policy {
+        SubscriptionPoisonPolicy::DeadLetter => "dead_letter",
+        SubscriptionPoisonPolicy::Block => "block",
+        SubscriptionPoisonPolicy::Drop => "drop",
+    }
+}
+
+fn build_dead_letter_message(
+    pending: &PendingDelivery,
+    subscription_name: &str,
+    dead_letter_topic: &str,
+    poison_policy: &SubscriptionPoisonPolicy,
+) -> StreamMessage {
+    let mut attributes: HashMap<String, String> = pending.message.attributes.clone();
+    attributes.insert(
+        "x-original-topic".to_string(),
+        pending.message.msg_id.topic_name.clone(),
+    );
+    attributes.insert(
+        "x-original-subscription".to_string(),
+        subscription_name.to_string(),
+    );
+    attributes.insert(
+        "x-original-topic-offset".to_string(),
+        pending.message.msg_id.topic_offset.to_string(),
+    );
+    attributes.insert(
+        "x-original-producer-id".to_string(),
+        pending.message.msg_id.producer_id.to_string(),
+    );
+    attributes.insert(
+        "x-original-broker-addr".to_string(),
+        pending.message.msg_id.broker_addr.clone(),
+    );
+    attributes.insert(
+        "x-poison-policy".to_string(),
+        poison_policy_label(poison_policy).to_string(),
+    );
+    attributes.insert(
+        "x-delivery-attempt".to_string(),
+        pending.delivery_attempt.to_string(),
+    );
+
+    if let Some(reason) = pending.last_failure_reason.as_ref() {
+        attributes.insert("x-failure-reason".to_string(), reason.clone());
+    }
+
+    let mut dead_letter_message = pending.message.clone();
+    dead_letter_message.msg_id = MessageID {
+        producer_id: 0,
+        topic_name: dead_letter_topic.to_string(),
+        broker_addr: pending.message.msg_id.broker_addr.clone(),
+        topic_offset: 0,
+    };
+    dead_letter_message.subscription_name = None;
+    dead_letter_message.attributes = attributes;
+    dead_letter_message
+}
+
+pub(super) async fn handle_retry_exhausted_pending(
+    engine: &mut SubscriptionEngine,
+    failure_policy: &SubscriptionFailurePolicy,
+    internal_publisher: Option<&InternalPublisher>,
+    pending_delivery: &mut Option<PendingDelivery>,
+) -> Result<bool> {
+    let Some(pending) = pending_delivery.as_ref() else {
+        return Ok(false);
+    };
+
+    if !pending.is_retry_exhausted() {
+        return Ok(false);
+    }
+
+    match failure_policy.poison_policy {
+        SubscriptionPoisonPolicy::DeadLetter => {
+            let dead_letter_topic = failure_policy
+                .dead_letter_topic
+                .as_deref()
+                .ok_or_else(|| anyhow!("dead_letter_topic must be configured for DeadLetter"))?;
+            let publisher = internal_publisher
+                .ok_or_else(|| anyhow!("internal publisher unavailable for dead-letter routing"))?;
+            let dead_letter_message = build_dead_letter_message(
+                pending,
+                &engine._subscription_name,
+                dead_letter_topic,
+                &failure_policy.poison_policy,
+            );
+            let original_msg_id = pending.message.msg_id.clone();
+
+            publisher
+                .publish_message_async(dead_letter_topic, dead_letter_message)
+                .await?;
+            engine.on_acked(original_msg_id).await?;
+            *pending_delivery = None;
+            Ok(true)
+        }
+        SubscriptionPoisonPolicy::Block => Ok(false),
+        SubscriptionPoisonPolicy::Drop => {
+            let original_msg_id = pending.message.msg_id.clone();
+            engine.on_acked(original_msg_id).await?;
+            *pending_delivery = None;
+            Ok(true)
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum DispatcherHandle {
@@ -206,10 +343,17 @@ impl Dispatcher {
     pub(crate) fn reliable_exclusive(
         engine: SubscriptionEngine,
         failure_policy: SubscriptionFailurePolicy,
+        internal_publisher: Option<InternalPublisher>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        ExclusiveDispatcher::start_reliable(engine, failure_policy, control_rx, ready_tx);
+        ExclusiveDispatcher::start_reliable(
+            engine,
+            failure_policy,
+            internal_publisher,
+            control_rx,
+            ready_tx,
+        );
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -222,10 +366,17 @@ impl Dispatcher {
     pub(crate) fn reliable_shared(
         engine: SubscriptionEngine,
         failure_policy: SubscriptionFailurePolicy,
+        internal_publisher: Option<InternalPublisher>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        SharedDispatcher::start_reliable(engine, failure_policy, control_rx, ready_tx);
+        SharedDispatcher::start_reliable(
+            engine,
+            failure_policy,
+            internal_publisher,
+            control_rx,
+            ready_tx,
+        );
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
