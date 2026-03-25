@@ -87,44 +87,46 @@
 //! - Task distribution systems
 //! - Any scenario requiring both load balancing AND delivery guarantees
 
-use danube_core::message::StreamMessage;
 use metrics::{counter, gauge};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use tracing::{trace, warn};
 
 use crate::broker_metrics::{
     DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL, SUBSCRIPTION_LAG_MESSAGES,
 };
 use crate::message::{AckMessage, NackMessage};
+use crate::subscription::SubscriptionFailurePolicy;
 
 use super::super::commands::DispatcherCommand;
 use super::super::shared::SharedConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
+use super::super::PendingDelivery;
 
 /// Spawn the reliable shared dispatcher background task.
 pub(super) fn start(
     engine: SubscriptionEngine,
+    failure_policy: SubscriptionFailurePolicy,
     control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
-        run_reliable_loop(engine, control_rx, ready_tx).await;
+        run_reliable_loop(engine, failure_policy, control_rx, ready_tx).await;
     });
 }
 
 async fn run_reliable_loop(
     mut engine: SubscriptionEngine,
+    failure_policy: SubscriptionFailurePolicy,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     let rr_index = Arc::new(AtomicUsize::new(0));
     let rr_task = rr_index.clone();
     let mut state = SharedConsumerState::new(rr_task);
-    let mut pending = false;
-    let mut pending_message: Option<StreamMessage> = None;
+    let mut pending_delivery: Option<PendingDelivery> = None;
 
     // Initialize stream
     {
@@ -149,8 +151,8 @@ async fn run_reliable_loop(
                             cmd,
                             &mut state,
                             &mut engine,
-                            &mut pending,
-                            &mut pending_message,
+                            &failure_policy,
+                            &mut pending_delivery,
                         ).await;
                     }
                     None => break,
@@ -158,7 +160,12 @@ async fn run_reliable_loop(
             }
 
             _ = heartbeat.tick() => {
-                handle_heartbeat(&mut state, &mut engine, &mut pending, &mut pending_message).await;
+                handle_heartbeat(
+                    &mut state,
+                    &mut engine,
+                    &failure_policy,
+                    &mut pending_delivery,
+                ).await;
             }
         }
     }
@@ -168,16 +175,14 @@ async fn handle_command(
     cmd: DispatcherCommand,
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    pending: &mut bool,
-    pending_message: &mut Option<StreamMessage>,
+    failure_policy: &SubscriptionFailurePolicy,
+    pending_delivery: &mut Option<PendingDelivery>,
 ) {
     match cmd {
         DispatcherCommand::AddConsumer(c) => {
             trace!(consumer_id = %c.consumer_id, "consumer added");
             state.add_consumer(c);
-            if !*pending {
-                handle_poll_and_dispatch(state, engine, pending, pending_message).await;
-            }
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::RemoveConsumer(id) => {
             state.remove_consumer(id);
@@ -189,23 +194,24 @@ async fn handle_command(
             state.disconnect_all();
         }
         DispatcherCommand::MessageAcked(ack_msg) => {
-            handle_ack(engine, ack_msg, pending, pending_message).await;
-            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+            handle_ack(engine, ack_msg, pending_delivery).await;
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
-            handle_nack(nack_msg, pending, pending_message).await;
-            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+            handle_nack(nack_msg, pending_delivery).await;
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+        }
+        DispatcherCommand::RetryNow(reason) => {
+            handle_retry_now(reason, pending_delivery).await;
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
+        }
+        DispatcherCommand::AckTimedOut => {
+            handle_ack_timed_out(pending_delivery).await;
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::PollAndDispatch => {
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
-            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
-        }
-        DispatcherCommand::ResetPending => {
-            if pending_message.is_some() {
-                trace!("Consumer disconnected, will failover buffered message");
-            }
-            *pending = false;
-            handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+            handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::FlushProgressNow => {
             if let Err(e) = engine.flush_progress_now().await {
@@ -217,14 +223,13 @@ async fn handle_command(
 
 async fn handle_nack(
     nack_msg: NackMessage,
-    pending: &mut bool,
-    pending_message: &mut Option<StreamMessage>,
+    pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let nacked_offset = nack_msg.msg_id.topic_offset;
 
-    let matches_pending = pending_message
+    let matches_pending = pending_delivery
         .as_ref()
-        .map(|msg| msg.msg_id.topic_offset == nacked_offset)
+        .map(|pending| pending.matches_offset(nacked_offset))
         .unwrap_or(false);
 
     if matches_pending {
@@ -235,7 +240,9 @@ async fn handle_nack(
             reason = ?nack_msg.reason,
             "nack received for pending message, preserving buffer for retry"
         );
-        *pending = false;
+        if let Some(pending) = pending_delivery.as_mut() {
+            pending.schedule_retry_now(nack_msg.reason);
+        }
     } else {
         trace!(
             request_id = %nack_msg.request_id,
@@ -245,27 +252,47 @@ async fn handle_nack(
     }
 }
 
+async fn handle_retry_now(
+    reason: Option<String>,
+    pending_delivery: &mut Option<PendingDelivery>,
+) {
+    if let Some(pending) = pending_delivery.as_mut() {
+        pending.schedule_retry_now(reason);
+    }
+}
+
+async fn handle_ack_timed_out(pending_delivery: &mut Option<PendingDelivery>) {
+    if let Some(pending) = pending_delivery.as_mut() {
+        if pending.is_awaiting_ack() {
+            trace!(
+                offset = %pending.message.msg_id.topic_offset,
+                delivery_attempt = %pending.delivery_attempt,
+                "ack timeout detected for pending message"
+            );
+            pending.schedule_retry_now(Some("ack timeout".to_string()));
+        }
+    }
+}
+
 async fn handle_ack(
     engine: &mut SubscriptionEngine,
     ack_msg: AckMessage,
-    pending: &mut bool,
-    pending_message: &mut Option<StreamMessage>,
+    pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let acked_offset = ack_msg.msg_id.topic_offset;
 
-    if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
-        warn!(offset = %acked_offset, error = %e, "Ack handling failed");
-    }
-
-    let should_clear = pending_message
+    let should_clear = pending_delivery
         .as_ref()
-        .map(|msg| msg.msg_id.topic_offset == acked_offset)
+        .map(|pending| pending.matches_offset(acked_offset) && pending.is_awaiting_ack())
         .unwrap_or(false);
 
     if should_clear {
+        if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
+            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
+            return;
+        }
         trace!(offset = %acked_offset, "ack received, clearing buffer");
-        *pending = false;
-        *pending_message = None;
+        *pending_delivery = None;
     } else {
         trace!(offset = %acked_offset, "ignoring late ack");
     }
@@ -274,37 +301,44 @@ async fn handle_ack(
 async fn handle_poll_and_dispatch(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    pending: &mut bool,
-    pending_message: &mut Option<StreamMessage>,
+    failure_policy: &SubscriptionFailurePolicy,
+    pending_delivery: &mut Option<PendingDelivery>,
 ) {
-    if *pending || state.is_empty() {
+    if state.is_empty() {
         return;
     }
 
     // Get message
-    let msg_to_send = if let Some(buffered_msg) = pending_message.take() {
-        trace!(
-            offset = %buffered_msg.msg_id.topic_offset,
-            "resending buffered message"
-        );
-        Some(buffered_msg)
-    } else {
-        match engine.poll_next().await {
+    if pending_delivery.is_none() {
+        let next_message = match engine.poll_next().await {
             Ok(msg_opt) => msg_opt,
             Err(e) => {
                 warn!(error = %e, "poll_next error");
                 None
             }
-        }
-    };
+        };
 
-    if let Some(msg) = msg_to_send {
+        if let Some(msg) = next_message {
+            *pending_delivery = Some(PendingDelivery::new(msg));
+        }
+    }
+
+    let now = Instant::now();
+    let should_send = pending_delivery
+        .as_ref()
+        .map(|pending| pending.is_retry_ready(now))
+        .unwrap_or(false);
+
+    if !should_send {
+        return;
+    }
+
+    if let Some(pending) = pending_delivery.as_mut() {
         let mut attempts = 0;
-        let mut sent = false;
-        let offset = msg.msg_id.topic_offset;
+        let offset = pending.message.msg_id.topic_offset;
         let num_consumers = state.len();
 
-        while attempts < num_consumers && !sent {
+        while attempts < num_consumers {
             let idx = state.rr_index.fetch_add(1, Ordering::Relaxed) % num_consumers;
             if let Some(target) = state.get_consumer_mut(idx) {
                 if !target.get_status().await {
@@ -312,9 +346,9 @@ async fn handle_poll_and_dispatch(
                     continue;
                 }
 
-                *pending_message = Some(msg.clone());
+                let msg = pending.message.clone();
 
-                if let Err(e) = target.send_message(msg.clone()).await {
+                if let Err(e) = target.send_message(msg).await {
                     warn!(
                         offset = %offset,
                         consumer_id = %target.consumer_id,
@@ -324,22 +358,27 @@ async fn handle_poll_and_dispatch(
                     attempts += 1;
                     continue;
                 } else {
-                    *pending = true;
-                    sent = true;
+                    pending.on_send_attempt(
+                        target.consumer_id,
+                        Duration::from_millis(failure_policy.ack_timeout_ms),
+                    );
+                    return;
                 }
             }
             attempts += 1;
         }
+
+        pending.schedule_retry_now(Some("no active shared consumer available".to_string()));
     }
 }
 
 async fn handle_heartbeat(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    pending: &mut bool,
-    pending_message: &mut Option<StreamMessage>,
+    failure_policy: &SubscriptionFailurePolicy,
+    pending_delivery: &mut Option<PendingDelivery>,
 ) {
-    if state.is_empty() || *pending {
+    if state.is_empty() {
         return;
     }
 
@@ -351,9 +390,33 @@ async fn handle_heartbeat(
     )
     .set(lag_info.lag_messages as f64);
 
-    if lag_info.has_lag {
+    let now = Instant::now();
+
+    if pending_delivery
+        .as_ref()
+        .map(|pending| pending.ack_timed_out(now))
+        .unwrap_or(false)
+    {
+        counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+        handle_command(
+            DispatcherCommand::AckTimedOut,
+            state,
+            engine,
+            failure_policy,
+            pending_delivery,
+        )
+        .await;
+        return;
+    }
+
+    let retry_ready = pending_delivery
+        .as_ref()
+        .map(|pending| pending.is_retry_ready(now))
+        .unwrap_or(false);
+
+    if retry_ready || (pending_delivery.is_none() && lag_info.has_lag) {
         trace!(lag_messages = %lag_info.lag_messages, "heartbeat detected lag");
         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
-        handle_poll_and_dispatch(state, engine, pending, pending_message).await;
+        handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
     }
 }

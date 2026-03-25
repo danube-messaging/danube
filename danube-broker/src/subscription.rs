@@ -221,7 +221,10 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        let dispatcher = Dispatcher::reliable_exclusive(
+                            engine,
+                            self.failure_policy.clone(),
+                        );
                         dispatcher.ready().await;
                         dispatcher
                     }
@@ -239,7 +242,10 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_shared(engine);
+                        let dispatcher = Dispatcher::reliable_shared(
+                            engine,
+                            self.failure_policy.clone(),
+                        );
                         dispatcher.ready().await;
                         dispatcher
                     }
@@ -257,7 +263,10 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        let dispatcher = Dispatcher::reliable_exclusive(
+                            engine,
+                            self.failure_policy.clone(),
+                        );
                         dispatcher
                     }
 

@@ -34,9 +34,11 @@ pub(super) enum DispatcherCommand {
 
     MessageNacked(NackMessage),
 
-    PollAndDispatch,
+    RetryNow(Option<String>),
 
-    ResetPending,
+    AckTimedOut,
+
+    PollAndDispatch,
 
     FlushProgressNow,
 }

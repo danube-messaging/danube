@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 use crate::consumer::Consumer;
+use crate::subscription::SubscriptionFailurePolicy;
 
 use super::commands::DispatcherCommand;
 use super::subscription_engine::SubscriptionEngine;
@@ -80,10 +81,11 @@ impl SharedDispatcher {
     /// Spawn the reliable shared background task.
     pub(super) fn start_reliable(
         engine: SubscriptionEngine,
+        failure_policy: SubscriptionFailurePolicy,
         control_rx: mpsc::Receiver<DispatcherCommand>,
         ready_tx: watch::Sender<bool>,
     ) {
-        reliable::start(engine, control_rx, ready_tx);
+        reliable::start(engine, failure_policy, control_rx, ready_tx);
     }
 }
 

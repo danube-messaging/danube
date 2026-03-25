@@ -38,6 +38,7 @@ use crate::consumer::{Consumer, ConsumerSession};
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::Dispatcher;
 use crate::message::AckMessage;
+use crate::subscription::SubscriptionFailurePolicy;
 use crate::topic::TopicStore;
 
 fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
@@ -90,7 +91,10 @@ async fn reliable_multiple_round_robin_ack_gating() {
     let ts = TopicStore::new(topic.to_string(), wal_storage);
 
     let engine = SubscriptionEngine::new("sub-shared".to_string(), Arc::new(ts.clone()));
-    let dispatcher = Dispatcher::reliable_shared(engine);
+    let dispatcher = Dispatcher::reliable_shared(
+        engine,
+        SubscriptionFailurePolicy::new(topic),
+    );
 
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);

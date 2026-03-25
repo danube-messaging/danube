@@ -35,6 +35,7 @@ use crate::consumer::{Consumer, ConsumerSession};
 use crate::dispatcher::subscription_engine::SubscriptionEngine;
 use crate::dispatcher::Dispatcher;
 use crate::message::AckMessage;
+use crate::subscription::SubscriptionFailurePolicy;
 use crate::topic::TopicStore;
 
 fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
@@ -88,7 +89,10 @@ async fn reliable_single_ack_gating() {
 
     // Dispatcher with reliable engine (start: Latest)
     let engine = SubscriptionEngine::new("sub-a".to_string(), Arc::new(ts.clone()));
-    let dispatcher = Dispatcher::reliable_exclusive(engine);
+    let dispatcher = Dispatcher::reliable_exclusive(
+        engine,
+        SubscriptionFailurePolicy::new(topic),
+    );
 
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);

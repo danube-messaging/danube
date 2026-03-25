@@ -3,8 +3,13 @@ use danube_core::message::StreamMessage;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, Mutex};
+use tokio::time::{Duration, Instant};
 
-use crate::{consumer::Consumer, message::{AckMessage, NackMessage}};
+use crate::{
+    consumer::Consumer,
+    message::{AckMessage, NackMessage},
+    subscription::SubscriptionFailurePolicy,
+};
 
 // Module declarations
 pub(crate) mod commands;
@@ -35,6 +40,84 @@ pub(crate) enum DispatchStrategy {
     Reliable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingDeliveryStatus {
+    ReadyToSend,
+    AwaitingAck,
+    WaitingToRetry,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingDelivery {
+    pub(super) message: StreamMessage,
+    pub(super) delivery_attempt: u32,
+    pub(super) first_sent_at: Instant,
+    pub(super) last_sent_at: Instant,
+    pub(super) ack_deadline_at: Instant,
+    pub(super) next_redelivery_at: Instant,
+    pub(super) last_failure_reason: Option<String>,
+    pub(super) target_consumer_id: Option<u64>,
+    pub(super) status: PendingDeliveryStatus,
+}
+
+impl PendingDelivery {
+    pub(super) fn new(message: StreamMessage) -> Self {
+        let now = Instant::now();
+        Self {
+            message,
+            delivery_attempt: 0,
+            first_sent_at: now,
+            last_sent_at: now,
+            ack_deadline_at: now,
+            next_redelivery_at: now,
+            last_failure_reason: None,
+            target_consumer_id: None,
+            status: PendingDeliveryStatus::ReadyToSend,
+        }
+    }
+
+    pub(super) fn matches_offset(&self, topic_offset: u64) -> bool {
+        self.message.msg_id.topic_offset == topic_offset
+    }
+
+    pub(super) fn is_awaiting_ack(&self) -> bool {
+        self.status == PendingDeliveryStatus::AwaitingAck
+    }
+
+    pub(super) fn is_retry_ready(&self, now: Instant) -> bool {
+        matches!(
+            self.status,
+            PendingDeliveryStatus::ReadyToSend | PendingDeliveryStatus::WaitingToRetry
+        ) && now >= self.next_redelivery_at
+    }
+
+    pub(super) fn ack_timed_out(&self, now: Instant) -> bool {
+        self.status == PendingDeliveryStatus::AwaitingAck && now >= self.ack_deadline_at
+    }
+
+    pub(super) fn on_send_attempt(&mut self, consumer_id: u64, ack_timeout: Duration) {
+        let now = Instant::now();
+        if self.delivery_attempt == 0 {
+            self.first_sent_at = now;
+        }
+        self.delivery_attempt = self.delivery_attempt.saturating_add(1);
+        self.last_sent_at = now;
+        self.ack_deadline_at = now + ack_timeout;
+        self.next_redelivery_at = now;
+        self.target_consumer_id = Some(consumer_id);
+        self.status = PendingDeliveryStatus::AwaitingAck;
+    }
+
+    pub(super) fn schedule_retry_now(&mut self, reason: Option<String>) {
+        let now = Instant::now();
+        self.last_failure_reason = reason;
+        self.next_redelivery_at = now;
+        self.target_consumer_id = None;
+        self.status = PendingDeliveryStatus::WaitingToRetry;
+    }
+
+}
+
 /// Single dispatcher handle — a thin facade over an mpsc command channel.
 #[derive(Debug, Clone)]
 pub(crate) struct Dispatcher {
@@ -63,10 +146,13 @@ impl Dispatcher {
     }
 
     /// Reliable exclusive (ack-gating, single active consumer, heartbeat).
-    pub(crate) fn reliable_exclusive(engine: SubscriptionEngine) -> Self {
+    pub(crate) fn reliable_exclusive(
+        engine: SubscriptionEngine,
+        failure_policy: SubscriptionFailurePolicy,
+    ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        ExclusiveDispatcher::start_reliable(engine, control_rx, ready_tx);
+        ExclusiveDispatcher::start_reliable(engine, failure_policy, control_rx, ready_tx);
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -76,10 +162,13 @@ impl Dispatcher {
     }
 
     /// Reliable shared (ack-gating, round-robin, heartbeat).
-    pub(crate) fn reliable_shared(engine: SubscriptionEngine) -> Self {
+    pub(crate) fn reliable_shared(
+        engine: SubscriptionEngine,
+        failure_policy: SubscriptionFailurePolicy,
+    ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        SharedDispatcher::start_reliable(engine, control_rx, ready_tx);
+        SharedDispatcher::start_reliable(engine, failure_policy, control_rx, ready_tx);
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -219,7 +308,7 @@ impl Dispatcher {
     pub(crate) async fn reset_pending(&self) -> Result<()> {
         match &self.handle {
             DispatcherHandle::Reliable { control_tx, .. } => control_tx
-                .send(DispatcherCommand::ResetPending)
+                .send(DispatcherCommand::RetryNow(None))
                 .await
                 .map_err(|_| anyhow!("Failed to send reset pending command")),
             _ => Ok(()),
