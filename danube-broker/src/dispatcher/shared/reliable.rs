@@ -198,7 +198,7 @@ async fn handle_command(
             handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
-            handle_nack(nack_msg, pending_delivery).await;
+            handle_nack(nack_msg, failure_policy, pending_delivery).await;
             handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::RetryNow(reason) => {
@@ -206,7 +206,7 @@ async fn handle_command(
             handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::AckTimedOut => {
-            handle_ack_timed_out(pending_delivery).await;
+            handle_ack_timed_out(failure_policy, pending_delivery).await;
             handle_poll_and_dispatch(state, engine, failure_policy, pending_delivery).await;
         }
         DispatcherCommand::PollAndDispatch => {
@@ -223,6 +223,7 @@ async fn handle_command(
 
 async fn handle_nack(
     nack_msg: NackMessage,
+    failure_policy: &SubscriptionFailurePolicy,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let nacked_offset = nack_msg.msg_id.topic_offset;
@@ -241,7 +242,11 @@ async fn handle_nack(
             "nack received for pending message, preserving buffer for retry"
         );
         if let Some(pending) = pending_delivery.as_mut() {
-            pending.schedule_retry_now(nack_msg.reason);
+            pending.schedule_retry_with_policy(
+                nack_msg.reason,
+                nack_msg.delay_ms,
+                failure_policy,
+            );
         }
     } else {
         trace!(
@@ -261,7 +266,10 @@ async fn handle_retry_now(
     }
 }
 
-async fn handle_ack_timed_out(pending_delivery: &mut Option<PendingDelivery>) {
+async fn handle_ack_timed_out(
+    failure_policy: &SubscriptionFailurePolicy,
+    pending_delivery: &mut Option<PendingDelivery>,
+) {
     if let Some(pending) = pending_delivery.as_mut() {
         if pending.is_awaiting_ack() {
             trace!(
@@ -269,7 +277,11 @@ async fn handle_ack_timed_out(pending_delivery: &mut Option<PendingDelivery>) {
                 delivery_attempt = %pending.delivery_attempt,
                 "ack timeout detected for pending message"
             );
-            pending.schedule_retry_now(Some("ack timeout".to_string()));
+            pending.schedule_retry_with_policy(
+                Some("ack timeout".to_string()),
+                None,
+                failure_policy,
+            );
         }
     }
 }
