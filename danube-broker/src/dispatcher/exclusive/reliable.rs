@@ -269,6 +269,14 @@ async fn handle_ack_timed_out(
                 None,
                 failure_policy,
             );
+            if pending.is_retry_exhausted() {
+                warn!(
+                    offset = %pending.message.msg_id.topic_offset,
+                    delivery_attempt = %pending.delivery_attempt,
+                    max_redelivery_count = %failure_policy.max_redelivery_count,
+                    "retry limit exhausted after ack timeout; leaving message in terminal state"
+                );
+            }
         }
     }
 }
@@ -343,6 +351,17 @@ async fn handle_poll_and_dispatch(
 
         if let Some(pending) = pending_delivery.as_mut() {
             let offset = pending.message.msg_id.topic_offset;
+
+            if pending.is_retry_exhausted() {
+                warn!(
+                    offset = %offset,
+                    delivery_attempt = %pending.delivery_attempt,
+                    max_redelivery_count = %failure_policy.max_redelivery_count,
+                    "pending message is retry-exhausted; dispatch is paused pending terminal handling"
+                );
+                return;
+            }
+
             let msg = pending.message.clone();
 
             if let Err(e) = cons.send_message(msg).await {

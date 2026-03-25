@@ -45,6 +45,7 @@ pub(super) enum PendingDeliveryStatus {
     ReadyToSend,
     AwaitingAck,
     WaitingToRetry,
+    RetryExhausted,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +83,14 @@ impl PendingDelivery {
 
     pub(super) fn is_awaiting_ack(&self) -> bool {
         self.status == PendingDeliveryStatus::AwaitingAck
+    }
+
+    pub(super) fn is_retry_exhausted(&self) -> bool {
+        self.status == PendingDeliveryStatus::RetryExhausted
+    }
+
+    pub(super) fn should_stop_retrying(&self, failure_policy: &SubscriptionFailurePolicy) -> bool {
+        self.delivery_attempt > failure_policy.max_redelivery_count
     }
 
     pub(super) fn is_retry_ready(&self, now: Instant) -> bool {
@@ -128,6 +137,11 @@ impl PendingDelivery {
         requested_delay_ms: Option<u64>,
         failure_policy: &SubscriptionFailurePolicy,
     ) {
+        if self.should_stop_retrying(failure_policy) {
+            self.mark_retry_exhausted(reason);
+            return;
+        }
+
         let now = Instant::now();
         let policy_delay_ms = self.policy_redelivery_delay_ms(failure_policy);
         let requested_delay_ms = requested_delay_ms.unwrap_or(0);
@@ -141,7 +155,17 @@ impl PendingDelivery {
         self.status = PendingDeliveryStatus::WaitingToRetry;
     }
 
+    pub(super) fn mark_retry_exhausted(&mut self, reason: Option<String>) {
+        self.last_failure_reason = reason;
+        self.target_consumer_id = None;
+        self.status = PendingDeliveryStatus::RetryExhausted;
+    }
+
     pub(super) fn schedule_retry_now(&mut self, reason: Option<String>) {
+        if self.is_retry_exhausted() {
+            return;
+        }
+
         let now = Instant::now();
         self.last_failure_reason = reason;
         self.next_redelivery_at = now;
@@ -452,5 +476,35 @@ mod tests {
 
         assert!(pending.next_redelivery_at >= before + Duration::from_millis(2_500));
         assert!(pending.next_redelivery_at <= after + Duration::from_millis(2_500));
+    }
+
+    #[test]
+    fn schedule_retry_with_policy_marks_retry_exhausted_after_limit() {
+        let mut pending = PendingDelivery::new(make_msg(4, 14, "/default/topic"));
+        pending.delivery_attempt = 2;
+
+        let failure_policy = SubscriptionFailurePolicy {
+            max_redelivery_count: 1,
+            ..SubscriptionFailurePolicy::new("/default/topic")
+        };
+
+        pending.schedule_retry_with_policy(Some("nack".to_string()), None, &failure_policy);
+
+        assert_eq!(pending.status, PendingDeliveryStatus::RetryExhausted);
+        assert!(pending.is_retry_exhausted());
+        assert_eq!(pending.last_failure_reason.as_deref(), Some("nack"));
+    }
+
+    #[test]
+    fn schedule_retry_now_does_not_revive_retry_exhausted_message() {
+        let mut pending = PendingDelivery::new(make_msg(5, 15, "/default/topic"));
+        pending.mark_retry_exhausted(Some("exhausted".to_string()));
+        let exhausted_deadline = pending.next_redelivery_at;
+
+        pending.schedule_retry_now(Some("reset".to_string()));
+
+        assert_eq!(pending.status, PendingDeliveryStatus::RetryExhausted);
+        assert_eq!(pending.last_failure_reason.as_deref(), Some("exhausted"));
+        assert_eq!(pending.next_redelivery_at, exhausted_deadline);
     }
 }
