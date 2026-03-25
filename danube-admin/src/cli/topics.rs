@@ -2,7 +2,11 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
     BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
-    NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionRequest, TopicRequest,
+    GetSubscriptionFailurePolicyRequest, NamespaceRequest, NewTopicRequest,
+    PartitionedTopicRequest, SetSubscriptionFailurePolicyRequest,
+    SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
+    SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy,
+    SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest, TopicRequest,
 };
 use danube_core::proto::danube_schema::{
     ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
@@ -27,6 +31,42 @@ fn parse_dispatch_strategy(input: &str) -> AdminDispatchStrategy {
     match input.to_ascii_lowercase().as_str() {
         "reliable" | "reliable_dispatch" | "reliable-dispatch" => AdminDispatchStrategy::Reliable,
         _ => AdminDispatchStrategy::NonReliable,
+    }
+}
+
+fn parse_subscription_backoff_strategy(input: &str) -> Result<AdminSubscriptionBackoffStrategy> {
+    match input.to_ascii_lowercase().as_str() {
+        "fixed" => Ok(AdminSubscriptionBackoffStrategy::Fixed),
+        "exponential" => Ok(AdminSubscriptionBackoffStrategy::Exponential),
+        _ => Err(anyhow::anyhow!(
+            "invalid backoff strategy, expected one of: fixed, exponential"
+        )),
+    }
+}
+
+fn parse_subscription_poison_policy(input: &str) -> Result<AdminSubscriptionPoisonPolicy> {
+    match input.to_ascii_lowercase().as_str() {
+        "dead_letter" | "dead-letter" => Ok(AdminSubscriptionPoisonPolicy::DeadLetter),
+        "block" => Ok(AdminSubscriptionPoisonPolicy::Block),
+        "drop" => Ok(AdminSubscriptionPoisonPolicy::Drop),
+        _ => Err(anyhow::anyhow!(
+            "invalid poison policy, expected one of: dead_letter, block, drop"
+        )),
+    }
+}
+
+fn subscription_backoff_strategy_label(strategy: i32) -> &'static str {
+    match AdminSubscriptionBackoffStrategy::try_from(strategy).ok() {
+        Some(AdminSubscriptionBackoffStrategy::Exponential) => "exponential",
+        _ => "fixed",
+    }
+}
+
+fn subscription_poison_policy_label(policy: i32) -> &'static str {
+    match AdminSubscriptionPoisonPolicy::try_from(policy).ok() {
+        Some(AdminSubscriptionPoisonPolicy::DeadLetter) => "dead_letter",
+        Some(AdminSubscriptionPoisonPolicy::Drop) => "drop",
+        _ => "block",
     }
 }
 
@@ -123,6 +163,38 @@ enum TopicsCommands {
         namespace: Option<String>,
         #[arg(short, long)]
         subscription: String,
+    },
+    SetFailurePolicy {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(short, long)]
+        subscription: String,
+        #[arg(long)]
+        max_redelivery_count: u32,
+        #[arg(long)]
+        ack_timeout_ms: u64,
+        #[arg(long)]
+        base_redelivery_delay_ms: u64,
+        #[arg(long)]
+        max_redelivery_delay_ms: u64,
+        #[arg(long, value_parser = ["fixed", "exponential"], default_value = "fixed")]
+        backoff_strategy: String,
+        #[arg(long)]
+        dead_letter_topic: Option<String>,
+        #[arg(long, value_parser = ["dead_letter", "dead-letter", "block", "drop"])]
+        poison_policy: String,
+    },
+    GetFailurePolicy {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(short, long)]
+        subscription: String,
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
+        output: Option<String>,
     },
     #[command(
         about = "Unload a topic from its current broker to be reassigned to a different broker",
@@ -407,6 +479,99 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             };
             let response = client.unsubscribe(request).await?;
             println!("Unsubscribed: {:?}", response.success);
+        }
+
+        TopicsCommands::SetFailurePolicy {
+            topic,
+            namespace,
+            subscription,
+            max_redelivery_count,
+            ack_timeout_ms,
+            base_redelivery_delay_ms,
+            max_redelivery_delay_ms,
+            backoff_strategy,
+            dead_letter_topic,
+            poison_policy,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let request = SetSubscriptionFailurePolicyRequest {
+                topic: topic_name.clone(),
+                subscription: subscription.clone(),
+                failure_policy: Some(AdminSubscriptionFailurePolicy {
+                    max_redelivery_count,
+                    ack_timeout_ms,
+                    base_redelivery_delay_ms,
+                    max_redelivery_delay_ms,
+                    backoff_strategy: parse_subscription_backoff_strategy(&backoff_strategy)? as i32,
+                    dead_letter_topic,
+                    poison_policy: parse_subscription_poison_policy(&poison_policy)? as i32,
+                }),
+            };
+
+            let response = client.set_subscription_failure_policy(request).await?;
+            if response.success {
+                println!(
+                    "✅ Failure policy updated for topic '{}' subscription '{}'",
+                    topic_name, subscription
+                );
+            }
+        }
+
+        TopicsCommands::GetFailurePolicy {
+            topic,
+            namespace,
+            subscription,
+            output,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let response = client
+                .get_subscription_failure_policy(GetSubscriptionFailurePolicyRequest {
+                    topic: topic_name.clone(),
+                    subscription: subscription.clone(),
+                })
+                .await?;
+            let failure_policy = response
+                .failure_policy
+                .ok_or_else(|| anyhow::anyhow!("subscription failure policy not found"))?;
+
+            if matches!(output.as_deref(), Some("json")) {
+                let out = serde_json::json!({
+                    "topic": topic_name,
+                    "subscription": subscription,
+                    "max_redelivery_count": failure_policy.max_redelivery_count,
+                    "ack_timeout_ms": failure_policy.ack_timeout_ms,
+                    "base_redelivery_delay_ms": failure_policy.base_redelivery_delay_ms,
+                    "max_redelivery_delay_ms": failure_policy.max_redelivery_delay_ms,
+                    "backoff_strategy": subscription_backoff_strategy_label(failure_policy.backoff_strategy),
+                    "dead_letter_topic": failure_policy.dead_letter_topic,
+                    "poison_policy": subscription_poison_policy_label(failure_policy.poison_policy),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Topic: {}", topic_name);
+                println!("Subscription: {}", subscription);
+                println!("Max Redelivery Count: {}", failure_policy.max_redelivery_count);
+                println!("Ack Timeout Ms: {}", failure_policy.ack_timeout_ms);
+                println!(
+                    "Base Redelivery Delay Ms: {}",
+                    failure_policy.base_redelivery_delay_ms
+                );
+                println!(
+                    "Max Redelivery Delay Ms: {}",
+                    failure_policy.max_redelivery_delay_ms
+                );
+                println!(
+                    "Backoff Strategy: {}",
+                    subscription_backoff_strategy_label(failure_policy.backoff_strategy)
+                );
+                if let Some(dead_letter_topic) = failure_policy.dead_letter_topic {
+                    println!("Dead Letter Topic: {}", dead_letter_topic);
+                }
+                println!(
+                    "Poison Policy: {}",
+                    subscription_poison_policy_label(failure_policy.poison_policy)
+                );
+            }
         }
         
         // Unload a topic
