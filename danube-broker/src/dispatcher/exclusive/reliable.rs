@@ -79,7 +79,9 @@ use tokio::time::{Duration, Instant};
 use tracing::{trace, warn};
 
 use crate::broker_metrics::{
-    DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL, SUBSCRIPTION_LAG_MESSAGES,
+    DISPATCHER_HEARTBEAT_POLLS_TOTAL, DISPATCHER_NOTIFIER_POLLS_TOTAL,
+    SUBSCRIPTION_ACK_TIMEOUT_TOTAL, SUBSCRIPTION_LAG_MESSAGES, SUBSCRIPTION_NACK_TOTAL,
+    SUBSCRIPTION_REDELIVERY_TOTAL,
 };
 use crate::message::{AckMessage, NackMessage};
 use crate::subscription::SubscriptionFailurePolicy;
@@ -87,7 +89,11 @@ use crate::subscription::SubscriptionFailurePolicy;
 use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
 use super::super::subscription_engine::SubscriptionEngine;
-use super::super::{handle_retry_exhausted_pending, InternalPublisher, PendingDelivery};
+use super::super::{
+    handle_retry_exhausted_pending, record_retry_exhausted_metric, subscription_metric_context,
+    subscription_metric_topic, update_pending_delivery_metrics, InternalPublisher, PendingDelivery,
+    SubscriptionMetricContext,
+};
 
 /// Spawn the reliable exclusive dispatcher background task.
 pub(super) fn start(
@@ -200,7 +206,8 @@ async fn handle_command(
             ).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
-            handle_nack(nack_msg, failure_policy, pending_delivery).await;
+            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+            handle_nack(&metric_context, nack_msg, failure_policy, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
@@ -210,7 +217,8 @@ async fn handle_command(
             ).await;
         }
         DispatcherCommand::RetryNow(reason) => {
-            handle_retry_now(reason, pending_delivery).await;
+            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+            handle_retry_now(&metric_context, failure_policy, reason, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
@@ -220,7 +228,8 @@ async fn handle_command(
             ).await;
         }
         DispatcherCommand::AckTimedOut => {
-            handle_ack_timed_out(failure_policy, pending_delivery).await;
+            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+            handle_ack_timed_out(&metric_context, failure_policy, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
@@ -249,7 +258,8 @@ async fn handle_command(
     }
 }
 
-async fn handle_nack(
+fn handle_nack(
+    metric_context: &SubscriptionMetricContext,
     nack_msg: NackMessage,
     failure_policy: &SubscriptionFailurePolicy,
     pending_delivery: &mut Option<PendingDelivery>,
@@ -269,6 +279,12 @@ async fn handle_nack(
             reason = ?nack_msg.reason,
             "nack received for pending message, preserving buffer for retry"
         );
+        counter!(
+            SUBSCRIPTION_NACK_TOTAL.name,
+            "topic" => metric_context.topic.clone(),
+            "subscription" => metric_context.subscription.clone(),
+        )
+        .increment(1);
         if let Some(pending) = pending_delivery.as_mut() {
             pending.schedule_retry_with_policy(
                 nack_msg.reason,
@@ -276,6 +292,14 @@ async fn handle_nack(
                 failure_policy,
             );
         }
+        if pending_delivery
+            .as_ref()
+            .map(|pending| pending.is_retry_exhausted())
+            .unwrap_or(false)
+        {
+            record_retry_exhausted_metric(metric_context, failure_policy);
+        }
+        update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
     } else {
         trace!(
             request_id = %nack_msg.request_id,
@@ -285,19 +309,27 @@ async fn handle_nack(
     }
 }
 
-async fn handle_retry_now(
+fn handle_retry_now(
+    metric_context: &SubscriptionMetricContext,
+    failure_policy: &SubscriptionFailurePolicy,
     reason: Option<String>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     if let Some(pending) = pending_delivery.as_mut() {
         pending.schedule_retry_now(reason);
     }
+    update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
 }
 
-async fn handle_ack_timed_out(
+fn handle_ack_timed_out(
+    metric_context: &SubscriptionMetricContext,
     failure_policy: &SubscriptionFailurePolicy,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
+    let mut retry_exhausted = false;
+    let mut exhausted_offset = None;
+    let mut exhausted_attempt = None;
+
     if let Some(pending) = pending_delivery.as_mut() {
         if pending.is_awaiting_ack() {
             trace!(
@@ -305,21 +337,36 @@ async fn handle_ack_timed_out(
                 delivery_attempt = %pending.delivery_attempt,
                 "ack timeout detected for pending message"
             );
+            counter!(
+                SUBSCRIPTION_ACK_TIMEOUT_TOTAL.name,
+                "topic" => metric_context.topic.clone(),
+                "subscription" => metric_context.subscription.clone(),
+            )
+            .increment(1);
             pending.schedule_retry_with_policy(
                 Some("ack timeout".to_string()),
                 None,
                 failure_policy,
             );
             if pending.is_retry_exhausted() {
-                warn!(
-                    offset = %pending.message.msg_id.topic_offset,
-                    delivery_attempt = %pending.delivery_attempt,
-                    max_redelivery_count = %failure_policy.max_redelivery_count,
-                    "retry limit exhausted after ack timeout; leaving message in terminal state"
-                );
+                retry_exhausted = true;
+                exhausted_offset = Some(pending.message.msg_id.topic_offset);
+                exhausted_attempt = Some(pending.delivery_attempt);
             }
         }
     }
+
+    if retry_exhausted {
+        record_retry_exhausted_metric(metric_context, failure_policy);
+        warn!(
+            offset = %exhausted_offset.unwrap_or_default(),
+            delivery_attempt = %exhausted_attempt.unwrap_or_default(),
+            max_redelivery_count = %failure_policy.max_redelivery_count,
+            "retry limit exhausted after ack timeout; leaving message in terminal state"
+        );
+    }
+
+    update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
 }
 
 async fn handle_ack(
@@ -361,8 +408,10 @@ async fn handle_poll_and_dispatch(
     internal_publisher: Option<&InternalPublisher>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
+    let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
     if let Some(cons) = state.active_consumer_mut() {
         if !cons.get_status().await {
+            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
             return;
         }
 
@@ -421,11 +470,13 @@ async fn handle_poll_and_dispatch(
             .unwrap_or(false);
 
         if !should_send {
+            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
             return;
         }
 
         if let Some(pending) = pending_delivery.as_mut() {
             let offset = pending.message.msg_id.topic_offset;
+            let is_redelivery = pending.delivery_attempt > 0;
 
             let msg = pending.message.clone();
 
@@ -437,12 +488,23 @@ async fn handle_poll_and_dispatch(
                 );
                 pending.schedule_retry_now(Some(format!("send failed: {e}")));
             } else {
+                if is_redelivery {
+                    counter!(
+                        SUBSCRIPTION_REDELIVERY_TOTAL.name,
+                        "topic" => subscription_metric_topic(engine, Some(pending)),
+                        "subscription" => engine._subscription_name.clone(),
+                    )
+                    .increment(1);
+                }
                 pending.on_send_attempt(
                     cons.consumer_id,
                     Duration::from_millis(failure_policy.ack_timeout_ms),
                 );
             }
         }
+        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
+    } else {
+        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
     }
 }
 
@@ -462,6 +524,7 @@ async fn handle_heartbeat(
     // Report lag gauge
     gauge!(
         SUBSCRIPTION_LAG_MESSAGES.name,
+        "topic" => subscription_metric_topic(engine, pending_delivery.as_ref()),
         "subscription" => engine._subscription_name.clone()
     )
     .set(lag_info.lag_messages as f64);
