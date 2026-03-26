@@ -32,7 +32,7 @@ use crate::{
     args_parse::Args,
     broker_metrics::init_metrics,
     broker_service::BrokerService,
-    danube_service::{DanubeService, LeaderElection, LoadManager, Syncronizer},
+    danube_service::{DanubeService, LeaderElection, LoadManager},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
     storage_configuration::{LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode},
@@ -267,9 +267,7 @@ async fn main() -> Result<()> {
     // for managing the cluster, namespaces & topics
     let resources = Resources::new(metadata_store.clone(), Some(leadership_handle.clone()));
 
-    // The synchronizer ensures that metadata & configuration settings across different brokers remains consistent.
-    // using the client Producers to distribute metadata updates across brokers.
-    let syncroniser = Syncronizer::new();
+
 
     // The broker_id IS the Raft node_id — a single stable identity.
     let broker_id = node_id;
@@ -332,7 +330,6 @@ async fn main() -> Result<()> {
         metadata_store,
         resources,
         leader_election_service,
-        syncroniser,
         load_manager,
         raft_handle,
         leadership_handle,

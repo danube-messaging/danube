@@ -17,19 +17,14 @@ use crate::subscription::{
 };
 use crate::topic::Topic;
 use crate::topic::TopicStore;
-use crate::topic_registry::TopicRegistry;
 use anyhow::Result as AnyResult;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::metadata::MemoryStore;
 use serde_json::{Number, Value};
 use std::sync::Arc;
 
-fn mk_replicator(store: &MetadataStorage) -> Arc<Replicator> {
-    Arc::new(Replicator::new(
-        0,
-        Arc::new(TopicRegistry::new(None)),
-        Arc::new(crate::resources::Resources::new(store.clone(), None)),
-    ))
+fn mk_replicator() -> Arc<Replicator> {
+    Arc::new(Replicator::new(0))
 }
 
 fn mk_policies(entries: &[(&str, u32)]) -> Policies {
@@ -85,7 +80,7 @@ async fn mk_topic(name: &str) -> Topic {
         topic_resources,
         schema_resources,
         Arc::new(MetricsCollector::new()),
-        mk_replicator(&store),
+        mk_replicator(),
     )
 }
 
@@ -108,7 +103,7 @@ async fn mk_reliable_topic(name: &str) -> Topic {
         topic_resources,
         schema_resources,
         Arc::new(MetricsCollector::new()),
-        mk_replicator(&store),
+        mk_replicator(),
     )
 }
 

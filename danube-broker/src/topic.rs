@@ -210,6 +210,7 @@ impl Topic {
         self.publish_message_inner(stream_message, true).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn publish_message_internal_async(
         &self,
         stream_message: StreamMessage,

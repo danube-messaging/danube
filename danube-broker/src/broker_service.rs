@@ -67,11 +67,7 @@ impl BrokerService {
         let topic_registry = Arc::new(TopicRegistry::new(None));
         let resources_arc = Arc::new(resources);
         let metrics_collector = Arc::new(MetricsCollector::new());
-        let replicator = Arc::new(Replicator::new(
-            broker_id,
-            topic_registry.clone(),
-            resources_arc.clone(),
-        ));
+        let replicator = Arc::new(Replicator::new(broker_id));
 
         let topic_manager = TopicManager::new(
             broker_id,
