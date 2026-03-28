@@ -101,7 +101,6 @@ use crate::broker_metrics::{
 };
 use crate::message::{AckMessage, NackMessage};
 use crate::replicator::Replicator;
-use crate::subscription::SubscriptionFailurePolicy;
 
 use super::super::commands::DispatcherCommand;
 use super::super::shared::SharedConsumerState;
@@ -115,19 +114,17 @@ use super::super::{
 /// Spawn the reliable shared dispatcher background task.
 pub(super) fn start(
     engine: SubscriptionEngine,
-    failure_policy: SubscriptionFailurePolicy,
     replicator: Option<Arc<Replicator>>,
     control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
-        run_reliable_loop(engine, failure_policy, replicator, control_rx, ready_tx).await;
+        run_reliable_loop(engine, replicator, control_rx, ready_tx).await;
     });
 }
 
 async fn run_reliable_loop(
     mut engine: SubscriptionEngine,
-    failure_policy: SubscriptionFailurePolicy,
     replicator: Option<Arc<Replicator>>,
     mut control_rx: mpsc::Receiver<DispatcherCommand>,
     ready_tx: watch::Sender<bool>,
@@ -160,7 +157,6 @@ async fn run_reliable_loop(
                             cmd,
                             &mut state,
                             &mut engine,
-                            &failure_policy,
                             replicator.as_deref(),
                             &mut pending_delivery,
                         ).await;
@@ -173,7 +169,6 @@ async fn run_reliable_loop(
                 handle_heartbeat(
                     &mut state,
                     &mut engine,
-                    &failure_policy,
                     replicator.as_deref(),
                     &mut pending_delivery,
                 ).await;
@@ -186,7 +181,6 @@ async fn handle_command(
     cmd: DispatcherCommand,
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    failure_policy: &SubscriptionFailurePolicy,
     replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
@@ -197,7 +191,6 @@ async fn handle_command(
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
@@ -216,40 +209,36 @@ async fn handle_command(
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
-            handle_nack(&metric_context, nack_msg, failure_policy, pending_delivery);
+            handle_nack(engine, &metric_context, nack_msg, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
         }
         DispatcherCommand::RetryNow(reason) => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
-            handle_retry_now(&metric_context, failure_policy, reason, pending_delivery);
+            handle_retry_now(engine, &metric_context, reason, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
         }
         DispatcherCommand::AckTimedOut => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
-            handle_ack_timed_out(&metric_context, failure_policy, pending_delivery);
+            handle_ack_timed_out(engine, &metric_context, pending_delivery);
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
@@ -259,7 +248,6 @@ async fn handle_command(
             handle_poll_and_dispatch(
                 state,
                 engine,
-                failure_policy,
                 replicator,
                 pending_delivery,
             ).await;
@@ -273,9 +261,9 @@ async fn handle_command(
 }
 
 fn handle_nack(
+    engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
     nack_msg: NackMessage,
-    failure_policy: &SubscriptionFailurePolicy,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let nacked_offset = nack_msg.msg_id.topic_offset;
@@ -300,20 +288,16 @@ fn handle_nack(
         )
         .increment(1);
         if let Some(pending) = pending_delivery.as_mut() {
-            pending.schedule_retry_with_policy(
-                nack_msg.reason,
-                nack_msg.delay_ms,
-                failure_policy,
-            );
+            engine.on_nacked(pending, nack_msg.reason, nack_msg.delay_ms);
         }
         if pending_delivery
             .as_ref()
             .map(|pending| pending.is_retry_exhausted())
             .unwrap_or(false)
         {
-            record_retry_exhausted_metric(metric_context, failure_policy);
+            record_retry_exhausted_metric(metric_context, engine.failure_policy());
         }
-        update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
+        update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
     } else {
         trace!(
             request_id = %nack_msg.request_id,
@@ -324,20 +308,20 @@ fn handle_nack(
 }
 
 fn handle_retry_now(
+    engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
-    failure_policy: &SubscriptionFailurePolicy,
     reason: Option<String>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     if let Some(pending) = pending_delivery.as_mut() {
         pending.schedule_retry_now(reason);
     }
-    update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
+    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
 }
 
 fn handle_ack_timed_out(
+    engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
-    failure_policy: &SubscriptionFailurePolicy,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
     let mut retry_exhausted = false;
@@ -357,11 +341,7 @@ fn handle_ack_timed_out(
                 "subscription" => metric_context.subscription.clone(),
             )
             .increment(1);
-            pending.schedule_retry_with_policy(
-                Some("ack timeout".to_string()),
-                None,
-                failure_policy,
-            );
+            engine.on_ack_timed_out(pending);
             if pending.is_retry_exhausted() {
                 retry_exhausted = true;
                 exhausted_offset = Some(pending.message.msg_id.topic_offset);
@@ -371,16 +351,16 @@ fn handle_ack_timed_out(
     }
 
     if retry_exhausted {
-        record_retry_exhausted_metric(metric_context, failure_policy);
+        record_retry_exhausted_metric(metric_context, engine.failure_policy());
         warn!(
             offset = %exhausted_offset.unwrap_or_default(),
             delivery_attempt = %exhausted_attempt.unwrap_or_default(),
-            max_redelivery_count = %failure_policy.max_redelivery_count,
+            max_redelivery_count = %engine.failure_policy().max_redelivery_count,
             "retry limit exhausted after ack timeout; leaving message in terminal state"
         );
     }
 
-    update_pending_delivery_metrics(metric_context, failure_policy, pending_delivery);
+    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
 }
 
 async fn handle_ack(
@@ -410,10 +390,10 @@ async fn handle_ack(
 async fn handle_poll_and_dispatch(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    failure_policy: &SubscriptionFailurePolicy,
     replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
+    let failure_policy = engine.failure_policy();
     let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
     if state.is_empty() {
         update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
@@ -437,7 +417,6 @@ async fn handle_poll_and_dispatch(
 
     match handle_retry_exhausted_pending(
         engine,
-        failure_policy,
         replicator,
         pending_delivery,
     )
@@ -451,6 +430,7 @@ async fn handle_poll_and_dispatch(
         }
     }
 
+    let failure_policy = engine.failure_policy();
     let is_retry_exhausted = pending_delivery
         .as_ref()
         .map(|pending| pending.is_retry_exhausted())
@@ -535,7 +515,6 @@ async fn handle_poll_and_dispatch(
 async fn handle_heartbeat(
     state: &mut SharedConsumerState,
     engine: &mut SubscriptionEngine,
-    failure_policy: &SubscriptionFailurePolicy,
     replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) {
@@ -564,7 +543,6 @@ async fn handle_heartbeat(
             DispatcherCommand::AckTimedOut,
             state,
             engine,
-            failure_policy,
             replicator,
             pending_delivery,
         )
@@ -583,7 +561,6 @@ async fn handle_heartbeat(
         handle_poll_and_dispatch(
             state,
             engine,
-            failure_policy,
             replicator,
             pending_delivery,
         ).await;

@@ -165,10 +165,10 @@ fn build_dead_letter_message(
 
 pub(super) async fn handle_retry_exhausted_pending(
     engine: &mut SubscriptionEngine,
-    failure_policy: &SubscriptionFailurePolicy,
     replicator: Option<&Replicator>,
     pending_delivery: &mut Option<PendingDelivery>,
 ) -> Result<bool> {
+    let failure_policy = engine.failure_policy();
     let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
     let Some(pending) = pending_delivery.as_ref() else {
         update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
@@ -206,8 +206,9 @@ pub(super) async fn handle_retry_exhausted_pending(
                 "poison_policy" => poison_policy_label(&failure_policy.poison_policy).to_string(),
             )
             .increment(1);
-            engine.on_acked(original_msg_id).await?;
+            engine.skip_poisoned(original_msg_id).await?;
             *pending_delivery = None;
+            let failure_policy = engine.failure_policy();
             update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
             Ok(true)
         }
@@ -217,8 +218,9 @@ pub(super) async fn handle_retry_exhausted_pending(
         }
         SubscriptionPoisonPolicy::Drop => {
             let original_msg_id = pending.message.msg_id.clone();
-            engine.on_acked(original_msg_id).await?;
+            engine.skip_poisoned(original_msg_id).await?;
             *pending_delivery = None;
+            let failure_policy = engine.failure_policy();
             update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
             Ok(true)
         }
@@ -407,14 +409,12 @@ impl Dispatcher {
     /// Reliable exclusive (ack-gating, single active consumer, heartbeat).
     pub(crate) fn reliable_exclusive(
         engine: SubscriptionEngine,
-        failure_policy: SubscriptionFailurePolicy,
         replicator: Option<Arc<Replicator>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
         ExclusiveDispatcher::start_reliable(
             engine,
-            failure_policy,
             replicator,
             control_rx,
             ready_tx,
@@ -430,14 +430,12 @@ impl Dispatcher {
     /// Reliable shared (ack-gating, round-robin, heartbeat).
     pub(crate) fn reliable_shared(
         engine: SubscriptionEngine,
-        failure_policy: SubscriptionFailurePolicy,
         replicator: Option<Arc<Replicator>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
         SharedDispatcher::start_reliable(
             engine,
-            failure_policy,
             replicator,
             control_rx,
             ready_tx,
