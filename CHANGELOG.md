@@ -1,3 +1,22 @@
+<!-- v0.10.0 START -->
+## v0.10.0 - 2026-03-28
+
+**Reliable Dispatch Failure Handling**
+
+This release adds configurable failure policies to reliable subscriptions, giving operators control over what happens when a message cannot be delivered, from automatic retries with backoff to dead-letter queues for poisoned messages.
+
+### 🛡️ Failure Policies & Poison Message Handling
+
+* **Consumer NACK support** (#210) — Consumers can now explicitly reject a message via `nack(msg, delay_ms, reason)`. The broker schedules a redelivery using the subscription's failure policy (fixed or exponential backoff), preserving the at-least-once guarantee while giving consumers control over retry timing. by @danrusei in 9de24b5
+
+* **Configurable failure policies** (#210) — Each subscription can be configured with `max_redelivery_count`, `ack_timeout_ms`, backoff strategy (Fixed / Exponential), base and max redelivery delays, and a poison policy. Policies are set via `danube-admin topics set-failure-policy` and persist in Raft metadata. by @danrusei in 9de24b5
+
+* **Poison message policies** (#210) — When a message exhausts its retry budget, operators choose one of three outcomes: **DeadLetter** (route to a configurable DLQ topic with full origin metadata), **Drop** (skip the message and resume progress), or **Block** (halt the subscription until manual intervention). by @danrusei in 9de24b5
+
+* **Dead-letter queue with origin metadata** (#210) — DLQ messages carry `x-original-topic`, `x-original-subscription`, `x-poison-policy`, `x-delivery-attempt`, `x-failure-reason`, and original offset/producer attributes, enabling full traceability from the DLQ back to the source. by @danrusei in 9de24b5
+
+<!-- v0.10.0 END -->
+
 <!-- v0.9.0 START -->
 ## v0.9.0 - 2026-03-23
 
