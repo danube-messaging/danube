@@ -23,6 +23,7 @@ pub(crate) struct Syncronizer {
     producer: Option<ClientProducer>,
 }
 
+#[allow(dead_code)]
 impl Syncronizer {
     pub(crate) fn new() -> Self {
         Syncronizer {

@@ -10,14 +10,22 @@ use tokio::time::timeout;
 
 use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
+use crate::replicator::Replicator;
 use crate::resources::{SchemaResources, TopicResources};
-use crate::subscription::SubscriptionOptions;
+use crate::subscription::{
+    SubscriptionFailurePolicy, SubscriptionOptions, SubscriptionPoisonPolicy,
+};
 use crate::topic::Topic;
 use crate::topic::TopicStore;
 use anyhow::Result as AnyResult;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::metadata::MemoryStore;
 use serde_json::{Number, Value};
+use std::sync::Arc;
+
+fn mk_replicator() -> Arc<Replicator> {
+    Arc::new(Replicator::new(0))
+}
 
 fn mk_policies(entries: &[(&str, u32)]) -> Policies {
     let mut map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -62,9 +70,8 @@ async fn mk_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store.clone());
-    let schema_resources = SchemaResources::new(store);
+    let schema_resources = SchemaResources::new(store.clone());
     use crate::danube_service::metrics_collector::MetricsCollector;
-    use std::sync::Arc;
 
     Topic::new(
         name,
@@ -73,6 +80,30 @@ async fn mk_topic(name: &str) -> Topic {
         topic_resources,
         schema_resources,
         Arc::new(MetricsCollector::new()),
+        mk_replicator(),
+    )
+}
+
+async fn mk_reliable_topic(name: &str) -> Topic {
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let topic_resources = TopicResources::new(store.clone());
+    let schema_resources = SchemaResources::new(store.clone());
+    use crate::danube_service::metrics_collector::MetricsCollector;
+
+    let wal = Wal::with_config(WalConfig::default())
+        .await
+        .expect("create wal");
+    let wal_storage = WalStorage::from_wal(wal);
+
+    Topic::new(
+        name,
+        ConfigDispatchStrategy::Reliable,
+        Some(wal_storage),
+        topic_resources,
+        schema_resources,
+        Arc::new(MetricsCollector::new()),
+        mk_replicator(),
     )
 }
 
@@ -83,6 +114,85 @@ fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
         consumer_id: None,
         consumer_name: consumer.to_string(),
     }
+}
+
+#[tokio::test]
+async fn ensure_subscription_failure_policy_does_not_backfill_default_dlq_topic() -> AnyResult<()> {
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let topic_resources = TopicResources::new(store);
+    let topic_name = "/default/failure-policy-backfill";
+    let subscription_name = "sub-a";
+
+    let partial_policy = SubscriptionFailurePolicy {
+        dead_letter_topic: None,
+        ..SubscriptionFailurePolicy::default()
+    };
+
+    topic_resources
+        .set_subscription_failure_policy(subscription_name, topic_name, &partial_policy)
+        .await?;
+
+    let ensured_policy = topic_resources
+        .ensure_subscription_failure_policy(subscription_name, topic_name)
+        .await?;
+    let stored_policy = topic_resources
+        .get_subscription_failure_policy(subscription_name, topic_name)
+        .await?
+        .expect("stored failure policy");
+
+    assert_eq!(ensured_policy.dead_letter_topic, None);
+    assert_eq!(stored_policy, ensured_policy);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_subscription_failure_policy_rejects_dead_letter_without_topic() {
+    let mem = MemoryStore::new().await.expect("init memory store");
+    let store = MetadataStorage::InMemory(mem);
+    let topic_resources = TopicResources::new(store);
+
+    let invalid_policy = SubscriptionFailurePolicy {
+        dead_letter_topic: None,
+        poison_policy: SubscriptionPoisonPolicy::DeadLetter,
+        ..SubscriptionFailurePolicy::default()
+    };
+
+    let err = topic_resources
+        .set_subscription_failure_policy("sub-a", "/default/invalid-dead-letter-policy", &invalid_policy)
+        .await
+        .expect_err("dead letter policy without topic should be rejected");
+
+    assert!(err
+        .to_string()
+        .contains("dead_letter_topic must be configured when poison_policy is DeadLetter"));
+}
+
+#[tokio::test]
+async fn reliable_subscription_materializes_with_persisted_failure_policy() -> AnyResult<()> {
+    let topic_name = "/default/reliable-failure-policy";
+    let topic = mk_reliable_topic(topic_name).await;
+
+    let _ = topic
+        .subscribe(topic_name, sub_opts("sub-a", "consumer-a", 0))
+        .await?;
+
+    let stored_policy = topic
+        .resources_topic
+        .get_subscription_failure_policy("sub-a", topic_name)
+        .await?
+        .expect("stored failure policy");
+
+    let subscriptions = topic.subscriptions.lock().await;
+    let subscription = subscriptions.get("sub-a").expect("subscription exists");
+
+    assert_eq!(subscription.failure_policy, stored_policy);
+    assert_eq!(subscription.failure_policy.dead_letter_topic, None);
+    assert_eq!(subscription.failure_policy.max_redelivery_count, 5);
+    assert_eq!(subscription.failure_policy.ack_timeout_ms, 30_000);
+
+    Ok(())
 }
 
 /// What this test validates

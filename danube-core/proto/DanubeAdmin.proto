@@ -8,6 +8,17 @@ enum DispatchStrategy {
   Reliable = 1;
 }
 
+enum SubscriptionBackoffStrategy {
+  Fixed = 0;
+  Exponential = 1;
+}
+
+enum SubscriptionPoisonPolicy {
+  DeadLetter = 0;
+  Block = 1;
+  Drop = 2;
+}
+
 // Retention policy and reliable options are removed in Phase 1; use DispatchStrategy only
 
 service BrokerAdmin {
@@ -57,6 +68,8 @@ service TopicAdmin {
   rpc UnloadTopic(TopicRequest) returns (TopicResponse);
   rpc ListSubscriptions(TopicRequest) returns (SubscriptionListResponse);
   rpc Unsubscribe(SubscriptionRequest) returns (SubscriptionResponse);
+  rpc SetSubscriptionFailurePolicy(SetSubscriptionFailurePolicyRequest) returns (SubscriptionResponse);
+  rpc GetSubscriptionFailurePolicy(GetSubscriptionFailurePolicyRequest) returns (GetSubscriptionFailurePolicyResponse);
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
@@ -99,6 +112,31 @@ message SubscriptionRequest {
 
 message SubscriptionResponse {
   bool success = 1;
+}
+
+message SubscriptionFailurePolicy {
+  uint32 max_redelivery_count = 1;
+  uint64 ack_timeout_ms = 2;
+  uint64 base_redelivery_delay_ms = 3;
+  uint64 max_redelivery_delay_ms = 4;
+  SubscriptionBackoffStrategy backoff_strategy = 5;
+  optional string dead_letter_topic = 6;
+  SubscriptionPoisonPolicy poison_policy = 7;
+}
+
+message SetSubscriptionFailurePolicyRequest {
+  string topic = 1;
+  string subscription = 2;
+  SubscriptionFailurePolicy failure_policy = 3;
+}
+
+message GetSubscriptionFailurePolicyRequest {
+  string topic = 1;
+  string subscription = 2;
+}
+
+message GetSubscriptionFailurePolicyResponse {
+  SubscriptionFailurePolicy failure_policy = 1;
 }
 
 // Response Messages

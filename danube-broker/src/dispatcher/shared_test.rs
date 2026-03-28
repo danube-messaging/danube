@@ -90,7 +90,10 @@ async fn reliable_multiple_round_robin_ack_gating() {
     let ts = TopicStore::new(topic.to_string(), wal_storage);
 
     let engine = SubscriptionEngine::new("sub-shared".to_string(), Arc::new(ts.clone()));
-    let dispatcher = Dispatcher::reliable_shared(engine);
+    let dispatcher = Dispatcher::reliable_shared(
+        engine,
+        None,
+    );
 
     // Two consumers capture messages
     let (tx1, mut rx1) = mpsc::channel::<StreamMessage>(8);

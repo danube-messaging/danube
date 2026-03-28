@@ -8,7 +8,10 @@ use tokio::time::{Duration, Instant};
 
 use crate::rate_limiter::RateLimiter;
 use crate::resources::TopicResources;
+use crate::subscription::SubscriptionFailurePolicy;
 use crate::topic::TopicStore;
+
+use super::pending_delivery::PendingDelivery;
 
 /// # SubscriptionEngine
 ///
@@ -21,19 +24,27 @@ use crate::topic::TopicStore;
 /// - **Progress Tracking**: Persists subscription cursor (last acked offset) to metadata store
 /// - **Lag Detection**: Monitors subscription position relative to WAL head
 /// - **Rate Limiting**: Optional throttling of message dispatch for flow control
+/// - **Failure Policy**: Single authority for applying retry limits, backoff, and poison handling
 ///
 /// ## Architecture
 ///
 /// ```text
 /// Topic WAL → TopicStream → SubscriptionEngine → Reliable Dispatcher → Consumer
-///                              ↓ ack tracking
-///                         TopicResources (metadata)
+///                              ├─ ack tracking       ├─ consumer mgmt
+///                              ├─ failure policy     ├─ dispatch loop
+///                              └─ cursor mgmt        └─ metrics
+///                                   ↓                     ↓
+///                            TopicResources         poison_handler
+///                            (metadata)             (DLQ/Drop/Block)
 /// ```
 ///
 /// ## Responsibility Boundary
 ///
-/// - **SubscriptionEngine**: Stream polling, progress persistence, lag detection
-/// - **Reliable Dispatcher**: Ack-gating, pending message buffer, consumer management
+/// - **SubscriptionEngine**: Stream polling, progress persistence, lag detection,
+///   **failure-aware message lifecycle** (nack/ack-timeout/skip decisions using failure policy)
+/// - **Reliable Dispatcher**: Consumer management, dispatch loop, metrics emission
+/// - **PendingDelivery**: Per-message delivery state (attempt count, status, timers)
+/// - **poison_handler**: Terminal handling for retry-exhausted messages (DLQ, Drop, Block)
 /// - **TopicStore**: WAL access, stream creation
 /// - **TopicResources**: Metadata persistence (subscription cursor storage)
 ///
@@ -48,6 +59,7 @@ use crate::topic::TopicStore;
 ///     topic_resources,
 ///     Duration::from_secs(5), // flush interval
 ///     Some(rate_limiter),
+///     failure_policy,
 /// );
 ///
 /// // 2. Initialize stream (typically from persisted progress)
@@ -61,7 +73,12 @@ use crate::topic::TopicStore;
 /// // 4. Track acknowledgments
 /// engine.on_acked(msg_id).await?;
 ///
-/// // 5. Check lag (heartbeat)
+/// // 5. Handle failures (engine applies failure policy)
+/// engine.on_nacked(&mut pending, reason, delay_ms); // retry or exhaust
+/// engine.on_ack_timed_out(&mut pending);             // retry or exhaust
+/// engine.skip_poisoned(msg_id).await?;               // DLQ/Drop cursor advance
+///
+/// // 6. Check lag (heartbeat)
 /// if engine.has_lag() {
 ///     // trigger dispatch...
 /// }
@@ -103,6 +120,10 @@ pub(crate) struct SubscriptionEngine {
     /// Optional rate limiter for throttling message dispatch
     /// Used for flow control to prevent overwhelming consumers
     pub(crate) dispatch_rate_limiter: Option<std::sync::Arc<RateLimiter>>,
+
+    /// Failure policy governing retry limits, backoff, ack timeouts, and poison handling.
+    /// The engine is the single authority that applies this policy to message lifecycle events.
+    pub(crate) failure_policy: SubscriptionFailurePolicy,
 }
 
 impl SubscriptionEngine {
@@ -126,6 +147,7 @@ impl SubscriptionEngine {
             last_flush_at: Instant::now(),
             sub_progress_flush_interval: Duration::from_secs(5),
             dispatch_rate_limiter: None,
+            failure_policy: SubscriptionFailurePolicy::default(),
         }
     }
 
@@ -161,12 +183,14 @@ impl SubscriptionEngine {
         progress_resources: TopicResources,
         sub_progress_flush_interval: Duration,
         limiter: Option<std::sync::Arc<RateLimiter>>,
+        failure_policy: SubscriptionFailurePolicy,
     ) -> Self {
         let mut s = Self::new(subscription_name, topic_store);
         s.topic_name = Some(topic_name);
         s.progress_resources = Some(progress_resources);
         s.sub_progress_flush_interval = sub_progress_flush_interval;
         s.dispatch_rate_limiter = limiter;
+        s.failure_policy = failure_policy;
         s
     }
 
@@ -457,6 +481,51 @@ impl SubscriptionEngine {
             has_lag: self.has_lag(),
         }
     }
+
+    // ── Failure-aware lifecycle methods ──────────────────────────────────
+    //
+    // These methods make the engine the single authority for message state
+    // transitions. The engine applies the failure policy; PendingDelivery
+    // owns the per-message state machine.
+
+    /// Access the failure policy (for metrics helpers and ack timeout reads).
+    pub(super) fn failure_policy(&self) -> &SubscriptionFailurePolicy {
+        &self.failure_policy
+    }
+
+    /// Consumer explicitly rejected the message (NACK).
+    ///
+    /// Applies the failure policy to decide whether to schedule a retry
+    /// or mark the message as retry-exhausted.
+    pub(super) fn on_nacked(
+        &self,
+        pending: &mut PendingDelivery,
+        reason: Option<String>,
+        delay_ms: Option<u64>,
+    ) {
+        pending.schedule_retry_with_policy(reason, delay_ms, &self.failure_policy);
+    }
+
+    /// Ack deadline expired without consumer response.
+    ///
+    /// Applies the failure policy to decide whether to schedule a retry
+    /// or mark the message as retry-exhausted.
+    pub(super) fn on_ack_timed_out(&self, pending: &mut PendingDelivery) {
+        pending.schedule_retry_with_policy(
+            Some("ack timeout".to_string()),
+            None,
+            &self.failure_policy,
+        );
+    }
+
+    /// Skip a poisoned message (DLQ-routed or dropped).
+    ///
+    /// Advances the cursor past this message without a real consumer ack.
+    /// Semantically distinct from `on_acked` — this is a forced skip, not
+    /// a successful delivery confirmation.
+    pub(crate) async fn skip_poisoned(&mut self, msg_id: MessageID) -> Result<()> {
+        self.on_acked(msg_id).await
+    }
 }
 
 /// Diagnostic information about subscription lag.
@@ -544,6 +613,7 @@ mod tests {
             topic_resources,
             Duration::from_millis(50),
             None,
+            SubscriptionFailurePolicy::default(),
         );
 
         // First ack (should mark dirty but not flush immediately)

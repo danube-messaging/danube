@@ -9,7 +9,7 @@ use tracing::warn;
 use danube_core::message::MessageID;
 use danube_core::proto::{
     consumer_service_client::ConsumerServiceClient, health_check_request::ClientType, AckRequest,
-    AckResponse, ConsumerRequest, ReceiveRequest, StreamMessage,
+    AckResponse, ConsumerRequest, NackRequest, NackResponse, ReceiveRequest, StreamMessage,
 };
 
 use std::sync::{
@@ -254,6 +254,44 @@ impl TopicConsumer {
         RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
 
         let response = match stream_client.ack(request).await {
+            Ok(response) => response,
+            Err(status) => {
+                return Err(status_to_danube_error(status));
+            }
+        };
+        Ok(response.into_inner())
+    }
+
+    pub(crate) async fn send_nack(
+        &mut self,
+        req_id: u64,
+        msg_id: MessageID,
+        subscription_name: &str,
+        delay_ms: Option<u64>,
+        reason: Option<String>,
+    ) -> Result<NackResponse> {
+        let stream_client = match &mut self.state {
+            ConsumerState::Ready { stream_client, .. } => stream_client,
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "SendNack: consumer is not connected".into(),
+                ));
+            }
+        };
+
+        let nack_request = NackRequest {
+            request_id: req_id,
+            msg_id: Some(msg_id.into()),
+            subscription_name: subscription_name.to_string(),
+            delay_ms,
+            reason,
+        };
+
+        let mut request = tonic::Request::new(nack_request);
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
+
+        let response = match stream_client.nack(request).await {
             Ok(response) => response,
             Err(status) => {
                 return Err(status_to_danube_error(status));

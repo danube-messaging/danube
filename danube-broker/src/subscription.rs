@@ -10,10 +10,10 @@ use crate::{
     broker_metrics::{SUBSCRIPTION_ACTIVE_CONSUMERS, TOPIC_ACTIVE_CONSUMERS},
     consumer::{Consumer, ConsumerSession},
     dispatcher::subscription_engine::SubscriptionEngine,
-    dispatcher::DispatchStrategy,
-    dispatcher::Dispatcher,
-    message::AckMessage,
+    dispatcher::{DispatchStrategy, Dispatcher},
+    message::{AckMessage, NackMessage},
     rate_limiter::RateLimiter,
+    replicator::Replicator,
     resources::TopicResources,
     topic::TopicStore,
     utils::get_random_id,
@@ -22,6 +22,71 @@ use crate::{
 // How long an idle non-reliable subscription is kept before removal (seconds).
 // Consumers that reconnect within this window reuse their identity.
 pub(crate) const SUBSCRIPTION_IDLE_GRACE: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) enum SubscriptionBackoffStrategy {
+    #[default]
+    Fixed,
+    Exponential,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) enum SubscriptionPoisonPolicy {
+    DeadLetter,
+    #[default]
+    Block,
+    Drop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct SubscriptionFailurePolicy {
+    pub(crate) max_redelivery_count: u32,
+    pub(crate) ack_timeout_ms: u64,
+    pub(crate) base_redelivery_delay_ms: u64,
+    pub(crate) max_redelivery_delay_ms: u64,
+    pub(crate) backoff_strategy: SubscriptionBackoffStrategy,
+    pub(crate) dead_letter_topic: Option<String>,
+    pub(crate) poison_policy: SubscriptionPoisonPolicy,
+}
+
+impl Default for SubscriptionFailurePolicy {
+    fn default() -> Self {
+        Self {
+            max_redelivery_count: 5,
+            ack_timeout_ms: 30_000,
+            base_redelivery_delay_ms: 1_000,
+            max_redelivery_delay_ms: 60_000,
+            backoff_strategy: SubscriptionBackoffStrategy::Exponential,
+            dead_letter_topic: None,
+            poison_policy: SubscriptionPoisonPolicy::Block,
+        }
+    }
+}
+
+impl SubscriptionFailurePolicy {
+    pub(crate) fn new(_topic_name: &str) -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.poison_policy == SubscriptionPoisonPolicy::DeadLetter {
+            let has_dead_letter_topic = self
+                .dead_letter_topic
+                .as_deref()
+                .map(|topic| !topic.trim().is_empty())
+                .unwrap_or(false);
+
+            if !has_dead_letter_topic {
+                return Err(anyhow!(
+                    "dead_letter_topic must be configured when poison_policy is DeadLetter"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
 
 // Subscriptions manage the consumers that are subscribed to them.
 // They also handle dispatchers that manage the distribution of messages to these consumers.
@@ -35,6 +100,7 @@ pub(crate) struct Subscription {
     pub(crate) consumers: HashMap<u64, Consumer>,
     // optional per-subscription dispatch limiter (messages/sec)
     pub(crate) dispatch_rate_limiter: Option<Arc<RateLimiter>>,
+    pub(crate) failure_policy: SubscriptionFailurePolicy,
     // When all consumers became inactive (non-reliable only). None = active.
     pub(crate) idle_since: Option<Instant>,
 }
@@ -54,6 +120,7 @@ impl Subscription {
     pub(crate) fn new(
         sub_options: SubscriptionOptions,
         topic_name: &str,
+        failure_policy: SubscriptionFailurePolicy,
         _meta_properties: HashMap<String, String>,
     ) -> Self {
         Subscription {
@@ -63,6 +130,7 @@ impl Subscription {
             dispatcher: None,
             consumers: HashMap::new(),
             dispatch_rate_limiter: None,
+            failure_policy,
             idle_since: None,
         }
     }
@@ -124,6 +192,7 @@ impl Subscription {
         dispatch_strategy: &DispatchStrategy,
         topic_store: Option<TopicStore>,
         topic_resources: Option<TopicResources>,
+        replicator: Option<Arc<Replicator>>,
         sub_progress_flush_interval: Option<Duration>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
@@ -158,8 +227,12 @@ impl Subscription {
                             tr,
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
+                            self.failure_policy.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        let dispatcher = Dispatcher::reliable_exclusive(
+                            engine,
+                            replicator.clone(),
+                        );
                         dispatcher.ready().await;
                         dispatcher
                     }
@@ -176,8 +249,12 @@ impl Subscription {
                             tr,
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
+                            self.failure_policy.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_shared(engine);
+                        let dispatcher = Dispatcher::reliable_shared(
+                            engine,
+                            replicator.clone(),
+                        );
                         dispatcher.ready().await;
                         dispatcher
                     }
@@ -194,8 +271,12 @@ impl Subscription {
                             tr,
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
+                            self.failure_policy.clone(),
                         );
-                        let dispatcher = Dispatcher::reliable_exclusive(engine);
+                        let dispatcher = Dispatcher::reliable_exclusive(
+                            engine,
+                            replicator.clone(),
+                        );
                         dispatcher
                     }
 
@@ -214,6 +295,15 @@ impl Subscription {
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
         if let Some(dispatcher) = self.dispatcher.as_ref() {
             dispatcher.ack_message(ack_msg).await?;
+        } else {
+            return Err(anyhow!("Dispatcher not initialized"));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        if let Some(dispatcher) = self.dispatcher.as_ref() {
+            dispatcher.nack_message(nack_msg).await?;
         } else {
             return Err(anyhow!("Dispatcher not initialized"));
         }

@@ -3,9 +3,11 @@
 //! Routes messages to a single active consumer. If the active consumer fails,
 //! failover to the next available consumer.
 
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 use crate::consumer::Consumer;
+use crate::replicator::Replicator;
 
 use super::commands::DispatcherCommand;
 use super::subscription_engine::SubscriptionEngine;
@@ -75,10 +77,16 @@ impl ExclusiveDispatcher {
     /// Spawn the reliable exclusive background task.
     pub(super) fn start_reliable(
         engine: SubscriptionEngine,
+        replicator: Option<Arc<Replicator>>,
         control_rx: mpsc::Receiver<DispatcherCommand>,
         ready_tx: watch::Sender<bool>,
     ) {
-        reliable::start(engine, control_rx, ready_tx);
+        reliable::start(
+            engine,
+            replicator,
+            control_rx,
+            ready_tx,
+        );
     }
 }
 

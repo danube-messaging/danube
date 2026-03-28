@@ -204,6 +204,29 @@ impl Consumer {
         Ok(())
     }
 
+    pub async fn nack(
+        &mut self,
+        message: &StreamMessage,
+        delay_ms: Option<u64>,
+        reason: Option<String>,
+    ) -> Result<()> {
+        let topic_name = message.msg_id.topic_name.clone();
+        let topic_consumer = self.consumers.get_mut(&topic_name);
+        if let Some(topic_consumer) = topic_consumer {
+            let mut topic_consumer = topic_consumer.lock().await;
+            let _ = topic_consumer
+                .send_nack(
+                    message.request_id,
+                    message.msg_id.clone(),
+                    &self.subscription,
+                    delay_ms,
+                    reason,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Gracefully close all receive tasks and stop background activities for this consumer
     pub async fn close(&mut self) {
         // signal shutdown

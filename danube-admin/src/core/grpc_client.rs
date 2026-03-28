@@ -281,6 +281,24 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn set_subscription_failure_policy(
+        &self,
+        req: admin::SetSubscriptionFailurePolicyRequest,
+    ) -> Result<admin::SubscriptionResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let fut = async move { client.set_subscription_failure_policy(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_subscription_failure_policy(
+        &self,
+        req: admin::GetSubscriptionFailurePolicyRequest,
+    ) -> Result<admin::GetSubscriptionFailurePolicyResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let fut = async move { client.get_subscription_failure_policy(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     // ===== SCHEMA REGISTRY METHODS =====
 
     pub async fn register_schema(

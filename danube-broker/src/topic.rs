@@ -19,12 +19,13 @@ use crate::{
     },
     danube_service::metrics_collector::MetricsCollector,
     dispatcher::{DispatchStrategy, Dispatcher},
-    message::AckMessage,
+    message::{AckMessage, NackMessage},
     policies::Policies,
     producer::Producer,
     rate_limiter::RateLimiter,
+    replicator::Replicator,
     resources::{SchemaResources, TopicResources},
-    subscription::{Subscription, SubscriptionOptions},
+    subscription::{Subscription, SubscriptionFailurePolicy, SubscriptionOptions},
     topic_schema::TopicSchemaContext,
 };
 
@@ -40,8 +41,6 @@ pub(crate) enum TopicState {
     Draining,
     Closed,
 }
-
-// (moved helper/validation methods after struct definition)
 
 // Topic
 //
@@ -70,6 +69,7 @@ pub(crate) struct Topic {
     resources_topic: TopicResources,
     // unified dispatcher TopicStore facade (per-topic WAL/Cloud access)
     topic_store: Option<TopicStore>,
+    replicator: Arc<Replicator>,
     // topic state for orchestrations like unload
     state: Mutex<TopicState>,
     // optional topic-level publish rate limiter (messages/sec)
@@ -86,6 +86,7 @@ impl Topic {
         resources_topic: TopicResources,
         resources_schema: SchemaResources,
         metrics_collector: Arc<MetricsCollector>,
+        replicator: Arc<Replicator>,
     ) -> Self {
         let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
         let dispatch_strategy = match dispatch_strategy {
@@ -102,6 +103,7 @@ impl Topic {
             dispatch_strategy,
             resources_topic,
             topic_store,
+            replicator,
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
             metrics_collector,
@@ -203,8 +205,11 @@ impl Topic {
         Ok((disconnected_producers, disconnected_consumers))
     }
 
-    // Asynchronous version of publish_message for better performance
-    pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
+//publish message async
+    pub(crate) async fn publish_message_async(
+        &self,
+        stream_message: StreamMessage,
+    ) -> Result<()> {
         // Block publishes when draining
         {
             let state = self.state.lock().await;
@@ -239,18 +244,17 @@ impl Topic {
             .validate_message(&stream_message, &self.topic_name)
             .await?;
 
-        // Validate producer without blocking
-        let producer_id = stream_message.msg_id.producer_id;
-        {
-            let producers = self.producers.lock().await;
-            if !producers.contains_key(&producer_id) {
-                return Err(anyhow!(
-                    "the producer with id {} is not attached to topic name: {}",
-                    producer_id,
-                    self.topic_name
-                ));
+            let producer_id = stream_message.msg_id.producer_id;
+            {
+                let producers = self.producers.lock().await;
+                if !producers.contains_key(&producer_id) {
+                    return Err(anyhow!(
+                        "the producer with id {} is not attached to topic name: {}",
+                        producer_id,
+                        self.topic_name
+                    ));
+                }
             }
-        }
 
         // Update ingress counters (topic only)
         counter!(
@@ -378,6 +382,15 @@ impl Topic {
         Ok(())
     }
 
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        let mut subscriptions = self.subscriptions.lock().await;
+        let subscription = subscriptions
+            .get_mut(nack_msg.subscription_name.as_str())
+            .ok_or_else(|| anyhow!("Subscription not found"))?;
+        subscription.nack_message(nack_msg).await?;
+        Ok(())
+    }
+
     pub(crate) async fn get_producer_status(&self, producer_id: u64) -> bool {
         let producers = self.producers.lock().await;
         if let Some(producer) = producers.get(&producer_id) {
@@ -408,9 +421,22 @@ impl Topic {
             // Policy: max_subscriptions_per_topic (only when creating a new subscription)
             self.can_add_subscription().await?;
 
+            let failure_policy = if let DispatchStrategy::Reliable = &self.dispatch_strategy {
+                self.resources_topic
+                    .ensure_subscription_failure_policy(&options.subscription_name, &self.topic_name)
+                    .await?
+            } else {
+                SubscriptionFailurePolicy::new(&self.topic_name)
+            };
+            failure_policy.validate()?;
+
             // Build the subscription and dispatcher without holding the lock
-            let mut new_subscription =
-                Subscription::new(options.clone(), &self.topic_name, sub_metadata);
+            let mut new_subscription = Subscription::new(
+                options.clone(),
+                &self.topic_name,
+                failure_policy,
+                sub_metadata,
+            );
             // install per-subscription dispatch limiter if configured
             if let Some(pol) = &self.topic_policies {
                 let sub_rate = pol.get_max_subscription_dispatch_rate();
@@ -427,6 +453,7 @@ impl Topic {
                         &self.dispatch_strategy,
                         self.topic_store.clone(),
                         Some(self.resources_topic.clone()),
+                        Some(self.replicator.clone()),
                         Some(Duration::from_secs(10)),
                     )
                     .await?;
@@ -435,6 +462,7 @@ impl Topic {
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,
+                        None,
                         None,
                         None,
                         None,

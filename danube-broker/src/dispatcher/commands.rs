@@ -7,7 +7,7 @@
 //! without complex synchronization.
 
 use crate::consumer::Consumer;
-use crate::message::AckMessage;
+use crate::message::{AckMessage, NackMessage};
 
 /// Commands for internal dispatcher communication.
 ///
@@ -18,11 +18,6 @@ use crate::message::AckMessage;
 /// **Consumer Management** (all dispatchers):
 /// - `AddConsumer`, `RemoveConsumer`, `DisconnectAllConsumers`
 ///
-/// **Reliable Only**:
-/// - `MessageAcked` - Consumer acknowledgment received
-/// - `PollAndDispatch` - Trigger polling from SubscriptionEngine
-/// - `ResetPending` - Clear pending state for failover
-/// - `FlushProgressNow` - Force immediate cursor persistence
 #[derive(Debug)]
 pub(super) enum DispatcherCommand {
     /// Register new consumer. Becomes active (exclusive) or joins round-robin (shared).
@@ -35,20 +30,15 @@ pub(super) enum DispatcherCommand {
     /// Gracefully disconnect all consumers. Used during subscription shutdown.
     DisconnectAllConsumers,
 
-    /// Consumer acknowledgment received (reliable only).
-    /// Updates cursor, clears pending state, triggers next poll.
     MessageAcked(AckMessage),
 
-    /// Trigger polling and dispatch (reliable only).
-    /// Sent by Topic notifier, heartbeat (on lag), or post-ack.
-    /// Polls message from SubscriptionEngine, sends to consumer, waits for ack.
+    MessageNacked(NackMessage),
+
+    RetryNow(Option<String>),
+
+    AckTimedOut,
+
     PollAndDispatch,
 
-    /// Clear pending flag to unblock dispatch (reliable only).
-    /// Used during consumer failover - keeps buffered message for retry.
-    ResetPending,
-
-    /// Force immediate cursor persistence (reliable only).
-    /// Bypasses debounce interval. Used on disconnect/shutdown.
     FlushProgressNow,
 }

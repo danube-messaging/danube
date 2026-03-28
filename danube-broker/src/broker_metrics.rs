@@ -6,7 +6,7 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 14] = [
+pub(crate) const COUNTERS: [Metric; 19] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
@@ -17,12 +17,17 @@ pub(crate) const COUNTERS: [Metric; 14] = [
     PRODUCER_SEND_TOTAL,
     DISPATCHER_HEARTBEAT_POLLS_TOTAL,
     DISPATCHER_NOTIFIER_POLLS_TOTAL,
+    SUBSCRIPTION_NACK_TOTAL,
+    SUBSCRIPTION_REDELIVERY_TOTAL,
+    SUBSCRIPTION_ACK_TIMEOUT_TOTAL,
+    SUBSCRIPTION_RETRY_EXHAUSTED_TOTAL,
+    SUBSCRIPTION_DLQ_TOTAL,
     SCHEMA_VALIDATION_TOTAL,
     SCHEMA_VALIDATION_FAILURES_TOTAL,
     REBALANCING_MOVES_TOTAL,
     REBALANCING_FAILURES_TOTAL,
 ];
-pub(crate) const GAUGES: [Metric; 8] = [
+pub(crate) const GAUGES: [Metric; 10] = [
     BROKER_TOPICS_OWNED,
     TOPIC_ACTIVE_PRODUCERS,
     TOPIC_ACTIVE_CONSUMERS,
@@ -30,6 +35,8 @@ pub(crate) const GAUGES: [Metric; 8] = [
     TOPIC_ACTIVE_SUBSCRIPTIONS,
     SUBSCRIPTION_ACTIVE_CONSUMERS,
     SUBSCRIPTION_LAG_MESSAGES,
+    SUBSCRIPTION_PENDING_REDELIVERY,
+    SUBSCRIPTION_TERMINAL_BLOCKED,
     CLUSTER_IMBALANCE_CV,
 ];
 pub(crate) const HISTOGRAMS: [Metric; 3] = [
@@ -78,6 +85,41 @@ pub(crate) const SUBSCRIPTION_ACTIVE_CONSUMERS: Metric = Metric {
 pub(crate) const SUBSCRIPTION_LAG_MESSAGES: Metric = Metric {
     name: "danube_subscription_lag_messages",
     description: "Number of messages the subscription is behind the topic WAL head",
+};
+
+pub(crate) const SUBSCRIPTION_NACK_TOTAL: Metric = Metric {
+    name: "danube_subscription_nack_total",
+    description: "Total number of negative acknowledgments accepted for a reliable subscription",
+};
+
+pub(crate) const SUBSCRIPTION_REDELIVERY_TOTAL: Metric = Metric {
+    name: "danube_subscription_redelivery_total",
+    description: "Total number of retry deliveries successfully re-sent for a reliable subscription",
+};
+
+pub(crate) const SUBSCRIPTION_ACK_TIMEOUT_TOTAL: Metric = Metric {
+    name: "danube_subscription_ack_timeout_total",
+    description: "Total number of ack timeouts detected for a reliable subscription",
+};
+
+pub(crate) const SUBSCRIPTION_RETRY_EXHAUSTED_TOTAL: Metric = Metric {
+    name: "danube_subscription_retry_exhausted_total",
+    description: "Total number of times a reliable subscription exhausted retry attempts and entered terminal poison handling",
+};
+
+pub(crate) const SUBSCRIPTION_DLQ_TOTAL: Metric = Metric {
+    name: "danube_subscription_dlq_total",
+    description: "Total number of messages successfully routed to a dead letter topic for a reliable subscription",
+};
+
+pub(crate) const SUBSCRIPTION_PENDING_REDELIVERY: Metric = Metric {
+    name: "danube_subscription_pending_redelivery",
+    description: "Whether a reliable subscription currently has a message waiting for redelivery (0 or 1)",
+};
+
+pub(crate) const SUBSCRIPTION_TERMINAL_BLOCKED: Metric = Metric {
+    name: "danube_subscription_terminal_blocked",
+    description: "Whether a reliable subscription is currently blocked on a retry-exhausted poison message (0 or 1)",
 };
 
 // DISPATCHER Metrics --------------------------

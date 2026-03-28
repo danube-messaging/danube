@@ -1,14 +1,34 @@
+//! Dispatcher facade — public API for message dispatch.
+//!
+//! # Module Structure
+//!
+//! - [`pending_delivery`] — Per-message delivery state machine (retry, backoff, exhaustion)
+//! - [`metrics`] — Subscription dispatch metric helpers
+//! - [`poison_handler`] — DLQ/Drop/Block terminal handling for poisoned messages
+//! - [`subscription_engine`] — Stream polling, progress persistence, failure-aware lifecycle
+//! - [`commands`] — DispatcherCommand enum (internal command protocol)
+//! - [`exclusive`] — Exclusive/Failover dispatcher (single active consumer)
+//! - [`shared`] — Shared dispatcher (round-robin across consumers)
+
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 
-use crate::{consumer::Consumer, message::AckMessage};
+use crate::{
+    consumer::Consumer,
+    message::{AckMessage, NackMessage},
+    replicator::Replicator,
+};
 
-// Module declarations
+// ── Module declarations ─────────────────────────────────────────────────
+
 pub(crate) mod commands;
 pub(crate) mod exclusive;
+pub(crate) mod metrics;
+pub(crate) mod pending_delivery;
+pub(crate) mod poison_handler;
 pub(crate) mod shared;
 pub(crate) mod subscription_engine;
 
@@ -16,6 +36,8 @@ use commands::DispatcherCommand;
 use exclusive::ExclusiveDispatcher;
 use shared::SharedDispatcher;
 use subscription_engine::SubscriptionEngine;
+
+// ── Dispatcher types ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 enum DispatcherHandle {
@@ -63,10 +85,18 @@ impl Dispatcher {
     }
 
     /// Reliable exclusive (ack-gating, single active consumer, heartbeat).
-    pub(crate) fn reliable_exclusive(engine: SubscriptionEngine) -> Self {
+    pub(crate) fn reliable_exclusive(
+        engine: SubscriptionEngine,
+        replicator: Option<Arc<Replicator>>,
+    ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        ExclusiveDispatcher::start_reliable(engine, control_rx, ready_tx);
+        ExclusiveDispatcher::start_reliable(
+            engine,
+            replicator,
+            control_rx,
+            ready_tx,
+        );
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -76,10 +106,18 @@ impl Dispatcher {
     }
 
     /// Reliable shared (ack-gating, round-robin, heartbeat).
-    pub(crate) fn reliable_shared(engine: SubscriptionEngine) -> Self {
+    pub(crate) fn reliable_shared(
+        engine: SubscriptionEngine,
+        replicator: Option<Arc<Replicator>>,
+    ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(32);
         let (ready_tx, ready_rx) = watch::channel(false);
-        SharedDispatcher::start_reliable(engine, control_rx, ready_tx);
+        SharedDispatcher::start_reliable(
+            engine,
+            replicator,
+            control_rx,
+            ready_tx,
+        );
         Self {
             handle: DispatcherHandle::Reliable {
                 control_tx,
@@ -132,6 +170,16 @@ impl Dispatcher {
                 .send(DispatcherCommand::MessageAcked(ack_msg))
                 .await
                 .map_err(|_| anyhow!("Failed to send ack command")),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => control_tx
+                .send(DispatcherCommand::MessageNacked(nack_msg))
+                .await
+                .map_err(|_| anyhow!("Failed to send nack command")),
             _ => Ok(()),
         }
     }
@@ -209,7 +257,7 @@ impl Dispatcher {
     pub(crate) async fn reset_pending(&self) -> Result<()> {
         match &self.handle {
             DispatcherHandle::Reliable { control_tx, .. } => control_tx
-                .send(DispatcherCommand::ResetPending)
+                .send(DispatcherCommand::RetryNow(None))
                 .await
                 .map_err(|_| anyhow!("Failed to send reset pending command")),
             _ => Ok(()),

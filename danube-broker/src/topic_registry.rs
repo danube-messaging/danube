@@ -5,7 +5,9 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::{
-    dispatcher::DispatchStrategy, message::AckMessage, subscription::SubscriptionOptions,
+    dispatcher::DispatchStrategy,
+    message::{AckMessage, NackMessage},
+    subscription::SubscriptionOptions,
     topic::Topic,
 };
 use danube_core::proto::DispatchStrategy as ProtoDispatchStrategy;
@@ -67,6 +69,15 @@ impl TopicRegistry {
         let topic_name = ack_msg.msg_id.topic_name.clone();
         if let Some(topic) = self.get_topic(&topic_name) {
             topic.ack_message(ack_msg).await
+        } else {
+            Err(anyhow::anyhow!("Topic {} not found in registry", topic_name))
+        }
+    }
+
+    pub async fn nack_message_async(&self, nack_msg: NackMessage) -> Result<()> {
+        let topic_name = nack_msg.msg_id.topic_name.clone();
+        if let Some(topic) = self.get_topic(&topic_name) {
+            topic.nack_message(nack_msg).await
         } else {
             Err(anyhow::anyhow!("Topic {} not found in registry", topic_name))
         }

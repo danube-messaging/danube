@@ -1,9 +1,18 @@
 use crate::admin::DanubeAdminImpl;
+use crate::subscription::{
+    SubscriptionBackoffStrategy as BrokerSubscriptionBackoffStrategy,
+    SubscriptionFailurePolicy as BrokerSubscriptionFailurePolicy,
+    SubscriptionPoisonPolicy as BrokerSubscriptionPoisonPolicy,
+};
 use danube_core::admin_proto::{
     topic_admin_server::TopicAdmin, BrokerRequest, DescribeTopicRequest, DescribeTopicResponse,
-    NamespaceRequest, NewTopicRequest, PartitionedTopicRequest, SubscriptionListResponse,
-    SubscriptionRequest, SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest,
-    TopicResponse,
+    GetSubscriptionFailurePolicyRequest, GetSubscriptionFailurePolicyResponse, NamespaceRequest,
+    NewTopicRequest, PartitionedTopicRequest,
+    SetSubscriptionFailurePolicyRequest,
+    SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
+    SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy, SubscriptionListResponse,
+    SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest,
+    SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest, TopicResponse,
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::proto::{
@@ -252,6 +261,72 @@ impl TopicAdmin for DanubeAdminImpl {
     }
 
     #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn set_subscription_failure_policy(
+        &self,
+        request: Request<SetSubscriptionFailurePolicyRequest>,
+    ) -> std::result::Result<Response<SubscriptionResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        trace!(
+            topic = %req.topic,
+            subscription = %req.subscription,
+            "set subscription failure policy"
+        );
+
+        let failure_policy = req
+            .failure_policy
+            .ok_or_else(|| Status::invalid_argument("failure_policy must be provided"))?;
+
+        let dispatch_strategy = self
+            .resources
+            .topic
+            .get_dispatch_strategy(req.topic.trim_start_matches('/'))
+            .await;
+
+        if !matches!(dispatch_strategy, Some(ConfigDispatchStrategy::Reliable)) {
+            return Err(Status::failed_precondition(
+                "subscription failure policy can only be configured for reliable topics",
+            ));
+        }
+
+        let failure_policy = admin_failure_policy_to_broker(failure_policy)?;
+
+        self.resources
+            .topic
+            .set_subscription_failure_policy(&req.subscription, &req.topic, &failure_policy)
+            .await
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        Ok(Response::new(SubscriptionResponse { success: true }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn get_subscription_failure_policy(
+        &self,
+        request: Request<GetSubscriptionFailurePolicyRequest>,
+    ) -> std::result::Result<Response<GetSubscriptionFailurePolicyResponse>, tonic::Status> {
+        let req = request.into_inner();
+
+        trace!(
+            topic = %req.topic,
+            subscription = %req.subscription,
+            "get subscription failure policy"
+        );
+
+        let failure_policy = self
+            .resources
+            .topic
+            .get_subscription_failure_policy(&req.subscription, &req.topic)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?
+            .ok_or_else(|| Status::not_found("subscription failure policy not found"))?;
+
+        Ok(Response::new(GetSubscriptionFailurePolicyResponse {
+            failure_policy: Some(broker_failure_policy_to_admin(failure_policy)),
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn describe_topic(
         &self,
         request: Request<DescribeTopicRequest>,
@@ -328,6 +403,65 @@ impl TopicAdmin for DanubeAdminImpl {
                 req.name, e
             ))),
         }
+    }
+}
+
+fn admin_failure_policy_to_broker(
+    failure_policy: AdminSubscriptionFailurePolicy,
+) -> Result<BrokerSubscriptionFailurePolicy, Status> {
+    let backoff_strategy = AdminSubscriptionBackoffStrategy::try_from(failure_policy.backoff_strategy)
+        .map_err(|_| Status::invalid_argument("invalid backoff_strategy value"))?;
+    let poison_policy = AdminSubscriptionPoisonPolicy::try_from(failure_policy.poison_policy)
+        .map_err(|_| Status::invalid_argument("invalid poison_policy value"))?;
+
+    let backoff_strategy = match backoff_strategy {
+        AdminSubscriptionBackoffStrategy::Fixed => BrokerSubscriptionBackoffStrategy::Fixed,
+        AdminSubscriptionBackoffStrategy::Exponential => {
+            BrokerSubscriptionBackoffStrategy::Exponential
+        }
+    };
+
+    let poison_policy = match poison_policy {
+        AdminSubscriptionPoisonPolicy::DeadLetter => BrokerSubscriptionPoisonPolicy::DeadLetter,
+        AdminSubscriptionPoisonPolicy::Block => BrokerSubscriptionPoisonPolicy::Block,
+        AdminSubscriptionPoisonPolicy::Drop => BrokerSubscriptionPoisonPolicy::Drop,
+    };
+
+    Ok(BrokerSubscriptionFailurePolicy {
+        max_redelivery_count: failure_policy.max_redelivery_count,
+        ack_timeout_ms: failure_policy.ack_timeout_ms,
+        base_redelivery_delay_ms: failure_policy.base_redelivery_delay_ms,
+        max_redelivery_delay_ms: failure_policy.max_redelivery_delay_ms,
+        backoff_strategy,
+        dead_letter_topic: failure_policy.dead_letter_topic,
+        poison_policy,
+    })
+}
+
+fn broker_failure_policy_to_admin(
+    failure_policy: BrokerSubscriptionFailurePolicy,
+) -> AdminSubscriptionFailurePolicy {
+    let backoff_strategy = match failure_policy.backoff_strategy {
+        BrokerSubscriptionBackoffStrategy::Fixed => AdminSubscriptionBackoffStrategy::Fixed,
+        BrokerSubscriptionBackoffStrategy::Exponential => {
+            AdminSubscriptionBackoffStrategy::Exponential
+        }
+    };
+
+    let poison_policy = match failure_policy.poison_policy {
+        BrokerSubscriptionPoisonPolicy::DeadLetter => AdminSubscriptionPoisonPolicy::DeadLetter,
+        BrokerSubscriptionPoisonPolicy::Block => AdminSubscriptionPoisonPolicy::Block,
+        BrokerSubscriptionPoisonPolicy::Drop => AdminSubscriptionPoisonPolicy::Drop,
+    };
+
+    AdminSubscriptionFailurePolicy {
+        max_redelivery_count: failure_policy.max_redelivery_count,
+        ack_timeout_ms: failure_policy.ack_timeout_ms,
+        base_redelivery_delay_ms: failure_policy.base_redelivery_delay_ms,
+        max_redelivery_delay_ms: failure_policy.max_redelivery_delay_ms,
+        backoff_strategy: backoff_strategy as i32,
+        dead_letter_topic: failure_policy.dead_letter_topic,
+        poison_policy: poison_policy as i32,
     }
 }
 

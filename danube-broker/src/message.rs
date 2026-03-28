@@ -6,3 +6,12 @@ pub(crate) struct AckMessage {
     pub(crate) msg_id: MessageID,
     pub(crate) subscription_name: String,
 }
+
+#[derive(Debug, Clone)]
+pub(crate) struct NackMessage {
+    pub(crate) request_id: u64,
+    pub(crate) msg_id: MessageID,
+    pub(crate) subscription_name: String,
+    pub(crate) delay_ms: Option<u64>,
+    pub(crate) reason: Option<String>,
+}

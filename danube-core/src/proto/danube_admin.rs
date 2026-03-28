@@ -58,6 +58,44 @@ pub struct SubscriptionResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionFailurePolicy {
+    #[prost(uint32, tag = "1")]
+    pub max_redelivery_count: u32,
+    #[prost(uint64, tag = "2")]
+    pub ack_timeout_ms: u64,
+    #[prost(uint64, tag = "3")]
+    pub base_redelivery_delay_ms: u64,
+    #[prost(uint64, tag = "4")]
+    pub max_redelivery_delay_ms: u64,
+    #[prost(enumeration = "SubscriptionBackoffStrategy", tag = "5")]
+    pub backoff_strategy: i32,
+    #[prost(string, optional, tag = "6")]
+    pub dead_letter_topic: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "SubscriptionPoisonPolicy", tag = "7")]
+    pub poison_policy: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetSubscriptionFailurePolicyRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub failure_policy: ::core::option::Option<SubscriptionFailurePolicy>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubscriptionFailurePolicyRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubscriptionFailurePolicyResponse {
+    #[prost(message, optional, tag = "1")]
+    pub failure_policy: ::core::option::Option<SubscriptionFailurePolicy>,
+}
 /// Response Messages
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BrokerListResponse {
@@ -390,6 +428,61 @@ impl DispatchStrategy {
         match value {
             "NonReliable" => Some(Self::NonReliable),
             "Reliable" => Some(Self::Reliable),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubscriptionBackoffStrategy {
+    Fixed = 0,
+    Exponential = 1,
+}
+impl SubscriptionBackoffStrategy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Fixed => "Fixed",
+            Self::Exponential => "Exponential",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Fixed" => Some(Self::Fixed),
+            "Exponential" => Some(Self::Exponential),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubscriptionPoisonPolicy {
+    DeadLetter = 0,
+    Block = 1,
+    Drop = 2,
+}
+impl SubscriptionPoisonPolicy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::DeadLetter => "DeadLetter",
+            Self::Block => "Block",
+            Self::Drop => "Drop",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "DeadLetter" => Some(Self::DeadLetter),
+            "Block" => Some(Self::Block),
+            "Drop" => Some(Self::Drop),
             _ => None,
         }
     }
@@ -2495,6 +2588,64 @@ pub mod topic_admin_client {
                 .insert(GrpcMethod::new("danube_admin.TopicAdmin", "Unsubscribe"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn set_subscription_failure_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SetSubscriptionFailurePolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SubscriptionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/SetSubscriptionFailurePolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_admin.TopicAdmin",
+                        "SetSubscriptionFailurePolicy",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_subscription_failure_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSubscriptionFailurePolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubscriptionFailurePolicyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/GetSubscriptionFailurePolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_admin.TopicAdmin",
+                        "GetSubscriptionFailurePolicy",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn describe_topic(
             &mut self,
             request: impl tonic::IntoRequest<super::DescribeTopicRequest>,
@@ -2577,6 +2728,20 @@ pub mod topic_admin_server {
             request: tonic::Request<super::SubscriptionRequest>,
         ) -> std::result::Result<
             tonic::Response<super::SubscriptionResponse>,
+            tonic::Status,
+        >;
+        async fn set_subscription_failure_policy(
+            &self,
+            request: tonic::Request<super::SetSubscriptionFailurePolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SubscriptionResponse>,
+            tonic::Status,
+        >;
+        async fn get_subscription_failure_policy(
+            &self,
+            request: tonic::Request<super::GetSubscriptionFailurePolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubscriptionFailurePolicyResponse>,
             tonic::Status,
         >;
         async fn describe_topic(
@@ -3002,6 +3167,110 @@ pub mod topic_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UnsubscribeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/SetSubscriptionFailurePolicy" => {
+                    #[allow(non_camel_case_types)]
+                    struct SetSubscriptionFailurePolicySvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<
+                        super::SetSubscriptionFailurePolicyRequest,
+                    > for SetSubscriptionFailurePolicySvc<T> {
+                        type Response = super::SubscriptionResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::SetSubscriptionFailurePolicyRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::set_subscription_failure_policy(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SetSubscriptionFailurePolicySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/GetSubscriptionFailurePolicy" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSubscriptionFailurePolicySvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<
+                        super::GetSubscriptionFailurePolicyRequest,
+                    > for GetSubscriptionFailurePolicySvc<T> {
+                        type Response = super::GetSubscriptionFailurePolicyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetSubscriptionFailurePolicyRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::get_subscription_failure_policy(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSubscriptionFailurePolicySvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

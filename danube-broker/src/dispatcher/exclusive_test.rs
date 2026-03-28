@@ -88,7 +88,10 @@ async fn reliable_single_ack_gating() {
 
     // Dispatcher with reliable engine (start: Latest)
     let engine = SubscriptionEngine::new("sub-a".to_string(), Arc::new(ts.clone()));
-    let dispatcher = Dispatcher::reliable_exclusive(engine);
+    let dispatcher = Dispatcher::reliable_exclusive(
+        engine,
+        None,
+    );
 
     // Consumer wiring: use a channel to capture dispatched messages
     let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);

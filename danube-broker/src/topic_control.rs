@@ -8,6 +8,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::danube_service::metrics_collector::MetricsCollector;
+use crate::replicator::Replicator;
 use crate::resources::BASE_TOPICS_PATH;
 use crate::schema::ValidationPolicy;
 use crate::utils::join_path;
@@ -21,6 +22,7 @@ use crate::{
 };
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_persistent_storage::StorageFactory;
+
 /// Manages topics and their associated producers and consumers.
 #[derive(Debug, Clone)]
 pub(crate) struct TopicManager {
@@ -38,6 +40,8 @@ pub(crate) struct TopicManager {
     pub(crate) consumers: ConsumerRegistry,
     /// Metrics collector for dual-tracking
     pub(crate) metrics_collector: Arc<MetricsCollector>,
+    /// Shared broker-level Replicator
+    pub(crate) replicator: Arc<Replicator>,
 }
 
 impl TopicManager {
@@ -50,6 +54,7 @@ impl TopicManager {
         producers: ProducerRegistry,
         consumers: ConsumerRegistry,
         metrics_collector: Arc<MetricsCollector>,
+        replicator: Arc<Replicator>,
     ) -> Self {
         Self {
             broker_id,
@@ -59,6 +64,7 @@ impl TopicManager {
             producers,
             consumers,
             metrics_collector,
+            replicator,
         }
     }
 
@@ -123,6 +129,7 @@ impl TopicManager {
             self.resources.topic.clone(),
             self.resources.schema.clone(),
             self.metrics_collector.clone(),
+            self.replicator.clone(),
         );
 
         // get policies from store
@@ -187,7 +194,7 @@ impl TopicManager {
 
         // Add topic to the registry (single source of truth)
         self.topic_registry
-            .add_topic(topic_name.to_string(), new_topic_arc);
+            .add_topic(topic_name.to_string(), new_topic_arc.clone());
 
         gauge!(BROKER_TOPICS_OWNED.name).increment(1);
 
@@ -511,6 +518,26 @@ impl TopicManager {
                 sub_options,
             )
             .await?;
+
+        if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
+            let failure_policy = {
+                let subscriptions = topic.subscriptions.lock().await;
+                subscriptions
+                    .get(&subscription_options.subscription_name)
+                    .map(|subscription| subscription.failure_policy.clone())
+            };
+
+            if let Some(failure_policy) = failure_policy {
+                self.resources
+                    .topic
+                    .set_subscription_failure_policy(
+                        &subscription_options.subscription_name,
+                        &topic_name,
+                        &failure_policy,
+                    )
+                    .await?;
+            }
+        }
 
         Ok(consumer_id)
     }

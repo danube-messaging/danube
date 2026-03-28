@@ -6,13 +6,14 @@ pub(crate) mod load_manager;
 pub(crate) mod load_report;
 pub(crate) mod metrics_collector;
 mod resource_monitor;
+// Syncronizer module retained for future use but no longer wired into DanubeService.
 mod syncronizer;
 
 pub(crate) use broker_register::register_broker;
 pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
-pub(crate) use syncronizer::Syncronizer;
+
 
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
@@ -57,11 +58,9 @@ use crate::{
 // It implements rebalancing logic to redistribute topics/partitions when brokers join or leave the cluster
 // and is responsible for failover mechanisms to handle broker failures.
 //
-// Syncronizer
-// The synchronizer ensures that metadata and configuration settings across different brokers remain consistent.
-// It propagates changes to metadata and configuration settings using client Producers and Consumers.
-// This is in addition to Metadata Storage watch events, allowing brokers to process metadata updates
-// even if there was a communication glitch or the broker was unavailable for a short period, potentially missing the Store Watch events.
+//
+// Note: Syncronizer was previously used for cross-broker metadata synchronization
+// but is now superseded by Raft-based consensus.
 //
 // Monitoring and Metrics:
 // Collect and provide metrics related to namespace usage, such as message rates, storage usage, and throughput.
@@ -77,7 +76,6 @@ pub(crate) struct DanubeService {
     meta_store: MetadataStorage,
     resources: Resources,
     leader_election: LeaderElection,
-    syncronizer: Syncronizer,
     load_manager: LoadManager,
     raft: Raft<danube_raft::typ::TypeConfig>,
     leadership: LeadershipHandle,
@@ -107,7 +105,6 @@ impl DanubeService {
         meta_store: MetadataStorage,
         resources: Resources,
         leader_election: LeaderElection,
-        syncronizer: Syncronizer,
         load_manager: LoadManager,
         raft: Raft<danube_raft::typ::TypeConfig>,
         leadership: LeadershipHandle,
@@ -122,7 +119,6 @@ impl DanubeService {
             meta_store,
             resources,
             leader_election,
-            syncronizer,
             load_manager,
             raft,
             leadership,
@@ -437,7 +433,7 @@ impl DanubeService {
             "broker gRPC server listening"
         );
 
-        // Start the Syncronizer
+        // Create internal DanubeClient for the Replicator (DLQ routing)
         //==========================================================================
 
         // Wait for the server to signal that it has started
@@ -445,16 +441,29 @@ impl DanubeService {
 
         let broker_client_url = self.service_config.broker_url.clone();
         let danube_client = loop {
-            match DanubeClient::builder()
-                .service_url(&broker_client_url)
-                .build()
-                .await
-            {
+            let mut builder = DanubeClient::builder()
+                .service_url(&broker_client_url);
+
+            // When the broker has TLS enabled, configure the internal client with
+            // the same CA certificate so it can connect to itself (or peers).
+            if let Some(ref tls_config) = self.service_config.auth.tls {
+                builder = match builder.with_tls(&tls_config.ca_file) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        return Err(anyhow::anyhow!(err)).context(format!(
+                            "Failed to configure TLS for internal broker client (ca_file={})",
+                            tls_config.ca_file
+                        ));
+                    }
+                };
+            }
+
+            match builder.build().await {
                 Ok(client) => break client,
                 Err(err) => {
                     if broker_client_url.starts_with("https://") {
                         return Err(err).context(format!(
-                            "Failed to connect internal broker client to {}. The synchronizer requires a locally reachable broker URL.",
+                            "Failed to connect internal broker client to {}. The replicator requires a locally reachable broker URL.",
                             broker_client_url
                         ));
                     }
@@ -463,9 +472,8 @@ impl DanubeService {
             }
         };
 
-        let _ = self.syncronizer.with_client(danube_client);
-
-        // TODO! create producer / consumer and use it
+        self.broker.replicator.set_client(danube_client).await;
+        info!("replicator DanubeClient initialized for DLQ routing");
 
         // Start the Leader Election Service
         //==========================================================================

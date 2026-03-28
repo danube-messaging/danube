@@ -63,6 +63,9 @@ service ConsumerService {
 
     // Acknowledges receipt of a message from the Consumer
     rpc Ack(AckRequest) returns (AckResponse);
+
+    // Negative acknowledgment for a message from the Consumer
+    rpc Nack(NackRequest) returns (NackResponse);
 }
 
 // Create Consumer request
@@ -133,6 +136,20 @@ message AckRequest {
 }
 
 message AckResponse {
+    uint64 request_id = 1;
+}
+
+message NackRequest {
+    uint64 request_id = 1;
+    // Identifies the message, associated with a unique topic, subscription and the broker
+    MsgID msg_id = 2;
+    // Subscription name the consumer is subscribed to
+    string subscription_name = 3;
+    optional uint64 delay_ms = 4;
+    optional string reason = 5;
+}
+
+message NackResponse {
     uint64 request_id = 1;
 }
 
