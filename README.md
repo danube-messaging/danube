@@ -117,7 +117,7 @@ rm -rf ~/danube-data && ./target/debug/danube-broker --single-node --data-dir ~/
 ### 📨 **Message Delivery**
 
 - **[Topics](https://danube-docs.dev-state.com/concepts/topics/)**: Partitioned and non-partitioned with automatic load balancing
-- **[Reliable Dispatch](https://danube-docs.dev-state.com/concepts/dispatch_strategy/)**: At-least-once delivery with configurable storage modes
+- **[Reliable Dispatch](https://danube-docs.dev-state.com/concepts/dispatch_strategy/)**: At-least-once delivery with configurable failure policies (NACK, retry backoff, dead-letter queues)
 - **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
 
 ### 🔄 **Subscription Models**
