@@ -11,7 +11,7 @@ use crate::resources::TopicResources;
 use crate::subscription::SubscriptionFailurePolicy;
 use crate::topic::TopicStore;
 
-use super::PendingDelivery;
+use super::pending_delivery::PendingDelivery;
 
 /// # SubscriptionEngine
 ///
@@ -24,13 +24,18 @@ use super::PendingDelivery;
 /// - **Progress Tracking**: Persists subscription cursor (last acked offset) to metadata store
 /// - **Lag Detection**: Monitors subscription position relative to WAL head
 /// - **Rate Limiting**: Optional throttling of message dispatch for flow control
+/// - **Failure Policy**: Single authority for applying retry limits, backoff, and poison handling
 ///
 /// ## Architecture
 ///
 /// ```text
 /// Topic WAL → TopicStream → SubscriptionEngine → Reliable Dispatcher → Consumer
-///                              ↓ ack tracking
-///                         TopicResources (metadata)
+///                              ├─ ack tracking       ├─ consumer mgmt
+///                              ├─ failure policy     ├─ dispatch loop
+///                              └─ cursor mgmt        └─ metrics
+///                                   ↓                     ↓
+///                            TopicResources         poison_handler
+///                            (metadata)             (DLQ/Drop/Block)
 /// ```
 ///
 /// ## Responsibility Boundary
@@ -39,6 +44,7 @@ use super::PendingDelivery;
 ///   **failure-aware message lifecycle** (nack/ack-timeout/skip decisions using failure policy)
 /// - **Reliable Dispatcher**: Consumer management, dispatch loop, metrics emission
 /// - **PendingDelivery**: Per-message delivery state (attempt count, status, timers)
+/// - **poison_handler**: Terminal handling for retry-exhausted messages (DLQ, Drop, Block)
 /// - **TopicStore**: WAL access, stream creation
 /// - **TopicResources**: Metadata persistence (subscription cursor storage)
 ///
@@ -53,6 +59,7 @@ use super::PendingDelivery;
 ///     topic_resources,
 ///     Duration::from_secs(5), // flush interval
 ///     Some(rate_limiter),
+///     failure_policy,
 /// );
 ///
 /// // 2. Initialize stream (typically from persisted progress)
@@ -66,7 +73,12 @@ use super::PendingDelivery;
 /// // 4. Track acknowledgments
 /// engine.on_acked(msg_id).await?;
 ///
-/// // 5. Check lag (heartbeat)
+/// // 5. Handle failures (engine applies failure policy)
+/// engine.on_nacked(&mut pending, reason, delay_ms); // retry or exhaust
+/// engine.on_ack_timed_out(&mut pending);             // retry or exhaust
+/// engine.skip_poisoned(msg_id).await?;               // DLQ/Drop cursor advance
+///
+/// // 6. Check lag (heartbeat)
 /// if engine.has_lag() {
 ///     // trigger dispatch...
 /// }
@@ -477,7 +489,7 @@ impl SubscriptionEngine {
     // owns the per-message state machine.
 
     /// Access the failure policy (for metrics helpers and ack timeout reads).
-    pub(crate) fn failure_policy(&self) -> &SubscriptionFailurePolicy {
+    pub(super) fn failure_policy(&self) -> &SubscriptionFailurePolicy {
         &self.failure_policy
     }
 
@@ -485,7 +497,7 @@ impl SubscriptionEngine {
     ///
     /// Applies the failure policy to decide whether to schedule a retry
     /// or mark the message as retry-exhausted.
-    pub(crate) fn on_nacked(
+    pub(super) fn on_nacked(
         &self,
         pending: &mut PendingDelivery,
         reason: Option<String>,
@@ -498,7 +510,7 @@ impl SubscriptionEngine {
     ///
     /// Applies the failure policy to decide whether to schedule a retry
     /// or mark the message as retry-exhausted.
-    pub(crate) fn on_ack_timed_out(&self, pending: &mut PendingDelivery) {
+    pub(super) fn on_ack_timed_out(&self, pending: &mut PendingDelivery) {
         pending.schedule_retry_with_policy(
             Some("ack timeout".to_string()),
             None,

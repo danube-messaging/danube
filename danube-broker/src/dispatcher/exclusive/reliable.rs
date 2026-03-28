@@ -3,75 +3,104 @@
 //! # Overview
 //!
 //! Provides **at-least-once delivery** to a single active consumer with strict ack-gating.
-//! Used for durable subscriptions where message delivery guarantees are critical.
+//! Used for Exclusive and Failover subscription types where delivery guarantees are critical.
 //!
-//! # Dispatch Behavior
+//! # Key Components
 //!
-//! - **Single Active Consumer**: Only one consumer is active at a time
-//! - **Ack-Gating**: Only one message is in-flight at a time; next message waits for acknowledgment
-//! - **Pending State**: Tracks the current in-flight message and blocks new dispatches until ack received
-//! - **Automatic Retry**: If dispatch is interrupted, the pending message stays buffered and is retried once an active consumer is available
-//! - **Progress Tracking**: Subscription progress is persisted to allow resumption from last acked offset
+//! - **`SubscriptionEngine`** — Owns the stream cursor, failure policy, and message lifecycle
+//!   decisions (NACK handling, ack timeout, poison skip). See `subscription_engine.rs`.
+//! - **`PendingDelivery`** — Per-message state machine tracking delivery attempt count,
+//!   ack deadline, retry timing, and terminal status. See `pending_delivery.rs`.
+//! - **`ExclusiveConsumerState`** — Manages consumer list and tracks which one is active.
+//! - **`poison_handler`** — Handles retry-exhausted messages (DLQ routing, Drop, Block).
 //!
-//! # State Management
+//! # State
 //!
-//! The reliable dispatcher maintains several critical state variables:
+//! The dispatch loop maintains two mutable variables:
 //!
-//! - `pending`: Boolean flag indicating if a message is currently in-flight
-//! - `pending_message`: Buffer holding the current in-flight message (for retries)
-//! - `consumers`: List of available consumers
-//! - `active_consumer`: Currently selected consumer (from ExclusiveConsumerState)
-//! - `engine`: SubscriptionEngine managing stream position and ack tracking
+//! - `state: ExclusiveConsumerState` — Consumer list + active consumer tracking
+//! - `pending_delivery: Option<PendingDelivery>` — The single in-flight message slot.
+//!   `Some(...)` means a message is being tracked (may be awaiting ack, waiting to retry,
+//!   or retry-exhausted). `None` means the slot is free and a new message can be polled.
 //!
-//! # Message Flow
+//! # Message Flow (`handle_poll_and_dispatch`)
 //!
-//! 1. **Wake**: External wakeups or the heartbeat trigger a dispatch attempt
-//! 2. **Check Pending**: If `pending == true`, skip (message already in-flight)
-//! 3. **Get Message**: Either resend buffered message OR poll next from SubscriptionEngine
-//! 4. **Buffer**: Store message in `pending_message`
-//! 5. **Send**: Attempt to send to active consumer via `send_message()`
-//! 6. **Mark Pending**: Set `pending = true` (blocks further dispatch)
-//! 7. **Wait for Ack**: Consumer must acknowledge before next message
-//! 8. **On Ack**: Clear `pending` flag and `pending_message` buffer, then immediately attempt the next dispatch
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 1. Active consumer available and healthy?                      │
+//! │    └─ No → return (wait for consumer)                          │
+//! │                                                                │
+//! │ 2. Pending slot empty? → Poll next message from engine         │
+//! │    └─ Got message → wrap in PendingDelivery, put in slot       │
+//! │                                                                │
+//! │ 3. Poison gate: is pending message retry-exhausted?            │
+//! │    └─ Yes → handle_retry_exhausted_pending (see poison_handler)│
+//! │       ├─ DeadLetter: publish to DLQ via replicator, skip       │
+//! │       ├─ Drop: skip message, advance cursor                    │
+//! │       └─ Block: halt dispatch until operator intervenes        │
+//! │                                                                │
+//! │ 4. Retry timing: is pending ready to send?                     │
+//! │    └─ No → return (backoff delay not elapsed)                  │
+//! │                                                                │
+//! │ 5. Send message to active consumer                             │
+//! │    ├─ Success → mark AwaitingAck, start ack deadline timer     │
+//! │    └─ Failure → schedule_retry_now (will retry on next tick)   │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Event Handlers
+//!
+//! All events flow through `handle_command`, which dispatches to:
+//!
+//! - **`MessageAcked`** → `handle_ack`: If ack matches the pending message and it is
+//!   awaiting ack, advance the engine cursor (`on_acked`) and clear the pending slot.
+//!   Then immediately attempt the next dispatch.
+//!
+//! - **`MessageNacked`** → `handle_nack`: Consumer explicitly rejected the message.
+//!   Engine applies failure policy via `on_nacked` — either schedules a retry with
+//!   backoff delay, or marks the message as retry-exhausted. Then triggers dispatch
+//!   (which will hit the poison gate if exhausted).
+//!
+//! - **`AckTimedOut`** → `handle_ack_timed_out`: Ack deadline expired without consumer
+//!   response. Engine applies failure policy via `on_ack_timed_out` — same retry/exhaust
+//!   logic as NACK. Detected by the heartbeat watchdog.
+//!
+//! - **`RetryNow`** → `handle_retry_now`: Force an immediate retry (e.g., after consumer
+//!   reconnect). Clears backoff delay but does not revive retry-exhausted messages.
+//!
+//! - **`PollAndDispatch`** → Direct dispatch attempt (triggered by topic publish
+//!   or reconnect via `Dispatcher::wake_dispatch()`).
+//!
+//! - **`AddConsumer` / `RemoveConsumer` / `DisconnectAllConsumers`** → Consumer
+//!   lifecycle management. AddConsumer triggers an immediate dispatch attempt.
+//!   DisconnectAllConsumers flushes progress before clearing state.
+//!
+//! - **`FlushProgressNow`** → Force-flush the subscription cursor to metadata.
 //!
 //! # Heartbeat Watchdog
 //!
-//! A background heartbeat (500ms interval) monitors lag and attempts dispatch:
+//! A 500ms interval background timer that:
 //!
-//! - Checks subscription lag via `SubscriptionEngine::get_lag_info()`
-//! - If lag is detected (unread messages in WAL), runs another dispatch attempt directly in the loop
-//! - Ensures messages are dispatched even without explicit Topic notifications
-//! - Reports lag metrics for monitoring
-//!
-//! # Wakeup Path
-//!
-//! Reliable topics wake the dispatcher directly through the dispatcher facade:
-//!
-//! - Topic publish and reconnect paths call `Dispatcher::wake_dispatch()`
-//! - The dispatcher loop receives `PollAndDispatch` directly, without an extra `Notify` bridge task
-//! - Ensures low-latency dispatch when messages are produced
+//! 1. Reports subscription lag gauge metrics
+//! 2. Detects ack timeouts (sends `AckTimedOut` command)
+//! 3. Detects pending messages ready to retry (backoff elapsed)
+//! 4. Detects new messages in WAL when no message is pending (lag catch-up)
 //!
 //! # Consumer Failover
 //!
 //! When the active consumer disconnects:
 //!
-//! 1. `RemoveConsumer` command is received
-//! 2. If removed consumer was active, `active_consumer` is cleared
-//! 3. `ResetPending` clears the in-flight gate while preserving any buffered message
-//! 4. The dispatcher retries the buffered message when an active consumer is available again
+//! 1. `RemoveConsumer` removes it from the consumer list and clears `active_consumer`
+//! 2. The pending message stays in its slot (preserving delivery state)
+//! 3. When a new consumer is added, `AddConsumer` triggers dispatch which
+//!    retries the buffered message to the new active consumer
 //!
 //! # Persistence
 //!
-//! - Subscription progress (last acked offset) is persisted via SubscriptionEngine
+//! Subscription progress (last acked offset) is persisted via `SubscriptionEngine`:
+//! - Debounced flush every 5s (configurable) to avoid metadata write on every ack
+//! - Force-flushed on `DisconnectAllConsumers` and `FlushProgressNow`
 //! - Allows broker restart without message loss
-//! - Progress is flushed periodically and on disconnect
-//!
-//! # Use Cases
-//!
-//! - Durable subscriptions requiring guaranteed delivery
-//! - Exclusive/Failover subscription types
-//! - Financial transactions, order processing
-//! - Any scenario where message loss is unacceptable
 
 use metrics::{counter, gauge};
 use std::sync::Arc;
@@ -89,12 +118,13 @@ use crate::replicator::Replicator;
 
 use super::super::commands::DispatcherCommand;
 use super::super::exclusive::ExclusiveConsumerState;
-use super::super::subscription_engine::SubscriptionEngine;
-use super::super::{
-    handle_retry_exhausted_pending, record_retry_exhausted_metric, subscription_metric_context,
-    subscription_metric_topic, update_pending_delivery_metrics, PendingDelivery,
-    SubscriptionMetricContext,
+use super::super::metrics::{
+    record_retry_exhausted_metric, subscription_metric_context, subscription_metric_topic,
+    update_pending_delivery_metrics, SubscriptionMetricContext,
 };
+use super::super::pending_delivery::PendingDelivery;
+use super::super::poison_handler::handle_retry_exhausted_pending;
+use super::super::subscription_engine::SubscriptionEngine;
 
 /// Spawn the reliable exclusive dispatcher background task.
 pub(super) fn start(
@@ -248,6 +278,11 @@ async fn handle_command(
     }
 }
 
+/// Handle a consumer NACK: apply failure policy to decide retry vs exhaust.
+///
+/// If the nacked offset matches the pending message, the engine's failure policy
+/// determines the outcome: schedule a retry (with backoff) or mark retry-exhausted.
+/// Late NACKs (not matching pending) are ignored.
 fn handle_nack(
     engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
@@ -295,6 +330,10 @@ fn handle_nack(
     }
 }
 
+/// Force an immediate retry of the pending message (e.g., after consumer reconnect).
+///
+/// Clears any backoff delay so the message is eligible for dispatch on the next tick.
+/// Does NOT revive messages that have already reached RetryExhausted status.
 fn handle_retry_now(
     engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
@@ -307,6 +346,10 @@ fn handle_retry_now(
     update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
 }
 
+/// Handle ack deadline expiry: apply failure policy to decide retry vs exhaust.
+///
+/// Called by the heartbeat watchdog when `pending.ack_timed_out(now)` is true.
+/// The engine applies the same retry/exhaust logic as NACK via `on_ack_timed_out`.
 fn handle_ack_timed_out(
     engine: &SubscriptionEngine,
     metric_context: &SubscriptionMetricContext,
@@ -351,6 +394,11 @@ fn handle_ack_timed_out(
     update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
 }
 
+/// Handle a consumer ACK: advance cursor and free the pending slot.
+///
+/// Only processes the ack if it matches the pending message's offset AND the
+/// message is currently awaiting ack. Late/duplicate acks are ignored.
+/// On success, clears the pending slot so the next dispatch can poll a new message.
 async fn handle_ack(
     engine: &mut SubscriptionEngine,
     ack_msg: AckMessage,
@@ -383,6 +431,10 @@ async fn handle_ack(
     }
 }
 
+/// Core dispatch logic: poll a message from the stream and send it to the active consumer.
+///
+/// This is the main work function, called after every event that might unblock dispatch.
+/// See the module-level "Message Flow" diagram for the full sequence of gates.
 async fn handle_poll_and_dispatch(
     state: &mut ExclusiveConsumerState,
     engine: &mut SubscriptionEngine,
@@ -490,6 +542,12 @@ async fn handle_poll_and_dispatch(
     }
 }
 
+/// Heartbeat watchdog: periodic timer that detects ack timeouts, retry readiness, and lag.
+///
+/// Runs every 500ms. Checks (in priority order):
+/// 1. Ack timeout → sends `AckTimedOut` command
+/// 2. Pending message ready to retry → triggers dispatch
+/// 3. No pending message + WAL has unread data → triggers dispatch (lag catch-up)
 async fn handle_heartbeat(
     state: &mut ExclusiveConsumerState,
     engine: &mut SubscriptionEngine,
