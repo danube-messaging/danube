@@ -205,23 +205,10 @@ impl Topic {
         Ok((disconnected_producers, disconnected_consumers))
     }
 
-    // Asynchronous version of publish_message for better performance
-    pub(crate) async fn publish_message_async(&self, stream_message: StreamMessage) -> Result<()> {
-        self.publish_message_inner(stream_message, true).await
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn publish_message_internal_async(
+//publish message async
+    pub(crate) async fn publish_message_async(
         &self,
         stream_message: StreamMessage,
-    ) -> Result<()> {
-        self.publish_message_inner(stream_message, false).await
-    }
-
-    async fn publish_message_inner(
-        &self,
-        stream_message: StreamMessage,
-        validate_producer: bool,
     ) -> Result<()> {
         // Block publishes when draining
         {
@@ -257,7 +244,6 @@ impl Topic {
             .validate_message(&stream_message, &self.topic_name)
             .await?;
 
-        if validate_producer {
             let producer_id = stream_message.msg_id.producer_id;
             {
                 let producers = self.producers.lock().await;
@@ -269,7 +255,6 @@ impl Topic {
                     ));
                 }
             }
-        }
 
         // Update ingress counters (topic only)
         counter!(
