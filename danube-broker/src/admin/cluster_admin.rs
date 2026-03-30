@@ -1,4 +1,7 @@
 use crate::admin::DanubeAdminImpl;
+use crate::security::authz::authorizer::enforce_authorization;
+use crate::security::authz::types::{Permission, Resource};
+use crate::security::context::get_security_context;
 use danube_core::admin_proto::{
     cluster_admin_server::ClusterAdmin, AddNodeRequest, AddNodeResponse, ClusterStatusResponse,
     Empty, PromoteNodeRequest, PromoteNodeResponse, RemoveNodeRequest, RemoveNodeResponse,
@@ -12,8 +15,10 @@ impl ClusterAdmin for DanubeAdminImpl {
     /// Return current Raft cluster state.
     async fn cluster_status(
         &self,
-        _request: Request<Empty>,
+        request: Request<Empty>,
     ) -> Result<Response<ClusterStatusResponse>, Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
         let metrics = self.raft.metrics().borrow().clone();
 
         let membership = metrics.membership_config.membership();
@@ -46,7 +51,10 @@ impl ClusterAdmin for DanubeAdminImpl {
         &self,
         request: Request<AddNodeRequest>,
     ) -> Result<Response<AddNodeResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
         if req.addr.is_empty() {
             return Err(Status::invalid_argument("addr is required"));
@@ -84,7 +92,10 @@ impl ClusterAdmin for DanubeAdminImpl {
         &self,
         request: Request<PromoteNodeRequest>,
     ) -> Result<Response<PromoteNodeResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
         if req.node_id == 0 {
             return Err(Status::invalid_argument("node_id is required"));
@@ -129,7 +140,10 @@ impl ClusterAdmin for DanubeAdminImpl {
         &self,
         request: Request<RemoveNodeRequest>,
     ) -> Result<Response<RemoveNodeResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
         if req.node_id == 0 {
             return Err(Status::invalid_argument("node_id is required"));

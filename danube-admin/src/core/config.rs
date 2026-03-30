@@ -8,6 +8,7 @@ pub struct GrpcClientConfig {
     pub ca_path: Option<String>,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
+    pub api_key: Option<String>,
 }
 
 impl Default for GrpcClientConfig {
@@ -21,6 +22,7 @@ impl Default for GrpcClientConfig {
             ca_path: None,
             cert_path: None,
             key_path: None,
+            api_key: std::env::var("DANUBE_ADMIN_API_KEY").ok(),
         }
     }
 }

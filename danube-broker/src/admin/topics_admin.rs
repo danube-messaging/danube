@@ -19,6 +19,9 @@ use danube_core::proto::{
     schema_reference::VersionRef, DispatchStrategy as CoreDispatchStrategy, SchemaReference,
 };
 
+use crate::security::authz::authorizer::enforce_authorization;
+use crate::security::authz::types::{Permission, Resource};
+use crate::security::context::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
 
@@ -29,9 +32,18 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<NamespaceRequest>,
     ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Namespace(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
+
         trace!("list topics with broker_id for a namespace");
 
-        let req = request.into_inner();
         let names = self
             .resources
             .namespace
@@ -72,9 +84,18 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<BrokerRequest>,
     ) -> std::result::Result<Response<TopicInfoListResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Broker(req.broker_id.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
+
         trace!("list topics hosted by a broker");
 
-        let req = request.into_inner();
         let names = self
             .resources
             .cluster
@@ -98,12 +119,21 @@ impl TopicAdmin for DanubeAdminImpl {
 
         Ok(Response::new(TopicInfoListResponse { topics }))
     }
+
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn create_topic(
         &self,
         request: Request<NewTopicRequest>,
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(topic = %req.name, "creates a non-partitioned topic");
 
@@ -143,7 +173,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<PartitionedTopicRequest>,
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.base_name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(
             base_name = %req.base_name,
@@ -187,7 +225,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<TopicRequest>,
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(topic = %req.name, "delete the topic");
 
@@ -213,7 +259,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<TopicRequest>,
     ) -> std::result::Result<Response<SubscriptionListResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(
             topic = %req.name,
@@ -235,7 +289,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<SubscriptionRequest>,
     ) -> std::result::Result<Response<SubscriptionResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(
             subscription = %req.subscription,
@@ -265,7 +327,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<SetSubscriptionFailurePolicyRequest>,
     ) -> std::result::Result<Response<SubscriptionResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(
             topic = %req.topic,
@@ -305,7 +375,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<GetSubscriptionFailurePolicyRequest>,
     ) -> std::result::Result<Response<GetSubscriptionFailurePolicyResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(
             topic = %req.topic,
@@ -331,7 +409,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<DescribeTopicRequest>,
     ) -> std::result::Result<Response<DescribeTopicResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         // Subscriptions
         let subscriptions = self
@@ -379,7 +465,15 @@ impl TopicAdmin for DanubeAdminImpl {
         &self,
         request: Request<TopicRequest>,
     ) -> std::result::Result<Response<TopicResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.name.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
 
         trace!(topic = %req.name, "unload the topic");
         let service = self.broker_service.as_ref();

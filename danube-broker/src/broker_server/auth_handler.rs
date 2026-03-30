@@ -1,8 +1,10 @@
-use crate::auth_jwt::{create_token, Claims};
+use crate::security::authn::claims::Claims;
+use crate::security::authn::jwt::create_token;
 use crate::broker_server::DanubeServerImpl;
 
 use danube_core::proto::{auth_service_server::AuthService, AuthRequest, AuthResponse};
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 use tracing::Level;
 
@@ -16,26 +18,40 @@ impl AuthService for DanubeServerImpl {
     ) -> std::result::Result<Response<AuthResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        // Validate API key
-        if self.valid_api_keys.contains(&req.api_key) {
-            let claims = Claims {
-                iss: "example".to_string(),
-                exp: 10000000000, // Set the expiration time
-            };
-            let token = match create_token(&claims, &self.auth.jwt.as_ref().unwrap().secret_key) {
-                Ok(token) => token,
-                Err(e) => {
-                    return Err(Status::invalid_argument(format!(
-                        "Unable to create JWT token: {}",
-                        e
-                    )));
-                }
-            };
+        let credential = self
+            .auth
+            .service_account_for_api_key(&req.api_key)
+            .ok_or_else(|| Status::invalid_argument("Invalid API key"))?;
 
-            let response = AuthResponse { token };
-            Ok(Response::new(response))
-        } else {
-            return Err(Status::invalid_argument("Invalid API key"));
-        }
+        let jwt_config = self
+            .auth
+            .jwt_config()
+            .ok_or_else(|| Status::failed_precondition("JWT support is not enabled"))?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Status::internal("System clock is invalid"))?
+            .as_secs();
+
+        let claims = Claims {
+            iss: jwt_config.issuer.clone(),
+            exp: now + jwt_config.expiration_time,
+            sub: credential.name.clone(),
+            principal_type: "service_account".to_string(),
+            principal_name: credential.name.clone(),
+        };
+
+        let token = match create_token(&claims, &jwt_config.secret_key) {
+            Ok(token) => token,
+            Err(e) => {
+                return Err(Status::invalid_argument(format!(
+                    "Unable to create JWT token: {}",
+                    e
+                )));
+            }
+        };
+
+        let response = AuthResponse { token };
+        Ok(Response::new(response))
     }
 }

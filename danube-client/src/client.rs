@@ -100,6 +100,7 @@ pub struct DanubeClientBuilder {
     uri: String,
     connection_options: ConnectionOptions,
     api_key: Option<String>,
+    internal_broker: Option<String>,
 }
 
 impl DanubeClientBuilder {
@@ -157,6 +158,12 @@ impl DanubeClientBuilder {
         self
     }
 
+    /// Sets the internal broker identity for the client in the builder.
+    pub fn with_internal_broker(mut self, broker_name: impl Into<String>) -> Self {
+        self.internal_broker = Some(broker_name.into());
+        self
+    }
+
     /// Constructs and returns a `DanubeClient` instance based on the configuration specified in the builder.
     ///
     /// This method finalizes the configuration and creates a new `DanubeClient` instance. It uses the settings and options that were configured using the `DanubeClientBuilder` methods.
@@ -173,13 +180,12 @@ impl DanubeClientBuilder {
             self.connection_options.api_key = Some(api_key.clone());
         }
 
+        if let Some(ref internal_broker) = self.internal_broker {
+            self.connection_options.internal_broker = Some(internal_broker.clone());
+        }
+
         let cnx_manager = Arc::new(ConnectionManager::new(self.connection_options));
         let auth_service = AuthService::new(cnx_manager.clone());
-
-        // Authenticate if api_key is present; token is cached inside AuthService
-        if let Some(ref api_key) = self.api_key {
-            auth_service.authenticate_client(&uri, api_key).await?;
-        }
 
         let lookup_service = LookupService::new(cnx_manager.clone(), auth_service.clone());
         let health_check_service =

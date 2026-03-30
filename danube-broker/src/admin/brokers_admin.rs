@@ -1,4 +1,7 @@
 use crate::admin::DanubeAdminImpl;
+use crate::security::authz::authorizer::enforce_authorization;
+use crate::security::authz::types::{Permission, Resource};
+use crate::security::context::get_security_context;
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
     BrokerListResponse, BrokerLoadInfo, BrokerResponse, ClusterBalanceRequest,
@@ -14,9 +17,12 @@ impl BrokerAdmin for DanubeAdminImpl {
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn list_brokers(
         &self,
-        _request: Request<Empty>,
+        request: Request<Empty>,
     ) -> std::result::Result<Response<BrokerListResponse>, tonic::Status> {
         trace!("list brokers command");
+
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageBroker, &self.resources.security).await?;
 
         let mut brokers_info = Vec::new();
 
@@ -43,9 +49,12 @@ impl BrokerAdmin for DanubeAdminImpl {
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn get_leader_broker(
         &self,
-        _request: Request<Empty>,
+        request: Request<Empty>,
     ) -> std::result::Result<Response<BrokerResponse>, tonic::Status> {
         trace!("get leader broker command");
+
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageBroker, &self.resources.security).await?;
 
         let leader = if let Some(lead) = self.resources.cluster.get_cluster_leader() {
             lead.to_string()
@@ -60,9 +69,12 @@ impl BrokerAdmin for DanubeAdminImpl {
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn list_namespaces(
         &self,
-        _request: Request<Empty>,
+        request: Request<Empty>,
     ) -> std::result::Result<Response<NamespaceListResponse>, tonic::Status> {
         trace!("get cluster namespaces command");
+
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageNamespace, &self.resources.security).await?;
 
         let namespaces = self.resources.cluster.get_namespaces().await;
 
@@ -75,7 +87,15 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         request: Request<ActivateBrokerRequest>,
     ) -> std::result::Result<Response<ActivateBrokerResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Broker(req.broker_id.clone()),
+            Permission::ManageBroker,
+            &self.resources.security,
+        ).await?;
         if req.broker_id.is_empty() {
             return Err(tonic::Status::invalid_argument(
                 "broker_id must be provided to activate a broker",
@@ -108,7 +128,15 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         request: Request<UnloadBrokerRequest>,
     ) -> std::result::Result<Response<UnloadBrokerResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Broker(req.broker_id.clone()),
+            Permission::ManageBroker,
+            &self.resources.security,
+        ).await?;
 
         // Preconditions: at least 2 brokers in cluster
         let brokers = self.resources.cluster.get_brokers().await;
@@ -250,9 +278,12 @@ impl BrokerAdmin for DanubeAdminImpl {
     #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn get_cluster_balance(
         &self,
-        _request: Request<ClusterBalanceRequest>,
+        request: Request<ClusterBalanceRequest>,
     ) -> std::result::Result<Response<ClusterBalanceResponse>, tonic::Status> {
         trace!("get cluster balance command");
+
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
         // Calculate current imbalance metrics
         let metrics = self.load_manager.calculate_imbalance().await.map_err(|e| {
@@ -305,7 +336,10 @@ impl BrokerAdmin for DanubeAdminImpl {
         &self,
         request: Request<RebalanceRequest>,
     ) -> std::result::Result<Response<RebalanceResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
         info!(
             dry_run = req.dry_run,

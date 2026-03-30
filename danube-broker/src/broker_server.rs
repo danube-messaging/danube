@@ -8,8 +8,8 @@ mod schema_registry_handler;
 pub(crate) use schema_registry_handler::SchemaRegistryService;
 
 use crate::auth::{AuthConfig, AuthMode};
-use crate::auth_jwt::jwt_auth_interceptor;
 use crate::broker_service::BrokerService;
+use crate::security::authn::interceptor::authenticate_request;
 use danube_core::proto::{
     auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
-use tonic::transport::{server::ServerTlsConfig, Identity};
+use tonic::transport::{server::ServerTlsConfig, Certificate, Identity};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -34,8 +34,6 @@ pub(crate) struct DanubeServerImpl {
     connect_url: String,
     proxy_enabled: bool,
     auth: AuthConfig,
-    // the api key is used to authenticate the user for JWT auth
-    valid_api_keys: Vec<String>,
 }
 
 impl DanubeServerImpl {
@@ -56,7 +54,6 @@ impl DanubeServerImpl {
             connect_url,
             proxy_enabled,
             auth,
-            valid_api_keys: Vec::new(),
         }
     }
 
@@ -76,10 +73,9 @@ impl DanubeServerImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let server_builder = if let AuthMode::TlsWithJwt = self.auth.mode {
-            let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
-            let jwt_secret = jwt_config.secret_key.clone();
-            let interceptor = move |request| jwt_auth_interceptor(request, &jwt_secret);
+        let server_builder = if self.auth.mode != AuthMode::None {
+            let auth = self.auth.clone();
+            let interceptor = move |request| authenticate_request(request, &auth);
 
             server_builder
                 .add_service(InterceptedService::new(
@@ -127,9 +123,18 @@ impl DanubeServerImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        server
-            .tls_config(ServerTlsConfig::new().identity(identity))
-            .unwrap()
+        let mut tls = ServerTlsConfig::new().identity(identity);
+
+        if tls_config.verify_client {
+            if let Ok(ca_pem) = tokio::fs::read(&tls_config.ca_file).await {
+                let ca = Certificate::from_pem(ca_pem);
+                tls = tls.client_ca_root(ca);
+            } else {
+                warn!(ca_file = %tls_config.ca_file, "verify_client enabled but unable to read CA file");
+            }
+        }
+
+        server.tls_config(tls).unwrap()
     }
 
     fn spawn_server(

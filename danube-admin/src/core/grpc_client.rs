@@ -2,20 +2,29 @@ use anyhow::{anyhow, Result};
 use danube_core::admin_proto as admin;
 use danube_core::proto::danube_schema;
 use std::time::Duration;
+use tonic::{metadata::MetadataValue, Request, Status};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use super::config::GrpcClientConfig;
+
+const SERVICE_ACCOUNT_API_KEY_HEADER: &str = "x-danube-api-key";
 
 /// Unified gRPC client for Danube admin operations
 /// Consolidates logic from danube-admin-cli and danube-admin-gateway
 pub struct AdminGrpcClient {
     channel: Channel,
     timeout: Duration,
+    api_key: Option<String>,
 }
 
 impl AdminGrpcClient {
     /// Connect to a Danube broker using the provided configuration
     pub async fn connect(config: GrpcClientConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok());
+
         // Accept either full URL (http/https) or host:port; default to http if no scheme
         let endpoint_url =
             if config.endpoint.starts_with("http://") || config.endpoint.starts_with("https://") {
@@ -72,7 +81,24 @@ impl AdminGrpcClient {
         Ok(Self {
             channel,
             timeout: Duration::from_millis(config.request_timeout_ms),
+            api_key,
         })
+    }
+
+    fn auth_interceptor(
+        &self,
+    ) -> impl FnMut(Request<()>) -> Result<Request<()>, Status> + Clone + 'static {
+        let api_key = self.api_key.clone();
+        move |mut request: Request<()>| {
+            if let Some(api_key) = api_key.as_deref() {
+                let value = MetadataValue::try_from(api_key)
+                    .map_err(|_| Status::unauthenticated("Invalid admin API key"))?;
+                request
+                    .metadata_mut()
+                    .insert(SERVICE_ACCOUNT_API_KEY_HEADER, value);
+            }
+            Ok(request)
+        }
     }
 
     /// Helper: Execute request with timeout
@@ -90,13 +116,19 @@ impl AdminGrpcClient {
     // ===== BROKER ADMIN METHODS =====
 
     pub async fn list_brokers(&self) -> Result<admin::BrokerListResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.list_brokers(admin::Empty {}).await };
         self.execute_with_timeout(fut).await
     }
 
     pub async fn get_leader(&self) -> Result<admin::BrokerResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.get_leader_broker(admin::Empty {}).await };
         self.execute_with_timeout(fut).await
     }
@@ -105,7 +137,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::UnloadBrokerRequest,
     ) -> Result<admin::UnloadBrokerResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.unload_broker(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -114,7 +149,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::ActivateBrokerRequest,
     ) -> Result<admin::ActivateBrokerResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.activate_broker(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -123,7 +161,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::ClusterBalanceRequest,
     ) -> Result<admin::ClusterBalanceResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.get_cluster_balance(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -132,7 +173,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::RebalanceRequest,
     ) -> Result<admin::RebalanceResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.trigger_rebalance(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -140,13 +184,19 @@ impl AdminGrpcClient {
     // ===== CLUSTER ADMIN METHODS =====
 
     pub async fn cluster_status(&self) -> Result<admin::ClusterStatusResponse> {
-        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.cluster_status(admin::Empty {}).await };
         self.execute_with_timeout(fut).await
     }
 
     pub async fn add_node(&self, req: admin::AddNodeRequest) -> Result<admin::AddNodeResponse> {
-        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.add_node(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -155,7 +205,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::PromoteNodeRequest,
     ) -> Result<admin::PromoteNodeResponse> {
-        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.promote_node(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -164,7 +217,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::RemoveNodeRequest,
     ) -> Result<admin::RemoveNodeResponse> {
-        let mut client = admin::cluster_admin_client::ClusterAdminClient::new(self.channel.clone());
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.remove_node(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -172,7 +228,10 @@ impl AdminGrpcClient {
     // ===== NAMESPACE ADMIN METHODS =====
 
     pub async fn list_namespaces(&self) -> Result<admin::NamespaceListResponse> {
-        let mut client = admin::broker_admin_client::BrokerAdminClient::new(self.channel.clone());
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.list_namespaces(admin::Empty {}).await };
         self.execute_with_timeout(fut).await
     }
@@ -181,8 +240,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::NamespaceRequest,
     ) -> Result<admin::NamespaceResponse> {
-        let mut client =
-            admin::namespace_admin_client::NamespaceAdminClient::new(self.channel.clone());
+        let mut client = admin::namespace_admin_client::NamespaceAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.create_namespace(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -191,8 +252,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::NamespaceRequest,
     ) -> Result<admin::NamespaceResponse> {
-        let mut client =
-            admin::namespace_admin_client::NamespaceAdminClient::new(self.channel.clone());
+        let mut client = admin::namespace_admin_client::NamespaceAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.delete_namespace(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -201,8 +264,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::NamespaceRequest,
     ) -> Result<admin::PolicyResponse> {
-        let mut client =
-            admin::namespace_admin_client::NamespaceAdminClient::new(self.channel.clone());
+        let mut client = admin::namespace_admin_client::NamespaceAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.get_namespace_policies(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -213,7 +278,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::NamespaceRequest,
     ) -> Result<admin::TopicInfoListResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.list_namespace_topics(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -222,13 +290,19 @@ impl AdminGrpcClient {
         &self,
         req: admin::BrokerRequest,
     ) -> Result<admin::TopicInfoListResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.list_broker_topics(req).await };
         self.execute_with_timeout(fut).await
     }
 
     pub async fn create_topic(&self, req: admin::NewTopicRequest) -> Result<admin::TopicResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.create_topic(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -237,19 +311,28 @@ impl AdminGrpcClient {
         &self,
         req: admin::PartitionedTopicRequest,
     ) -> Result<admin::TopicResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.create_partitioned_topic(req).await };
         self.execute_with_timeout(fut).await
     }
 
     pub async fn delete_topic(&self, req: admin::TopicRequest) -> Result<admin::TopicResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.delete_topic(req).await };
         self.execute_with_timeout(fut).await
     }
 
     pub async fn unload_topic(&self, req: admin::TopicRequest) -> Result<admin::TopicResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.unload_topic(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -258,7 +341,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::DescribeTopicRequest,
     ) -> Result<admin::DescribeTopicResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.describe_topic(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -267,7 +353,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::TopicRequest,
     ) -> Result<admin::SubscriptionListResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.list_subscriptions(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -276,7 +365,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::SubscriptionRequest,
     ) -> Result<admin::SubscriptionResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.unsubscribe(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -285,7 +377,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::SetSubscriptionFailurePolicyRequest,
     ) -> Result<admin::SubscriptionResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.set_subscription_failure_policy(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -294,7 +389,10 @@ impl AdminGrpcClient {
         &self,
         req: admin::GetSubscriptionFailurePolicyRequest,
     ) -> Result<admin::GetSubscriptionFailurePolicyResponse> {
-        let mut client = admin::topic_admin_client::TopicAdminClient::new(self.channel.clone());
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
         let fut = async move { client.get_subscription_failure_policy(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -306,7 +404,10 @@ impl AdminGrpcClient {
         req: danube_schema::RegisterSchemaRequest,
     ) -> Result<danube_schema::RegisterSchemaResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.register_schema(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -316,7 +417,10 @@ impl AdminGrpcClient {
         req: danube_schema::GetSchemaRequest,
     ) -> Result<danube_schema::GetSchemaResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.get_schema(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -326,7 +430,10 @@ impl AdminGrpcClient {
         req: danube_schema::GetLatestSchemaRequest,
     ) -> Result<danube_schema::GetSchemaResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.get_latest_schema(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -336,7 +443,10 @@ impl AdminGrpcClient {
         req: danube_schema::ListVersionsRequest,
     ) -> Result<danube_schema::ListVersionsResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.list_versions(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -346,7 +456,10 @@ impl AdminGrpcClient {
         req: danube_schema::CheckCompatibilityRequest,
     ) -> Result<danube_schema::CheckCompatibilityResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.check_compatibility(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -356,7 +469,10 @@ impl AdminGrpcClient {
         req: danube_schema::SetCompatibilityModeRequest,
     ) -> Result<danube_schema::SetCompatibilityModeResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.set_compatibility_mode(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -366,7 +482,10 @@ impl AdminGrpcClient {
         req: danube_schema::DeleteSchemaVersionRequest,
     ) -> Result<danube_schema::DeleteSchemaVersionResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.delete_schema_version(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -376,7 +495,10 @@ impl AdminGrpcClient {
         req: danube_schema::ConfigureTopicSchemaRequest,
     ) -> Result<danube_schema::ConfigureTopicSchemaResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.configure_topic_schema(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -386,7 +508,10 @@ impl AdminGrpcClient {
         req: danube_schema::GetTopicSchemaConfigRequest,
     ) -> Result<danube_schema::GetTopicSchemaConfigResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.get_topic_schema_config(req).await };
         self.execute_with_timeout(fut).await
     }
@@ -396,7 +521,10 @@ impl AdminGrpcClient {
         req: danube_schema::UpdateTopicValidationPolicyRequest,
     ) -> Result<danube_schema::UpdateTopicValidationPolicyResponse> {
         let mut client =
-            danube_schema::schema_registry_client::SchemaRegistryClient::new(self.channel.clone());
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
         let fut = async move { client.update_topic_validation_policy(req).await };
         self.execute_with_timeout(fut).await
     }

@@ -11,6 +11,8 @@ use tonic::{metadata::MetadataValue, transport::Uri, Request, Response};
 
 /// Assumed token validity duration in seconds.
 const TOKEN_EXPIRY_SECS: u64 = 3600;
+const SERVICE_ACCOUNT_API_KEY_HEADER: &str = "x-danube-api-key";
+const INTERNAL_BROKER_HEADER: &str = "x-danube-internal-broker";
 
 /// The `AuthService` struct provides methods for authenticating clients with the Danube messaging system.
 #[derive(Debug, Clone)]
@@ -79,6 +81,20 @@ impl AuthService {
         Ok(new_token)
     }
 
+    async fn cached_token(&self) -> Option<String> {
+        let now = Instant::now();
+        let token_guard = self.token.lock().await;
+        let expiry_guard = self.token_expiry.lock().await;
+
+        if let Some(expiry) = *expiry_guard {
+            if now < expiry {
+                return token_guard.clone();
+            }
+        }
+
+        None
+    }
+
     /// Insert an authentication token into a gRPC request if an API key is configured.
     ///
     /// This is the single entry point for auth token insertion across the client.
@@ -88,15 +104,29 @@ impl AuthService {
         &self,
         api_key: Option<&str>,
         request: &mut tonic::Request<T>,
-        addr: &Uri,
+        _addr: &Uri,
     ) -> Result<()> {
-        if let Some(api_key) = api_key {
-            let token = self.get_valid_token(addr, api_key).await?;
+        if let Some(token) = self.cached_token().await {
             let token_metadata = MetadataValue::try_from(format!("Bearer {}", token))
                 .map_err(|_| DanubeError::InvalidToken)?;
             request
                 .metadata_mut()
                 .insert("authorization", token_metadata);
+        } else if let Some(api_key) = api_key {
+            let api_key_metadata =
+                MetadataValue::try_from(api_key).map_err(|_| DanubeError::InvalidToken)?;
+            request
+                .metadata_mut()
+                .insert(SERVICE_ACCOUNT_API_KEY_HEADER, api_key_metadata);
+        }
+
+        if let Some(internal_broker) = self.cnx_manager.connection_options.internal_broker.as_deref()
+        {
+            let internal_broker_metadata = MetadataValue::try_from(internal_broker)
+                .map_err(|_| DanubeError::InvalidToken)?;
+            request
+                .metadata_mut()
+                .insert(INTERNAL_BROKER_HEADER, internal_broker_metadata);
         }
         Ok(())
     }

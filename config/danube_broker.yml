@@ -54,10 +54,23 @@ auth:
     key_file: "./cert/server-key.pem"
     ca_file: "./cert/ca-cert.pem"
     verify_client: false
-  jwt:
-    secret_key: "your-secret-key"
-    issuer: "danube-auth"
-    expiration_time: 3600 # in seconds
+  clients:
+    service_accounts:
+      enabled: true
+      require_tls: true
+      default_method: "api_key"
+      credentials: []
+    jwt:
+      enabled: true
+      optional: true
+      secret_key: "your-secret-key"
+      issuer: "danube-auth"
+      expiration_time: 3600
+  internal:
+    mtls_required: false
+    map_peer_identity_to_broker_internal: true
+    secure_replicator: true
+    secure_raft_transport: true
 
 # Load Manager Configuration (Automated Proactive Rebalancing)
 load_manager:

@@ -5,7 +5,7 @@ mod topics_admin;
 
 use crate::{
     auth::AuthConfig, broker_server::SchemaRegistryService, broker_service::BrokerService,
-    danube_service::LoadManager, resources::Resources,
+    danube_service::LoadManager, resources::Resources, security::authn::interceptor::authenticate_request,
 };
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
@@ -16,6 +16,7 @@ use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
@@ -83,13 +84,46 @@ impl DanubeAdminImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let server = server_builder
-            .add_service(BrokerAdminServer::new(self.clone()))
-            .add_service(ClusterAdminServer::new(self.clone()))
-            .add_service(NamespaceAdminServer::new(self.clone()))
-            .add_service(TopicAdminServer::new(self.clone()))
-            .add_service(schema_registry_service)
-            .serve(socket_addr);
+        let broker_admin_service = BrokerAdminServer::new(self.clone());
+        let cluster_admin_service = ClusterAdminServer::new(self.clone());
+        let namespace_admin_service = NamespaceAdminServer::new(self.clone());
+        let topic_admin_service = TopicAdminServer::new(self.clone());
+
+        let server_builder = if self.auth.mode != crate::auth::AuthMode::None {
+            let auth = self.auth.clone();
+            let interceptor = move |request| authenticate_request(request, &auth);
+
+            server_builder
+                .add_service(InterceptedService::new(
+                    broker_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    cluster_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    namespace_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    topic_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    schema_registry_service,
+                    interceptor,
+                ))
+        } else {
+            server_builder
+                .add_service(broker_admin_service)
+                .add_service(cluster_admin_service)
+                .add_service(namespace_admin_service)
+                .add_service(topic_admin_service)
+                .add_service(schema_registry_service)
+        };
+
+        let server = server_builder.serve(socket_addr);
 
         // Server has started
         let handle = tokio::spawn(async move {

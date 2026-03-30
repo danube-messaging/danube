@@ -1,7 +1,6 @@
 mod admin;
 mod args_parse;
 mod auth;
-mod auth_jwt;
 mod broker_metrics;
 mod broker_server;
 mod broker_service;
@@ -16,6 +15,7 @@ mod rate_limiter;
 mod replicator;
 mod resources;
 mod schema;
+mod security;
 mod service_configuration;
 mod storage_configuration;
 mod subscription;

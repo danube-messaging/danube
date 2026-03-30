@@ -4,6 +4,7 @@ use danube_core::proto::{
     health_check_server::HealthCheck, HealthCheckRequest, HealthCheckResponse,
 };
 
+use crate::security::context::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
 
@@ -15,6 +16,7 @@ impl HealthCheck for DanubeServerImpl {
         &self,
         request: Request<HealthCheckRequest>,
     ) -> std::result::Result<Response<HealthCheckResponse>, tonic::Status> {
+        let _security_context = get_security_context(&request)?;
         let req = request.into_inner();
 
         trace!(client_type = %req.client, client_id = %req.id, "health check received");

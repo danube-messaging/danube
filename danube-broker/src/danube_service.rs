@@ -442,12 +442,21 @@ impl DanubeService {
         let broker_client_url = self.service_config.broker_url.clone();
         let danube_client = loop {
             let mut builder = DanubeClient::builder()
-                .service_url(&broker_client_url);
+                .service_url(&broker_client_url)
+                .with_internal_broker(format!("broker/{}", self.broker_id));
 
             // When the broker has TLS enabled, configure the internal client with
             // the same CA certificate so it can connect to itself (or peers).
             if let Some(ref tls_config) = self.service_config.auth.tls {
-                builder = match builder.with_tls(&tls_config.ca_file) {
+                builder = match if tls_config.verify_client {
+                    builder.with_mtls(
+                        &tls_config.ca_file,
+                        &tls_config.cert_file,
+                        &tls_config.key_file,
+                    )
+                } else {
+                    builder.with_tls(&tls_config.ca_file)
+                } {
                     Ok(b) => b,
                     Err(err) => {
                         return Err(anyhow::anyhow!(err)).context(format!(
