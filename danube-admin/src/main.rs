@@ -51,6 +51,10 @@ enum Commands {
     /// [CLI] Manage schemas in the schema registry
     #[command(display_order = 13)]
     Schemas(cli::schemas::Schemas),
+
+    /// [CLI] Manage authorization roles and bindings
+    #[command(display_order = 14)]
+    Security(cli::security::Security),
 }
 
 #[tokio::main]
@@ -76,5 +80,6 @@ async fn main() -> Result<()> {
         Commands::Namespaces(cmd) => cli::namespaces::handle(cmd, &cli.endpoint).await,
         Commands::Topics(cmd) => cli::topics::handle(cmd, &cli.endpoint).await,
         Commands::Schemas(cmd) => cli::schemas::handle(cmd, &cli.endpoint).await,
+        Commands::Security(cmd) => cli::security::handle(cmd, &cli.endpoint).await,
     }
 }

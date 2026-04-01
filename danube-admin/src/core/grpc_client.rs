@@ -528,4 +528,96 @@ impl AdminGrpcClient {
         let fut = async move { client.update_topic_validation_policy(req).await };
         self.execute_with_timeout(fut).await
     }
+
+    // ===== SECURITY ADMIN METHODS =====
+
+    pub async fn create_role(
+        &self,
+        req: admin::CreateRoleRequest,
+    ) -> Result<admin::CreateRoleResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.create_role(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_role(&self, req: admin::GetRoleRequest) -> Result<admin::GetRoleResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_role(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn list_roles(&self) -> Result<admin::ListRolesResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.list_roles(admin::Empty {}).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn delete_role(
+        &self,
+        req: admin::DeleteRoleRequest,
+    ) -> Result<admin::DeleteRoleResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.delete_role(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn create_binding(
+        &self,
+        req: admin::CreateBindingRequest,
+    ) -> Result<admin::CreateBindingResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.create_binding(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_binding(
+        &self,
+        req: admin::GetBindingRequest,
+    ) -> Result<admin::GetBindingResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_binding(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn list_bindings(
+        &self,
+        req: admin::ListBindingsRequest,
+    ) -> Result<admin::ListBindingsResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.list_bindings(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn delete_binding(
+        &self,
+        req: admin::DeleteBindingRequest,
+    ) -> Result<admin::DeleteBindingResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.delete_binding(req).await };
+        self.execute_with_timeout(fut).await
+    }
 }

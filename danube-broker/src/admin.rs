@@ -1,6 +1,7 @@
 mod brokers_admin;
 mod cluster_admin;
 mod namespace_admin;
+mod security_admin;
 mod topics_admin;
 
 use crate::{
@@ -9,7 +10,8 @@ use crate::{
 };
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
-    namespace_admin_server::NamespaceAdminServer, topic_admin_server::TopicAdminServer,
+    namespace_admin_server::NamespaceAdminServer, security_admin_server::SecurityAdminServer,
+    topic_admin_server::TopicAdminServer,
 };
 use danube_core::proto::danube_schema::schema_registry_server::SchemaRegistryServer;
 use danube_raft::leadership::LeadershipHandle;
@@ -87,6 +89,7 @@ impl DanubeAdminImpl {
         let broker_admin_service = BrokerAdminServer::new(self.clone());
         let cluster_admin_service = ClusterAdminServer::new(self.clone());
         let namespace_admin_service = NamespaceAdminServer::new(self.clone());
+        let security_admin_service = SecurityAdminServer::new(self.clone());
         let topic_admin_service = TopicAdminServer::new(self.clone());
 
         let server_builder = if self.auth.mode != crate::auth::AuthMode::None {
@@ -107,6 +110,10 @@ impl DanubeAdminImpl {
                     interceptor.clone(),
                 ))
                 .add_service(InterceptedService::new(
+                    security_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
                     topic_admin_service,
                     interceptor.clone(),
                 ))
@@ -119,6 +126,7 @@ impl DanubeAdminImpl {
                 .add_service(broker_admin_service)
                 .add_service(cluster_admin_service)
                 .add_service(namespace_admin_service)
+                .add_service(security_admin_service)
                 .add_service(topic_admin_service)
                 .add_service(schema_registry_service)
         };

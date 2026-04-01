@@ -139,6 +139,25 @@ impl SecurityResources {
         Ok(all)
     }
 
+    // ── Deletions ──────────────────────────────────────────────────
+
+    pub(crate) async fn delete_role(&self, role_name: &str) -> Result<()> {
+        let path = join_path(&[BASE_AUTH_ROLES_PATH, role_name]);
+        self.store.delete(&path).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_binding(
+        &self,
+        scope: &str,
+        resource_name: &str,
+        binding_id: &str,
+    ) -> Result<()> {
+        let path = self.binding_path(scope, resource_name, binding_id);
+        self.store.delete(&path).await?;
+        Ok(())
+    }
+
     // ── Internal helpers ───────────────────────────────────────────
 
     fn binding_scope_path(&self, scope: &str, resource_name: &str) -> String {
