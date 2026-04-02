@@ -207,8 +207,7 @@ impl DanubeService {
         let connect_url = &self.service_config.connect_url;
 
         //check it is a secure connection
-        let is_secure = self.service_config.auth.mode == AuthMode::Tls
-            || self.service_config.auth.mode == AuthMode::TlsWithJwt;
+        let is_secure = self.service_config.auth.mode == AuthMode::Tls;
 
         let ttl = 32; // Time to live for the lease in seconds
         let admin_addr = self.service_config.admin_addr.to_string();

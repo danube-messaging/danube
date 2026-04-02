@@ -29,7 +29,7 @@ enum ConnectionStatus {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ConnectionOptions {
     pub(crate) tls_config: Option<ClientTlsConfig>,
-    pub(crate) api_key: Option<String>,
+    pub(crate) token: Option<String>,
     pub(crate) internal_broker: Option<String>,
     pub(crate) use_tls: bool,
 }

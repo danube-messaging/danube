@@ -43,7 +43,7 @@ auto_create_topics: true
 
 # Security Configuration
 auth:
-  mode: none # Options: none, tls, tlswithjwt
+  mode: none # Options: none, tls
   # tls:
   #   cert_file: "./cert/server-cert.pem"
   #   key_file: "./cert/server-key.pem"

@@ -7,23 +7,22 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 
 use super::config::GrpcClientConfig;
 
-const SERVICE_ACCOUNT_API_KEY_HEADER: &str = "x-danube-api-key";
-
 /// Unified gRPC client for Danube admin operations
 /// Consolidates logic from danube-admin-cli and danube-admin-gateway
 pub struct AdminGrpcClient {
     channel: Channel,
     timeout: Duration,
-    api_key: Option<String>,
+    token: Option<String>,
 }
 
 impl AdminGrpcClient {
     /// Connect to a Danube broker using the provided configuration
     pub async fn connect(config: GrpcClientConfig) -> Result<Self> {
-        let api_key = config
-            .api_key
+        let token = config
+            .token
             .clone()
-            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok());
+            .or_else(|| std::env::var("DANUBE_ADMIN_TOKEN").ok())
+            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()); // backward compat
 
         // Accept either full URL (http/https) or host:port; default to http if no scheme
         let endpoint_url =
@@ -81,21 +80,19 @@ impl AdminGrpcClient {
         Ok(Self {
             channel,
             timeout: Duration::from_millis(config.request_timeout_ms),
-            api_key,
+            token,
         })
     }
 
     fn auth_interceptor(
         &self,
     ) -> impl FnMut(Request<()>) -> Result<Request<()>, Status> + Clone + 'static {
-        let api_key = self.api_key.clone();
+        let token = self.token.clone();
         move |mut request: Request<()>| {
-            if let Some(api_key) = api_key.as_deref() {
-                let value = MetadataValue::try_from(api_key)
-                    .map_err(|_| Status::unauthenticated("Invalid admin API key"))?;
-                request
-                    .metadata_mut()
-                    .insert(SERVICE_ACCOUNT_API_KEY_HEADER, value);
+            if let Some(token) = token.as_deref() {
+                let value = MetadataValue::try_from(format!("Bearer {}", token))
+                    .map_err(|_| Status::unauthenticated("Invalid admin token"))?;
+                request.metadata_mut().insert("authorization", value);
             }
             Ok(request)
         }

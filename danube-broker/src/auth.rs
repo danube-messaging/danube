@@ -4,10 +4,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_api_key_method() -> String {
-    "api_key".to_string()
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct TlsConfig {
     pub(crate) cert_file: String,
@@ -16,6 +12,8 @@ pub(crate) struct TlsConfig {
     pub(crate) verify_client: bool,
 }
 
+/// JWT configuration — used for validating client tokens and (optionally)
+/// issuing broker-minted short-lived tokens via the AuthService RPC.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct JwtConfig {
     pub(crate) secret_key: String,
@@ -23,24 +21,14 @@ pub(crate) struct JwtConfig {
     pub(crate) expiration_time: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct ServiceAccountCredential {
-    pub(crate) name: String,
-    pub(crate) api_key: String,
-    #[serde(default)]
-    pub(crate) disabled: bool,
-}
-
+/// Service account auth settings (TLS requirements).
+/// Credentials are no longer stored in config — use `danube-admin security tokens create`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct ServiceAccountAuthConfig {
     #[serde(default = "default_true")]
     pub(crate) enabled: bool,
     #[serde(default)]
     pub(crate) require_tls: bool,
-    #[serde(default = "default_api_key_method")]
-    pub(crate) default_method: String,
-    #[serde(default)]
-    pub(crate) credentials: Vec<ServiceAccountCredential>,
 }
 
 impl Default for ServiceAccountAuthConfig {
@@ -48,21 +36,8 @@ impl Default for ServiceAccountAuthConfig {
         Self {
             enabled: true,
             require_tls: false,
-            default_method: default_api_key_method(),
-            credentials: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct ClientJwtConfig {
-    #[serde(default = "default_true")]
-    pub(crate) enabled: bool,
-    #[serde(default)]
-    pub(crate) optional: bool,
-    pub(crate) secret_key: String,
-    pub(crate) issuer: String,
-    pub(crate) expiration_time: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -70,7 +45,7 @@ pub(crate) struct ClientAuthConfig {
     #[serde(default)]
     pub(crate) service_accounts: Option<ServiceAccountAuthConfig>,
     #[serde(default)]
-    pub(crate) jwt: Option<ClientJwtConfig>,
+    pub(crate) jwt: Option<JwtConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -90,7 +65,6 @@ pub(crate) struct InternalAuthConfig {
 pub(crate) enum AuthMode {
     None,
     Tls,
-    TlsWithJwt,
 }
 
 impl Default for AuthMode {
@@ -104,6 +78,7 @@ pub(crate) struct AuthConfig {
     #[serde(default)]
     pub(crate) mode: AuthMode,
     pub(crate) tls: Option<TlsConfig>,
+    /// Top-level JWT config (preferred). Falls back to clients.jwt for backward compat.
     #[serde(default)]
     pub(crate) jwt: Option<JwtConfig>,
     #[serde(default)]
@@ -129,17 +104,16 @@ impl AuthConfig {
         self.mode == AuthMode::None
     }
 
+    /// Get the JWT config, checking top-level `jwt` first, then `clients.jwt` for backward compat.
     pub(crate) fn jwt_config(&self) -> Option<JwtConfig> {
-        self.clients
-            .as_ref()
-            .and_then(|clients| clients.jwt.as_ref())
-            .filter(|jwt| jwt.enabled)
-            .map(|jwt| JwtConfig {
-                secret_key: jwt.secret_key.clone(),
-                issuer: jwt.issuer.clone(),
-                expiration_time: jwt.expiration_time,
+        self.jwt
+            .clone()
+            .or_else(|| {
+                self.clients
+                    .as_ref()
+                    .and_then(|clients| clients.jwt.as_ref())
+                    .cloned()
             })
-            .or_else(|| self.jwt.clone())
     }
 
     pub(crate) fn map_internal_broker_identity(&self) -> bool {
@@ -147,21 +121,5 @@ impl AuthConfig {
             .as_ref()
             .map(|internal| internal.map_peer_identity_to_broker_internal)
             .unwrap_or(false)
-    }
-
-    pub(crate) fn service_account_for_api_key(
-        &self,
-        api_key: &str,
-    ) -> Option<&ServiceAccountCredential> {
-        self.clients
-            .as_ref()
-            .and_then(|clients| clients.service_accounts.as_ref())
-            .filter(|service_accounts| service_accounts.enabled)
-            .and_then(|service_accounts| {
-                service_accounts
-                    .credentials
-                    .iter()
-                    .find(|credential| !credential.disabled && credential.api_key == api_key)
-            })
     }
 }

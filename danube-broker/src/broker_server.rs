@@ -61,7 +61,7 @@ impl DanubeServerImpl {
         let socket_addr = self.broker_addr.clone();
         let mut server_builder = Server::builder();
 
-        if let AuthMode::Tls | AuthMode::TlsWithJwt = self.auth.mode {
+        if self.auth.mode == AuthMode::Tls {
             server_builder = self.configure_tls(server_builder).await;
         }
 

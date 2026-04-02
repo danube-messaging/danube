@@ -1,12 +1,11 @@
 use crate::metadata_storage::MetadataStorage;
 use crate::resources::{
-    BASE_AUTH_BINDINGS_PATH, BASE_AUTH_ROLES_PATH, BASE_AUTH_SERVICE_ACCOUNTS_PATH,
+    BASE_AUTH_BINDINGS_PATH, BASE_AUTH_ROLES_PATH,
 };
 use crate::security::authz::types::{Binding, Role};
 use crate::utils::join_path;
 use anyhow::Result;
 use danube_core::metadata::{MetaOptions, MetadataStore};
-use serde_json::Value;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -38,26 +37,6 @@ impl SecurityResources {
 
     pub(crate) async fn list_role_names(&self) -> Result<Vec<String>> {
         Ok(self.store.get_childrens(BASE_AUTH_ROLES_PATH).await?)
-    }
-
-    // ── Service accounts ───────────────────────────────────────────
-
-    pub(crate) async fn put_service_account(
-        &self,
-        service_account_name: &str,
-        value: Value,
-    ) -> Result<()> {
-        let path = join_path(&[BASE_AUTH_SERVICE_ACCOUNTS_PATH, service_account_name]);
-        self.store.put(&path, value, MetaOptions::None).await?;
-        Ok(())
-    }
-
-    pub(crate) async fn get_service_account(
-        &self,
-        service_account_name: &str,
-    ) -> Result<Option<Value>> {
-        let path = join_path(&[BASE_AUTH_SERVICE_ACCOUNTS_PATH, service_account_name]);
-        Ok(self.store.get(&path, MetaOptions::None).await?)
     }
 
     // ── Bindings ───────────────────────────────────────────────────

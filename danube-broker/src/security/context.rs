@@ -4,7 +4,6 @@ use tonic::{Request, Status};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthenticationMethod {
     None,
-    ServiceAccountApiKey,
     Jwt,
     MutualTls,
 }

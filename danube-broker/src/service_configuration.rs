@@ -219,7 +219,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
         };
 
         let scheme = match auth.mode {
-            AuthMode::Tls | AuthMode::TlsWithJwt => "https",
+            AuthMode::Tls => "https",
             _ => "http",
         };
         let broker_addr_str = broker_addr.to_string();

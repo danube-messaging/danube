@@ -4,6 +4,8 @@ use danube_core::admin_proto::{
     BindingDefinition, CreateBindingRequest, CreateRoleRequest, DeleteBindingRequest,
     DeleteRoleRequest, GetBindingRequest, GetRoleRequest, ListBindingsRequest, RoleDefinition,
 };
+use danube_core::jwt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
 
@@ -22,6 +24,10 @@ enum SecurityCommands {
     /// Manage authorization bindings
     #[command(subcommand)]
     Bindings(BindingsCommands),
+
+    /// Manage authentication tokens (offline JWT operations)
+    #[command(subcommand)]
+    Tokens(TokensCommands),
 }
 
 // ── Roles ──────────────────────────────────────────────────────────────────
@@ -143,18 +149,73 @@ Scopes: cluster, namespace, topic"
     },
 }
 
+// ── Tokens ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+enum TokensCommands {
+    /// Create a signed JWT token (offline — no broker connection needed)
+    #[command(
+        after_help = "Examples:
+  danube-admin security tokens create --subject my-app --secret-key your-secret-key
+  danube-admin security tokens create --subject admin-user --type user --ttl 24h --secret-key '$JWT_SECRET'
+  danube-admin security tokens create --subject my-app --ttl 365d --secret-key your-secret-key
+
+TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
+    )]
+    Create {
+        /// Principal name (e.g. my-app, admin-user)
+        #[arg(long)]
+        subject: String,
+
+        /// JWT signing secret key (must match broker's jwt.secret_key)
+        #[arg(long, env = "DANUBE_JWT_SECRET_KEY")]
+        secret_key: String,
+
+        /// Token time-to-live (e.g. 8760h, 365d). Default: 8760h (1 year)
+        #[arg(long, default_value = "8760h")]
+        ttl: String,
+
+        /// Principal type: service_account or user
+        #[arg(long, default_value = "service_account")]
+        r#type: String,
+
+        /// Token issuer (should match broker's jwt.issuer)
+        #[arg(long, default_value = "danube-auth")]
+        issuer: String,
+    },
+
+    /// Validate a JWT token and display its claims (offline — no broker connection needed)
+    Validate {
+        /// JWT token to validate
+        #[arg(long)]
+        token: String,
+
+        /// JWT signing secret key
+        #[arg(long, env = "DANUBE_JWT_SECRET_KEY")]
+        secret_key: String,
+    },
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────
 
 pub async fn handle(security: Security, endpoint: &str) -> Result<()> {
-    let config = GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        ..Default::default()
-    };
-    let client = AdminGrpcClient::connect(config).await?;
-
     match security.command {
-        SecurityCommands::Roles(cmd) => handle_roles(cmd, &client).await,
-        SecurityCommands::Bindings(cmd) => handle_bindings(cmd, &client).await,
+        SecurityCommands::Tokens(cmd) => {
+            // Tokens are purely local/offline — no broker connection needed
+            handle_tokens(cmd)
+        }
+        _ => {
+            let config = GrpcClientConfig {
+                endpoint: endpoint.to_string(),
+                ..Default::default()
+            };
+            let client = AdminGrpcClient::connect(config).await?;
+            match security.command {
+                SecurityCommands::Roles(cmd) => handle_roles(cmd, &client).await,
+                SecurityCommands::Bindings(cmd) => handle_bindings(cmd, &client).await,
+                SecurityCommands::Tokens(_) => unreachable!(),
+            }
+        }
     }
 }
 
@@ -351,4 +412,99 @@ fn binding_to_json(b: &BindingDefinition) -> serde_json::Value {
         "scope": b.scope,
         "resource_name": b.resource_name,
     })
+}
+
+// ── Token helpers ──────────────────────────────────────────────────────────
+
+fn handle_tokens(cmd: TokensCommands) -> Result<()> {
+    match cmd {
+        TokensCommands::Create {
+            subject,
+            secret_key,
+            ttl,
+            r#type,
+            issuer,
+        } => {
+            let ttl_seconds = parse_ttl(&ttl)?;
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| anyhow::anyhow!("System clock error"))?
+                .as_secs();
+
+            let claims = jwt::Claims {
+                iss: issuer,
+                exp: now + ttl_seconds,
+                sub: subject.clone(),
+                principal_type: r#type.clone(),
+                principal_name: subject,
+            };
+
+            let token = jwt::create_token(&claims, &secret_key)
+                .map_err(|e| anyhow::anyhow!("Failed to create token: {}", e))?;
+
+            // Print only the token to stdout (for piping/scripting)
+            println!("{}", token);
+        }
+
+        TokensCommands::Validate { token, secret_key } => {
+            match jwt::validate_token(&token, &secret_key) {
+                Ok(claims) => {
+                    let exp_time = chrono::DateTime::from_timestamp(claims.exp as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                        .unwrap_or_else(|| "invalid".to_string());
+
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let remaining = if claims.exp > now {
+                        let secs = claims.exp - now;
+                        let hours = secs / 3600;
+                        let days = hours / 24;
+                        if days > 0 {
+                            format!("{}d {}h", days, hours % 24)
+                        } else {
+                            format!("{}h", hours)
+                        }
+                    } else {
+                        "EXPIRED".to_string()
+                    };
+
+                    println!("Token is valid.");
+                    println!("  Subject:        {}", claims.sub);
+                    println!("  Principal type:  {}", claims.principal_type);
+                    println!("  Principal name:  {}", claims.principal_name);
+                    println!("  Issuer:          {}", claims.iss);
+                    println!("  Expires:         {}", exp_time);
+                    println!("  Remaining:       {}", remaining);
+                }
+                Err(e) => {
+                    eprintln!("Token validation failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a TTL string like "8760h", "365d", "24h" into seconds.
+fn parse_ttl(ttl: &str) -> Result<u64> {
+    let ttl = ttl.trim();
+    if let Some(hours) = ttl.strip_suffix('h') {
+        let h: u64 = hours
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid TTL: '{}'", ttl))?;
+        Ok(h * 3600)
+    } else if let Some(days) = ttl.strip_suffix('d') {
+        let d: u64 = days
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid TTL: '{}'", ttl))?;
+        Ok(d * 86400)
+    } else {
+        // Assume seconds if no suffix
+        ttl.parse::<u64>()
+            .map_err(|_| anyhow::anyhow!("Invalid TTL: '{}'. Use h (hours) or d (days) suffix.", ttl))
+    }
 }

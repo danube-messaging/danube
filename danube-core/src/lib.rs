@@ -1,4 +1,5 @@
 pub mod dispatch_strategy;
+pub mod jwt;
 pub mod message;
 pub mod metadata;
 pub mod storage;

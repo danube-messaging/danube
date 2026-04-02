@@ -19,10 +19,8 @@ pub(crate) static BASE_BROKER_PATH: &str = "/cluster/brokers";
 pub(crate) static BASE_NAMESPACES_PATH: &str = "/namespaces";
 pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
 pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
-pub(crate) static BASE_AUTH_PATH: &str = "/auth";
 pub(crate) static BASE_AUTH_ROLES_PATH: &str = "/auth/roles";
 pub(crate) static BASE_AUTH_BINDINGS_PATH: &str = "/auth/bindings";
-pub(crate) static BASE_AUTH_SERVICE_ACCOUNTS_PATH: &str = "/auth/service_accounts";
 
 // Once new topic is created, it is posted to unassigned path in order to be alocated by Load Manager to a broker
 pub(crate) static BASE_UNASSIGNED_PATH: &str = "/cluster/unassigned";

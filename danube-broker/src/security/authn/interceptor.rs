@@ -1,8 +1,6 @@
 use crate::auth::AuthConfig;
-use crate::security::authn::api_keys::{
-    authenticate_service_account, metadata_api_key, metadata_internal_broker,
-};
-use crate::security::authn::jwt::{parse_bearer_token, principal_from_claims, validate_token};
+use crate::security::authn::api_keys::metadata_internal_broker;
+use crate::security::authn::jwt::{broker_parse_bearer_token, broker_validate_token, principal_from_claims};
 use crate::security::context::{AuthenticationMethod, SecurityContext};
 use crate::security::error::SecurityError;
 use crate::security::principal::Principal;
@@ -24,12 +22,6 @@ pub(crate) fn authenticate_request(
             },
             AuthenticationMethod::MutualTls,
         )
-    } else if let Some(api_key) = metadata_api_key(request.metadata())
-        .map_err(SecurityError::into_status)?
-    {
-        let principal =
-            authenticate_service_account(auth, api_key).map_err(SecurityError::into_status)?;
-        SecurityContext::authenticated(principal, AuthenticationMethod::ServiceAccountApiKey)
     } else if let Some(token) = request.metadata().get("authorization") {
         let token = token
             .to_str()
@@ -37,8 +29,8 @@ pub(crate) fn authenticate_request(
         let jwt_config = auth
             .jwt_config()
             .ok_or_else(|| SecurityError::JwtNotConfigured.into_status())?;
-        let bearer = parse_bearer_token(token).map_err(SecurityError::into_status)?;
-        let claims = validate_token(bearer, &jwt_config.secret_key)
+        let bearer = broker_parse_bearer_token(token).map_err(SecurityError::into_status)?;
+        let claims = broker_validate_token(bearer, &jwt_config.secret_key)
             .map_err(|_| SecurityError::InvalidToken.into_status())?;
         let principal = principal_from_claims(&claims);
         SecurityContext::authenticated(principal, AuthenticationMethod::Jwt)

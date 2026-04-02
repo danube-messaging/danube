@@ -99,7 +99,7 @@ impl DanubeClient {
 pub struct DanubeClientBuilder {
     uri: String,
     connection_options: ConnectionOptions,
-    api_key: Option<String>,
+    token: Option<String>,
     internal_broker: Option<String>,
 }
 
@@ -145,17 +145,27 @@ impl DanubeClientBuilder {
         Ok(self)
     }
 
-    /// Sets the API key for the client in the builder.
+    /// Sets the authentication token (JWT) for the client.
     ///
+    /// Use `danube-admin security tokens create` to generate a token.
     /// Automatically enables TLS. If no TLS config has been set via `with_tls()` or
     /// `with_mtls()`, a default TLS config using system root certificates is applied.
-    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
         if self.connection_options.tls_config.is_none() {
             self.connection_options.tls_config = Some(ClientTlsConfig::new());
         }
         self.connection_options.use_tls = true;
         self
+    }
+
+    /// Deprecated: Use `with_token()` instead. This method treats the input as a JWT token.
+    #[deprecated(
+        since = "0.11.0",
+        note = "Use with_token() — Danube now uses JWT tokens instead of API keys"
+    )]
+    pub fn with_api_key(self, api_key: impl Into<String>) -> Self {
+        self.with_token(api_key)
     }
 
     /// Sets the internal broker identity for the client in the builder.
@@ -175,9 +185,9 @@ impl DanubeClientBuilder {
     pub async fn build(mut self) -> Result<DanubeClient> {
         let uri = self.uri.parse::<Uri>()?;
 
-        // Set api_key on connection_options before creating the single ConnectionManager
-        if let Some(ref api_key) = self.api_key {
-            self.connection_options.api_key = Some(api_key.clone());
+        // Set token on connection_options before creating the single ConnectionManager
+        if let Some(ref token) = self.token {
+            self.connection_options.token = Some(token.clone());
         }
 
         if let Some(ref internal_broker) = self.internal_broker {

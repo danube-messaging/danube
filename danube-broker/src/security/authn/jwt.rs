@@ -1,37 +1,16 @@
-use crate::security::authn::claims::Claims;
+use danube_core::jwt::Claims;
 use crate::security::error::SecurityError;
 use crate::security::principal::Principal;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 
-pub(crate) fn create_token(
-    claims: &Claims,
-    jwt_secret: &str,
-) -> Result<String, jsonwebtoken::errors::Error> {
-    encode(
-        &Header::default(),
-        claims,
-        &EncodingKey::from_secret(jwt_secret.as_ref()),
-    )
-}
-
-pub(crate) fn validate_token(
+pub(crate) fn broker_validate_token(
     token: &str,
     jwt_secret: &str,
 ) -> Result<Claims, jsonwebtoken::errors::Error> {
-    let validation = Validation::default();
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(jwt_secret.as_ref()),
-        &validation,
-    )?;
-    Ok(token_data.claims)
+    danube_core::jwt::validate_token(token, jwt_secret)
 }
 
-pub(crate) fn parse_bearer_token(header_value: &str) -> Result<&str, SecurityError> {
-    header_value
-        .strip_prefix("Bearer ")
-        .or_else(|| header_value.strip_prefix("bearer "))
-        .ok_or(SecurityError::InvalidToken)
+pub(crate) fn broker_parse_bearer_token(header_value: &str) -> Result<&str, SecurityError> {
+    danube_core::jwt::parse_bearer_token(header_value).ok_or(SecurityError::InvalidToken)
 }
 
 pub(crate) fn principal_from_claims(claims: &Claims) -> Principal {
