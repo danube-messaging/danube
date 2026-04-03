@@ -409,6 +409,17 @@ impl DanubeService {
             "cluster metadata initialization completed successfully"
         );
 
+        // Initialize authorization cache
+        //==========================================================================
+        // Load all roles and bindings into memory before accepting requests.
+        // The background watcher keeps the cache in sync on admin mutations.
+        self.resources
+            .security
+            .load_cache()
+            .await
+            .expect("failed to load authorization cache");
+        self.resources.security.start_watcher().await;
+
         // Start the Broker GRPC server
         //==========================================================================
 

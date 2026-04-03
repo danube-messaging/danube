@@ -1,55 +1,212 @@
 use crate::metadata_storage::MetadataStorage;
-use crate::resources::{
-    BASE_AUTH_BINDINGS_PATH, BASE_AUTH_ROLES_PATH,
-};
+use crate::resources::{BASE_AUTH_BINDINGS_PATH, BASE_AUTH_ROLES_PATH};
 use crate::security::authz::{Binding, Role};
 use crate::utils::join_path;
 use anyhow::Result;
 use danube_core::metadata::{MetaOptions, MetadataStore};
-use tracing::warn;
+use futures::StreamExt;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
+
+// ── Cache ──────────────────────────────────────────────────────────────────
+
+/// In-memory snapshot of all roles and bindings.
+/// Roles and bindings are small, rarely mutated, and read on every request —
+/// the textbook case for an eager cache with watch-based invalidation.
+#[derive(Debug, Clone, Default)]
+struct AuthzCache {
+    /// role_name → Role
+    roles: HashMap<String, Role>,
+    /// (scope, resource_name) → Vec<Binding>
+    ///
+    /// For cluster scope, resource_name is "".
+    /// For namespace scope, resource_name is the namespace.
+    /// For topic scope, resource_name is the full topic path.
+    bindings: HashMap<(String, String), Vec<Binding>>,
+}
+
+// ── SecurityResources ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub(crate) struct SecurityResources {
     store: MetadataStorage,
+    cache: Arc<RwLock<AuthzCache>>,
 }
 
 impl SecurityResources {
     pub(crate) fn new(store: MetadataStorage) -> Self {
-        Self { store }
+        Self {
+            store,
+            cache: Arc::new(RwLock::new(AuthzCache::default())),
+        }
     }
 
-    // ── Roles ──────────────────────────────────────────────────────
+    // ── Startup ────────────────────────────────────────────────────
+
+    /// Bulk-load all roles and bindings into the in-memory cache.
+    /// Call once during broker startup, before accepting requests.
+    pub(crate) async fn load_cache(&self) -> Result<()> {
+        let roles = self.load_all_roles_from_store().await?;
+        let bindings = self.load_all_bindings_from_store().await?;
+
+        let role_count = roles.len();
+        let binding_count: usize = bindings.values().map(|v| v.len()).sum();
+
+        let mut cache = self.cache.write().await;
+        cache.roles = roles;
+        cache.bindings = bindings;
+
+        info!(
+            roles = role_count,
+            bindings = binding_count,
+            "authorization cache loaded"
+        );
+        Ok(())
+    }
+
+    /// Spawn a background task that watches `/auth/` and reloads the cache
+    /// Watch `/auth/` for role/binding mutations and reload the cache.
+    ///
+    /// Follows the same pattern as `broker_watcher::watch_events_for_broker`:
+    /// creates the watch stream, spawns processing in a background task.
+    /// Handles broadcast lag by doing a full resync (same as load_manager).
+    pub(crate) async fn start_watcher(&self) {
+        let base_path = "/auth/";
+
+        match self.store.watch(base_path).await {
+            Ok(mut watch_stream) => {
+                let store = self.store.clone();
+                let cache = self.cache.clone();
+
+                tokio::spawn(async move {
+                    while let Some(result) = watch_stream.next().await {
+                        match result {
+                            Ok(event) => {
+                                debug!(%event, "auth metadata changed, reloading cache");
+                                if let Err(e) = reload_cache(&store, &cache).await {
+                                    warn!("failed to reload authorization cache: {}", e);
+                                }
+                            }
+                            Err(danube_core::metadata::MetadataError::WatchError(msg))
+                                if msg.contains("lagged") =>
+                            {
+                                warn!(
+                                    "authorization watcher stream lagged — resyncing cache"
+                                );
+                                if let Err(e) = reload_cache(&store, &cache).await {
+                                    warn!("failed to resync authorization cache after lag: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "error receiving auth watch event");
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to create auth watch stream");
+            }
+        }
+    }
+
+    // ── Cached reads (hot path) ────────────────────────────────────
+
+    pub(crate) async fn get_role(&self, role_name: &str) -> Result<Option<Role>> {
+        let cache = self.cache.read().await;
+        Ok(cache.roles.get(role_name).cloned())
+    }
+
+    pub(crate) async fn list_role_names(&self) -> Result<Vec<String>> {
+        let cache = self.cache.read().await;
+        Ok(cache.roles.keys().cloned().collect())
+    }
+
+    /// Collect bindings from all relevant scopes for a given resource.
+    /// For a topic `/ns/topic`, returns: cluster + namespace(ns) + topic bindings.
+    /// For a namespace resource, returns: cluster + namespace bindings.
+    /// For cluster/broker resources, returns only cluster bindings.
+    pub(crate) async fn list_bindings_for_resource(
+        &self,
+        scope: &str,
+        resource_name: &str,
+    ) -> Result<Vec<Binding>> {
+        let cache = self.cache.read().await;
+        let mut all = Vec::new();
+
+        // Always include cluster-scoped bindings
+        if let Some(cluster_bindings) = cache.bindings.get(&("cluster".to_string(), String::new()))
+        {
+            all.extend(cluster_bindings.iter().cloned());
+        }
+
+        if scope == "namespace" || scope == "topic" {
+            let ns = if scope == "topic" {
+                extract_namespace(resource_name)
+            } else {
+                resource_name.to_string()
+            };
+            if !ns.is_empty() {
+                if let Some(ns_bindings) =
+                    cache.bindings.get(&("namespace".to_string(), ns))
+                {
+                    all.extend(ns_bindings.iter().cloned());
+                }
+            }
+        }
+
+        if scope == "topic" && !resource_name.is_empty() {
+            if let Some(topic_bindings) = cache
+                .bindings
+                .get(&("topic".to_string(), resource_name.to_string()))
+            {
+                all.extend(topic_bindings.iter().cloned());
+            }
+        }
+
+        Ok(all)
+    }
+
+    /// List all bindings under a specific scope+resource.
+    pub(crate) async fn list_bindings(
+        &self,
+        scope: &str,
+        resource_name: &str,
+    ) -> Result<Vec<Binding>> {
+        let cache = self.cache.read().await;
+        let key = (scope.to_string(), resource_name.to_string());
+        Ok(cache.bindings.get(&key).cloned().unwrap_or_default())
+    }
+
+    // ── Writes (update store first, then cache) ────────────────────
 
     pub(crate) async fn put_role(&self, role: &Role) -> Result<()> {
         let path = join_path(&[BASE_AUTH_ROLES_PATH, &role.name]);
         let value = serde_json::to_value(role)?;
         self.store.put(&path, value, MetaOptions::None).await?;
+
+        // Cache will be updated by the watcher, but also update eagerly
+        // to avoid a brief window where the just-created role isn't visible.
+        let mut cache = self.cache.write().await;
+        cache.roles.insert(role.name.clone(), role.clone());
         Ok(())
     }
-
-    pub(crate) async fn get_role(&self, role_name: &str) -> Result<Option<Role>> {
-        let path = join_path(&[BASE_AUTH_ROLES_PATH, role_name]);
-        match self.store.get(&path, MetaOptions::None).await? {
-            Some(value) => Ok(Some(serde_json::from_value(value)?)),
-            None => Ok(None),
-        }
-    }
-
-    pub(crate) async fn list_role_names(&self) -> Result<Vec<String>> {
-        Ok(self.store.get_childrens(BASE_AUTH_ROLES_PATH).await?)
-    }
-
-    // ── Bindings ───────────────────────────────────────────────────
-    //
-    // Storage layout:
-    //   /auth/bindings/cluster/{binding_id}          – cluster-scoped
-    //   /auth/bindings/namespace/{ns}/{binding_id}    – namespace-scoped
-    //   /auth/bindings/topic/{topic}/{binding_id}     – topic-scoped
 
     pub(crate) async fn put_binding(&self, binding: &Binding) -> Result<()> {
         let path = self.binding_path(&binding.scope, &binding.resource_name, &binding.id);
         let value = serde_json::to_value(binding)?;
         self.store.put(&path, value, MetaOptions::None).await?;
+
+        // Eager cache update
+        let mut cache = self.cache.write().await;
+        let key = (binding.scope.clone(), binding.resource_name.clone());
+        cache
+            .bindings
+            .entry(key)
+            .or_default()
+            .push(binding.clone());
         Ok(())
     }
 
@@ -59,70 +216,22 @@ impl SecurityResources {
         resource_name: &str,
         binding_id: &str,
     ) -> Result<Option<Binding>> {
-        let path = self.binding_path(scope, resource_name, binding_id);
-        match self.store.get(&path, MetaOptions::None).await? {
-            Some(value) => Ok(Some(serde_json::from_value(value)?)),
-            None => Ok(None),
-        }
+        let cache = self.cache.read().await;
+        let key = (scope.to_string(), resource_name.to_string());
+        Ok(cache
+            .bindings
+            .get(&key)
+            .and_then(|bindings| bindings.iter().find(|b| b.id == binding_id))
+            .cloned())
     }
-
-    /// List all bindings under a specific scope+resource.
-    /// For cluster scope, resource_name is ignored (pass "").
-    pub(crate) async fn list_bindings(
-        &self,
-        scope: &str,
-        resource_name: &str,
-    ) -> Result<Vec<Binding>> {
-        let parent = self.binding_scope_path(scope, resource_name);
-        let ids = self.store.get_childrens(&parent).await?;
-        let mut bindings = Vec::with_capacity(ids.len());
-        for id in ids {
-            let path = join_path(&[&parent, &id]);
-            if let Some(value) = self.store.get(&path, MetaOptions::None).await? {
-                match serde_json::from_value::<Binding>(value) {
-                    Ok(b) => bindings.push(b),
-                    Err(e) => warn!(binding_id = %id, "skipping malformed binding: {}", e),
-                }
-            }
-        }
-        Ok(bindings)
-    }
-
-    /// Collect bindings from all relevant scopes for a given resource.
-    /// For a topic `/ns/topic`, this returns: cluster bindings + namespace bindings for `ns` + topic bindings for the full topic path.
-    /// For a namespace resource, this returns: cluster bindings + namespace bindings.
-    /// For cluster/broker resources, this returns only cluster bindings.
-    pub(crate) async fn list_bindings_for_resource(
-        &self,
-        scope: &str,
-        resource_name: &str,
-    ) -> Result<Vec<Binding>> {
-        let mut all = self.list_bindings("cluster", "").await?;
-
-        if scope == "namespace" || scope == "topic" {
-            // Extract namespace from resource_name: for topics like "/ns/topic", namespace is "ns"
-            let ns = if scope == "topic" {
-                extract_namespace(resource_name)
-            } else {
-                resource_name.to_string()
-            };
-            if !ns.is_empty() {
-                all.extend(self.list_bindings("namespace", &ns).await?);
-            }
-        }
-
-        if scope == "topic" && !resource_name.is_empty() {
-            all.extend(self.list_bindings("topic", resource_name).await?);
-        }
-
-        Ok(all)
-    }
-
-    // ── Deletions ──────────────────────────────────────────────────
 
     pub(crate) async fn delete_role(&self, role_name: &str) -> Result<()> {
         let path = join_path(&[BASE_AUTH_ROLES_PATH, role_name]);
         self.store.delete(&path).await?;
+
+        // Eager cache removal
+        let mut cache = self.cache.write().await;
+        cache.roles.remove(role_name);
         Ok(())
     }
 
@@ -134,10 +243,94 @@ impl SecurityResources {
     ) -> Result<()> {
         let path = self.binding_path(scope, resource_name, binding_id);
         self.store.delete(&path).await?;
+
+        // Eager cache removal
+        let mut cache = self.cache.write().await;
+        let key = (scope.to_string(), resource_name.to_string());
+        if let Some(bindings) = cache.bindings.get_mut(&key) {
+            bindings.retain(|b| b.id != binding_id);
+            if bindings.is_empty() {
+                cache.bindings.remove(&key);
+            }
+        }
         Ok(())
     }
 
-    // ── Internal helpers ───────────────────────────────────────────
+    // ── Internal: store reads for cache loading ────────────────────
+
+    async fn load_all_roles_from_store(&self) -> Result<HashMap<String, Role>> {
+        let keys = self.store.get_childrens(BASE_AUTH_ROLES_PATH).await?;
+        let mut roles = HashMap::with_capacity(keys.len());
+        for key in keys {
+            let path = join_path(&[BASE_AUTH_ROLES_PATH, &key]);
+            if let Some(value) = self.store.get(&path, MetaOptions::None).await? {
+                match serde_json::from_value::<Role>(value) {
+                    Ok(role) => {
+                        roles.insert(role.name.clone(), role);
+                    }
+                    Err(e) => warn!(role_key = %key, "skipping malformed role: {}", e),
+                }
+            }
+        }
+        Ok(roles)
+    }
+
+    async fn load_all_bindings_from_store(
+        &self,
+    ) -> Result<HashMap<(String, String), Vec<Binding>>> {
+        let mut bindings: HashMap<(String, String), Vec<Binding>> = HashMap::new();
+
+        // Load cluster-scoped bindings
+        self.load_bindings_for_scope(&mut bindings, "cluster", "")
+            .await?;
+
+        // Load namespace-scoped bindings — enumerate namespaces under /auth/bindings/namespace/
+        let ns_path = join_path(&[BASE_AUTH_BINDINGS_PATH, "namespace"]);
+        let namespaces = self.store.get_childrens(&ns_path).await.unwrap_or_default();
+        for ns in &namespaces {
+            self.load_bindings_for_scope(&mut bindings, "namespace", ns)
+                .await?;
+        }
+
+        // Load topic-scoped bindings — enumerate topics under /auth/bindings/topic/
+        let topic_path = join_path(&[BASE_AUTH_BINDINGS_PATH, "topic"]);
+        let topics = self
+            .store
+            .get_childrens(&topic_path)
+            .await
+            .unwrap_or_default();
+        for topic in &topics {
+            self.load_bindings_for_scope(&mut bindings, "topic", topic)
+                .await?;
+        }
+
+        Ok(bindings)
+    }
+
+    async fn load_bindings_for_scope(
+        &self,
+        bindings: &mut HashMap<(String, String), Vec<Binding>>,
+        scope: &str,
+        resource_name: &str,
+    ) -> Result<()> {
+        let parent = self.binding_scope_path(scope, resource_name);
+        let ids = self.store.get_childrens(&parent).await.unwrap_or_default();
+        for id in ids {
+            let path = join_path(&[&parent, &id]);
+            if let Some(value) = self.store.get(&path, MetaOptions::None).await? {
+                match serde_json::from_value::<Binding>(value) {
+                    Ok(b) => {
+                        let key = (scope.to_string(), resource_name.to_string());
+                        bindings.entry(key).or_default().push(b);
+                    }
+                    Err(e) => warn!(binding_id = %id, "skipping malformed binding: {}", e),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── Internal: path helpers ─────────────────────────────────────
 
     fn binding_scope_path(&self, scope: &str, resource_name: &str) -> String {
         match scope {
@@ -150,6 +343,36 @@ impl SecurityResources {
         let parent = self.binding_scope_path(scope, resource_name);
         join_path(&[&parent, binding_id])
     }
+}
+
+// ── Module-level helpers ───────────────────────────────────────────────────
+
+/// Full reload of the cache from the store.
+/// Called by the background watcher on any `/auth/` mutation.
+async fn reload_cache(store: &MetadataStorage, cache: &Arc<RwLock<AuthzCache>>) -> Result<()> {
+    // Build a temporary SecurityResources to reuse the load logic.
+    // This is cheap — SecurityResources is just two Arcs.
+    let tmp = SecurityResources {
+        store: store.clone(),
+        cache: cache.clone(),
+    };
+
+    let roles = tmp.load_all_roles_from_store().await?;
+    let bindings = tmp.load_all_bindings_from_store().await?;
+
+    let role_count = roles.len();
+    let binding_count: usize = bindings.values().map(|v| v.len()).sum();
+
+    let mut c = cache.write().await;
+    c.roles = roles;
+    c.bindings = bindings;
+
+    debug!(
+        roles = role_count,
+        bindings = binding_count,
+        "authorization cache reloaded"
+    );
+    Ok(())
 }
 
 /// Extract namespace from a topic path like "/namespace/topic_name" → "namespace"
