@@ -33,6 +33,7 @@ pub async fn start_cluster() -> (RaftNode, TempDir) {
         raft_addr: addr,
         advertised_addr: None,
         ttl_check_interval: Duration::from_millis(200),
+        tls: None,
     })
     .await
     .expect("start raft node");
