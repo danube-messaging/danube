@@ -1,0 +1,91 @@
+# Danube Broker — Secure Configuration (TLS + JWT + RBAC)
+#
+# This configuration enables full security:
+#   - TLS for client connections
+#   - mTLS for inter-broker and Raft consensus
+#   - JWT-based client authentication
+#   - RBAC authorization with default-deny semantics
+#
+# For development/testing without auth, use config/danube_broker.yml (mode: none).
+
+cluster_name: "MY_CLUSTER"
+
+broker:
+  host: "0.0.0.0"
+  ports:
+    client: 6650
+    admin: 50051
+    raft: 7650
+    prometheus: 9040
+
+meta_store:
+  data_dir: "./danube-data/raft"
+
+bootstrap_namespaces:
+  - "default"
+
+auto_create_topics: true
+
+# Security Configuration — Full TLS + JWT + RBAC
+auth:
+  mode: tls
+
+  # TLS certificates — shared by all secure connections:
+  #   - Client-facing gRPC (port 6650): server TLS
+  #   - Admin gRPC: server TLS
+  #   - Replicator (inter-broker DLQ): mutual TLS
+  #   - Raft consensus (port 7650): mutual TLS
+  tls:
+    cert_file: "./cert/server-cert.pem"
+    key_file: "./cert/server-key.pem"
+    ca_file: "./cert/ca-cert.pem"
+
+  # JWT — client token validation
+  # Generate tokens: danube-admin security tokens create --subject my-app --secret-key <key>
+  jwt:
+    secret_key: "your-secret-key"
+    issuer: "danube-auth"
+    expiration_time: 3600
+
+  # Super-admin subjects — JWT subjects that bypass RBAC entirely.
+  # Used for initial cluster bootstrap and break-glass scenarios.
+  # 1. Add subject here (e.g. "admin")
+  # 2. Create token: danube-admin security tokens create --subject admin --secret-key <key>
+  # 3. Use token to create proper roles & bindings via the admin API
+  # 4. Optionally remove from this list once RBAC is configured
+  super_admins:
+    - "admin"
+
+load_manager:
+  assignment_strategy: "fair"
+  load_report_interval_seconds: 30
+  rebalancing:
+    enabled: false
+    aggressiveness: "balanced"
+    check_interval_seconds: 300
+    max_moves_per_hour: 10
+    cooldown_seconds: 60
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 300
+    blacklist_topics: []
+
+storage:
+  mode: local
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
+  wal:
+    rotation:
+      max_bytes: 536870912
+
+policies:
+  max_producers_per_topic: 0
+  max_subscriptions_per_topic: 0
+  max_consumers_per_topic: 0
+  max_consumers_per_subscription: 0
+  max_publish_rate: 0
+  max_subscription_dispatch_rate: 0
+  max_message_size: 10485760

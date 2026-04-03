@@ -3,7 +3,6 @@ use crate::resources::SecurityResources;
 use crate::security::authn::{AuthenticationMethod, Principal, SecurityContext};
 use crate::security::authz::{enforce_authorization, Binding, Permission, Resource, Role};
 use danube_core::metadata::MemoryStore;
-use std::sync::Arc;
 
 async fn setup_security() -> SecurityResources {
     let mem = MemoryStore::new()
@@ -18,10 +17,10 @@ async fn setup_security() -> SecurityResources {
 }
 
 /// Tests that `BrokerInternal` principals automatically bypass all RBAC checks.
-/// 
-/// **Objective:** Ensure cluster-internal components (like replicators or background tasks) 
+///
+/// **Objective:** Ensure cluster-internal components (like replicators or background tasks)
 /// authenticated via mTLS internal mapping (`BrokerInternal`) are never blocked by tenant RBAC policies.
-/// 
+///
 /// **Expected Outcome:** The request allows access `Ok(())` unconditionally, despite no
 /// roles or bindings existing in the empty store.
 #[tokio::test]
@@ -89,13 +88,14 @@ async fn test_authorize_super_admin() {
     );
 }
 
-/// Tests that entirely unauthenticated requests (`Anonymous`) are always rejected
-/// when the server operates in secure mode.
+/// Tests that `Anonymous` principals (auth mode: none) are allowed through
+/// without RBAC enforcement.
 ///
-/// **Objective:** Prevent default-allow access leaks for endpoints that bypass the 
-/// authentication interceptor, guaranteeing strict perimeter lockdown.
+/// **Objective:** When the broker runs with `auth.mode: none`, the interceptor
+/// creates an `Anonymous` security context. Authorization must allow these
+/// requests unconditionally so that unauthenticated dev/test clients work.
 ///
-/// **Expected Outcome:** The request returns `Err(PermissionDenied)`.
+/// **Expected Outcome:** The request returns `Ok(())`.
 #[tokio::test]
 async fn test_authorize_anonymous() {
     let security = setup_security().await;
@@ -110,7 +110,7 @@ async fn test_authorize_anonymous() {
     )
     .await;
 
-    assert!(result.is_err(), "Anonymous should always be denied");
+    assert!(result.is_ok(), "Anonymous (auth disabled) should be allowed");
 }
 
 /// Tests the "Default Deny" behavior of the authorization engine.
@@ -205,8 +205,8 @@ async fn test_authorize_allow_matching_binding() {
 /// Tests that having a valid binding is insufficient if the associated role lacks
 /// the specific permission requested.
 ///
-/// **Objective:** Validate fine-grained role enforcement. The user (`bob`) has a binding 
-/// on the requested topic, but his role only grants `Consume` and `Lookup`. 
+/// **Objective:** Validate fine-grained role enforcement. The user (`bob`) has a binding
+/// on the requested topic, but his role only grants `Consume` and `Lookup`.
 /// He attempts to `Produce`.
 ///
 /// **Expected Outcome:** The request returns `Err(PermissionDenied)`.
@@ -258,7 +258,7 @@ async fn test_authorize_deny_insufficient_binding() {
 
 /// Tests the hierarchical scope resolution (Namespace-level binding overriding Topic-level checks).
 ///
-/// **Objective:** Verify that bindings at a broader scope implicitly grant access to 
+/// **Objective:** Verify that bindings at a broader scope implicitly grant access to
 /// all child resources. The user (`carol`) holds a `namespace` scoped binding for `/default`.
 /// She requests access to a specific topic (`/default/topic1`) inside that namespace.
 ///

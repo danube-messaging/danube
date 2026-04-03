@@ -10,31 +10,10 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::DanubeClient;
-use rustls::crypto;
-use tokio::sync::OnceCell;
 use tokio::time::{sleep, timeout, Duration};
 
-static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
-
-async fn setup_client() -> Result<DanubeClient> {
-    CRYPTO_PROVIDER
-        .get_or_init(|| async {
-            let crypto_provider = crypto::ring::default_provider();
-            crypto_provider
-                .install_default()
-                .expect("Failed to install default CryptoProvider");
-        })
-        .await;
-
-    let client = DanubeClient::builder()
-        .service_url("https://127.0.0.1:6650")
-        .with_tls("../cert/ca-cert.pem")?
-        .build()
-        .await?;
-
-    Ok(client)
-}
+#[path = "test_utils.rs"]
+mod test_utils;
 
 // Admin not needed for this test variant
 
@@ -53,7 +32,7 @@ async fn setup_client() -> Result<DanubeClient> {
 /// - Confirms the broker/client surface correct topic identifiers in message IDs and that partitioned
 ///   producers dispatch across all partitions so consumers can observe coverage.
 async fn partitioning_validation() -> Result<()> {
-    let danube_client = setup_client().await?;
+    let danube_client = test_utils::setup_client().await?;
 
     // Non-partitioned topic via producer/consumer and validate topic_name in messages
     let np_topic = "/default/partitioning_validation_np";

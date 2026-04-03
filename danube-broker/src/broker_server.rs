@@ -73,41 +73,33 @@ impl DanubeServerImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let server_builder = if self.auth.mode != AuthMode::None {
-            let auth = self.auth.clone();
-            let interceptor = move |request| authenticate_request(request, &auth);
+        // Always attach the auth interceptor. When mode=none it creates Anonymous
+        // contexts that the authorization engine allows unconditionally.
+        let auth = self.auth.clone();
+        let interceptor = move |request| authenticate_request(request, &auth);
 
-            server_builder
-                .add_service(InterceptedService::new(
-                    producer_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    consumer_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    discovery_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    health_check_service,
-                    interceptor.clone(),
-                ))
-                .add_service(auth_service)
-                .add_service(InterceptedService::new(
-                    schema_registry_service,
-                    interceptor,
-                ))
-        } else {
-            server_builder
-                .add_service(producer_service)
-                .add_service(consumer_service)
-                .add_service(discovery_service)
-                .add_service(health_check_service)
-                .add_service(auth_service)
-                .add_service(schema_registry_service)
-        };
+        let server_builder = server_builder
+            .add_service(InterceptedService::new(
+                producer_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                consumer_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                discovery_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                health_check_service,
+                interceptor.clone(),
+            ))
+            .add_service(auth_service)
+            .add_service(InterceptedService::new(
+                schema_registry_service,
+                interceptor,
+            ));
 
         let server = server_builder.serve(socket_addr);
 

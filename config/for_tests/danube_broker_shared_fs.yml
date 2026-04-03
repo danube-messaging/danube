@@ -17,13 +17,13 @@ bootstrap_namespaces:
 auto_create_topics: true
 
 auth:
-  mode: tls
-  tls:
-    cert_file: "./cert/server-cert.pem"
-    key_file: "./cert/server-key.pem"
-    ca_file: "./cert/ca-cert.pem"
-  super_admins:
-    - "admin"
+  mode: none
+  # tls:
+  #   cert_file: "./cert/server-cert.pem"
+  #   key_file: "./cert/server-key.pem"
+  #   ca_file: "./cert/ca-cert.pem"
+  # super_admins:
+  #   - "admin"
 
 load_manager:
   assignment_strategy: "fair"

@@ -152,9 +152,10 @@ async fn authorize(
         ));
     }
 
-    // Anonymous — deny when we get here (auth-disabled mode never calls enforce)
+    // Anonymous — auth is disabled (mode: none). The interceptor only creates Anonymous
+    // contexts when is_auth_disabled() is true, so allow unconditionally.
     if matches!(principal, Principal::Anonymous) {
-        return AuthorizationDecision::deny("anonymous principals are not authorized");
+        return AuthorizationDecision::allow("auth disabled (mode: none)");
     }
 
     // Resolve scope for binding lookup

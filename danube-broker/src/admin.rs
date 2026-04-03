@@ -93,44 +93,36 @@ impl DanubeAdminImpl {
         let security_admin_service = SecurityAdminServer::new(self.clone());
         let topic_admin_service = TopicAdminServer::new(self.clone());
 
-        let server_builder = if self.auth.mode != crate::security::config::AuthMode::None {
-            let auth = self.auth.clone();
-            let interceptor = move |request| authenticate_request(request, &auth);
+        // Always attach the auth interceptor. When mode=none it creates Anonymous
+        // contexts that the authorization engine allows unconditionally.
+        let auth = self.auth.clone();
+        let interceptor = move |request| authenticate_request(request, &auth);
 
-            server_builder
-                .add_service(InterceptedService::new(
-                    broker_admin_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    cluster_admin_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    namespace_admin_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    security_admin_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    topic_admin_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    schema_registry_service,
-                    interceptor,
-                ))
-        } else {
-            server_builder
-                .add_service(broker_admin_service)
-                .add_service(cluster_admin_service)
-                .add_service(namespace_admin_service)
-                .add_service(security_admin_service)
-                .add_service(topic_admin_service)
-                .add_service(schema_registry_service)
-        };
+        let server_builder = server_builder
+            .add_service(InterceptedService::new(
+                broker_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                cluster_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                namespace_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                security_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                topic_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                schema_registry_service,
+                interceptor,
+            ));
 
         let server = server_builder.serve(socket_addr);
 
