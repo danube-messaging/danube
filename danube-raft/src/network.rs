@@ -33,7 +33,15 @@ type Node = BasicNode;
 
 /// Factory that creates gRPC connections to peer Raft nodes.
 #[derive(Clone)]
-pub struct DanubeNetworkFactory;
+pub struct DanubeNetworkFactory {
+    tls: Option<crate::node::RaftTlsConfig>,
+}
+
+impl DanubeNetworkFactory {
+    pub fn new(tls: Option<crate::node::RaftTlsConfig>) -> Self {
+        Self { tls }
+    }
+}
 
 impl RaftNetworkFactory<TypeConfig> for DanubeNetworkFactory {
     type Network = DanubeNetwork;
@@ -44,6 +52,7 @@ impl RaftNetworkFactory<TypeConfig> for DanubeNetworkFactory {
             addr: node.addr.clone(),
             client: None,
             connected: false,
+            tls: self.tls.clone(),
         }
     }
 }
@@ -61,17 +70,36 @@ pub struct DanubeNetwork {
     /// Used to log state transitions once (unreachable / reconnected)
     /// instead of flooding logs on every failed RPC.
     connected: bool,
+    tls: Option<crate::node::RaftTlsConfig>,
 }
 
 impl DanubeNetwork {
     /// Lazily connect to the peer.
     async fn ensure_client(&mut self) -> Result<&mut RaftTransportClient<Channel>, tonic::Status> {
         if self.client.is_none() {
-            let endpoint = format!("http://{}", self.addr);
-            let client = RaftTransportClient::connect(endpoint)
-                .await
-                .map_err(|e| tonic::Status::unavailable(format!("connect failed: {}", e)))?;
-            self.client = Some(client);
+            let channel = if let Some(ref tls) = self.tls {
+                use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
+                let endpoint_url = format!("https://{}", self.addr);
+                let tls_config = ClientTlsConfig::new()
+                    .ca_certificate(Certificate::from_pem(&tls.ca_pem))
+                    .identity(Identity::from_pem(&tls.cert_pem, &tls.key_pem));
+                Endpoint::from_shared(endpoint_url)
+                    .map_err(|e| tonic::Status::unavailable(format!("invalid endpoint: {}", e)))?
+                    .tls_config(tls_config)
+                    .map_err(|e| tonic::Status::unavailable(format!("tls config failed: {}", e)))?
+                    .connect()
+                    .await
+                    .map_err(|e| tonic::Status::unavailable(format!("connect failed: {}", e)))?
+            } else {
+                use tonic::transport::Endpoint;
+                let endpoint_url = format!("http://{}", self.addr);
+                Endpoint::from_shared(endpoint_url)
+                    .map_err(|e| tonic::Status::unavailable(format!("invalid endpoint: {}", e)))?
+                    .connect()
+                    .await
+                    .map_err(|e| tonic::Status::unavailable(format!("connect failed: {}", e)))?
+            };
+            self.client = Some(RaftTransportClient::new(channel));
         }
         Ok(self.client.as_mut().unwrap())
     }

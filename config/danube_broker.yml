@@ -47,25 +47,28 @@ auto_create_topics: true
 # admin_tls: false
 
 # Security Configuration
+# mode: none — no authentication, no encryption (development/testing only)
+# mode: tls  — full security: TLS + JWT for clients, mTLS for inter-broker & Raft
 auth:
-  mode: tls # Options: none, tls
+  mode: tls
+
+  # TLS certificates — shared by all secure connections:
+  #   - Client-facing gRPC (port 6650): server TLS
+  #   - Admin gRPC: server TLS
+  #   - Replicator (inter-broker DLQ): mutual TLS
+  #   - Raft consensus (port 7650): mutual TLS
   tls:
     cert_file: "./cert/server-cert.pem"
     key_file: "./cert/server-key.pem"
     ca_file: "./cert/ca-cert.pem"
-    verify_client: false
-  # JWT configuration — used for validating client tokens.
-  # Generate tokens with: danube-admin security tokens create --subject my-app --secret-key <this-key>
+
+  # JWT — client token validation
+  # Generate tokens: danube-admin security tokens create --subject my-app --secret-key <key>
   jwt:
     secret_key: "your-secret-key"
     issuer: "danube-auth"
     # Expiration for broker-issued tokens (token refresh). Client tokens set their own TTL.
     expiration_time: 3600
-  internal:
-    mtls_required: false
-    map_peer_identity_to_broker_internal: true
-    secure_replicator: true
-    secure_raft_transport: true
 
 # Load Manager Configuration (Automated Proactive Rebalancing)
 load_manager:

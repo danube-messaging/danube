@@ -22,7 +22,6 @@ auth:
     cert_file: "./cert/server-cert.pem"
     key_file: "./cert/server-key.pem"
     ca_file: "./cert/ca-cert.pem"
-    verify_client: false
 
 load_manager:
   assignment_strategy: "fair"

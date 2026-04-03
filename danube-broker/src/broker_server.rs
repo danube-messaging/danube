@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
-use tonic::transport::{server::ServerTlsConfig, Certificate, Identity};
+use tonic::transport::{server::ServerTlsConfig, Identity};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -123,16 +123,8 @@ impl DanubeServerImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        let mut tls = ServerTlsConfig::new().identity(identity);
-
-        if tls_config.verify_client {
-            if let Ok(ca_pem) = tokio::fs::read(&tls_config.ca_file).await {
-                let ca = Certificate::from_pem(ca_pem);
-                tls = tls.client_ca_root(ca);
-            } else {
-                warn!(ca_file = %tls_config.ca_file, "verify_client enabled but unable to read CA file");
-            }
-        }
+        // Client port uses server-only TLS. Clients authenticate via JWT, not client certs.
+        let tls = ServerTlsConfig::new().identity(identity);
 
         server.tls_config(tls).unwrap()
     }

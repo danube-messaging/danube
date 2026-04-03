@@ -456,22 +456,18 @@ impl DanubeService {
                 .service_url(&broker_client_url)
                 .with_internal_broker(format!("broker/{}", self.broker_id));
 
-            // When the broker has TLS enabled, configure the internal client with
-            // the same CA certificate so it can connect to itself (or peers).
+            // When TLS is enabled, the replicator uses mTLS (inter-broker communication).
+            // The client presents broker certs for mutual authentication.
             if let Some(ref tls_config) = self.service_config.auth.tls {
-                builder = match if tls_config.verify_client {
-                    builder.with_mtls(
-                        &tls_config.ca_file,
-                        &tls_config.cert_file,
-                        &tls_config.key_file,
-                    )
-                } else {
-                    builder.with_tls(&tls_config.ca_file)
-                } {
+                builder = match builder.with_mtls(
+                    &tls_config.ca_file,
+                    &tls_config.cert_file,
+                    &tls_config.key_file,
+                ) {
                     Ok(b) => b,
                     Err(err) => {
                         return Err(anyhow::anyhow!(err)).context(format!(
-                            "Failed to configure TLS for internal broker client (ca_file={})",
+                            "Failed to configure mTLS for internal broker client (ca_file={})",
                             tls_config.ca_file
                         ));
                     }

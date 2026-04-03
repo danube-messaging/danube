@@ -20,7 +20,7 @@ use danube_raft::Raft;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tonic::service::interceptor::InterceptedService;
-use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
 #[derive(Clone)]
@@ -153,18 +153,8 @@ impl DanubeAdminImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        // Base TLS config with server identity
-        let mut tls = ServerTlsConfig::new().identity(identity);
-
-        // If verify_client is enabled, load CA and require client auth
-        if tls_config.verify_client {
-            if let Ok(ca_pem) = tokio::fs::read(&tls_config.ca_file).await {
-                let ca = Certificate::from_pem(ca_pem);
-                tls = tls.client_ca_root(ca);
-            } else {
-                warn!(ca_file = %tls_config.ca_file, "verify_client enabled but unable to read CA file");
-            }
-        }
+        // Admin port uses server-only TLS. Admins authenticate via JWT, not client certs.
+        let tls = ServerTlsConfig::new().identity(identity);
 
         server.tls_config(tls).unwrap()
     }

@@ -14,6 +14,6 @@ pub mod state_machine;
 pub mod ttl_worker;
 pub mod typ;
 
-pub use node::BootstrapResult;
+pub use node::{BootstrapResult, RaftTlsConfig};
 /// Re-export openraft types needed by downstream crates (e.g. danube-broker).
 pub use openraft::{BasicNode, Raft};

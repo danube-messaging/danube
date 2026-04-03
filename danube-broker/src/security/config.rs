@@ -1,19 +1,19 @@
 use serde::{Deserialize, Serialize};
 
-fn default_true() -> bool {
-    true
-}
-
+/// TLS certificate material — shared by all secure connections:
+/// - Client-facing gRPC (port 6650): server TLS
+/// - Admin gRPC: server TLS
+/// - Replicator (inter-broker DLQ): mutual TLS
+/// - Raft consensus (port 7650): mutual TLS
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct TlsConfig {
     pub(crate) cert_file: String,
     pub(crate) key_file: String,
     pub(crate) ca_file: String,
-    pub(crate) verify_client: bool,
 }
 
-/// JWT configuration — used for validating client tokens and (optionally)
-/// issuing broker-minted short-lived tokens via the AuthService RPC.
+/// JWT configuration — used for validating client tokens.
+/// Generate tokens with: `danube-admin security tokens create --subject my-app --secret-key <key>`
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct JwtConfig {
     pub(crate) secret_key: String,
@@ -21,45 +21,10 @@ pub(crate) struct JwtConfig {
     pub(crate) expiration_time: u64,
 }
 
-/// Service account auth settings (TLS requirements).
-/// Credentials are no longer stored in config — use `danube-admin security tokens create`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct ServiceAccountAuthConfig {
-    #[serde(default = "default_true")]
-    pub(crate) enabled: bool,
-    #[serde(default)]
-    pub(crate) require_tls: bool,
-}
-
-impl Default for ServiceAccountAuthConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            require_tls: false,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub(crate) struct ClientAuthConfig {
-    #[serde(default)]
-    pub(crate) service_accounts: Option<ServiceAccountAuthConfig>,
-    #[serde(default)]
-    pub(crate) jwt: Option<JwtConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub(crate) struct InternalAuthConfig {
-    #[serde(default)]
-    pub(crate) mtls_required: bool,
-    #[serde(default)]
-    pub(crate) map_peer_identity_to_broker_internal: bool,
-    #[serde(default)]
-    pub(crate) secure_replicator: bool,
-    #[serde(default)]
-    pub(crate) secure_raft_transport: bool,
-}
-
+/// Master security mode switch.
+///
+/// - `None` — no authentication, no encryption (development only)
+/// - `Tls`  — full security: TLS + JWT for clients, mTLS for inter-broker
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AuthMode {
@@ -69,57 +34,57 @@ pub(crate) enum AuthMode {
 
 impl Default for AuthMode {
     fn default() -> Self {
-        AuthMode::Tls
+        AuthMode::None
     }
 }
 
+/// Top-level security configuration.
+///
+/// When `mode: tls`:
+/// - Client ports use TLS (server cert) + JWT (Bearer token)
+/// - Replicator uses mTLS (same certs) + internal broker header
+/// - Raft transport uses mTLS (same certs, both sides verify)
+///
+/// When `mode: none`:
+/// - All connections are plain HTTP, no authentication
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct AuthConfig {
     #[serde(default)]
     pub(crate) mode: AuthMode,
     pub(crate) tls: Option<TlsConfig>,
-    /// Top-level JWT config (preferred). Falls back to clients.jwt for backward compat.
     #[serde(default)]
     pub(crate) jwt: Option<JwtConfig>,
-    #[serde(default)]
-    pub(crate) clients: Option<ClientAuthConfig>,
-    #[serde(default)]
-    pub(crate) internal: Option<InternalAuthConfig>,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            mode: AuthMode::Tls,
+            mode: AuthMode::None,
             tls: None,
             jwt: None,
-            clients: None,
-            internal: None,
         }
     }
 }
 
 impl AuthConfig {
+    /// Returns true when security is completely disabled (mode: none).
     pub(crate) fn is_auth_disabled(&self) -> bool {
         self.mode == AuthMode::None
     }
 
-    /// Get the JWT config, checking top-level `jwt` first, then `clients.jwt` for backward compat.
-    pub(crate) fn jwt_config(&self) -> Option<JwtConfig> {
-        self.jwt
-            .clone()
-            .or_else(|| {
-                self.clients
-                    .as_ref()
-                    .and_then(|clients| clients.jwt.as_ref())
-                    .cloned()
-            })
+    /// Returns true when full security is enabled (mode: tls).
+    pub(crate) fn is_tls_enabled(&self) -> bool {
+        self.mode == AuthMode::Tls && self.tls.is_some()
     }
 
+    /// Get the JWT config.
+    pub(crate) fn jwt_config(&self) -> Option<JwtConfig> {
+        self.jwt.clone()
+    }
+
+    /// Whether to map the `x-danube-internal-broker` header to `Principal::BrokerInternal`.
+    /// Always true when security is enabled — inter-broker communication is trusted.
     pub(crate) fn map_internal_broker_identity(&self) -> bool {
-        self.internal
-            .as_ref()
-            .map(|internal| internal.map_peer_identity_to_broker_internal)
-            .unwrap_or(false)
+        !self.is_auth_disabled()
     }
 }

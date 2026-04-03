@@ -157,8 +157,6 @@ impl ServiceConfiguration {
                 mode: AuthMode::None,
                 tls: None,
                 jwt: None,
-                clients: None,
-                internal: None,
             },
             admin_tls: false,
             load_manager: Some(LoadManagerConfig {

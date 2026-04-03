@@ -14,7 +14,7 @@ use std::time::Duration;
 use rand::Rng;
 
 use openraft::{BasicNode, Config, Raft};
-use tonic::transport::{Endpoint, Server};
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity, Server, ServerTlsConfig};
 use tracing::{info, warn};
 
 use danube_core::raft_proto::raft_transport_client::RaftTransportClient;
@@ -43,6 +43,15 @@ pub enum BootstrapResult {
     JoinExisting,
 }
 
+/// TLS material for Raft transport, passed from the broker layer.
+/// When present, both server and client use mutual TLS.
+#[derive(Clone)]
+pub struct RaftTlsConfig {
+    pub cert_pem: Vec<u8>,
+    pub key_pem: Vec<u8>,
+    pub ca_pem: Vec<u8>,
+}
+
 /// Configuration for starting a Raft node.
 pub struct RaftNodeConfig {
     /// Directory for redb log store and node metadata.
@@ -55,6 +64,8 @@ pub struct RaftNodeConfig {
     pub advertised_addr: Option<String>,
     /// TTL expiration check interval.
     pub ttl_check_interval: Duration,
+    /// Optional mTLS config. When set, Raft transport uses mutual TLS.
+    pub tls: Option<RaftTlsConfig>,
 }
 
 /// A running Raft node with all background tasks.
@@ -70,6 +81,8 @@ pub struct RaftNode {
     /// True if the node_id file already existed on disk (restart, not first boot).
     /// Used by `bootstrap_cluster` to skip re-initialization.
     node_id_existed: bool,
+    /// TLS material for Raft transport (used by bootstrap seed discovery).
+    tls: Option<RaftTlsConfig>,
     /// gRPC server join handle.
     _grpc_handle: tokio::task::JoinHandle<()>,
     /// TTL worker join handle.
@@ -135,7 +148,9 @@ impl RaftNode {
         let log_store = RedbLogStore::new(&db_path)?;
 
         // 4. Create Raft instance (takes ownership of SM)
-        let raft = Raft::new(node_id, raft_config, DanubeNetworkFactory, log_store, sm).await?;
+        let tls_config = cfg.tls.clone();
+        let network_factory = DanubeNetworkFactory::new(tls_config.clone());
+        let raft = Raft::new(node_id, raft_config, network_factory, log_store, sm).await?;
 
         // 5. Start gRPC server for Raft transport
         let advertised_addr = cfg
@@ -144,9 +159,26 @@ impl RaftNode {
             .unwrap_or_else(|| cfg.raft_addr.to_string());
         let handler = RaftTransportHandler::new(raft.clone(), node_id, advertised_addr.clone());
         let grpc_addr = cfg.raft_addr;
+        let tls_for_server = cfg.tls.clone();
         let grpc_handle = tokio::spawn(async move {
-            info!(%grpc_addr, "starting Raft gRPC transport");
-            if let Err(e) = Server::builder()
+            let mut server = Server::builder();
+
+            // Configure mTLS if TLS material is provided
+            if let Some(ref tls) = tls_for_server {
+                let identity = Identity::from_pem(&tls.cert_pem, &tls.key_pem);
+                let ca = Certificate::from_pem(&tls.ca_pem);
+                let tls_config = ServerTlsConfig::new()
+                    .identity(identity)
+                    .client_ca_root(ca);  // Require client certs (mutual TLS)
+
+                server = server.tls_config(tls_config)
+                    .expect("failed to configure Raft server TLS");
+                info!(%grpc_addr, "starting Raft gRPC transport (mTLS)");
+            } else {
+                info!(%grpc_addr, "starting Raft gRPC transport (plain)");
+            }
+
+            if let Err(e) = server
                 .add_service(RaftTransportServer::new(handler))
                 .serve(grpc_addr)
                 .await
@@ -159,8 +191,8 @@ impl RaftNode {
         let ttl_handle =
             ttl_worker::spawn_ttl_worker(raft.clone(), shared_data.clone(), cfg.ttl_check_interval);
 
-        // 7. Build the MetadataStore wrapper
-        let store = RaftMetadataStore::new(raft.clone(), shared_data);
+        // 7. Build the MetadataStore wrapper (with TLS for leader-forwarding)
+        let store = RaftMetadataStore::new(raft.clone(), shared_data, cfg.tls.clone());
 
         // 8. Spawn metrics watcher for clean lifecycle logging
         let metrics_handle = spawn_metrics_watcher(raft.metrics(), node_id);
@@ -173,6 +205,7 @@ impl RaftNode {
             node_id,
             advertised_addr,
             node_id_existed,
+            tls: tls_config,
             _grpc_handle: grpc_handle,
             _ttl_handle: ttl_handle,
             _metrics_handle: metrics_handle,
@@ -311,11 +344,12 @@ impl RaftNode {
                 continue;
             }
 
-            let endpoint_url = format!("http://{}", seed_addr);
+            let scheme = if self.tls.is_some() { "https" } else { "http" };
+            let endpoint_url = format!("{}://{}", scheme, seed_addr);
             let mut attempts = 0u32;
             loop {
                 attempts += 1;
-                match Self::discover_peer(&endpoint_url).await {
+                match Self::discover_peer(&endpoint_url, &self.tls).await {
                     Ok((peer_id, peer_addr, has_leader)) => {
                         info!(
                             peer_node_id = peer_id,
@@ -400,11 +434,21 @@ impl RaftNode {
     }
 
     /// Contact a peer's Raft transport to get its node_id, raft_addr, and leader status.
-    async fn discover_peer(endpoint_url: &str) -> anyhow::Result<(u64, String, bool)> {
-        let channel = Endpoint::from_shared(endpoint_url.to_string())?
-            .connect_timeout(Duration::from_secs(3))
-            .connect()
-            .await?;
+    async fn discover_peer(
+        endpoint_url: &str,
+        tls: &Option<RaftTlsConfig>,
+    ) -> anyhow::Result<(u64, String, bool)> {
+        let mut endpoint = Endpoint::from_shared(endpoint_url.to_string())?
+            .connect_timeout(Duration::from_secs(3));
+
+        if let Some(ref tls) = tls {
+            let tls_config = ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(&tls.ca_pem))
+                .identity(Identity::from_pem(&tls.cert_pem, &tls.key_pem));
+            endpoint = endpoint.tls_config(tls_config)?;
+        }
+
+        let channel = endpoint.connect().await?;
         let mut client = RaftTransportClient::new(channel);
         let resp = client
             .get_node_info(danube_core::raft_proto::Empty {})
