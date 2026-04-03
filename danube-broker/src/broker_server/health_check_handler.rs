@@ -4,7 +4,7 @@ use danube_core::proto::{
     health_check_server::HealthCheck, HealthCheckRequest, HealthCheckResponse,
 };
 
-use crate::security::context::get_security_context;
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
 

@@ -1,7 +1,6 @@
 use crate::admin::DanubeAdminImpl;
-use crate::security::authz::authorizer::enforce_authorization;
-use crate::security::authz::types::{Permission, Resource};
-use crate::security::context::get_security_context;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
     BrokerListResponse, BrokerLoadInfo, BrokerResponse, ClusterBalanceRequest,

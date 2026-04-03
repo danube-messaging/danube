@@ -5,8 +5,9 @@ mod security_admin;
 mod topics_admin;
 
 use crate::{
-    auth::AuthConfig, broker_server::SchemaRegistryService, broker_service::BrokerService,
-    danube_service::LoadManager, resources::Resources, security::authn::interceptor::authenticate_request,
+    broker_server::SchemaRegistryService, broker_service::BrokerService,
+    danube_service::LoadManager, resources::Resources, security::authn::authenticate_request,
+    security::config::AuthConfig,
 };
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
@@ -92,7 +93,7 @@ impl DanubeAdminImpl {
         let security_admin_service = SecurityAdminServer::new(self.clone());
         let topic_admin_service = TopicAdminServer::new(self.clone());
 
-        let server_builder = if self.auth.mode != crate::auth::AuthMode::None {
+        let server_builder = if self.auth.mode != crate::security::config::AuthMode::None {
             let auth = self.auth.clone();
             let interceptor = move |request| authenticate_request(request, &auth);
 

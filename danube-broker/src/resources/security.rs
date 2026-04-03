@@ -2,7 +2,7 @@ use crate::metadata_storage::MetadataStorage;
 use crate::resources::{
     BASE_AUTH_BINDINGS_PATH, BASE_AUTH_ROLES_PATH,
 };
-use crate::security::authz::types::{Binding, Role};
+use crate::security::authz::{Binding, Role};
 use crate::utils::join_path;
 use anyhow::Result;
 use danube_core::metadata::{MetaOptions, MetadataStore};

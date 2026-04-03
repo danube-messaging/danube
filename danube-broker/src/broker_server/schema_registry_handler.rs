@@ -1,8 +1,7 @@
 use crate::resources::{SchemaResources, SecurityResources};
 use crate::schema::{SchemaRegistry, ValidationPolicy};
-use crate::security::authz::authorizer::enforce_authorization;
-use crate::security::authz::types::{Permission, Resource};
-use crate::security::context::get_security_context;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use crate::topic_control::TopicManager;
 use crate::MetadataStorage;
 use anyhow::Result;

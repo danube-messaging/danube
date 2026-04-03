@@ -1,4 +1,4 @@
-use crate::auth::{AuthConfig, AuthMode};
+use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::{
     AssignmentStrategy, LoadManagerConfig, RebalancingConfig,
 };
@@ -267,7 +267,7 @@ fn ensure_scheme(url: &str, default_scheme: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::ServiceConfiguration;
-    use crate::auth::AuthMode;
+    use crate::security::config::AuthMode;
     use crate::danube_service::load_manager::config::AssignmentStrategy;
     use crate::storage_configuration::StorageConfig;
     use std::path::Path;

@@ -19,9 +19,8 @@ use danube_core::proto::{
     schema_reference::VersionRef, DispatchStrategy as CoreDispatchStrategy, SchemaReference,
 };
 
-use crate::security::authz::authorizer::enforce_authorization;
-use crate::security::authz::types::{Permission, Resource};
-use crate::security::context::get_security_context;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{trace, Level};
 

@@ -1,7 +1,6 @@
 use crate::admin::DanubeAdminImpl;
-use crate::security::authz::authorizer::enforce_authorization;
-use crate::security::authz::types::{Binding, Permission, Resource, Role};
-use crate::security::context::get_security_context;
+use crate::security::authz::{enforce_authorization, Binding, Permission, Resource, Role};
+use crate::security::authn::get_security_context;
 use danube_core::admin_proto::{
     security_admin_server::SecurityAdmin, BindingDefinition, CreateBindingRequest,
     CreateBindingResponse, CreateRoleRequest, CreateRoleResponse, DeleteBindingRequest,

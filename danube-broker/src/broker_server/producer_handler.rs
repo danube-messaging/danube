@@ -12,9 +12,8 @@ use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
 use metrics::{counter, histogram};
 use std::time::Instant;
-use crate::security::authz::authorizer::enforce_authorization;
-use crate::security::authz::types::{Permission, Resource};
-use crate::security::context::get_security_context;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, trace, Level};
 

@@ -1,9 +1,82 @@
+//! Authorization: RBAC types, scoped bindings, and the policy evaluation engine.
+//!
+//! This module handles:
+//! - **Permission** — the 9 action types (Lookup, Produce, Consume, etc.)
+//! - **Resource** — the 5 resource types (Cluster, Broker, Namespace, Topic, SchemaSubject)
+//! - **Role** — named set of permissions, persisted in metadata
+//! - **Binding** — attaches roles to principals at a specific scope
+//! - **Authorizer** — `enforce_authorization()` evaluates bindings across scopes with default-deny
+
 use crate::resources::SecurityResources;
-use crate::security::authz::types::{AuthorizationDecision, Permission, Resource};
-use crate::security::context::SecurityContext;
-use crate::security::principal::Principal;
+use crate::security::authn::{Principal, SecurityContext};
+use serde::{Deserialize, Serialize};
 use tonic::Status;
 use tracing::warn;
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Permission {
+    Lookup,
+    Produce,
+    Consume,
+    Replicate,
+    ManageNamespace,
+    ManageTopic,
+    ManageSchema,
+    ManageBroker,
+    ManageCluster,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Resource {
+    Cluster,
+    Broker(String),
+    Namespace(String),
+    Topic(String),
+    SchemaSubject(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Role {
+    pub(crate) name: String,
+    pub(crate) permissions: Vec<Permission>,
+    pub(crate) system: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Binding {
+    pub(crate) id: String,
+    pub(crate) principal_type: String,
+    pub(crate) principal_name: String,
+    pub(crate) role_names: Vec<String>,
+    pub(crate) scope: String,
+    pub(crate) resource_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthorizationDecision {
+    pub(crate) allowed: bool,
+    pub(crate) reason: String,
+}
+
+impl AuthorizationDecision {
+    pub(crate) fn allow(reason: impl Into<String>) -> Self {
+        Self {
+            allowed: true,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn deny(reason: impl Into<String>) -> Self {
+        Self {
+            allowed: false,
+            reason: reason.into(),
+        }
+    }
+}
+
+// ── Authorizer ─────────────────────────────────────────────────────────────
 
 /// Map a `Resource` enum to the (scope, resource_name) pair used by `SecurityResources`
 /// for binding lookups.

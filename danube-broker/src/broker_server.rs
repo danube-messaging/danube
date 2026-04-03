@@ -7,9 +7,9 @@ mod schema_registry_handler;
 
 pub(crate) use schema_registry_handler::SchemaRegistryService;
 
-use crate::auth::{AuthConfig, AuthMode};
 use crate::broker_service::BrokerService;
-use crate::security::authn::interceptor::authenticate_request;
+use crate::security::authn::authenticate_request;
+use crate::security::config::{AuthConfig, AuthMode};
 use danube_core::proto::{
     auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,

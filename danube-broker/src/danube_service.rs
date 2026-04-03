@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     admin::DanubeAdminImpl,
-    auth::AuthMode,
+    security::config::AuthMode,
     broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
     policies::Policies,
