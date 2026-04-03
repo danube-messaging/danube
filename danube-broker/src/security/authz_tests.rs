@@ -318,3 +318,87 @@ async fn test_authorize_hierarchical_scope() {
         "Carol should be allowed via namespace-level binding override"
     );
 }
+
+/// Regression test: bindings must survive a cache reload round-trip.
+///
+/// **Background:** The watcher calls `load_cache()` whenever `/auth/` metadata changes,
+/// which does a full reload from the metadata store. A previous bug caused
+/// `load_all_bindings_from_store` to fail when topic resource names contained slashes
+/// (e.g. `/default/my-topic`), because `get_childrens` returns full key paths that
+/// were incorrectly treated as resource names.
+///
+/// **Objective:** Verify that after `put_role` + `put_binding` + `load_cache()`,
+/// the binding is still found by `enforce_authorization`.
+///
+/// **Expected Outcome:** Authorization succeeds after the reload.
+#[tokio::test]
+async fn test_bindings_survive_cache_reload() {
+    let security = setup_security().await;
+
+    // Create role with Produce + Lookup permissions
+    let role = Role {
+        name: "reload-producer-role".into(),
+        permissions: vec![Permission::Produce, Permission::Lookup],
+        system: false,
+    };
+    security
+        .put_role(&role)
+        .await
+        .expect("failed to create role");
+
+    // Create a topic-scoped binding (topic path has a slash: /default/reload-test)
+    let binding = Binding {
+        id: "reload-test-binding".into(),
+        principal_type: "service_account".into(),
+        principal_name: "reload-app".into(),
+        role_names: vec!["reload-producer-role".into()],
+        scope: "topic".into(),
+        resource_name: "/default/reload-test".into(),
+    };
+    security
+        .put_binding(&binding)
+        .await
+        .expect("failed to create binding");
+
+    // Verify authorization works BEFORE reload (eager cache)
+    let context = SecurityContext::authenticated(
+        Principal::ServiceAccount {
+            name: "reload-app".into(),
+        },
+        AuthenticationMethod::Jwt,
+    );
+
+    let result = enforce_authorization(
+        &context,
+        &Resource::Topic("/default/reload-test".into()),
+        Permission::Produce,
+        &security,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Authorization should work before reload (eager cache)"
+    );
+
+    // Simulate what the watcher does: full cache reload from store.
+    // This was the buggy code path — it would lose bindings after reload.
+    security
+        .load_cache()
+        .await
+        .expect("load_cache should succeed");
+
+    // Verify authorization still works AFTER reload
+    let result_after = enforce_authorization(
+        &context,
+        &Resource::Topic("/default/reload-test".into()),
+        Permission::Produce,
+        &security,
+    )
+    .await;
+
+    assert!(
+        result_after.is_ok(),
+        "Authorization must still work after cache reload from store"
+    );
+}

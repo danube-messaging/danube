@@ -108,9 +108,7 @@ impl SecurityResources {
                             Err(danube_core::metadata::MetadataError::WatchError(msg))
                                 if msg.contains("lagged") =>
                             {
-                                warn!(
-                                    "authorization watcher stream lagged — resyncing cache"
-                                );
+                                warn!("authorization watcher stream lagged — resyncing cache");
                                 if let Err(e) = reload_cache(&store, &cache).await {
                                     warn!("failed to resync authorization cache after lag: {}", e);
                                 }
@@ -165,9 +163,7 @@ impl SecurityResources {
                 resource_name.to_string()
             };
             if !ns.is_empty() {
-                if let Some(ns_bindings) =
-                    cache.bindings.get(&("namespace".to_string(), ns))
-                {
+                if let Some(ns_bindings) = cache.bindings.get(&("namespace".to_string(), ns)) {
                     all.extend(ns_bindings.iter().cloned());
                 }
             }
@@ -218,11 +214,7 @@ impl SecurityResources {
         // Eager cache update
         let mut cache = self.cache.write().await;
         let key = (binding.scope.clone(), binding.resource_name.clone());
-        cache
-            .bindings
-            .entry(key)
-            .or_default()
-            .push(binding.clone());
+        cache.bindings.entry(key).or_default().push(binding.clone());
         Ok(())
     }
 
@@ -275,17 +267,18 @@ impl SecurityResources {
     // ── Internal: store reads for cache loading ────────────────────
 
     async fn load_all_roles_from_store(&self) -> Result<HashMap<String, Role>> {
-        let keys = self.store.get_childrens(BASE_AUTH_ROLES_PATH).await?;
-        let mut roles = HashMap::with_capacity(keys.len());
-        for key in keys {
-            let path = join_path(&[BASE_AUTH_ROLES_PATH, &key]);
-            if let Some(value) = self.store.get(&path, MetaOptions::None).await? {
-                match serde_json::from_value::<Role>(value) {
-                    Ok(role) => {
-                        roles.insert(role.name.clone(), role);
-                    }
-                    Err(e) => warn!(role_key = %key, "skipping malformed role: {}", e),
+        let entries = self
+            .store
+            .get_bulk(BASE_AUTH_ROLES_PATH)
+            .await
+            .unwrap_or_default();
+        let mut roles = HashMap::with_capacity(entries.len());
+        for entry in entries {
+            match serde_json::from_slice::<Role>(&entry.value) {
+                Ok(role) => {
+                    roles.insert(role.name.clone(), role);
                 }
+                Err(e) => warn!(key = %entry.key, "skipping malformed role: {}", e),
             }
         }
         Ok(roles)
@@ -296,54 +289,25 @@ impl SecurityResources {
     ) -> Result<HashMap<(String, String), Vec<Binding>>> {
         let mut bindings: HashMap<(String, String), Vec<Binding>> = HashMap::new();
 
-        // Load cluster-scoped bindings
-        self.load_bindings_for_scope(&mut bindings, "cluster", "")
-            .await?;
-
-        // Load namespace-scoped bindings — enumerate namespaces under /auth/bindings/namespace/
-        let ns_path = join_path(&[BASE_AUTH_BINDINGS_PATH, "namespace"]);
-        let namespaces = self.store.get_childrens(&ns_path).await.unwrap_or_default();
-        for ns in &namespaces {
-            self.load_bindings_for_scope(&mut bindings, "namespace", ns)
-                .await?;
-        }
-
-        // Load topic-scoped bindings — enumerate topics under /auth/bindings/topic/
-        let topic_path = join_path(&[BASE_AUTH_BINDINGS_PATH, "topic"]);
-        let topics = self
+        let entries = self
             .store
-            .get_childrens(&topic_path)
+            .get_bulk(BASE_AUTH_BINDINGS_PATH)
             .await
             .unwrap_or_default();
-        for topic in &topics {
-            self.load_bindings_for_scope(&mut bindings, "topic", topic)
-                .await?;
-        }
 
-        Ok(bindings)
-    }
-
-    async fn load_bindings_for_scope(
-        &self,
-        bindings: &mut HashMap<(String, String), Vec<Binding>>,
-        scope: &str,
-        resource_name: &str,
-    ) -> Result<()> {
-        let parent = self.binding_scope_path(scope, resource_name);
-        let ids = self.store.get_childrens(&parent).await.unwrap_or_default();
-        for id in ids {
-            let path = join_path(&[&parent, &id]);
-            if let Some(value) = self.store.get(&path, MetaOptions::None).await? {
-                match serde_json::from_value::<Binding>(value) {
-                    Ok(b) => {
-                        let key = (scope.to_string(), resource_name.to_string());
-                        bindings.entry(key).or_default().push(b);
-                    }
-                    Err(e) => warn!(binding_id = %id, "skipping malformed binding: {}", e),
+        for entry in entries {
+            match serde_json::from_slice::<Binding>(&entry.value) {
+                Ok(b) => {
+                    let key = (b.scope.clone(), b.resource_name.clone());
+                    bindings.entry(key).or_default().push(b);
+                }
+                Err(e) => {
+                    warn!(key = %entry.key, "skipping malformed binding: {}", e);
                 }
             }
         }
-        Ok(())
+
+        Ok(bindings)
     }
 
     // ── Internal: path helpers ─────────────────────────────────────
@@ -395,9 +359,5 @@ async fn reload_cache(store: &MetadataStorage, cache: &Arc<RwLock<AuthzCache>>) 
 /// Extract namespace from a topic path like "/namespace/topic_name" → "namespace"
 fn extract_namespace(topic_path: &str) -> String {
     let trimmed = topic_path.trim_start_matches('/');
-    trimmed
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .to_string()
+    trimmed.split('/').next().unwrap_or("").to_string()
 }

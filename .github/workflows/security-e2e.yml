@@ -99,7 +99,10 @@ jobs:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
           DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
+          set -e
           ADMIN_BIN=./target/release/danube-admin
+
+          echo "Token present: $([ -n "$DANUBE_ADMIN_TOKEN" ] && echo 'yes' || echo 'NO')"
 
           echo "Creating roles..."
           $ADMIN_BIN security roles create producer-role --permissions Produce,Lookup
@@ -107,11 +110,7 @@ jobs:
 
           echo ""
           echo "Verifying roles..."
-          $ADMIN_BIN security roles list
-          
-          echo ""
-          echo "Creating topic for security tests..."
-          $ADMIN_BIN topics create /default/security-test
+          $ADMIN_BIN security roles list --output json
 
           echo ""
           echo "Creating bindings for test-app on /default/security-test..."
@@ -131,7 +130,10 @@ jobs:
 
           echo ""
           echo "Verifying bindings..."
-          $ADMIN_BIN security bindings list --scope topic --resource /default/security-test
+          $ADMIN_BIN security bindings list --scope topic --resource /default/security-test --output json
+
+          # Allow cache propagation
+          sleep 2
 
           echo ""
           echo "✅ RBAC bootstrap complete"
