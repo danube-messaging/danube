@@ -386,14 +386,39 @@ impl RaftNode {
             "all seed peers discovered"
         );
 
-        // If any peer already has a leader, the cluster is formed.
-        // This is a scale-up: don't try to bootstrap, wait to be added via admin CLI.
+        // If any peer already has a leader, check whether this node is already
+        // part of the cluster membership (co-founder) or truly an outsider (scale-up).
+        //
+        // Race condition: all seed nodes start together. The lowest-ID node calls
+        // raft.initialize(members) — which includes ALL seed nodes — and elects
+        // a leader within milliseconds. By the time the other seed nodes finish
+        // discovery, they see has_leader=true. But they are already members!
+        // Treating them as "JoinExisting" would incorrectly register them as drained.
         if any_peer_has_leader {
+            let metrics = self.raft.metrics().borrow().clone();
+            let is_member = metrics
+                .membership_config
+                .membership()
+                .voter_ids()
+                .any(|id| id == self.node_id);
+
+            if !is_member {
+                // Not in the cluster membership — genuine scale-up join
+                info!(
+                    node_id = self.node_id,
+                    "existing cluster detected (not a member) — entering join mode (register as drained)"
+                );
+                return Ok(BootstrapResult::JoinExisting);
+            }
+
+            // Already a member — the lowest-ID seed initialized us before we got here.
+            // Fall through to the leader-wait loop.
             info!(
                 node_id = self.node_id,
-                "existing cluster detected on peers — entering join mode (register as drained)"
+                leader = ?metrics.current_leader,
+                "seed co-founder: already a cluster member, leader elected by peer"
             );
-            return Ok(BootstrapResult::JoinExisting);
+            return Ok(BootstrapResult::Initialized);
         }
 
         // The node with the lowest node_id performs the initialization

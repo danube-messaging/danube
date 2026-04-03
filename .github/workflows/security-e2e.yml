@@ -97,6 +97,7 @@ jobs:
       - name: Bootstrap RBAC (roles and bindings)
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           ADMIN_BIN=./target/release/danube-admin
 
