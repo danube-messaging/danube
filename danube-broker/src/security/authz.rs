@@ -9,9 +9,11 @@
 
 use crate::resources::SecurityResources;
 use crate::security::authn::{Principal, SecurityContext};
+use crate::broker_metrics::{AUTHZ_ALLOW_TOTAL, AUTHZ_DENY_TOTAL};
+use metrics::counter;
 use serde::{Deserialize, Serialize};
 use tonic::Status;
-use tracing::warn;
+use tracing::{error, trace, warn};
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -96,10 +98,32 @@ pub(crate) async fn enforce_authorization(
     permission: Permission,
     security: &SecurityResources,
 ) -> Result<(), Status> {
-    let decision = authorize(context, resource, permission, security).await;
+    let decision = authorize(context, resource, permission.clone(), security).await;
+    
+    let (resource_type, _) = resource_to_scope(resource);
+    let perm_str = format!("{:?}", permission);
+
     if decision.allowed {
+        counter!(AUTHZ_ALLOW_TOTAL.name, "resource" => resource_type, "permission" => perm_str).increment(1);
+        trace!(
+            principal = context.principal.principal_name(),
+            principal_type = context.principal.principal_type(),
+            resource = ?resource,
+            permission = ?permission,
+            reason = %decision.reason,
+            "authorization allowed"
+        );
         Ok(())
     } else {
+        counter!(AUTHZ_DENY_TOTAL.name, "resource" => resource_type, "permission" => perm_str).increment(1);
+        warn!(
+            principal = context.principal.principal_name(),
+            principal_type = context.principal.principal_type(),
+            resource = ?resource,
+            permission = ?permission,
+            reason = %decision.reason,
+            "authorization denied"
+        );
         Err(Status::permission_denied(decision.reason))
     }
 }
@@ -140,7 +164,7 @@ async fn authorize(
     let bindings = match security.list_bindings_for_resource(scope, &resource_name).await {
         Ok(b) => b,
         Err(e) => {
-            warn!("failed to read authorization bindings: {}", e);
+            error!("failed to read authorization bindings: {}", e);
             return AuthorizationDecision::deny(format!(
                 "authorization check failed: {}",
                 e
