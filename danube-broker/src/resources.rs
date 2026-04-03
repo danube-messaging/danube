@@ -64,13 +64,17 @@ pub(crate) struct Resources {
 
 // A wrapper for interacting with Metadata Storage
 impl Resources {
-    pub(crate) fn new(store: MetadataStorage, leadership: Option<LeadershipHandle>) -> Self {
+    pub(crate) fn new(
+        store: MetadataStorage,
+        leadership: Option<LeadershipHandle>,
+        super_admins: Vec<String>,
+    ) -> Self {
         Resources {
             store: store.clone(),
             cluster: ClusterResources::new(store.clone(), leadership),
             namespace: NamespaceResources::new(store.clone()),
             topic: TopicResources::new(store.clone()),
-            security: SecurityResources::new(store.clone()),
+            security: SecurityResources::new(store.clone(), super_admins),
             schema: SchemaResources::new(store),
         }
     }

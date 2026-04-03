@@ -120,6 +120,14 @@ async fn authorize(
         ));
     }
 
+    // Config-declared super-admins bypass RBAC entirely
+    if security.is_super_admin(&principal.principal_name()) {
+        return AuthorizationDecision::allow(format!(
+            "super-admin '{}' (configured in auth.super_admins)",
+            principal.principal_name(),
+        ));
+    }
+
     // Anonymous — deny when we get here (auth-disabled mode never calls enforce)
     if matches!(principal, Principal::Anonymous) {
         return AuthorizationDecision::deny("anonymous principals are not authorized");

@@ -54,6 +54,11 @@ pub(crate) struct AuthConfig {
     pub(crate) tls: Option<TlsConfig>,
     #[serde(default)]
     pub(crate) jwt: Option<JwtConfig>,
+    /// JWT subjects that bypass RBAC entirely (super-admin access).
+    /// Used for initial cluster bootstrap and break-glass scenarios.
+    /// Create tokens: `danube-admin security tokens create --subject <name> --secret-key <key>`
+    #[serde(default)]
+    pub(crate) super_admins: Vec<String>,
 }
 
 impl Default for AuthConfig {
@@ -62,6 +67,7 @@ impl Default for AuthConfig {
             mode: AuthMode::None,
             tls: None,
             jwt: None,
+            super_admins: Vec::new(),
         }
     }
 }

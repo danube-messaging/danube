@@ -157,6 +157,7 @@ impl ServiceConfiguration {
                 mode: AuthMode::None,
                 tls: None,
                 jwt: None,
+                super_admins: Vec::new(),
             },
             admin_tls: false,
             load_manager: Some(LoadManagerConfig {

@@ -70,6 +70,15 @@ auth:
     # Expiration for broker-issued tokens (token refresh). Client tokens set their own TTL.
     expiration_time: 3600
 
+  # Super-admin subjects — JWT subjects that bypass RBAC entirely.
+  # Used for initial cluster bootstrap and break-glass scenarios.
+  # 1. Add subject here (e.g. "admin")
+  # 2. Create token: danube-admin security tokens create --subject admin --secret-key <key>
+  # 3. Use token to create proper roles & bindings via the admin API
+  # 4. Optionally remove from this list once RBAC is configured
+  super_admins:
+    - "admin"
+
 # Load Manager Configuration (Automated Proactive Rebalancing)
 load_manager:
   # Topic Assignment Strategy: How to assign NEW topics to brokers

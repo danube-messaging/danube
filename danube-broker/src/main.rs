@@ -283,7 +283,11 @@ async fn main() -> Result<()> {
 
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
-    let resources = Resources::new(metadata_store.clone(), Some(leadership_handle.clone()));
+    let resources = Resources::new(
+        metadata_store.clone(),
+        Some(leadership_handle.clone()),
+        service_config.auth.super_admins.clone(),
+    );
 
 
 

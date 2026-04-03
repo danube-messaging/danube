@@ -52,6 +52,8 @@ auth:
   #   secret_key: "your-secret-key"
   #   issuer: "danube-auth"
   #   expiration_time: 3600
+  # super_admins:
+  #   - "admin"
 
 # Load Manager Configuration (Automated Proactive Rebalancing)
 load_manager:

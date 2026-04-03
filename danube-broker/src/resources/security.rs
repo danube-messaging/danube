@@ -5,7 +5,7 @@ use crate::utils::join_path;
 use anyhow::Result;
 use danube_core::metadata::{MetaOptions, MetadataStore};
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -33,14 +33,30 @@ struct AuthzCache {
 pub(crate) struct SecurityResources {
     store: MetadataStorage,
     cache: Arc<RwLock<AuthzCache>>,
+    /// JWT subjects that bypass RBAC entirely (super-admin access).
+    /// Loaded once from config at startup — immutable at runtime.
+    super_admins: HashSet<String>,
 }
 
 impl SecurityResources {
-    pub(crate) fn new(store: MetadataStorage) -> Self {
+    pub(crate) fn new(store: MetadataStorage, super_admins: Vec<String>) -> Self {
+        let super_admin_set: HashSet<String> = super_admins.into_iter().collect();
+        if !super_admin_set.is_empty() {
+            info!(
+                super_admins = ?super_admin_set,
+                "super-admin subjects configured (bypass RBAC)"
+            );
+        }
         Self {
             store,
             cache: Arc::new(RwLock::new(AuthzCache::default())),
+            super_admins: super_admin_set,
         }
+    }
+
+    /// Check if a principal name is a configured super-admin.
+    pub(crate) fn is_super_admin(&self, subject: &str) -> bool {
+        self.super_admins.contains(subject)
     }
 
     // ── Startup ────────────────────────────────────────────────────
@@ -355,6 +371,7 @@ async fn reload_cache(store: &MetadataStorage, cache: &Arc<RwLock<AuthzCache>>) 
     let tmp = SecurityResources {
         store: store.clone(),
         cache: cache.clone(),
+        super_admins: HashSet::new(), // Not used during reload, just satisfying the struct
     };
 
     let roles = tmp.load_all_roles_from_store().await?;
