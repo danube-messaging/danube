@@ -113,6 +113,10 @@ jobs:
           $ADMIN_BIN security roles list --output json
 
           echo ""
+          echo "Pre-creating topic for security tests..."
+          $ADMIN_BIN topics create /default/security-test
+
+          echo ""
           echo "Creating bindings for test-app on /default/security-test..."
           $ADMIN_BIN security bindings create test-app-produce \
             --principal-type service_account \
