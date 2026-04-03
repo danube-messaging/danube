@@ -142,7 +142,7 @@ jobs:
       - name: Run security E2E tests
         env:
           DANUBE_BROKER_ENDPOINT: https://127.0.0.1:6650
-          DANUBE_CA_CERT: ./cert/ca-cert.pem
+          DANUBE_CA_CERT: ../cert/ca-cert.pem
           DANUBE_AUTHORIZED_TOKEN: ${{ env.AUTHORIZED_TOKEN }}
           DANUBE_DENIED_TOKEN: ${{ env.DENIED_TOKEN }}
           RUST_BACKTRACE: 1
