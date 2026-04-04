@@ -76,7 +76,7 @@ impl LookupService {
         let mut request = tonic::Request::new(lookup_request);
         self.auth_service
             .insert_token_if_needed(
-                self.cnx_manager.connection_options.token.as_deref(),
+                self.cnx_manager.connection_options.resolve_token(),
                 &mut request,
                 addr,
             )
@@ -122,7 +122,7 @@ impl LookupService {
         let mut request = tonic::Request::new(lookup_request);
         self.auth_service
             .insert_token_if_needed(
-                self.cnx_manager.connection_options.token.as_deref(),
+                self.cnx_manager.connection_options.resolve_token(),
                 &mut request,
                 addr,
             )

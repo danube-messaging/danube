@@ -53,7 +53,7 @@ impl HealthCheckService {
             .await?;
         let stop_signal = Arc::clone(&stop_signal);
         let request_id = Arc::clone(&self.request_id);
-        let token = self.cnx_manager.connection_options.token.clone();
+        let cnx_options = self.cnx_manager.connection_options.clone();
         let connect_url = connect_url.clone();
         let broker_addr = broker_addr.clone();
         let auth_service = self.auth_service.clone();
@@ -71,7 +71,7 @@ impl HealthCheckService {
                     client_type,
                     client_id,
                     stop_signal_clone,
-                    token.as_deref(),
+                    cnx_options.resolve_token(),
                     &connect_url,
                     &broker_addr,
                     proxy,
@@ -94,7 +94,7 @@ impl HealthCheckService {
         client_type: ClientType,
         client_id: u64,
         stop_signal: Arc<AtomicBool>,
-        token: Option<&str>,
+        token: Option<String>,
         connect_url: &Uri,
         broker_addr: &Uri,
         proxy: bool,
@@ -109,7 +109,7 @@ impl HealthCheckService {
         let mut request = tonic::Request::new(health_request);
 
         auth_service
-            .insert_token_if_needed(token, &mut request, connect_url)
+            .insert_token_if_needed(token.clone(), &mut request, connect_url)
             .await?;
         RetryManager::insert_proxy_header(&mut request, broker_addr, proxy);
 

@@ -27,9 +27,11 @@ impl AuthService {
     ///
     /// This is the single entry point for auth token insertion across the client.
     /// It attaches the JWT as a Bearer token in the request metadata.
+    /// Uses `ConnectionOptions::resolve_token()` which supports both static tokens
+    /// and dynamic token suppliers.
     pub async fn insert_token_if_needed<T>(
         &self,
-        token: Option<&str>,
+        token: Option<String>,
         request: &mut Request<T>,
         _addr: &Uri,
     ) -> Result<()> {

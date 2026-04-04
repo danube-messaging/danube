@@ -58,7 +58,7 @@ impl SchemaRegistryClient {
         let mut req = tonic::Request::new(request);
         self.auth_service
             .insert_token_if_needed(
-                self.cnx_manager.connection_options.token.as_deref(),
+                self.cnx_manager.connection_options.resolve_token(),
                 &mut req,
                 &self.uri,
             )

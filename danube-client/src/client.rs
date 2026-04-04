@@ -150,8 +150,48 @@ impl DanubeClientBuilder {
     /// Use `danube-admin security tokens create` to generate a token.
     /// Automatically enables TLS. If no TLS config has been set via `with_tls()` or
     /// `with_mtls()`, a default TLS config using system root certificates is applied.
+    ///
+    /// For tokens that expire, consider [`with_token_supplier`](Self::with_token_supplier)
+    /// instead, which allows runtime token refresh.
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
+        if self.connection_options.tls_config.is_none() {
+            self.connection_options.tls_config = Some(ClientTlsConfig::new());
+        }
+        self.connection_options.use_tls = true;
+        self
+    }
+
+    /// Sets a dynamic token supplier for the client.
+    ///
+    /// The supplier function is called on **every gRPC request** to obtain the current
+    /// token, enabling runtime token refresh without restarting the client. This is
+    /// useful for:
+    ///
+    /// - **File-based tokens**: Read from a file that is updated by infrastructure
+    ///   (e.g., K8s projected volumes, sidecar token refreshers)
+    /// - **Environment-based tokens**: Read from an environment variable
+    /// - **Custom refresh logic**: Implement your own token rotation
+    ///
+    /// Automatically enables TLS (same as `with_token`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// // Read token from a file on each request
+    /// let client = DanubeClient::builder()
+    ///     .service_url("https://broker:6650")
+    ///     .with_token_supplier(|| {
+    ///         std::fs::read_to_string("/var/run/secrets/danube-token")
+    ///             .unwrap_or_default()
+    ///             .trim()
+    ///             .to_string()
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_token_supplier(mut self, supplier: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.connection_options.token_supplier = Some(Arc::new(supplier));
         if self.connection_options.tls_config.is_none() {
             self.connection_options.tls_config = Some(ClientTlsConfig::new());
         }
