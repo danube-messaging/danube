@@ -32,12 +32,6 @@ jobs:
           printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
           printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
-      - name: Create test config without TLS for CLI tests
-        run: |
-          cp config/danube_broker.yml config/danube_broker_test.yml
-          # Replace 'mode: tls' with 'mode: none' for CLI tests
-          sed -i 's/mode: tls/mode: none/' config/danube_broker_test.yml
-
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
@@ -47,7 +41,7 @@ jobs:
         run: |
           mkdir -p danube-data
           nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker_test.yml \
+            --config-file ./config/danube_broker.yml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \

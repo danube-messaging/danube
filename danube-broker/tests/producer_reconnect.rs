@@ -10,31 +10,10 @@
 extern crate danube_client;
 
 use anyhow::Result;
-use danube_client::DanubeClient;
-use rustls::crypto;
-use tokio::sync::OnceCell;
 use tokio::time::{sleep, Duration};
 
-static CRYPTO_PROVIDER: OnceCell<()> = OnceCell::const_new();
-
-async fn setup() -> Result<DanubeClient> {
-    CRYPTO_PROVIDER
-        .get_or_init(|| async {
-            let crypto_provider = crypto::ring::default_provider();
-            crypto_provider
-                .install_default()
-                .expect("Failed to install default CryptoProvider");
-        })
-        .await;
-
-    let client = DanubeClient::builder()
-        .service_url("https://127.0.0.1:6650")
-        .with_tls("../cert/ca-cert.pem")?
-        .build()
-        .await?;
-
-    Ok(client)
-}
+#[path = "test_utils.rs"]
+mod test_utils;
 
 #[tokio::test]
 /// What this test validates
@@ -49,7 +28,7 @@ async fn setup() -> Result<DanubeClient> {
 /// - Validates connection reuse and resilience; ensures the client can keep using the same producer
 ///   for multiple sends across time without unintended disconnects.
 async fn producer_reconnection_reuse() -> Result<()> {
-    let danube_client = setup().await?;
+    let danube_client = test_utils::setup_client().await?;
     let topic = "/default/producer_reconnect_reuse";
     let producer_name = "producer_reconn_reuse";
 

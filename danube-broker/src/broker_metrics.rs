@@ -6,7 +6,7 @@ pub(crate) struct Metric {
     description: &'static str,
 }
 
-pub(crate) const COUNTERS: [Metric; 19] = [
+pub(crate) const COUNTERS: [Metric; 21] = [
     TOPIC_MESSAGES_IN_TOTAL,
     TOPIC_BYTES_IN_TOTAL,
     CONSUMER_MESSAGES_OUT_TOTAL,
@@ -26,6 +26,8 @@ pub(crate) const COUNTERS: [Metric; 19] = [
     SCHEMA_VALIDATION_FAILURES_TOTAL,
     REBALANCING_MOVES_TOTAL,
     REBALANCING_FAILURES_TOTAL,
+    AUTHZ_ALLOW_TOTAL,
+    AUTHZ_DENY_TOTAL,
 ];
 pub(crate) const GAUGES: [Metric; 10] = [
     BROKER_TOPICS_OWNED,
@@ -44,6 +46,18 @@ pub(crate) const HISTOGRAMS: [Metric; 3] = [
     TOPIC_MESSAGE_SIZE_BYTES,
     REBALANCING_CYCLE_DURATION_SECONDS,
 ];
+
+// SECURITY Metrics ------------------------
+
+pub(crate) const AUTHZ_ALLOW_TOTAL: Metric = Metric {
+    name: "danube_authz_allow_total",
+    description: "Total number of successful authorization decisions",
+};
+
+pub(crate) const AUTHZ_DENY_TOTAL: Metric = Metric {
+    name: "danube_authz_deny_total",
+    description: "Total number of denied authorization decisions",
+};
 
 // BROKER Metrics --------------------------
 

@@ -1,7 +1,5 @@
 mod admin;
 mod args_parse;
-mod auth;
-mod auth_jwt;
 mod broker_metrics;
 mod broker_server;
 mod broker_service;
@@ -16,6 +14,7 @@ mod rate_limiter;
 mod replicator;
 mod resources;
 mod schema;
+mod security;
 mod service_configuration;
 mod storage_configuration;
 mod subscription;
@@ -216,11 +215,30 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Build Raft TLS config from broker auth config
+    let raft_tls = if service_config.auth.is_tls_enabled() {
+        let tls = service_config.auth.tls.as_ref().unwrap();
+        let cert_pem = std::fs::read(&tls.cert_file)
+            .unwrap_or_else(|e| panic!("failed to read TLS cert {}: {}", tls.cert_file, e));
+        let key_pem = std::fs::read(&tls.key_file)
+            .unwrap_or_else(|e| panic!("failed to read TLS key {}: {}", tls.key_file, e));
+        let ca_pem = std::fs::read(&tls.ca_file)
+            .unwrap_or_else(|e| panic!("failed to read TLS CA {}: {}", tls.ca_file, e));
+        Some(danube_raft::RaftTlsConfig {
+            cert_pem,
+            key_pem,
+            ca_pem,
+        })
+    } else {
+        None
+    };
+
     let raft_node = RaftNode::start(RaftNodeConfig {
         data_dir: (&meta_cfg.data_dir).into(),
         raft_addr,
         advertised_addr: advertised_raft_addr,
         ttl_check_interval: std::time::Duration::from_secs(5),
+        tls: raft_tls,
     })
     .await?;
 
@@ -265,7 +283,11 @@ async fn main() -> Result<()> {
 
     // convenient functions to handle the metadata and configurations required
     // for managing the cluster, namespaces & topics
-    let resources = Resources::new(metadata_store.clone(), Some(leadership_handle.clone()));
+    let resources = Resources::new(
+        metadata_store.clone(),
+        Some(leadership_handle.clone()),
+        service_config.auth.super_admins.clone(),
+    );
 
 
 

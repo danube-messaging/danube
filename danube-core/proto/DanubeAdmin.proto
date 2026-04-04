@@ -73,6 +73,108 @@ service TopicAdmin {
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
+// ─── Security / Authorization Admin ──────────────────────────────────────────
+
+service SecurityAdmin {
+  // Roles
+  rpc CreateRole(CreateRoleRequest)     returns (CreateRoleResponse);
+  rpc GetRole(GetRoleRequest)           returns (GetRoleResponse);
+  rpc ListRoles(Empty)                  returns (ListRolesResponse);
+  rpc DeleteRole(DeleteRoleRequest)     returns (DeleteRoleResponse);
+
+  // Bindings
+  rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
+  rpc GetBinding(GetBindingRequest)       returns (GetBindingResponse);
+  rpc ListBindings(ListBindingsRequest)   returns (ListBindingsResponse);
+  rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
+}
+
+// ─── Security messages ──────────────────────────────────────────────────────
+
+// Role CRUD
+
+message RoleDefinition {
+  string name = 1;
+  repeated string permissions = 2;  // e.g. ["Produce", "Consume", "Lookup"]
+  bool system = 3;
+}
+
+message CreateRoleRequest {
+  RoleDefinition role = 1;
+}
+
+message CreateRoleResponse {
+  bool success = 1;
+}
+
+message GetRoleRequest {
+  string name = 1;
+}
+
+message GetRoleResponse {
+  RoleDefinition role = 1;
+}
+
+message ListRolesResponse {
+  repeated RoleDefinition roles = 1;
+}
+
+message DeleteRoleRequest {
+  string name = 1;
+}
+
+message DeleteRoleResponse {
+  bool success = 1;
+}
+
+// Binding CRUD
+
+message BindingDefinition {
+  string id = 1;
+  string principal_type = 2;   // "service_account", "user"
+  string principal_name = 3;
+  repeated string role_names = 4;
+  string scope = 5;            // "cluster", "namespace", "topic"
+  string resource_name = 6;    // "" for cluster, namespace name, or topic path
+}
+
+message CreateBindingRequest {
+  BindingDefinition binding = 1;
+}
+
+message CreateBindingResponse {
+  bool success = 1;
+}
+
+message GetBindingRequest {
+  string scope = 1;
+  string resource_name = 2;
+  string binding_id = 3;
+}
+
+message GetBindingResponse {
+  BindingDefinition binding = 1;
+}
+
+message ListBindingsRequest {
+  string scope = 1;           // "cluster", "namespace", "topic"
+  string resource_name = 2;   // "" for cluster scope
+}
+
+message ListBindingsResponse {
+  repeated BindingDefinition bindings = 1;
+}
+
+message DeleteBindingRequest {
+  string scope = 1;
+  string resource_name = 2;
+  string binding_id = 3;
+}
+
+message DeleteBindingResponse {
+  bool success = 1;
+}
+
 // Common Messages
 message Empty {}
 

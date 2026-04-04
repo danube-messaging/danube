@@ -1,5 +1,7 @@
-use crate::resources::SchemaResources;
+use crate::resources::{SchemaResources, SecurityResources};
 use crate::schema::{SchemaRegistry, ValidationPolicy};
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use crate::topic_control::TopicManager;
 use crate::MetadataStorage;
 use anyhow::Result;
@@ -21,16 +23,22 @@ use tracing::{error, info, warn};
 pub struct SchemaRegistryService {
     registry: Arc<SchemaRegistry>,
     topic_manager: TopicManager,
+    security: SecurityResources,
 }
 
 impl SchemaRegistryService {
-    pub fn new(metadata_storage: MetadataStorage, topic_manager: TopicManager) -> Self {
+    pub fn new(
+        metadata_storage: MetadataStorage,
+        topic_manager: TopicManager,
+        security: SecurityResources,
+    ) -> Self {
         let schema_resources = SchemaResources::new(metadata_storage);
         let registry = Arc::new(SchemaRegistry::new(Arc::new(schema_resources)));
 
         Self {
             registry,
             topic_manager,
+            security,
         }
     }
 
@@ -47,7 +55,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<RegisterSchemaRequest>,
     ) -> Result<Response<RegisterSchemaResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(
             subject = %req.subject,
             schema_type = %req.schema_type,
@@ -101,7 +116,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<GetSchemaRequest>,
     ) -> Result<Response<GetSchemaResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::Cluster,
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(schema_id = %req.schema_id, version = ?req.version, "getting schema by ID");
 
         // Use reverse index to look up subject and fetch schema
@@ -150,7 +172,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<GetLatestSchemaRequest>,
     ) -> Result<Response<GetSchemaResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(subject = %req.subject, "getting latest schema for subject");
 
         match self.registry.get_latest_schema(&req.subject).await {
@@ -195,7 +224,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<ListVersionsRequest>,
     ) -> Result<Response<ListVersionsResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(subject = %req.subject, "listing versions for subject");
 
         // Get metadata for schema_id
@@ -250,7 +286,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<CheckCompatibilityRequest>,
     ) -> Result<Response<CheckCompatibilityResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
 
         // Parse compatibility mode if provided
         let mode_override = req
@@ -292,7 +335,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<DeleteSchemaVersionRequest>,
     ) -> Result<Response<DeleteSchemaVersionResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(
             subject = %req.subject,
             version = %req.version,
@@ -325,7 +375,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<SetCompatibilityModeRequest>,
     ) -> Result<Response<SetCompatibilityModeResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::SchemaSubject(req.subject.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
         info!(
             subject = %req.subject,
             mode = %req.compatibility_mode,
@@ -369,7 +426,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<ConfigureTopicSchemaRequest>,
     ) -> Result<Response<ConfigureTopicSchemaResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic_name.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
 
         // Parse validation policy
         let validation_policy = match req.validation_policy.to_lowercase().as_str() {
@@ -416,7 +480,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<UpdateTopicValidationPolicyRequest>,
     ) -> Result<Response<UpdateTopicValidationPolicyResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic_name.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
 
         // Parse validation policy
         let validation_policy = match req.validation_policy.to_lowercase().as_str() {
@@ -451,7 +522,14 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         &self,
         request: Request<GetTopicSchemaConfigRequest>,
     ) -> Result<Response<GetTopicSchemaConfigResponse>, Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic_name.clone()),
+            Permission::ManageSchema,
+            &self.security,
+        ).await?;
 
         // Delegate to TopicManager
         let (schema_subject, validation_policy, enable_payload_validation, schema_id) = self

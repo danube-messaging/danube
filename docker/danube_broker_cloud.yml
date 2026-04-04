@@ -27,6 +27,8 @@ auto_create_topics: true
 
 auth:
   mode: none
+  # super_admins:
+  #   - "admin"
 
 load_manager:
   assignment_strategy: "balanced"

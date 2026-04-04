@@ -1,22 +1,26 @@
 mod brokers_admin;
 mod cluster_admin;
 mod namespace_admin;
+mod security_admin;
 mod topics_admin;
 
 use crate::{
-    auth::AuthConfig, broker_server::SchemaRegistryService, broker_service::BrokerService,
-    danube_service::LoadManager, resources::Resources,
+    broker_server::SchemaRegistryService, broker_service::BrokerService,
+    danube_service::LoadManager, resources::Resources, security::authn::authenticate_request,
+    security::config::AuthConfig,
 };
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdminServer, cluster_admin_server::ClusterAdminServer,
-    namespace_admin_server::NamespaceAdminServer, topic_admin_server::TopicAdminServer,
+    namespace_admin_server::NamespaceAdminServer, security_admin_server::SecurityAdminServer,
+    topic_admin_server::TopicAdminServer,
 };
 use danube_core::proto::danube_schema::schema_registry_server::SchemaRegistryServer;
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
-use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
 #[derive(Clone)]
@@ -83,13 +87,44 @@ impl DanubeAdminImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let server = server_builder
-            .add_service(BrokerAdminServer::new(self.clone()))
-            .add_service(ClusterAdminServer::new(self.clone()))
-            .add_service(NamespaceAdminServer::new(self.clone()))
-            .add_service(TopicAdminServer::new(self.clone()))
-            .add_service(schema_registry_service)
-            .serve(socket_addr);
+        let broker_admin_service = BrokerAdminServer::new(self.clone());
+        let cluster_admin_service = ClusterAdminServer::new(self.clone());
+        let namespace_admin_service = NamespaceAdminServer::new(self.clone());
+        let security_admin_service = SecurityAdminServer::new(self.clone());
+        let topic_admin_service = TopicAdminServer::new(self.clone());
+
+        // Always attach the auth interceptor. When mode=none it creates Anonymous
+        // contexts that the authorization engine allows unconditionally.
+        let auth = self.auth.clone();
+        let interceptor = move |request| authenticate_request(request, &auth);
+
+        let server_builder = server_builder
+            .add_service(InterceptedService::new(
+                broker_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                cluster_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                namespace_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                security_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                topic_admin_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                schema_registry_service,
+                interceptor,
+            ));
+
+        let server = server_builder.serve(socket_addr);
 
         // Server has started
         let handle = tokio::spawn(async move {
@@ -110,18 +145,8 @@ impl DanubeAdminImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        // Base TLS config with server identity
-        let mut tls = ServerTlsConfig::new().identity(identity);
-
-        // If verify_client is enabled, load CA and require client auth
-        if tls_config.verify_client {
-            if let Ok(ca_pem) = tokio::fs::read(&tls_config.ca_file).await {
-                let ca = Certificate::from_pem(ca_pem);
-                tls = tls.client_ca_root(ca);
-            } else {
-                warn!(ca_file = %tls_config.ca_file, "verify_client enabled but unable to read CA file");
-            }
-        }
+        // Admin port uses server-only TLS. Admins authenticate via JWT, not client certs.
+        let tls = ServerTlsConfig::new().identity(identity);
 
         server.tls_config(tls).unwrap()
     }

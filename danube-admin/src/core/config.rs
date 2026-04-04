@@ -8,6 +8,9 @@ pub struct GrpcClientConfig {
     pub ca_path: Option<String>,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
+    /// JWT token for admin authentication.
+    /// Can also be set via `DANUBE_ADMIN_TOKEN` env var.
+    pub token: Option<String>,
 }
 
 impl Default for GrpcClientConfig {
@@ -21,6 +24,9 @@ impl Default for GrpcClientConfig {
             ca_path: None,
             cert_path: None,
             key_path: None,
+            token: std::env::var("DANUBE_ADMIN_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()),
         }
     }
 }

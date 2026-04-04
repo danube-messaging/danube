@@ -47,17 +47,21 @@ auto_create_topics: true
 # admin_tls: false
 
 # Security Configuration
+# mode: none — no authentication, no encryption (development/testing only)
+# mode: tls  — full security: TLS + JWT for clients, mTLS for inter-broker & Raft
+# For production with TLS enabled, see config/danube_broker_secure.yml
 auth:
-  mode: tls # Options: none, tls, tlswithjwt
-  tls:
-    cert_file: "./cert/server-cert.pem"
-    key_file: "./cert/server-key.pem"
-    ca_file: "./cert/ca-cert.pem"
-    verify_client: false
-  jwt:
-    secret_key: "your-secret-key"
-    issuer: "danube-auth"
-    expiration_time: 3600 # in seconds
+  mode: none
+  # tls:
+  #   cert_file: "./cert/server-cert.pem"
+  #   key_file: "./cert/server-key.pem"
+  #   ca_file: "./cert/ca-cert.pem"
+  # jwt:
+  #   secret_key: "your-secret-key"
+  #   issuer: "danube-auth"
+  #   expiration_time: 3600
+  # super_admins:
+  #   - "admin"
 
 # Load Manager Configuration (Automated Proactive Rebalancing)
 load_manager:

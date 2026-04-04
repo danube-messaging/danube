@@ -33,11 +33,16 @@ use crate::typ::TypeConfig;
 pub struct RaftMetadataStore {
     raft: Raft<TypeConfig>,
     data: SharedStateMachineData,
+    tls: Option<crate::node::RaftTlsConfig>,
 }
 
 impl RaftMetadataStore {
-    pub fn new(raft: Raft<TypeConfig>, data: SharedStateMachineData) -> Self {
-        Self { raft, data }
+    pub fn new(
+        raft: Raft<TypeConfig>,
+        data: SharedStateMachineData,
+        tls: Option<crate::node::RaftTlsConfig>,
+    ) -> Self {
+        Self { raft, data, tls }
     }
 
     /// Propose a command through Raft and return the response.
@@ -70,10 +75,23 @@ impl RaftMetadataStore {
 
     /// Forward a write command to the leader via the ClientWrite gRPC RPC.
     async fn forward_to_leader(&self, leader_addr: &str, cmd: RaftCommand) -> Result<RaftResponse> {
-        let endpoint_url = format!("http://{}", leader_addr);
-        let channel = Endpoint::from_shared(endpoint_url)
+        let scheme = if self.tls.is_some() { "https" } else { "http" };
+        let endpoint_url = format!("{}://{}", scheme, leader_addr);
+        let mut endpoint = Endpoint::from_shared(endpoint_url)
             .map_err(|e| MetadataError::Unknown(format!("invalid leader endpoint: {}", e)))?
-            .connect_timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(5));
+
+        if let Some(ref tls) = self.tls {
+            use tonic::transport::{Certificate, ClientTlsConfig, Identity};
+            let tls_config = ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(&tls.ca_pem))
+                .identity(Identity::from_pem(&tls.cert_pem, &tls.key_pem));
+            endpoint = endpoint
+                .tls_config(tls_config)
+                .map_err(|e| MetadataError::Unknown(format!("tls config failed: {}", e)))?;
+        }
+
+        let channel = endpoint
             .connect()
             .await
             .map_err(|e| MetadataError::Unknown(format!("connect to leader failed: {}", e)))?;

@@ -1,4 +1,4 @@
-use crate::auth::{AuthConfig, AuthMode};
+use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::{
     AssignmentStrategy, LoadManagerConfig, RebalancingConfig,
 };
@@ -157,6 +157,7 @@ impl ServiceConfiguration {
                 mode: AuthMode::None,
                 tls: None,
                 jwt: None,
+                super_admins: Vec::new(),
             },
             admin_tls: false,
             load_manager: Some(LoadManagerConfig {
@@ -217,7 +218,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
         };
 
         let scheme = match auth.mode {
-            AuthMode::Tls | AuthMode::TlsWithJwt => "https",
+            AuthMode::Tls => "https",
             _ => "http",
         };
         let broker_addr_str = broker_addr.to_string();
@@ -265,7 +266,7 @@ fn ensure_scheme(url: &str, default_scheme: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::ServiceConfiguration;
-    use crate::auth::AuthMode;
+    use crate::security::config::AuthMode;
     use crate::danube_service::load_manager::config::AssignmentStrategy;
     use crate::storage_configuration::StorageConfig;
     use std::path::Path;

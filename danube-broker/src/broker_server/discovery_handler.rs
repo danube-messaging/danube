@@ -6,6 +6,8 @@ use danube_core::proto::{
     TopicLookupResponse, TopicPartitionsResponse,
 };
 
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{debug, trace, Level};
 
@@ -17,7 +19,15 @@ impl Discovery for DanubeServerImpl {
         &self,
         request: Request<TopicLookupRequest>,
     ) -> std::result::Result<Response<TopicLookupResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::Lookup,
+            &self.service.resources.security,
+        ).await?;
 
         trace!(topic = %req.topic, "topic lookup request");
 
@@ -83,7 +93,15 @@ impl Discovery for DanubeServerImpl {
         &self,
         request: Request<TopicLookupRequest>,
     ) -> std::result::Result<Response<TopicPartitionsResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::Lookup,
+            &self.service.resources.security,
+        ).await?;
 
         trace!(topic = %req.topic, "topic partitions request");
 

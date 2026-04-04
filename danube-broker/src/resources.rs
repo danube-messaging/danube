@@ -3,11 +3,13 @@ use danube_raft::leadership::LeadershipHandle;
 
 mod cluster;
 mod namespace;
+mod security;
 mod schema;
 mod topic;
 
 pub(crate) use cluster::ClusterResources;
 pub(crate) use namespace::NamespaceResources;
+pub(crate) use security::SecurityResources;
 pub(crate) use schema::SchemaResources;
 pub(crate) use topic::{TopicResources, TopicSchemaConfig};
 
@@ -17,6 +19,8 @@ pub(crate) static BASE_BROKER_PATH: &str = "/cluster/brokers";
 pub(crate) static BASE_NAMESPACES_PATH: &str = "/namespaces";
 pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
 pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
+pub(crate) static BASE_AUTH_ROLES_PATH: &str = "/auth/roles";
+pub(crate) static BASE_AUTH_BINDINGS_PATH: &str = "/auth/bindings";
 
 // Once new topic is created, it is posted to unassigned path in order to be alocated by Load Manager to a broker
 pub(crate) static BASE_UNASSIGNED_PATH: &str = "/cluster/unassigned";
@@ -52,6 +56,7 @@ pub(crate) struct Resources {
     pub(crate) cluster: ClusterResources,
     pub(crate) namespace: NamespaceResources,
     pub(crate) topic: TopicResources,
+    pub(crate) security: SecurityResources,
     pub(crate) schema: SchemaResources,
     // should hold also the MetadataStore,
     // as the resources translate the Danube requests into MetadataStore paths puts & gets
@@ -59,12 +64,17 @@ pub(crate) struct Resources {
 
 // A wrapper for interacting with Metadata Storage
 impl Resources {
-    pub(crate) fn new(store: MetadataStorage, leadership: Option<LeadershipHandle>) -> Self {
+    pub(crate) fn new(
+        store: MetadataStorage,
+        leadership: Option<LeadershipHandle>,
+        super_admins: Vec<String>,
+    ) -> Self {
         Resources {
             store: store.clone(),
             cluster: ClusterResources::new(store.clone(), leadership),
             namespace: NamespaceResources::new(store.clone()),
             topic: TopicResources::new(store.clone()),
+            security: SecurityResources::new(store.clone(), super_admins),
             schema: SchemaResources::new(store),
         }
     }

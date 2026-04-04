@@ -7,9 +7,9 @@ mod schema_registry_handler;
 
 pub(crate) use schema_registry_handler::SchemaRegistryService;
 
-use crate::auth::{AuthConfig, AuthMode};
-use crate::auth_jwt::jwt_auth_interceptor;
 use crate::broker_service::BrokerService;
+use crate::security::authn::authenticate_request;
+use crate::security::config::{AuthConfig, AuthMode};
 use danube_core::proto::{
     auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
@@ -34,8 +34,6 @@ pub(crate) struct DanubeServerImpl {
     connect_url: String,
     proxy_enabled: bool,
     auth: AuthConfig,
-    // the api key is used to authenticate the user for JWT auth
-    valid_api_keys: Vec<String>,
 }
 
 impl DanubeServerImpl {
@@ -56,7 +54,6 @@ impl DanubeServerImpl {
             connect_url,
             proxy_enabled,
             auth,
-            valid_api_keys: Vec::new(),
         }
     }
 
@@ -64,7 +61,7 @@ impl DanubeServerImpl {
         let socket_addr = self.broker_addr.clone();
         let mut server_builder = Server::builder();
 
-        if let AuthMode::Tls | AuthMode::TlsWithJwt = self.auth.mode {
+        if self.auth.mode == AuthMode::Tls {
             server_builder = self.configure_tls(server_builder).await;
         }
 
@@ -76,42 +73,33 @@ impl DanubeServerImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let server_builder = if let AuthMode::TlsWithJwt = self.auth.mode {
-            let jwt_config = self.auth.jwt.as_ref().expect("JWT config required");
-            let jwt_secret = jwt_config.secret_key.clone();
-            let interceptor = move |request| jwt_auth_interceptor(request, &jwt_secret);
+        // Always attach the auth interceptor. When mode=none it creates Anonymous
+        // contexts that the authorization engine allows unconditionally.
+        let auth = self.auth.clone();
+        let interceptor = move |request| authenticate_request(request, &auth);
 
-            server_builder
-                .add_service(InterceptedService::new(
-                    producer_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    consumer_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    discovery_service,
-                    interceptor.clone(),
-                ))
-                .add_service(InterceptedService::new(
-                    health_check_service,
-                    interceptor.clone(),
-                ))
-                .add_service(auth_service)
-                .add_service(InterceptedService::new(
-                    schema_registry_service,
-                    interceptor,
-                ))
-        } else {
-            server_builder
-                .add_service(producer_service)
-                .add_service(consumer_service)
-                .add_service(discovery_service)
-                .add_service(health_check_service)
-                .add_service(auth_service)
-                .add_service(schema_registry_service)
-        };
+        let server_builder = server_builder
+            .add_service(InterceptedService::new(
+                producer_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                consumer_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                discovery_service,
+                interceptor.clone(),
+            ))
+            .add_service(InterceptedService::new(
+                health_check_service,
+                interceptor.clone(),
+            ))
+            .add_service(auth_service)
+            .add_service(InterceptedService::new(
+                schema_registry_service,
+                interceptor,
+            ));
 
         let server = server_builder.serve(socket_addr);
 
@@ -127,9 +115,10 @@ impl DanubeServerImpl {
         let key = tokio::fs::read(&tls_config.key_file).await.unwrap();
         let identity = Identity::from_pem(cert, key);
 
-        server
-            .tls_config(ServerTlsConfig::new().identity(identity))
-            .unwrap()
+        // Client port uses server-only TLS. Clients authenticate via JWT, not client certs.
+        let tls = ServerTlsConfig::new().identity(identity);
+
+        server.tls_config(tls).unwrap()
     }
 
     fn spawn_server(

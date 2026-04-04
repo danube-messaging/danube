@@ -34,12 +34,13 @@ auto_create_topics: true
 
 # Security Configuration
 auth:
-  mode: tls
-  tls:
-    cert_file: "./cert/server-cert.pem"
-    key_file: "./cert/server-key.pem"
-    ca_file: "./cert/ca-cert.pem"
-    verify_client: false
+  mode: none
+  # tls:
+  #   cert_file: "./cert/server-cert.pem"
+  #   key_file: "./cert/server-key.pem"
+  #   ca_file: "./cert/ca-cert.pem"
+  # super_admins:
+  #   - "admin"
 
 # Load Manager Configuration - AGGRESSIVE REBALANCING FOR TESTING
 load_manager:

@@ -11,6 +11,8 @@ use metrics::counter;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, trace, warn, Level};
 
@@ -23,7 +25,15 @@ impl ConsumerService for DanubeServerImpl {
         &self,
         request: Request<ConsumerRequest>,
     ) -> Result<Response<ConsumerResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        ).await?;
 
         info!(
             consumer_name = %req.consumer_name,
@@ -144,6 +154,8 @@ impl ConsumerService for DanubeServerImpl {
         &self,
         request: tonic::Request<ReceiveRequest>,
     ) -> std::result::Result<tonic::Response<Self::ReceiveMessagesStream>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let consumer_id = request.into_inner().consumer_id;
 
         // Create a new mpsc channel to stream messages to the client via gRPC
@@ -242,6 +254,8 @@ impl ConsumerService for DanubeServerImpl {
         &self,
         request: tonic::Request<AckRequest>,
     ) -> std::result::Result<tonic::Response<AckResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let ack_request = request.into_inner();
         let ack = AckMessage {
             request_id: ack_request.request_id,
@@ -274,6 +288,8 @@ impl ConsumerService for DanubeServerImpl {
         &self,
         request: tonic::Request<NackRequest>,
     ) -> std::result::Result<tonic::Response<NackResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let nack_request = request.into_inner();
         let nack = NackMessage {
             request_id: nack_request.request_id,

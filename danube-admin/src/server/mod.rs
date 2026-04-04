@@ -158,6 +158,9 @@ async fn run_mcp_server(args: ServerArgs) -> Result<()> {
         ca_path: args.grpc_ca.clone(),
         cert_path: args.grpc_cert.clone(),
         key_path: args.grpc_key.clone(),
+        token: std::env::var("DANUBE_ADMIN_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()),
     };
 
     let client = Arc::new(AdminGrpcClient::connect(grpc_config).await?);

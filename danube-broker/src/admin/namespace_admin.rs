@@ -1,4 +1,6 @@
 use crate::admin::DanubeAdminImpl;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use danube_core::admin_proto::{
     namespace_admin_server::NamespaceAdmin, NamespaceRequest, NamespaceResponse, PolicyResponse,
     TopicListResponse,
@@ -16,7 +18,15 @@ impl NamespaceAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<TopicListResponse>, tonic::Status> {
         trace!("Admin: get the list of topics of a namespace");
 
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Namespace(req.name.clone()),
+            Permission::ManageNamespace,
+            &self.resources.security,
+        ).await?;
 
         let topics = self
             .resources
@@ -35,7 +45,15 @@ impl NamespaceAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<PolicyResponse>, tonic::Status> {
         trace!("Admin: get the configuration policies of a namespace");
 
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Namespace(req.name.clone()),
+            Permission::ManageNamespace,
+            &self.resources.security,
+        ).await?;
 
         let policies = match self.resources.namespace.get_policies(&req.name).await {
             Ok(policies) => policies,
@@ -74,7 +92,15 @@ impl NamespaceAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<NamespaceResponse>, tonic::Status> {
         trace!("Admin: create a new namespace");
 
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Namespace(req.name.clone()),
+            Permission::ManageNamespace,
+            &self.resources.security,
+        ).await?;
         let service = self.broker_service.as_ref();
 
         let success = match service.create_namespace_if_absent(&req.name).await {
@@ -99,7 +125,15 @@ impl NamespaceAdmin for DanubeAdminImpl {
     ) -> std::result::Result<Response<NamespaceResponse>, tonic::Status> {
         trace!("Admin: delete the namespace");
 
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Namespace(req.name.clone()),
+            Permission::ManageNamespace,
+            &self.resources.security,
+        ).await?;
         let service = self.broker_service.as_ref();
 
         let success = match service.delete_namespace(&req.name).await {

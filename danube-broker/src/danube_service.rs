@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     admin::DanubeAdminImpl,
-    auth::AuthMode,
+    security::config::AuthMode,
     broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
     policies::Policies,
@@ -139,6 +139,7 @@ impl DanubeService {
         let schema_registry = Arc::new(SchemaRegistryService::new(
             self.meta_store.clone(),
             self.broker.topic_manager.clone(),
+            self.resources.security.clone(),
         ));
         info!("schema registry service initialized");
 
@@ -206,8 +207,7 @@ impl DanubeService {
         let connect_url = &self.service_config.connect_url;
 
         //check it is a secure connection
-        let is_secure = self.service_config.auth.mode == AuthMode::Tls
-            || self.service_config.auth.mode == AuthMode::TlsWithJwt;
+        let is_secure = self.service_config.auth.mode == AuthMode::Tls;
 
         let ttl = 32; // Time to live for the lease in seconds
         let admin_addr = self.service_config.admin_addr.to_string();
@@ -409,6 +409,17 @@ impl DanubeService {
             "cluster metadata initialization completed successfully"
         );
 
+        // Initialize authorization cache
+        //==========================================================================
+        // Load all roles and bindings into memory before accepting requests.
+        // The background watcher keeps the cache in sync on admin mutations.
+        self.resources
+            .security
+            .load_cache()
+            .await
+            .expect("failed to load authorization cache");
+        self.resources.security.start_watcher().await;
+
         // Start the Broker GRPC server
         //==========================================================================
 
@@ -442,16 +453,21 @@ impl DanubeService {
         let broker_client_url = self.service_config.broker_url.clone();
         let danube_client = loop {
             let mut builder = DanubeClient::builder()
-                .service_url(&broker_client_url);
+                .service_url(&broker_client_url)
+                .with_internal_broker(format!("broker/{}", self.broker_id));
 
-            // When the broker has TLS enabled, configure the internal client with
-            // the same CA certificate so it can connect to itself (or peers).
+            // When TLS is enabled, the replicator uses mTLS (inter-broker communication).
+            // The client presents broker certs for mutual authentication.
             if let Some(ref tls_config) = self.service_config.auth.tls {
-                builder = match builder.with_tls(&tls_config.ca_file) {
+                builder = match builder.with_mtls(
+                    &tls_config.ca_file,
+                    &tls_config.cert_file,
+                    &tls_config.key_file,
+                ) {
                     Ok(b) => b,
                     Err(err) => {
                         return Err(anyhow::anyhow!(err)).context(format!(
-                            "Failed to configure TLS for internal broker client (ca_file={})",
+                            "Failed to configure mTLS for internal broker client (ca_file={})",
                             tls_config.ca_file
                         ));
                     }

@@ -12,6 +12,8 @@ use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
 use metrics::{counter, histogram};
 use std::time::Instant;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
+use crate::security::authn::get_security_context;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, trace, Level};
 
@@ -23,7 +25,15 @@ impl ProducerService for DanubeServerImpl {
         &self,
         request: Request<ProducerRequest>,
     ) -> Result<Response<ProducerResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic_name.clone()),
+            Permission::Produce,
+            &self.service.resources.security,
+        ).await?;
 
         let config_dispatch_strategy: ConfigDispatchStrategy =
             ProtoDispatchStrategy::try_from(req.dispatch_strategy)
@@ -54,8 +64,6 @@ impl ProducerService for DanubeServerImpl {
                 return Err(status);
             }
         }
-
-        //Todo! Here insert the auth/authz, check if it is authorized to perform the Topic Operation, add a producer
 
         // This check is on the local broker
         // If exist, the producer should be already created to the correct broker
@@ -119,8 +127,16 @@ impl ProducerService for DanubeServerImpl {
         &self,
         request: Request<ProtoStreamMessage>,
     ) -> Result<Response<MessageResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
         let req = request.into_inner();
         let stream_message: StreamMessage = req.into();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(stream_message.msg_id.topic_name.clone()),
+            Permission::Produce,
+            &self.service.resources.security,
+        ).await?;
 
         trace!(
             message_id = %stream_message.request_id,

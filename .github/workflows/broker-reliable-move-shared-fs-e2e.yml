@@ -82,6 +82,32 @@ jobs:
 
           sleep 10
 
+      - name: Activate all brokers
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          ADMIN_BIN=./target/release/danube-admin
+
+          # Get all broker IDs and activate any that are drained
+          BROKERS_JSON=$($ADMIN_BIN brokers list --output json)
+          echo "Brokers before activation:"
+          echo "$BROKERS_JSON" | jq .
+
+          for BROKER_ID in $(echo "$BROKERS_JSON" | jq -r '.[].broker_id'); do
+            STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$BROKER_ID" '.[] | select(.broker_id == $id) | .broker_status')
+            if [ "$STATUS" != "active" ]; then
+              echo "Activating broker $BROKER_ID (was: $STATUS)..."
+              $ADMIN_BIN brokers activate --broker-id "$BROKER_ID" --reason "e2e-test"
+            else
+              echo "Broker $BROKER_ID is already active."
+            fi
+          done
+
+          sleep 3
+          echo ""
+          echo "Brokers after activation:"
+          $ADMIN_BIN brokers list
+
       - name: Run shared_fs reliable move integration tests
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051

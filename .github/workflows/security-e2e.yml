@@ -1,0 +1,170 @@
+name: Security E2E
+
+on:
+  pull_request:
+    paths:
+      - 'danube-broker/src/**'
+      - 'config/danube_broker_secure.yml'
+      - '.github/workflows/security-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  security_e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build broker and admin binaries
+        run: cargo build --release -p danube-broker -p danube-admin
+
+      # =====================================================================
+      # Start broker with full security enabled
+      # =====================================================================
+      - name: Start broker (auth.mode=tls)
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p temp danube-data
+          nohup ./target/release/danube-broker \
+            --config-file ./config/danube_broker_secure.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/raft-1 \
+            --prom-exporter 0.0.0.0:9040 \
+            > temp/broker.log 2>&1 &
+
+          # Wait for broker to be ready
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 6650 2>/dev/null; then
+              echo "✅ Broker is ready (port 6650)."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "❌ Broker failed to start."
+              cat temp/broker.log
+              exit 1
+            fi
+            echo "⏳ Waiting for broker to start... ($i/15)"
+            sleep 3
+          done
+
+      # =====================================================================
+      # Generate JWT tokens for test principals
+      # =====================================================================
+      - name: Generate JWT tokens
+        run: |
+          SECRET_KEY="your-secret-key"
+
+          # Super-admin token (subject "admin" is in super_admins config)
+          ADMIN_TOKEN=$(./target/release/danube-admin security tokens create \
+            --subject admin --type user --secret-key "$SECRET_KEY")
+          echo "ADMIN_TOKEN=$ADMIN_TOKEN" >> $GITHUB_ENV
+
+          # Authorized service account token
+          AUTHORIZED_TOKEN=$(./target/release/danube-admin security tokens create \
+            --subject test-app --type service_account --secret-key "$SECRET_KEY")
+          echo "AUTHORIZED_TOKEN=$AUTHORIZED_TOKEN" >> $GITHUB_ENV
+
+          # Unprivileged token (no bindings will be created for this principal)
+          DENIED_TOKEN=$(./target/release/danube-admin security tokens create \
+            --subject unprivileged-app --type service_account --secret-key "$SECRET_KEY")
+          echo "DENIED_TOKEN=$DENIED_TOKEN" >> $GITHUB_ENV
+
+          echo "✅ JWT tokens generated for: admin, test-app, unprivileged-app"
+
+      # =====================================================================
+      # Bootstrap RBAC via super-admin
+      # =====================================================================
+      - name: Bootstrap RBAC (roles and bindings)
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+        run: |
+          set -e
+          ADMIN_BIN=./target/release/danube-admin
+
+          echo "Token present: $([ -n "$DANUBE_ADMIN_TOKEN" ] && echo 'yes' || echo 'NO')"
+
+          echo "Creating roles..."
+          $ADMIN_BIN security roles create producer-role --permissions Produce,Lookup
+          $ADMIN_BIN security roles create consumer-role --permissions Consume,Lookup
+
+          echo ""
+          echo "Verifying roles..."
+          $ADMIN_BIN security roles list --output json
+
+          echo ""
+          echo "Pre-creating topic for security tests..."
+          $ADMIN_BIN topics create /default/security-test
+
+          echo ""
+          echo "Creating bindings for test-app on /default/security-test..."
+          $ADMIN_BIN security bindings create test-app-produce \
+            --principal-type service_account \
+            --principal-name test-app \
+            --roles producer-role \
+            --scope topic \
+            --resource /default/security-test
+
+          $ADMIN_BIN security bindings create test-app-consume \
+            --principal-type service_account \
+            --principal-name test-app \
+            --roles consumer-role \
+            --scope topic \
+            --resource /default/security-test
+
+          echo ""
+          echo "Verifying bindings..."
+          $ADMIN_BIN security bindings list --scope topic --resource /default/security-test --output json
+
+          # Allow cache propagation
+          sleep 2
+
+          echo ""
+          echo "✅ RBAC bootstrap complete"
+
+      # =====================================================================
+      # Run security integration tests
+      # =====================================================================
+      - name: Run security E2E tests
+        env:
+          DANUBE_BROKER_ENDPOINT: https://127.0.0.1:6650
+          DANUBE_CA_CERT: ../cert/ca-cert.pem
+          DANUBE_AUTHORIZED_TOKEN: ${{ env.AUTHORIZED_TOKEN }}
+          DANUBE_DENIED_TOKEN: ${{ env.DENIED_TOKEN }}
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --release -p danube-broker --test security_e2e -- --ignored --test-threads=1 --nocapture
+
+      # =====================================================================
+      # Cleanup
+      # =====================================================================
+      - name: Print broker logs on failure
+        if: failure()
+        run: |
+          echo '--- broker.log ---'
+          cat temp/broker.log || true
+
+      - name: Stop broker
+        if: always()
+        run: |
+          pkill -f danube-broker || true
