@@ -493,7 +493,7 @@ async fn reliable_retry_exhausted_deadletter_routes_message_to_dlq() -> Result<(
     let subscription = "sub_failure_deadletter";
 
     create_topic(&topic, "reliable")?;
-    create_topic(&dlq_topic, "non_reliable")?;
+    create_topic(&dlq_topic, "reliable")?;
     set_failure_policy(
         &topic,
         subscription,
