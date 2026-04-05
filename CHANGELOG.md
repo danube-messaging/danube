@@ -1,3 +1,33 @@
+<!-- v0.11.0 START -->
+## v0.11.0 - 2026-04-05
+
+**Authentication, Authorization & Cluster Stability**
+
+This release adds a complete security layer to Danube: multi-method authentication, fine-grained RBAC with default-deny semantics, and management APIs for roles and bindings. It also fixes several cluster stability issues around topic convergence in multi-broker deployments.
+
+### 🔒 Security
+
+* **Authentication** — Brokers authenticate every request via API-key service accounts, JWT bearer tokens, or mTLS-derived broker-internal identity. Auth mode is configurable (`none`, `tls`). JWT validation results are cached (30s TTL) to avoid cryptographic overhead on hot paths.
+
+* **RBAC authorization** — 9 permission types (`Lookup`, `Produce`, `Consume`, `ManageTopic`, `ManageSchema`, etc.) scoped to 5 resource types (`Cluster`, `Namespace`, `Topic`, etc.). Bindings resolve hierarchically (topic → namespace → cluster). All admin and data-plane RPCs are gated.
+
+* **Security management** — `SecurityAdmin` gRPC service with role and binding CRUD. `danube-admin security` CLI for managing authorization state and generating JWT tokens.
+
+### 📦 Client
+
+* **Dynamic token rotation** — `with_token_supplier()` accepts a closure called on every request, enabling runtime token refresh from K8s projected volumes or secret managers.
+
+* **Explicit topic auto-creation guard** — Only producer requests can auto-create topics; consumer requests are explicitly prevented via an `allow_auto_create` flag.
+
+### 🐛 Cluster Stability
+
+* **Eager topic loading** — Brokers now eagerly load topics assigned to them when a client request arrives before the watch event fires, eliminating the convergence race that caused intermittent failures in multi-broker clusters.
+
+* **Idempotent topic registry** — Concurrent topic loading (from watch events and eager-load) can no longer replace a live topic instance, preventing "producer not attached" errors.
+
+* **Reliable DLQ dispatch** — The replicator now creates reliable producers for DLQ topics, matching the topic's dispatch strategy.
+<!-- v0.11.0 END -->
+
 <!-- v0.10.0 START -->
 ## v0.10.0 - 2026-03-28
 

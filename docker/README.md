@@ -135,7 +135,7 @@ docker-compose up -d
 
 ```bash
 # Produce with reliable delivery (persisted to S3)
-docker exec danube-cli produce \
+docker exec danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent" \
   --count 1000 \
@@ -143,7 +143,7 @@ docker exec danube-cli produce \
   --reliable
 
 # Consume persistent messages
-docker exec -it danube-cli consume \
+docker exec -it danube-cli danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/persistent" \
   --subscription "persistent-sub" \
@@ -237,7 +237,7 @@ docker exec danube-admin brokers rebalance
 
 ```bash
 # Produce with schema
-docker exec danube-cli produce \
+docker exec danube-cli danube-cli produce \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
   --count 100 \
@@ -246,7 +246,7 @@ docker exec danube-cli produce \
   --message '{"message":"Hello JSON","timestamp":1640995200}'
 
 # Consume
-docker exec -it danube-cli consume \
+docker exec -it danube-cli danube-cli consume \
   --service-addr http://broker1:6650 \
   --topic "/default/json-topic" \
   --subscription "json-sub"

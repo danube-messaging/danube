@@ -11,63 +11,15 @@ Danube is an open-source distributed messaging broker platform designed to be cl
 
 ## 🚀 Get Started with Danube
 
-### Quick Start with Docker Compose - Deploy a cluster in seconds:
+### Deploy a Cluster with Docker Compose
 
-Create a directory and download the required files:
+Spin up a 3-broker high-availability cluster with Prometheus monitoring in seconds.
 
-```bash
-mkdir danube-docker && cd danube-docker
-```
+📖 **[Docker Setup Guide →](docker/README.md)**
 
-Download the docker-compose and broker configuration file:
+### Run a Single-Node Broker Locally
 
-```bash
-curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/quickstart/docker-compose.yml
-
-curl -O https://raw.githubusercontent.com/danube-messaging/danube/main/docker/danube_broker.yml
-```
-
-Start the danube cluster:
-
-```bash
-docker-compose up -d
-```
-
-This launches a complete Danube cluster with:
-
-- **3 High-Availability Brokers** for topics failover
-- **Prometheus** for monitoring
-- **danube-cli** to produce and consume messages
-
-**Test the setup:**
-
-**Produce messages with reliable delivery**
-
-```bash
-docker-compose exec -it danube-cli danube-cli produce \
-  --service-addr http://broker1:6650 \
-  --topic "/default/persistent-topic" \
-  --count 100 \
-  --message "Persistent message" \
-  --reliable
-```
-
-**Consume messages from the topic**
-
-```bash
-docker-compose exec -it danube-cli danube-cli consume \
-  --service-addr http://broker1:6650 \
-  --topic "/default/persistent-topic" \
-  --subscription "persistent-sub" \
-  --sub-type exclusive
-```
-
-📖 **[Complete Docker Setup Guide →](docker/README.md)**
-
-
-### Run a Single-Node Broker Locally - No Docker, no config file needed:
-
-Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases), then:
+No Docker, no config file needed. Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases), then:
 
 ```bash
 ./danube-broker --single-node --data-dir ~/danube-data
@@ -80,11 +32,12 @@ This starts a self-contained single-broker cluster with sensible local defaults:
 - Local WAL storage under `~/danube-data/wal`
 - No authentication, no TLS — ready for local development and testing
 
-Data is preserved across restarts. To start fresh, remove the data directory:
+Data is preserved across restarts. To start fresh, remove the data directory.
 
-```bash
-rm -rf ~/danube-data && ./target/debug/danube-broker --single-node --data-dir ~/danube-data
-```
+### Tools
+
+- **[danube-cli](https://danube-docs.dev-state.com/danube_cli/getting_started/)** — Command-line producer and consumer for quick testing
+- **[danube-admin](https://danube-docs.dev-state.com/danube_admin/getting_started/)** — Cluster administration (CLI, MCP, Web UI)
 
 ## Architecture
 
@@ -94,7 +47,7 @@ rm -rf ~/danube-data && ./target/debug/danube-broker --single-node --data-dir ~/
 - **Horizontal scaling**: Add brokers in seconds with zero-downtime expansion
 - **Intelligent load balancing**: Automatic topic placement and rebalancing across brokers
 - **Broker resilience**: Automatic leader election, failover, and topic reconciliation on restart
-- **Security-ready**: TLS/mTLS support in Admin and data paths
+- **Security**: TLS/mTLS, multi-method authentication, and fine-grained RBAC authorization
 
 ### 🌩️ **Write-Ahead Log + Durable Storage**
 
@@ -133,12 +86,18 @@ rm -rf ~/danube-data && ./target/debug/danube-broker --single-node --data-dir ~/
 - **Multiple formats**: Bytes, String, Number, JSON Schema, Avro, Protobuf
 - **Validation & governance**: Prevent invalid messages and ensure data quality
 
+### 🔒 **Security**
+
+- **Authentication**: API-key service accounts, JWT bearer tokens, and mTLS broker-internal identity. Auth mode configurable (`none`, `tls`)
+- **RBAC authorization**: Fine-grained permissions (`Produce`, `Consume`, `Lookup`, `ManageTopic`, etc.) with hierarchical scope resolution (topic → namespace → cluster). Default-deny when auth is enabled
+- **Security management**: Role and binding CRUD via gRPC and `danube-admin security` CLI
+
 ### 🤖 **AI-Powered Administration**
 
 Danube features **the AI-native messaging platform administration** through the Model Context Protocol (MCP):
 
 - **Natural language cluster management**: Manage your cluster by talking to AI assistants (Claude, Cursor, Windsurf)
-- **32 intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
+- **40+ intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
 - **Automated troubleshooting**: AI-guided workflows for consumer lag analysis, health checks, and performance optimization
 - **Multiple interfaces**: CLI commands, Web UI, or AI conversation - your choice
 
@@ -166,6 +125,7 @@ Contributions in **NodeJs**, **C / C++ / C#**, **Ruby**, and other languages are
 ### Project Structure
 
 - **[danube-broker](danube-broker/)** - Core messaging platform
+- **[danube-raft](danube-raft/)** - Raft consensus implementation for metadata replication
 - **[danube-persistent-storage](danube-persistent-storage/)** - WAL and durable storage engine for reliable topics
 - **[danube-client](danube-client/)** - Async Rust client library  
 - **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
