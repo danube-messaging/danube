@@ -25,8 +25,11 @@ impl TopicRegistry {
         }
     }
 
+    /// Adds a topic to the registry. If the topic already exists (e.g. loaded
+    /// concurrently by both the watch and an eager-load), the existing instance
+    /// is kept so that attached producers/consumers are not lost.
     pub fn add_topic(&self, topic_name: String, topic: Arc<Topic>) {
-        self.topics.insert(topic_name, topic);
+        self.topics.entry(topic_name).or_insert(topic);
     }
 
     pub fn remove_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {

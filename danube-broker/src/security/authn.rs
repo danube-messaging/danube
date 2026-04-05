@@ -4,17 +4,26 @@
 //! - **Principal identity** — `Principal` enum (User, ServiceAccount, BrokerInternal, Anonymous)
 //! - **Security context** — `SecurityContext` stored in request extensions after authentication
 //! - **Request interceptor** — `authenticate_request()` that runs on every gRPC call
+//! - **JWT validation cache** — avoids re-computing HMAC on hot paths (send_message, ack, nack)
 //! - **JWT helpers** — principal extraction from JWT claims
 //! - **Internal broker header** — mTLS-based broker-to-broker identity
 
 use crate::security::config::AuthConfig;
 use danube_core::jwt::Claims;
+use dashmap::DashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const INTERNAL_BROKER_HEADER: &str = "x-danube-internal-broker";
+
+/// How long a validated JWT result is cached before re-validation.
+/// This avoids HMAC-SHA256 computation on every gRPC call while ensuring
+/// that expired/revoked tokens are caught within a bounded window.
+const JWT_CACHE_TTL: Duration = Duration::from_secs(30);
 
 // ── Principal ──────────────────────────────────────────────────────────────
 
@@ -88,6 +97,50 @@ pub(crate) fn get_security_context<T>(request: &Request<T>) -> Result<SecurityCo
         .ok_or_else(|| Status::unauthenticated("Security context missing"))
 }
 
+// ── JWT Validation Cache ───────────────────────────────────────────────────
+
+/// Caches validated JWT tokens to avoid HMAC-SHA256 re-computation on every
+/// gRPC call. This is critical for hot paths like `send_message`, `ack`, and
+/// `nack` which are called per-message.
+///
+/// The cache uses the raw Bearer token string as the key and stores the
+/// validated `SecurityContext` with a timestamp. Entries expire after
+/// `JWT_CACHE_TTL` (30s), after which the token is re-validated.
+///
+/// Thread-safe via `DashMap` (lock-free concurrent HashMap).
+#[derive(Debug, Clone)]
+pub(crate) struct JwtValidationCache {
+    cache: Arc<DashMap<String, (SecurityContext, Instant)>>,
+}
+
+impl JwtValidationCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            cache: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Look up a cached validation result. Returns `None` if the token
+    /// is not cached or has expired.
+    fn get(&self, token: &str) -> Option<SecurityContext> {
+        if let Some(entry) = self.cache.get(token) {
+            let (ctx, created_at) = entry.value();
+            if created_at.elapsed() < JWT_CACHE_TTL {
+                return Some(ctx.clone());
+            }
+            // Expired — drop the ref before removing
+            drop(entry);
+            self.cache.remove(token);
+        }
+        None
+    }
+
+    /// Store a validated result in the cache.
+    fn insert(&self, token: String, context: SecurityContext) {
+        self.cache.insert(token, (context, Instant::now()));
+    }
+}
+
 // ── Security Errors ────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -148,6 +201,7 @@ fn principal_from_claims(claims: &Claims) -> Principal {
 pub(crate) fn authenticate_request(
     mut request: Request<()>,
     auth: &AuthConfig,
+    jwt_cache: &JwtValidationCache,
 ) -> Result<Request<()>, Status> {
     let context = if auth.is_auth_disabled() {
         SecurityContext::anonymous()
@@ -162,18 +216,29 @@ pub(crate) fn authenticate_request(
             AuthenticationMethod::MutualTls,
         )
     } else if let Some(token) = request.metadata().get("authorization") {
-        let token = token
+        let token_str = token
             .to_str()
             .map_err(|_| SecurityError::InvalidMetadata.into_status())?;
-        let jwt_config = auth
-            .jwt_config()
-            .ok_or_else(|| SecurityError::JwtNotConfigured.into_status())?;
-        let bearer = danube_core::jwt::parse_bearer_token(token)
-            .ok_or_else(|| SecurityError::InvalidToken.into_status())?;
-        let claims = danube_core::jwt::validate_token(bearer, &jwt_config.secret_key)
-            .map_err(|_| SecurityError::InvalidToken.into_status())?;
-        let principal = principal_from_claims(&claims);
-        SecurityContext::authenticated(principal, AuthenticationMethod::Jwt)
+
+        // Fast path: check the cache first (avoids HMAC on every send_message)
+        if let Some(cached_ctx) = jwt_cache.get(token_str) {
+            cached_ctx
+        } else {
+            // Slow path: full JWT validation
+            let jwt_config = auth
+                .jwt_config()
+                .ok_or_else(|| SecurityError::JwtNotConfigured.into_status())?;
+            let bearer = danube_core::jwt::parse_bearer_token(token_str)
+                .ok_or_else(|| SecurityError::InvalidToken.into_status())?;
+            let claims = danube_core::jwt::validate_token(bearer, &jwt_config.secret_key)
+                .map_err(|_| SecurityError::InvalidToken.into_status())?;
+            let principal = principal_from_claims(&claims);
+            let ctx = SecurityContext::authenticated(principal, AuthenticationMethod::Jwt);
+
+            // Cache the result for future requests with the same token
+            jwt_cache.insert(token_str.to_string(), ctx.clone());
+            ctx
+        }
     } else {
         return Err(SecurityError::MissingCredentials.into_status());
     };

@@ -210,19 +210,3 @@ message HealthCheckResponse {
     }
     ClientStatus status = 1;
 }
-
-// ============================================================================================
-
-service AuthService {
-    rpc Authenticate (AuthRequest) returns (AuthResponse);
-}
-
-message AuthRequest {
-    string api_key = 1;
-}
-
-message AuthResponse {
-    string token = 1;
-}
-
-// ============================================================================================

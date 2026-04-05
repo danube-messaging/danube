@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use danube_client::{DanubeClient, Producer};
+use danube_client::{DanubeClient, Producer, ProducerOptions};
 use danube_core::message::StreamMessage;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -105,6 +105,8 @@ impl Replicator {
             .new_producer()
             .with_topic(topic_name.to_string())
             .with_name(producer_name)
+            .with_reliable_dispatch()
+            .with_options(ProducerOptions::new(3, 200, 2000))
             .build()?;
         producer.create().await?;
         Ok(producer)

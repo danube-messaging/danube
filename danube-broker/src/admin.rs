@@ -96,7 +96,8 @@ impl DanubeAdminImpl {
         // Always attach the auth interceptor. When mode=none it creates Anonymous
         // contexts that the authorization engine allows unconditionally.
         let auth = self.auth.clone();
-        let interceptor = move |request| authenticate_request(request, &auth);
+        let jwt_cache = crate::security::authn::JwtValidationCache::new();
+        let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
         let server_builder = server_builder
             .add_service(InterceptedService::new(

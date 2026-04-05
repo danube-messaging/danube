@@ -115,13 +115,21 @@ impl BrokerService {
     // The Leader Broker will be informed about the new topic creation and assign the topic to a broker.
     // The selected Broker will be informed through watch mechanism and will host the topic.
     /// Validates topic format, checks local presence and dispatch strategy, and
-    /// optionally triggers cluster auto-create. Returns true if local; otherwise
-    /// returns an error with appropriate retry/redirection semantics.
+    /// optionally triggers cluster auto-create (producer path only).
+    ///
+    /// `allow_auto_create` controls whether this call may create a new topic in
+    /// the cluster when the topic doesn't exist. Only the **producer** path sets
+    /// this to `true`; the consumer path must always pass `false` so it can never
+    /// accidentally create topics.
+    ///
+    /// Returns `Ok(true)` when the topic is served locally.
+    /// Returns an error with retry/redirection semantics otherwise.
     pub(crate) async fn get_topic(
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema_ref: Option<SchemaReference>,
+        allow_auto_create: bool,
     ) -> Result<bool, Status> {
         // Validate topic format
         if !validate_topic_format(topic_name) {
@@ -131,54 +139,59 @@ impl BrokerService {
             )));
         }
 
-        // Fast path: topic is local
+        // Fast path: topic is local — validate and return
         if self.topic_registry.contains_topic(topic_name) {
-            if let Some(req_ds) = dispatch_strategy {
-                if let Some(false) = self.topic_registry.strategies_match(topic_name, req_ds) {
-                    return Err(Status::failed_precondition(
-                        "Producer requested dispatch strategy does not match topic strategy",
-                    ));
-                }
-            }
+            return self
+                .validate_local_topic(topic_name, dispatch_strategy, schema_ref)
+                .await;
+        }
 
-            // Schema reference validation: if producer explicitly sets schema, validate it
-            if let Some(schema_ref) = schema_ref {
-                if let Some(topic) = self.topic_registry.get_topic(topic_name) {
-                    let subject = schema_ref.subject.clone();
+        // If topic exists in namespace but is not local, check if this broker
+        // is the assigned owner. If so, the topic may still be loading after a
+        // Raft assignment (watch event hasn't fired yet) — load it eagerly.
+        let cluster = TopicCluster::new(self.resources.clone());
+        let topic_in_namespace = cluster.exists_topic_in_namespace(topic_name).await;
 
-                    // Check if topic already has a schema subject assigned
-                    let existing_subject = topic.get_schema_subject().await;
+        if topic_in_namespace {
+            // Check if this broker is the assigned owner
+            let assigned_to_self = self
+                .get_topic_broker_id(topic_name)
+                .await
+                .and_then(|id| id.parse::<u64>().ok())
+                .map_or(false, |id| id == self.broker_id);
 
-                    match existing_subject {
-                        Some(existing) => {
-                            // Topic has schema - producer's subject must match
-                            if existing != subject {
-                                return Err(Status::failed_precondition(format!(
-                                    "Topic '{}' uses schema subject '{}', cannot use '{}'. Only admin can change topic schema.",
-                                    topic_name, existing, subject
-                                )));
-                            }
-                            // Subject matches - already set, no action needed
+            if assigned_to_self {
+                // Double-check: the watch may have loaded the topic between
+                // our first check and now.
+                if !self.topic_registry.contains_topic(topic_name) {
+                    // Topic is assigned to us but not loaded yet — eagerly load it
+                    // from the metadata store rather than waiting for the watch event.
+                    match self.topic_manager.ensure_local(topic_name).await {
+                        Ok(_) => {
+                            tracing::info!(
+                                topic = %topic_name,
+                                "eagerly loaded topic assigned to this broker"
+                            );
                         }
-                        None => {
-                            // Topic has no schema yet - first producer assigns it
-                            topic.set_schema_ref(schema_ref).await.map_err(|e| {
-                                Status::failed_precondition(format!(
-                                    "Failed to assign schema '{}' to topic '{}': {}. Ensure schema is registered first.",
-                                    subject, topic_name, e
-                                ))
-                            })?;
+                        Err(e) => {
+                            tracing::warn!(
+                                topic = %topic_name,
+                                error = %e,
+                                "failed to eagerly load topic, falling through to redirect"
+                            );
                         }
                     }
                 }
+
+                // Topic should now be in registry — run the full validation
+                // (dispatch strategy + schema) via the fast path.
+                if self.topic_registry.contains_topic(topic_name) {
+                    return self
+                        .validate_local_topic(topic_name, dispatch_strategy, schema_ref)
+                        .await;
+                }
             }
 
-            return Ok(true);
-        }
-
-        // If topic exists in namespace but is not local, ask client to redo lookup
-        let cluster = TopicCluster::new(self.resources.clone());
-        if cluster.exists_topic_in_namespace(topic_name).await {
             // Count redirect when topic exists but is not local
             let ns = get_nsname_from_topic(topic_name).to_string();
             counter!(
@@ -192,8 +205,9 @@ impl BrokerService {
             ));
         }
 
-        // Auto-create path if enabled
-        if !self.auto_create_topics {
+        // Topic does not exist anywhere in the cluster.
+        // Only the producer path is allowed to auto-create.
+        if !allow_auto_create || !self.auto_create_topics {
             return Err(Status::not_found(format!(
                 "Unable to find the topic: {}",
                 topic_name
@@ -219,6 +233,58 @@ impl BrokerService {
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// Validates a topic that is already in the local registry.
+    /// Checks dispatch strategy match and schema subject compatibility.
+    /// Called from both the fast path and the eager-load path in `get_topic`.
+    async fn validate_local_topic(
+        &self,
+        topic_name: &str,
+        dispatch_strategy: Option<ProtoDispatchStrategy>,
+        schema_ref: Option<SchemaReference>,
+    ) -> Result<bool, Status> {
+        if let Some(req_ds) = dispatch_strategy {
+            if let Some(false) = self.topic_registry.strategies_match(topic_name, req_ds) {
+                return Err(Status::failed_precondition(
+                    "Producer requested dispatch strategy does not match topic strategy",
+                ));
+            }
+        }
+
+        // Schema reference validation: if producer explicitly sets schema, validate it
+        if let Some(schema_ref) = schema_ref {
+            if let Some(topic) = self.topic_registry.get_topic(topic_name) {
+                let subject = schema_ref.subject.clone();
+
+                // Check if topic already has a schema subject assigned
+                let existing_subject = topic.get_schema_subject().await;
+
+                match existing_subject {
+                    Some(existing) => {
+                        // Topic has schema - producer's subject must match
+                        if existing != subject {
+                            return Err(Status::failed_precondition(format!(
+                                "Topic '{}' uses schema subject '{}', cannot use '{}'. Only admin can change topic schema.",
+                                topic_name, existing, subject
+                            )));
+                        }
+                        // Subject matches - already set, no action needed
+                    }
+                    None => {
+                        // Topic has no schema yet - first producer assigns it
+                        topic.set_schema_ref(schema_ref).await.map_err(|e| {
+                            Status::failed_precondition(format!(
+                                "Failed to assign schema '{}' to topic '{}': {}. Ensure schema is registered first.",
+                                subject, topic_name, e
+                            ))
+                        })?;
+                    }
+                }
+            }
+        }
+
+        Ok(true)
     }
 
     /// Returns the list of topic names currently served by this broker.

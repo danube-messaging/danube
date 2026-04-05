@@ -443,6 +443,12 @@ impl ConsumerBuilder {
         self
     }
 
+    /// Sets the configuration options for the consumer, allowing customization of retry behavior.
+    pub fn with_options(mut self, options: ConsumerOptions) -> Self {
+        self.consumer_options = options;
+        self
+    }
+
     /// Creates a new `Consumer` instance using the settings configured in the `ConsumerBuilder`.
     ///
     /// This method performs validation to ensure that all required fields are set before creating the `Consumer`.  Once validation is successful, it constructs and returns a new `Consumer` instance configured with the specified settings.
@@ -481,4 +487,15 @@ pub struct ConsumerOptions {
     pub base_backoff_ms: u64,
     // Maximum backoff cap in milliseconds
     pub max_backoff_ms: u64,
+}
+
+impl ConsumerOptions {
+    /// Create new ConsumerOptions with explicit retry settings.
+    pub fn new(max_retries: usize, base_backoff_ms: u64, max_backoff_ms: u64) -> Self {
+        Self {
+            max_retries,
+            base_backoff_ms,
+            max_backoff_ms,
+        }
+    }
 }

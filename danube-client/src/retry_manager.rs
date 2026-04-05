@@ -58,7 +58,7 @@ impl RetryManager {
         client
             .auth_service
             .insert_token_if_needed(
-                client.cnx_manager.connection_options.token.as_deref(),
+                client.cnx_manager.connection_options.resolve_token(),
                 request,
                 addr,
             )

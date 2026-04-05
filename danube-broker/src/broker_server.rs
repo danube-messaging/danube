@@ -1,4 +1,3 @@
-mod auth_handler;
 mod consumer_handler;
 mod discovery_handler;
 mod health_check_handler;
@@ -11,7 +10,7 @@ use crate::broker_service::BrokerService;
 use crate::security::authn::authenticate_request;
 use crate::security::config::{AuthConfig, AuthMode};
 use danube_core::proto::{
-    auth_service_server::AuthServiceServer, consumer_service_server::ConsumerServiceServer,
+    consumer_service_server::ConsumerServiceServer,
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
@@ -69,14 +68,16 @@ impl DanubeServerImpl {
         let consumer_service = ConsumerServiceServer::new(self.clone());
         let discovery_service = DiscoveryServer::new(self.clone());
         let health_check_service = HealthCheckServer::new(self.clone());
-        let auth_service = AuthServiceServer::new(self.clone());
+
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
         // Always attach the auth interceptor. When mode=none it creates Anonymous
         // contexts that the authorization engine allows unconditionally.
+        // The JWT validation cache avoids HMAC re-computation on hot paths.
         let auth = self.auth.clone();
-        let interceptor = move |request| authenticate_request(request, &auth);
+        let jwt_cache = crate::security::authn::JwtValidationCache::new();
+        let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
         let server_builder = server_builder
             .add_service(InterceptedService::new(
@@ -95,7 +96,6 @@ impl DanubeServerImpl {
                 health_check_service,
                 interceptor.clone(),
             ))
-            .add_service(auth_service)
             .add_service(InterceptedService::new(
                 schema_registry_service,
                 interceptor,

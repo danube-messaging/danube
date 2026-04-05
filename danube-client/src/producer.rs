@@ -469,3 +469,14 @@ pub struct ProducerOptions {
     // Maximum backoff cap in milliseconds
     pub max_backoff_ms: u64,
 }
+
+impl ProducerOptions {
+    /// Create new ProducerOptions with explicit retry settings.
+    pub fn new(max_retries: usize, base_backoff_ms: u64, max_backoff_ms: u64) -> Self {
+        Self {
+            max_retries,
+            base_backoff_ms,
+            max_backoff_ms,
+        }
+    }
+}

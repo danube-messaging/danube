@@ -101,10 +101,23 @@ impl TopicManager {
 
     /// Ensures a topic exists locally by materializing it from metadata store.
     /// Returns the configured dispatch strategy and optional schema subject.
+    /// Idempotent: returns early if the topic is already in the registry.
     pub(crate) async fn ensure_local(
         &self,
         topic_name: &str,
     ) -> Result<(ConfigDispatchStrategy, Option<String>)> {
+        // If already loaded (e.g. by the watch), return existing config
+        if self.topic_registry.contains_topic(topic_name) {
+            let dispatch_strategy = self
+                .resources
+                .topic
+                .get_dispatch_strategy(topic_name)
+                .await
+                .ok_or_else(|| anyhow!("topic exists locally but dispatch strategy is missing"))?;
+            let schema_subject = self.resources.topic.get_schema_subject(topic_name).await;
+            return Ok((dispatch_strategy, schema_subject));
+        }
+
         //get retention strategy from store
         let dispatch_strategy = self.resources.topic.get_dispatch_strategy(topic_name).await;
         if dispatch_strategy.is_none() {

@@ -26,12 +26,42 @@ enum ConnectionStatus {
     Disconnected,
 }
 
-#[derive(Debug, Clone, Default)]
+/// A function that returns a token string, called on every request.
+/// This enables dynamic token refresh (e.g., reading from a file that is
+/// periodically updated by infrastructure like K8s projected volumes).
+pub type TokenSupplier = Arc<dyn Fn() -> String + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub(crate) struct ConnectionOptions {
     pub(crate) tls_config: Option<ClientTlsConfig>,
     pub(crate) token: Option<String>,
+    pub(crate) token_supplier: Option<TokenSupplier>,
     pub(crate) internal_broker: Option<String>,
     pub(crate) use_tls: bool,
+}
+
+impl ConnectionOptions {
+    /// Resolve the current token. If a supplier is set, calls it to get a fresh
+    /// token (enabling runtime rotation). Otherwise falls back to the static token.
+    pub(crate) fn resolve_token(&self) -> Option<String> {
+        if let Some(ref supplier) = self.token_supplier {
+            Some(supplier())
+        } else {
+            self.token.clone()
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnectionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionOptions")
+            .field("tls_config", &self.tls_config)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("token_supplier", &self.token_supplier.as_ref().map(|_| "<supplier>"))
+            .field("internal_broker", &self.internal_broker)
+            .field("use_tls", &self.use_tls)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]

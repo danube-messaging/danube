@@ -54,7 +54,7 @@ impl ProducerService for DanubeServerImpl {
                 .ok();
 
         match service
-            .get_topic(&req.topic_name, requested_strategy, req.schema_ref.clone())
+            .get_topic(&req.topic_name, requested_strategy, req.schema_ref.clone(), true)
             .await
         {
             Ok(_) => trace!(topic = %req.topic_name, "topic found for producer request"),

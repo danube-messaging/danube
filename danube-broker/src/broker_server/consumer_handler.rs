@@ -48,7 +48,7 @@ impl ConsumerService for DanubeServerImpl {
         let service = self.service.as_ref();
 
         // the client is allowed to create the subscription only if the topic is served by this broker
-        match service.get_topic(&req.topic_name, None, None).await {
+        match service.get_topic(&req.topic_name, None, None, false).await {
             Ok(_) => trace!(topic = %req.topic_name, "topic found for consumer request"),
             Err(status) => {
                 debug!(topic = %req.topic_name, error = %status.message(), "topic request failed");
