@@ -207,6 +207,18 @@ async fn handle_command(
                 pending_delivery,
             ).await;
         }
+        DispatcherCommand::AddConsumerKeyShared(c, _filters) => {
+            // KeyShared consumers should not reach shared dispatcher;
+            // treat as regular consumer as fallback.
+            trace!(consumer_id = %c.consumer_id, "ignoring key filters in shared dispatcher");
+            state.add_consumer(c);
+            handle_poll_and_dispatch(
+                state,
+                engine,
+                replicator,
+                pending_delivery,
+            ).await;
+        }
         DispatcherCommand::RemoveConsumer(id) => {
             state.remove_consumer(id);
         }

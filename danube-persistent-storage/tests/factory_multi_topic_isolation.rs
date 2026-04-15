@@ -31,6 +31,7 @@ fn make_msg(topic: &str, i: u64) -> StreamMessage {
         attributes: Default::default(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

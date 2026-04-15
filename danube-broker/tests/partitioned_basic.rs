@@ -28,6 +28,7 @@ async fn run_partitioned_basic(topic_prefix: &str, sub_type: SubType, partitions
         SubType::Exclusive => "cons_part_exclusive",
         SubType::Shared => "cons_part_shared",
         SubType::FailOver => "cons_part_failover",
+        SubType::KeyShared => "cons_part_key_shared",
     };
     let mut consumer = client
         .new_consumer()

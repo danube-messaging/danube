@@ -23,6 +23,11 @@ pub(super) enum DispatcherCommand {
     /// Register new consumer. Becomes active (exclusive) or joins round-robin (shared).
     AddConsumer(Consumer),
 
+    /// Register a Key-Shared consumer with key filter patterns.
+    /// Filters are glob patterns (e.g., "user-*", "eu-west-?").
+    /// Empty filters = accept all keys from hash ring assignment.
+    AddConsumerKeyShared(Consumer, Vec<String>),
+
     /// Unregister consumer by ID. Triggers failover if active consumer removed (exclusive).
     /// Pending messages are not lost - will be resent to another consumer.
     RemoveConsumer(u64),

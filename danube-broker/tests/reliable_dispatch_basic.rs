@@ -28,6 +28,7 @@ async fn run_reliable_basic(topic_prefix: &str, sub_type: SubType) -> Result<()>
         SubType::Exclusive => "cons_rel_exclusive",
         SubType::Shared => "cons_rel_shared",
         SubType::FailOver => "cons_rel_failover",
+        SubType::KeyShared => "cons_rel_key_shared",
     };
     let mut consumer = client
         .new_consumer()

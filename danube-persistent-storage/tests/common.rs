@@ -31,6 +31,7 @@ pub fn make_test_message(
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

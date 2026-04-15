@@ -38,6 +38,7 @@ fn make_test_message(topic_name: &str, offset: u64) -> StreamMessage {
         attributes: Default::default(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

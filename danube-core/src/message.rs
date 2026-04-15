@@ -54,6 +54,8 @@ pub struct StreamMessage {
     // Schema identification from schema registry
     pub schema_id: Option<u64>,
     pub schema_version: Option<u32>,
+    // Routing key for Key-Shared dispatch and application-level keying
+    pub routing_key: Option<String>,
 }
 
 impl StreamMessage {
@@ -62,6 +64,11 @@ impl StreamMessage {
     }
     pub fn add_subscription_name(&mut self, subscription_name: &String) {
         self.subscription_name = Some(subscription_name.into());
+    }
+    /// Returns the effective routing key for dispatch decisions.
+    /// Falls back to producer_name if no explicit routing_key is set.
+    pub fn effective_routing_key(&self) -> &str {
+        self.routing_key.as_deref().unwrap_or(&self.producer_name)
     }
 }
 
@@ -91,6 +98,7 @@ impl From<ProtoStreamMessage> for StreamMessage {
             attributes: proto_stream_msg.attributes,
             schema_id: proto_stream_msg.schema_id,
             schema_version: proto_stream_msg.schema_version,
+            routing_key: proto_stream_msg.routing_key,
         }
     }
 }
@@ -118,6 +126,7 @@ impl From<StreamMessage> for ProtoStreamMessage {
             attributes: stream_msg.attributes,
             schema_id: stream_msg.schema_id,
             schema_version: stream_msg.schema_version,
+            routing_key: stream_msg.routing_key,
         }
     }
 }

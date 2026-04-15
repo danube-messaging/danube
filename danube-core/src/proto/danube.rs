@@ -68,6 +68,11 @@ pub struct ConsumerRequest {
     pub subscription: ::prost::alloc::string::String,
     #[prost(enumeration = "consumer_request::SubscriptionType", tag = "5")]
     pub subscription_type: i32,
+    /// Glob patterns for key-based filtering (optional, KeyShared only).
+    /// Examples: "user-*", "eu-west-?", "orders-premium-*"
+    /// Empty = accept all keys from hash ring assignment.
+    #[prost(string, repeated, tag = "6")]
+    pub key_filters: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Nested message and enum types in `ConsumerRequest`.
 pub mod consumer_request {
@@ -90,6 +95,8 @@ pub mod consumer_request {
         Shared = 1,
         /// Only one consumer (the active consumer) receives messages at any given time.
         Failover = 2,
+        /// Messages with same routing key always go to the same consumer, in order.
+        KeyShared = 3,
     }
     impl SubscriptionType {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -101,6 +108,7 @@ pub mod consumer_request {
                 Self::Exclusive => "Exclusive",
                 Self::Shared => "Shared",
                 Self::Failover => "Failover",
+                Self::KeyShared => "KeyShared",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -109,6 +117,7 @@ pub mod consumer_request {
                 "Exclusive" => Some(Self::Exclusive),
                 "Shared" => Some(Self::Shared),
                 "Failover" => Some(Self::Failover),
+                "KeyShared" => Some(Self::KeyShared),
                 _ => None,
             }
         }
@@ -166,6 +175,10 @@ pub struct StreamMessage {
     /// Schema version number
     #[prost(uint32, optional, tag = "9")]
     pub schema_version: ::core::option::Option<u32>,
+    /// Routing key for Key-Shared dispatch. Set by producer via send_with_key().
+    /// Carried through to consumers for application-level use.
+    #[prost(string, optional, tag = "10")]
+    pub routing_key: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Unique ID of the message
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

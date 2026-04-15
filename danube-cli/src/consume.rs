@@ -50,6 +50,7 @@ pub enum SubTypeArg {
     Exclusive,
     Shared,
     FailOver,
+    KeyShared,
 }
 
 const EXAMPLES_TEXT: &str = r#"
@@ -291,6 +292,7 @@ impl From<SubTypeArg> for SubType {
             SubTypeArg::Exclusive => SubType::Exclusive,
             SubTypeArg::Shared => SubType::Shared,
             SubTypeArg::FailOver => SubType::FailOver,
+            SubTypeArg::KeyShared => SubType::KeyShared,
         }
     }
 }

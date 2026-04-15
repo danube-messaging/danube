@@ -56,6 +56,7 @@ fn make_msg(req_id: u64, topic_off: u64, topic: &str) -> StreamMessage {
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

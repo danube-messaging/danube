@@ -9,6 +9,7 @@
 //! - [`commands`] — DispatcherCommand enum (internal command protocol)
 //! - [`exclusive`] — Exclusive/Failover dispatcher (single active consumer)
 //! - [`shared`] — Shared dispatcher (round-robin across consumers)
+//! - [`key_shared`] — Key-Shared dispatcher (per-key ordering, parallel keys)
 
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
@@ -26,6 +27,7 @@ use crate::{
 
 pub(crate) mod commands;
 pub(crate) mod exclusive;
+pub(crate) mod key_shared;
 pub(crate) mod metrics;
 pub(crate) mod pending_delivery;
 pub(crate) mod poison_handler;
@@ -126,6 +128,27 @@ impl Dispatcher {
         }
     }
 
+    /// Reliable Key-Shared (ack-gating, per-key ordering, heartbeat).
+    pub(crate) fn reliable_key_shared(
+        engine: SubscriptionEngine,
+        replicator: Option<Arc<Replicator>>,
+    ) -> Self {
+        let (control_tx, control_rx) = mpsc::channel(128); // larger buffer for multi-key dispatch
+        let (ready_tx, ready_rx) = watch::channel(false);
+        key_shared::reliable::start(
+            engine,
+            replicator,
+            control_rx,
+            ready_tx,
+        );
+        Self {
+            handle: DispatcherHandle::Reliable {
+                control_tx,
+                ready_rx,
+            },
+        }
+    }
+
     // ── Public API (written once) ───────────────────────────────────────
 
     /// Block until the dispatcher is ready.
@@ -210,6 +233,24 @@ impl Dispatcher {
                 .send(DispatcherCommand::AddConsumer(consumer))
                 .await
                 .map_err(|_| anyhow!("Failed to send add consumer command")),
+        }
+    }
+
+    /// Register a Key-Shared consumer with key filter patterns.
+    pub(crate) async fn add_consumer_with_filters(
+        &self,
+        consumer: Consumer,
+        key_filters: Vec<String>,
+    ) -> Result<()> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => control_tx
+                .send(DispatcherCommand::AddConsumerKeyShared(consumer, key_filters))
+                .await
+                .map_err(|_| anyhow!("Failed to send add Key-Shared consumer command")),
+            _ => {
+                // Fallback for non-reliable: ignore filters, add normally
+                self.add_consumer(consumer).await
+            }
         }
     }
 
