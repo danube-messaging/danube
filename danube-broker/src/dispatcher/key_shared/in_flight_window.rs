@@ -202,14 +202,7 @@ impl InFlightWindow {
         freed_keys
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.in_flight.is_empty() && self.blocked_queue.is_empty()
-    }
-
-    pub(crate) fn in_flight_count(&self) -> usize {
-        self.in_flight.len()
-    }
-
+    #[cfg(test)]
     pub(crate) fn blocked_count(&self) -> usize {
         self.blocked_queue.len()
     }
