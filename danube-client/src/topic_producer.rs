@@ -221,6 +221,7 @@ impl TopicProducer {
         &mut self,
         data: &[u8],
         attributes: Option<&HashMap<String, String>>,
+        routing_key: Option<&str>,
     ) -> Result<u64> {
         let (stream_client, producer_id) = match &self.state {
             ProducerState::Ready {
@@ -256,6 +257,7 @@ impl TopicProducer {
             attributes: attributes.cloned().unwrap_or_default(),
             schema_id: self.schema_id,
             schema_version: self.schema_version,
+            routing_key: routing_key.map(|k| k.to_string()),
         };
 
         let req: ProtoStreamMessage = send_message.into();

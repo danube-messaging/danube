@@ -113,6 +113,10 @@ pub(crate) struct SubscriptionOptions {
     pub(crate) subscription_type: i32, // should be moved to SubscriptionType
     pub(crate) consumer_id: Option<u64>,
     pub(crate) consumer_name: String,
+    /// Key filter patterns for KeyShared subscriptions (glob syntax).
+    /// Empty = accept all keys from hash ring assignment.
+    #[serde(default)]
+    pub(crate) key_filters: Vec<String>,
 }
 
 impl Subscription {
@@ -162,8 +166,14 @@ impl Subscription {
         );
 
         let dispatcher = self.dispatcher.as_mut().unwrap();
-        // Add the consumer to the dispatcher
-        dispatcher.add_consumer(consumer.clone()).await?;
+        // Add the consumer to the dispatcher — use key-filter-aware path for KeyShared
+        if options.subscription_type == 3 {
+            dispatcher
+                .add_consumer_with_filters(consumer.clone(), options.key_filters.clone())
+                .await?;
+        } else {
+            dispatcher.add_consumer(consumer.clone()).await?;
+        }
 
         // Insert the consumer into the subscription's consumer list
         self.consumers.insert(consumer_id, consumer);
@@ -205,6 +215,9 @@ impl Subscription {
 
                 // Failover
                 2 => Dispatcher::non_reliable_exclusive(),
+
+                // KeyShared (non-reliable: use shared as fallback)
+                3 => Dispatcher::non_reliable_shared(),
 
                 _ => {
                     return Err(anyhow!("Should not get here"));
@@ -277,6 +290,28 @@ impl Subscription {
                             engine,
                             replicator.clone(),
                         );
+                        dispatcher
+                    }
+
+                    // KeyShared
+                    3 => {
+                        let tr = topic_resources
+                            .clone()
+                            .expect("progress resources must be provided for reliable dispatcher");
+                        let engine = SubscriptionEngine::new_with_progress(
+                            options.subscription_name.clone(),
+                            self.topic_name.clone(),
+                            Arc::new(ts.clone()),
+                            tr,
+                            sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
+                            self.dispatch_rate_limiter.clone(),
+                            self.failure_policy.clone(),
+                        );
+                        let dispatcher = Dispatcher::reliable_key_shared(
+                            engine,
+                            replicator.clone(),
+                        );
+                        dispatcher.ready().await;
                         dispatcher
                     }
 

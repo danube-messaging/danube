@@ -204,12 +204,14 @@ async fn handle_command(
                 "consumer added to reliable exclusive dispatcher"
             );
             state.add_consumer(c);
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
+        }
+        DispatcherCommand::AddConsumerKeyShared(c, _filters) => {
+            // KeyShared consumers should not reach exclusive dispatcher;
+            // treat as regular consumer as fallback.
+            trace!(consumer_id = %c.consumer_id, "ignoring key filters in exclusive dispatcher");
+            state.add_consumer(c);
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::RemoveConsumer(id) => {
             state.remove_consumer(id);
@@ -222,53 +224,28 @@ async fn handle_command(
         }
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(engine, ack_msg, pending_delivery).await;
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
             handle_nack(engine, &metric_context, nack_msg, pending_delivery);
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::RetryNow(reason) => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
             handle_retry_now(engine, &metric_context, reason, pending_delivery);
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::AckTimedOut => {
             let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
             handle_ack_timed_out(engine, &metric_context, pending_delivery);
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::PollAndDispatch => {
             // Increment notifier poll counter (fast path)
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
 
-            handle_poll_and_dispatch(
-                state,
-                engine,
-                replicator,
-                pending_delivery,
-            ).await;
+            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
         }
         DispatcherCommand::FlushProgressNow => {
             if let Err(e) = engine.flush_progress_now().await {
@@ -464,13 +441,7 @@ async fn handle_poll_and_dispatch(
             }
         }
 
-        match handle_retry_exhausted_pending(
-            engine,
-            replicator,
-            pending_delivery,
-        )
-        .await
-        {
+        match handle_retry_exhausted_pending(engine, replicator, pending_delivery).await {
             Ok(true) => return,
             Ok(false) => {}
             Err(e) => {
@@ -598,11 +569,6 @@ async fn handle_heartbeat(
             "heartbeat detected lag"
         );
         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
-        handle_poll_and_dispatch(
-            state,
-            engine,
-            replicator,
-            pending_delivery,
-        ).await;
+        handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
     }
 }

@@ -355,6 +355,47 @@ impl SubscriptionEngine {
         Ok(())
     }
 
+    /// Advance the subscription cursor to a known-safe offset.
+    ///
+    /// Used by Key-Shared dispatcher which manages its own ack bitmap via `InFlightWindow`.
+    /// The safe_cursor guarantee: ALL offsets <= safe_cursor are confirmed
+    /// acked or skipped. This prevents cursor jumps past unacked messages.
+    ///
+    /// Unlike `on_acked()` which accepts any single message's offset,
+    /// this method only advances the cursor forward and uses the same
+    /// debounced flush logic for metadata persistence.
+    pub(crate) async fn advance_cursor_to(&mut self, offset: u64) -> Result<()> {
+        // Only advance forward
+        if self.last_acked.map(|la| offset > la).unwrap_or(true) {
+            self.last_acked = Some(offset);
+            self.dirty = true;
+
+            // Debounced flush: persist at most every `flush_interval`
+            if let Some(res) = &self.progress_resources {
+                let now = Instant::now();
+                if self.dirty
+                    && now.duration_since(self.last_flush_at) >= self.sub_progress_flush_interval
+                {
+                    if let Some(off) = self.last_acked {
+                        if res
+                            .set_subscription_cursor(
+                                &self._subscription_name,
+                                self.topic_name.as_deref().unwrap_or(""),
+                                off,
+                            )
+                            .await
+                            .is_ok()
+                        {
+                            self.last_flush_at = now;
+                            self.dirty = false;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Immediately flush subscription cursor to metadata.
     ///
     /// Bypasses the debounce interval to force persistence.

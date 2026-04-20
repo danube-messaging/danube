@@ -115,6 +115,7 @@ impl ConsumerService for DanubeServerImpl {
             subscription_type: req.subscription_type,
             consumer_id: None,
             consumer_name: req.consumer_name.clone(),
+            key_filters: req.key_filters,
         };
 
         let sub_name = subscription_options.subscription_name.clone();
@@ -129,6 +130,16 @@ impl ConsumerService for DanubeServerImpl {
                     &req.topic_name, err
                 ))
             })?;
+
+        // Subscribe-time warning: KeyShared on partitioned topic
+        if req.subscription_type == 3 && req.topic_name.contains("-part-") {
+            warn!(
+                topic = %req.topic_name,
+                subscription = %sub_name,
+                "KeyShared subscription on partitioned topic. \
+                 Producers MUST use send_with_key() for per-key ordering guarantees."
+            );
+        }
 
         info!(
             consumer_id = %consumer_id,

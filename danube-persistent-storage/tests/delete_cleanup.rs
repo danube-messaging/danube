@@ -25,6 +25,7 @@ fn make_message(topic_name: &str, topic_offset: u64) -> StreamMessage {
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

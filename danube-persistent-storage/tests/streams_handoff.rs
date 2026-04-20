@@ -29,6 +29,7 @@ fn make_msg_tagged(i: u64, topic: &str, tag: &str) -> StreamMessage {
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn make_msg_bin(topic: &str, off: u64, payload: &[u8]) -> StreamMessage {
         attributes: Default::default(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

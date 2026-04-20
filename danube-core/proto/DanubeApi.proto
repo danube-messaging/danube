@@ -74,12 +74,17 @@ message ConsumerRequest {
         Exclusive = 0; // Only one consumer can subscribe to the topic at a time.
         Shared = 1 ; // Multiple consumers can subscribe to the topic concurrently.
         Failover = 2; // Only one consumer (the active consumer) receives messages at any given time.
+        KeyShared = 3; // Messages with same routing key always go to the same consumer, in order.
     }
     uint64 request_id = 1;
     string topic_name = 2;
     string consumer_name = 3;
     string subscription = 4;
     SubscriptionType subscription_type = 5;
+    // Glob patterns for key-based filtering (optional, KeyShared only).
+    // Examples: "user-*", "eu-west-?", "orders-premium-*"
+    // Empty = accept all keys from hash ring assignment.
+    repeated string key_filters = 6;
 }
 
 // Create Consumer response
@@ -113,6 +118,9 @@ message StreamMessage {
     // NEW: Schema identification for registry-based schemas
     optional uint64 schema_id = 8;      // Global schema ID from registry
     optional uint32 schema_version = 9; // Schema version number
+    // Routing key for Key-Shared dispatch. Set by producer via send_with_key().
+    // Carried through to consumers for application-level use.
+    optional string routing_key = 10;
 }
 
 // Unique ID of the message

@@ -43,6 +43,8 @@ pub(crate) struct TopicConsumer {
     subscription: String,
     // the type of the subscription, that can be Shared and Exclusive
     subscription_type: SubType,
+    // key filter patterns for KeyShared subscriptions
+    key_filters: Vec<String>,
     // other configurable options for the consumer
     consumer_options: ConsumerOptions,
     // unique identifier for every request sent by consumer
@@ -68,6 +70,7 @@ impl TopicConsumer {
         consumer_name: String,
         subscription: String,
         sub_type: Option<SubType>,
+        key_filters: Vec<String>,
         consumer_options: ConsumerOptions,
     ) -> Self {
         let subscription_type = sub_type.unwrap_or(SubType::Shared);
@@ -87,6 +90,7 @@ impl TopicConsumer {
             consumer_name,
             subscription,
             subscription_type,
+            key_filters,
             consumer_options,
             request_id: AtomicU64::new(0),
             state: ConsumerState::Disconnected,
@@ -139,6 +143,7 @@ impl TopicConsumer {
             consumer_name: self.consumer_name.clone(),
             subscription: self.subscription.clone(),
             subscription_type: self.subscription_type.clone() as i32,
+            key_filters: self.key_filters.clone(),
         };
 
         let mut request = tonic::Request::new(consumer_request);

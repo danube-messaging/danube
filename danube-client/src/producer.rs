@@ -136,7 +136,7 @@ impl Producer {
         loop {
             let send_result = {
                 let mut producers = self.producers.lock().await;
-                producers[partition].send(&data, attributes.as_ref()).await
+                producers[partition].send(&data, attributes.as_ref(), None).await
             };
 
             match send_result {
@@ -171,6 +171,70 @@ impl Producer {
         }
     }
 
+    /// Sends a message with a routing key for Key-Shared subscriptions.
+    ///
+    /// For partitioned topics: hashes the routing key to a specific partition,
+    /// ensuring all messages with the same key go to the same partition's WAL.
+    /// For non-partitioned topics: simply tags the routing key on the message.
+    ///
+    /// All messages with the same routing key are guaranteed to be delivered
+    /// to the same consumer, in order, within a Key-Shared subscription.
+    pub async fn send_with_key(
+        &self,
+        data: Vec<u8>,
+        attributes: Option<HashMap<String, String>>,
+        routing_key: &str,
+    ) -> Result<u64> {
+        // Key-based partition selection (vs round-robin in send())
+        let partition = self.select_partition_for_key(routing_key);
+        let retry_manager = RetryManager::new(
+            self.producer_options.max_retries,
+            self.producer_options.base_backoff_ms,
+            self.producer_options.max_backoff_ms,
+        );
+
+        let mut attempts = 0;
+
+        loop {
+            let send_result = {
+                let mut producers = self.producers.lock().await;
+                producers[partition]
+                    .send(&data, attributes.as_ref(), Some(routing_key))
+                    .await
+            };
+
+            match send_result {
+                Ok(sequence_id) => return Ok(sequence_id),
+
+                // Unrecoverable: attempt full recreation
+                Err(ref error) if matches!(error, DanubeError::Unrecoverable(_)) => {
+                    warn!(error = ?error, "unrecoverable error, attempting producer recreation");
+                    self.recreate_producer(partition).await?;
+                    attempts = 0;
+                }
+
+                // Retryable: backoff, then escalate to lookup+recreate after max retries
+                Err(error) if retry_manager.is_retryable_error(&error) => {
+                    attempts += 1;
+                    if attempts > retry_manager.max_retries() {
+                        warn!("max retries exceeded, attempting broker lookup and recreation");
+                        self.lookup_and_recreate(partition, error).await?;
+                        attempts = 0;
+                        continue;
+                    }
+                    let backoff = retry_manager.calculate_backoff(attempts - 1);
+                    tokio::time::sleep(backoff).await;
+                }
+
+                // Non-retryable: bail
+                Err(error) => {
+                    error!(error = ?error, "non-retryable error in producer send_with_key");
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     /// Select the next partition using round-robin, or 0 for non-partitioned topics.
     fn select_partition(&self) -> usize {
         match self.partitions {
@@ -179,6 +243,20 @@ impl Producer {
                 .as_ref()
                 .expect("message_router must be initialized for partitioned topics")
                 .round_robin(),
+            None => 0,
+        }
+    }
+
+    /// Select partition by hashing the routing key.
+    /// Ensures all messages with the same key go to the same partition.
+    /// For non-partitioned topics, returns 0.
+    fn select_partition_for_key(&self, routing_key: &str) -> usize {
+        match self.partitions {
+            Some(_) => self
+                .message_router
+                .as_ref()
+                .expect("message_router must be initialized for partitioned topics")
+                .key_route(routing_key),
             None => 0,
         }
     }

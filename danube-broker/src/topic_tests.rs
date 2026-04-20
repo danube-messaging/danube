@@ -113,6 +113,7 @@ fn sub_opts(sub: &str, consumer: &str, sub_type: i32) -> SubscriptionOptions {
         subscription_type: sub_type,
         consumer_id: None,
         consumer_name: consumer.to_string(),
+        key_filters: Vec::new(),
     }
 }
 
@@ -324,6 +325,7 @@ async fn policy_limit_max_message_size() -> AnyResult<()> {
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     };
 
     let err = topic.publish_message_async(msg).await.unwrap_err();
@@ -347,6 +349,7 @@ fn make_msg(i: u64, topic: &str) -> StreamMessage {
         attributes: HashMap::new(),
         schema_id: None,
         schema_version: None,
+            routing_key: None,
     }
 }
 

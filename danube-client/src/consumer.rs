@@ -33,6 +33,7 @@ pub enum SubType {
     Exclusive,
     Shared,
     FailOver,
+    KeyShared,
 }
 
 /// Consumer represents a message consumer that subscribes to a topic and receives messages.
@@ -53,6 +54,8 @@ pub struct Consumer {
     subscription_type: SubType,
     // other configurable options for the consumer
     consumer_options: ConsumerOptions,
+    // key filter patterns for KeyShared subscriptions
+    key_filters: Vec<String>,
     // shutdown flag and task handles for graceful close
     shutdown: Arc<AtomicBool>,
     task_handles: Vec<JoinHandle<()>>,
@@ -66,6 +69,7 @@ impl Consumer {
         subscription: String,
         sub_type: Option<SubType>,
         consumer_options: ConsumerOptions,
+        key_filters: Vec<String>,
     ) -> Self {
         let subscription_type = sub_type.unwrap_or(SubType::Shared);
 
@@ -77,6 +81,7 @@ impl Consumer {
             subscription,
             subscription_type,
             consumer_options,
+            key_filters,
             shutdown: Arc::new(AtomicBool::new(false)),
             task_handles: Vec::new(),
         }
@@ -104,6 +109,7 @@ impl Consumer {
             let subscription = self.subscription.clone();
             let subscription_type = self.subscription_type.clone();
             let consumer_options = self.consumer_options.clone();
+            let key_filters = self.key_filters.clone();
             let client = self.client.clone();
 
             let task = tokio::spawn(async move {
@@ -113,6 +119,7 @@ impl Consumer {
                     consumer_name,
                     subscription,
                     Some(subscription_type),
+                    key_filters,
                     consumer_options,
                 );
                 match topic_consumer.subscribe().await {
@@ -378,6 +385,7 @@ pub struct ConsumerBuilder {
     subscription: Option<String>,
     subscription_type: Option<SubType>,
     consumer_options: ConsumerOptions,
+    key_filters: Vec<String>,
 }
 
 impl ConsumerBuilder {
@@ -389,6 +397,7 @@ impl ConsumerBuilder {
             subscription: None,
             subscription_type: None,
             consumer_options: ConsumerOptions::default(),
+            key_filters: Vec::new(),
         }
     }
 
@@ -449,6 +458,19 @@ impl ConsumerBuilder {
         self
     }
 
+    /// Add a key filter pattern for KeyShared subscriptions.
+    /// Uses glob syntax: "user-*", "eu-west-?", "*"
+    pub fn with_key_filter(mut self, pattern: impl Into<String>) -> Self {
+        self.key_filters.push(pattern.into());
+        self
+    }
+
+    /// Add multiple key filter patterns for KeyShared subscriptions.
+    pub fn with_key_filters(mut self, patterns: Vec<String>) -> Self {
+        self.key_filters.extend(patterns);
+        self
+    }
+
     /// Creates a new `Consumer` instance using the settings configured in the `ConsumerBuilder`.
     ///
     /// This method performs validation to ensure that all required fields are set before creating the `Consumer`.  Once validation is successful, it constructs and returns a new `Consumer` instance configured with the specified settings.
@@ -473,6 +495,7 @@ impl ConsumerBuilder {
             subscription,
             self.subscription_type,
             self.consumer_options,
+            self.key_filters,
         ))
     }
 }
