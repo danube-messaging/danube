@@ -122,15 +122,17 @@ async fn handle_command(
 ) {
     match cmd {
         DispatcherCommand::AddConsumerKeyShared(c, filters) => {
-            trace!(consumer_id = %c.consumer_id, filters = ?filters, "key-shared consumer added");
+            trace!(consumer_id = %c.consumer_id, filters = ?filters, total = state.consumers.len() + 1, "key-shared consumer added");
             state.add_consumer(c, filters);
-            handle_poll_and_dispatch(state, engine, window).await;
+            // NOTE: Do NOT call handle_poll_and_dispatch here.
+            // poll_next() blocks on the WAL stream when no messages exist,
+            // which prevents subsequent AddConsumer commands from being processed.
+            // Dispatch will be triggered by PollAndDispatch when messages arrive.
         }
         DispatcherCommand::AddConsumer(c) => {
             // Fallback: add without filters (accepts all keys)
-            trace!(consumer_id = %c.consumer_id, "key-shared consumer added (no filters)");
+            trace!(consumer_id = %c.consumer_id, total = state.consumers.len() + 1, "key-shared consumer added (no filters)");
             state.add_consumer(c, Vec::new());
-            handle_poll_and_dispatch(state, engine, window).await;
         }
         DispatcherCommand::RemoveConsumer(id) => {
             // Free any in-flight keys held by this consumer
@@ -150,20 +152,20 @@ async fn handle_command(
         }
         DispatcherCommand::MessageAcked(ack_msg) => {
             handle_ack(state, engine, ack_msg, window).await;
-            handle_poll_and_dispatch(state, engine, window).await;
+            // NOTE: do NOT call handle_poll_and_dispatch here.
+            // handle_ack already calls dispatch_unblocked for freed keys.
+            // Polling new messages is driven by PollAndDispatch events.
         }
         DispatcherCommand::MessageNacked(nack_msg) => {
             handle_nack(engine, nack_msg, window);
-            handle_poll_and_dispatch(state, engine, window).await;
+            // Retry of nack'd messages handled by heartbeat watchdog
         }
         DispatcherCommand::RetryNow(_reason) => {
-            // For Key-Shared, retry-now triggers a general dispatch attempt
-            handle_poll_and_dispatch(state, engine, window).await;
+            dispatch_unblocked(state, engine, window).await;
         }
         DispatcherCommand::AckTimedOut => {
             handle_ack_timeouts(engine, window);
             dispatch_unblocked(state, engine, window).await;
-            handle_poll_and_dispatch(state, engine, window).await;
         }
         DispatcherCommand::PollAndDispatch => {
             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
@@ -324,92 +326,94 @@ async fn dispatch_unblocked(
 
 /// Core dispatch logic: poll messages from WAL and dispatch to consumers via key hash.
 ///
-/// Unlike shared dispatcher which has a single pending slot, this polls multiple messages
-/// into the InFlightWindow, respecting per-key blocking and window capacity.
+/// Unlike the original while-loop approach, this polls ONE message per call.
+/// The WAL stream is a live BroadcastStream that blocks when no data is available;
+/// a while loop over poll_next would stall the entire event loop and prevent
+/// processing of ack/nack commands. Each PollAndDispatch wake (one per published
+/// message) triggers exactly one poll, matching the shared/exclusive reliable
+/// dispatcher pattern.
 async fn handle_poll_and_dispatch(
     state: &mut KeySharedConsumerState,
     engine: &mut SubscriptionEngine,
     window: &mut InFlightWindow,
 ) {
-    if state.is_empty() {
+    if state.is_empty() || !window.has_capacity() {
         return;
     }
 
     let failure_policy = engine.failure_policy();
     let ack_timeout = Duration::from_millis(failure_policy.ack_timeout_ms);
 
-    // Poll multiple messages while window has capacity
-    while window.has_capacity() {
-        // Check rate limiter
-        if let Some(limiter) = &engine.dispatch_rate_limiter {
-            if !limiter.try_acquire(1).await {
-                break;
-            }
+    // Check rate limiter
+    if let Some(limiter) = &engine.dispatch_rate_limiter {
+        if !limiter.try_acquire(1).await {
+            return;
         }
+    }
 
-        let next_message = match engine.poll_next().await {
-            Ok(msg_opt) => msg_opt,
-            Err(e) => {
-                warn!(error = %e, "poll_next error in Key-Shared dispatcher");
-                break;
-            }
-        };
+    // Poll ONE message from the WAL stream
+    let next_message = match engine.poll_next().await {
+        Ok(msg_opt) => msg_opt,
+        Err(e) => {
+            warn!(error = %e, "poll_next error in Key-Shared dispatcher");
+            return;
+        }
+    };
 
-        let msg = match next_message {
-            Some(msg) => msg,
-            None => break, // caught up with WAL
-        };
+    let msg = match next_message {
+        Some(msg) => msg,
+        None => return, // caught up with WAL
+    };
 
-        let offset = msg.msg_id.topic_offset;
-        let key = msg.effective_routing_key().to_string();
-        window.record_polled(offset);
+    let offset = msg.msg_id.topic_offset;
+    let key = msg.effective_routing_key().to_string();
+    window.record_polled(offset);
 
-        // 1. Filter check: any consumer wants this key?
-        let consumer_idx = match state.select_consumer(&key) {
-            Some(idx) => idx,
-            None => {
-                // No consumer accepts this key → skip, advance cursor
-                if let Some(safe) = window.on_skipped(offset) {
-                    if let Err(e) = engine.advance_cursor_to(safe).await {
-                        warn!(error = %e, "advance_cursor_to failed on skip");
-                    }
+    // 1. Filter check: any consumer wants this key?
+    let consumer_idx = match state.select_consumer(&key) {
+        Some(idx) => idx,
+        None => {
+            // No consumer accepts this key → skip, advance cursor
+            if let Some(safe) = window.on_skipped(offset) {
+                if let Err(e) = engine.advance_cursor_to(safe).await {
+                    warn!(error = %e, "advance_cursor_to failed on skip");
                 }
-                continue;
             }
-        };
-
-        // 2. Key blocking check: is this key already in-flight?
-        if window.is_key_active(&key) {
-            window.push_blocked(msg);
-            continue;
+            return;
         }
+    };
 
-        // 3. Dispatch!
-        let consumer = state.get_consumer_mut(consumer_idx);
-        if !consumer.get_status().await {
-            // Consumer unhealthy — block the message for retry on heartbeat
-            window.push_blocked(msg);
-            continue;
+    // 2. Key blocking check: is this key already in-flight?
+    if window.is_key_active(&key) {
+        window.push_blocked(msg);
+        return;
+    }
+
+    // 3. Dispatch!
+    let consumer = state.get_consumer_mut(consumer_idx);
+    if !consumer.get_status().await {
+        // Consumer unhealthy — block the message for retry on heartbeat
+        window.push_blocked(msg);
+        return;
+    }
+
+    let mut delivery = PendingDelivery::new(msg.clone());
+    let consumer_id = consumer.consumer_id;
+
+    match consumer.send_message(msg).await {
+        Ok(()) => {
+            delivery.on_send_attempt(consumer_id, ack_timeout);
+            window.mark_dispatched(offset, key, consumer_id, delivery);
         }
-
-        let mut delivery = PendingDelivery::new(msg.clone());
-        let consumer_id = consumer.consumer_id;
-
-        match consumer.send_message(msg).await {
-            Ok(()) => {
-                delivery.on_send_attempt(consumer_id, ack_timeout);
-                window.mark_dispatched(offset, key, consumer_id, delivery);
-            }
-            Err(e) => {
-                warn!(
-                    offset = %offset,
-                    consumer_id = %consumer_id,
-                    error = %e,
-                    "Failed to send message to Key-Shared consumer"
-                );
-                // Put back for retry
-                window.push_blocked(delivery.message);
-            }
+        Err(e) => {
+            warn!(
+                offset = %offset,
+                consumer_id = %consumer_id,
+                error = %e,
+                "Failed to send message to Key-Shared consumer"
+            );
+            // Put back for retry
+            window.push_blocked(delivery.message);
         }
     }
 }

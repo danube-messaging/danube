@@ -156,12 +156,23 @@ impl KeySharedConsumerState {
 }
 
 /// FNV-1a hash producing a 32-bit value for ring placement.
-/// Uses the standard 64-bit FNV-1a and folds to 32 bits via xor-folding
-/// for better distribution than a simple truncation.
+/// Uses the standard 64-bit FNV-1a and folds to 32 bits via xor-folding,
+/// then applies a murmur3 finalizer for proper avalanche (bit mixing).
+///
+/// The finalizer is critical: without it, strings sharing a long prefix
+/// (e.g., large consumer IDs like "98765432101234-0" vs "98765432101234-1")
+/// produce tightly clustered 32-bit values, breaking ring distribution.
 pub(crate) fn fnv1a_hash_32(key: &str) -> u32 {
     let h64 = fnv1a_hash_64(key);
     // XOR-fold 64→32: combines upper and lower halves
-    ((h64 >> 32) ^ h64) as u32
+    let mut h = ((h64 >> 32) ^ h64) as u32;
+    // Murmur3 32-bit finalizer for full avalanche
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85ebca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2ae35);
+    h ^= h >> 16;
+    h
 }
 
 /// FNV-1a 64-bit hash used internally for 32-bit xor-folding.
