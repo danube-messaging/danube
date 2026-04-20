@@ -12,7 +12,6 @@ extern crate danube_client;
 use anyhow::{bail, Context, Result};
 use danube_client::{DanubeClient, SubType};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
