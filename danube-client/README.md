@@ -9,16 +9,18 @@ An async Rust client library for interacting with Danube Messaging platform.
 ### 📤 Producer Capabilities
 
 - **Basic Messaging** - Send messages with byte payloads and optional key-value attributes
+- **Key-Based Routing** - Tag messages with routing keys via `send_with_key()` for key-affinity dispatch
 - **Partitioned Topics** - Distribute messages across multiple partitions for horizontal scaling
 - **Reliable Dispatch** - Guaranteed message delivery with persistence (WAL + cloud storage)
-- **Schema Integration** - Type-safe messaging with automatic validation (Bytes, String, Number,Avro, JSON Schema, Protobuf)
+- **Schema Integration** - Type-safe messaging with automatic validation (Bytes, String, Number, Avro, JSON Schema, Protobuf)
 
 ### 📥 Consumer Capabilities
 
-- **Flexible Subscriptions** - Three subscription types for different use cases:
+- **Flexible Subscriptions** - Four subscription types for different use cases:
   - **Exclusive** - Single active consumer, guaranteed ordering
   - **Shared** - Load balancing across multiple consumers, parallel processing
   - **Failover** - High availability with automatic standby promotion
+  - **Key-Shared** - Key-affinity routing with per-key ordering and optional key filtering
 - **Message Acknowledgment** - Reliable message processing with at-least-once delivery
 - **Partitioned Consumption** - Automatic handling of messages from all partitions
 - **Batch Processing** - Efficient batch consumption for high-throughput scenarios
@@ -108,6 +110,52 @@ while let Some(message) = message_stream.recv().await {
         Err(e) => println!("Failed to convert Payload to String: {}", e),
     }
 }
+```
+
+### Key-Shared Producer & Consumer
+
+Key-Shared subscriptions route messages by key — all messages with the same routing key are delivered to the same consumer, guaranteeing per-key ordering while distributing load across consumers.
+
+```rust
+// Producer: tag each message with a routing key
+let mut producer = client
+    .new_producer()
+    .with_topic("/default/orders")
+    .with_name("orders_producer")
+    .with_reliable_dispatch()
+    .build()?;
+
+producer.create().await?;
+
+// All "payment" messages go to the same consumer
+producer.send_with_key(data, None, "payment").await?;
+producer.send_with_key(data, None, "shipping").await?;
+```
+
+```rust
+// Consumer: automatic key distribution (no filters)
+let mut consumer = client
+    .new_consumer()
+    .with_topic("/default/orders")
+    .with_consumer_name("worker_1")
+    .with_subscription("orders_sub")
+    .with_subscription_type(SubType::KeyShared)
+    .build()?;
+
+consumer.subscribe().await?;
+
+// Consumer with key filters: only receive matching keys
+let mut payments_consumer = client
+    .new_consumer()
+    .with_topic("/default/orders")
+    .with_consumer_name("payments_worker")
+    .with_subscription("orders_sub")
+    .with_subscription_type(SubType::KeyShared)
+    .with_key_filter("payment")    // exact match
+    .with_key_filter("invoice-*")  // glob pattern
+    .build()?;
+
+payments_consumer.subscribe().await?;
 ```
 
 ## Advanced Features
