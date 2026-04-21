@@ -45,6 +45,7 @@ use subscription_engine::SubscriptionEngine;
 enum DispatcherHandle {
     NonReliableExclusive(Arc<Mutex<exclusive::ExclusiveConsumerState>>),
     NonReliableShared(Arc<Mutex<shared::SharedConsumerState>>),
+    NonReliableKeyShared(Arc<Mutex<key_shared::consumer_state::KeySharedConsumerState>>),
     Reliable {
         control_tx: mpsc::Sender<DispatcherCommand>,
         ready_rx: watch::Receiver<bool>,
@@ -82,6 +83,15 @@ impl Dispatcher {
         Self {
             handle: DispatcherHandle::NonReliableShared(Arc::new(Mutex::new(
                 shared::SharedConsumerState::new(Arc::new(AtomicUsize::new(0))),
+            ))),
+        }
+    }
+
+    /// Non-reliable Key-Shared (fire-and-forget, key-based routing).
+    pub(crate) fn non_reliable_key_shared() -> Self {
+        Self {
+            handle: DispatcherHandle::NonReliableKeyShared(Arc::new(Mutex::new(
+                key_shared::consumer_state::KeySharedConsumerState::new(),
             ))),
         }
     }
@@ -179,6 +189,10 @@ impl Dispatcher {
                 let mut state = state.lock().await;
                 SharedDispatcher::dispatch_non_reliable(&mut state, message).await
             }
+            DispatcherHandle::NonReliableKeyShared(state) => {
+                let mut state = state.lock().await;
+                key_shared::non_reliable::dispatch(&mut state, message).await
+            }
             DispatcherHandle::Reliable { .. } => {
                 Err(anyhow!("Reliable dispatcher is stream-driven, not push-per-message"))
             }
@@ -229,6 +243,10 @@ impl Dispatcher {
                 state.lock().await.add_consumer(consumer);
                 Ok(())
             }
+            DispatcherHandle::NonReliableKeyShared(state) => {
+                state.lock().await.add_consumer(consumer, Vec::new());
+                Ok(())
+            }
             DispatcherHandle::Reliable { control_tx, .. } => control_tx
                 .send(DispatcherCommand::AddConsumer(consumer))
                 .await
@@ -243,12 +261,16 @@ impl Dispatcher {
         key_filters: Vec<String>,
     ) -> Result<()> {
         match &self.handle {
+            DispatcherHandle::NonReliableKeyShared(state) => {
+                state.lock().await.add_consumer(consumer, key_filters);
+                Ok(())
+            }
             DispatcherHandle::Reliable { control_tx, .. } => control_tx
                 .send(DispatcherCommand::AddConsumerKeyShared(consumer, key_filters))
                 .await
                 .map_err(|_| anyhow!("Failed to send add Key-Shared consumer command")),
             _ => {
-                // Fallback for non-reliable: ignore filters, add normally
+                // Fallback for non-key-shared: ignore filters, add normally
                 self.add_consumer(consumer).await
             }
         }
@@ -264,6 +286,10 @@ impl Dispatcher {
                 Ok(())
             }
             DispatcherHandle::NonReliableShared(state) => {
+                state.lock().await.remove_consumer(consumer_id);
+                Ok(())
+            }
+            DispatcherHandle::NonReliableKeyShared(state) => {
                 state.lock().await.remove_consumer(consumer_id);
                 Ok(())
             }
@@ -283,6 +309,10 @@ impl Dispatcher {
                 Ok(())
             }
             DispatcherHandle::NonReliableShared(state) => {
+                state.lock().await.disconnect_all();
+                Ok(())
+            }
+            DispatcherHandle::NonReliableKeyShared(state) => {
                 state.lock().await.disconnect_all();
                 Ok(())
             }

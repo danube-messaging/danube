@@ -216,8 +216,8 @@ impl Subscription {
                 // Failover
                 2 => Dispatcher::non_reliable_exclusive(),
 
-                // KeyShared (non-reliable: use shared as fallback)
-                3 => Dispatcher::non_reliable_shared(),
+                // KeyShared (non-reliable: key-based routing, no ack tracking)
+                3 => Dispatcher::non_reliable_key_shared(),
 
                 _ => {
                     return Err(anyhow!("Should not get here"));

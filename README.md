@@ -78,6 +78,16 @@ Data is preserved across restarts. To start fresh, remove the data directory.
 - **[Exclusive](https://danube-docs.dev-state.com/concepts/subscriptions/)**: Single consumer per subscription
 - **Shared**: Load-balanced message distribution across consumers
 - **Failover**: Automatic consumer failover with ordered delivery
+- **Key-Shared**: Key-based message routing, all messages with the same routing key are delivered to the same consumer, guaranteeing per-key ordering while distributing load across consumers
+
+#### Key-Shared Subscriptions
+
+Key-Shared subscriptions add **key-affinity routing** on top of multi-consumer load balancing. Each routing key is assigned to exactly one consumer via consistent hashing, ensuring:
+
+- **Per-key ordering**: All messages with the same key are processed by the same consumer, in order
+- **Automatic load distribution**: Different keys are spread across consumers — no manual partitioning
+- **Consumer elasticity**: When consumers join or leave, only the affected keys are redistributed
+- **Key filtering** gives consumers explicit control over which keys they handle.
 
 ### 📋 **Schema Registry**
 

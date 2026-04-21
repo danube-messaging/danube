@@ -39,6 +39,12 @@ pub(crate) struct InFlightWindow {
 
     /// Maximum number of in-flight + blocked messages.
     max_window_size: usize,
+
+    /// Per-consumer in-flight message count for backpressure.
+    per_consumer_in_flight: HashMap<u64, usize>,
+
+    /// Maximum in-flight messages per consumer before backpressure kicks in.
+    max_per_consumer: usize,
 }
 
 /// An in-flight message entry.
@@ -59,12 +65,19 @@ impl InFlightWindow {
             safe_cursor: None,
             first_offset: None,
             max_window_size,
+            per_consumer_in_flight: HashMap::new(),
+            max_per_consumer: 1_000,
         }
     }
 
     /// Check if we can accept more messages from the WAL.
     pub(crate) fn has_capacity(&self) -> bool {
         self.in_flight.len() + self.blocked_queue.len() < self.max_window_size
+    }
+
+    /// Get the current safe cursor value.
+    pub(crate) fn get_safe_cursor(&self) -> Option<u64> {
+        self.safe_cursor
     }
 
     /// Check if a routing key is currently in-flight (would need to be blocked).
@@ -89,6 +102,7 @@ impl InFlightWindow {
                 consumer_id,
             },
         );
+        *self.per_consumer_in_flight.entry(consumer_id).or_insert(0) += 1;
         if self.first_offset.is_none() {
             self.first_offset = Some(offset);
         }
@@ -115,6 +129,10 @@ impl InFlightWindow {
             // Only release the key lock if this offset owns it
             if self.active_keys.get(&key) == Some(&offset) {
                 self.active_keys.remove(&key);
+            }
+            // Decrement per-consumer count
+            if let Some(count) = self.per_consumer_in_flight.get_mut(&entry.consumer_id) {
+                *count = count.saturating_sub(1);
             }
             Some(key)
         } else {
@@ -178,8 +196,52 @@ impl InFlightWindow {
         pos.and_then(|i| self.blocked_queue.remove(i))
     }
 
-    /// Remove all in-flight entries for a given consumer (e.g., on disconnect).
+    /// Remove a single in-flight entry by offset.
+    /// Releases the key lock and decrements per-consumer count.
+    /// Returns the removed entry if found.
+    pub(crate) fn remove_entry(&mut self, offset: u64) -> Option<InFlightEntry> {
+        if let Some(entry) = self.in_flight.remove(&offset) {
+            if self.active_keys.get(&entry.routing_key) == Some(&offset) {
+                self.active_keys.remove(&entry.routing_key);
+            }
+            if let Some(count) = self.per_consumer_in_flight.get_mut(&entry.consumer_id) {
+                *count = count.saturating_sub(1);
+            }
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
+    /// Remove all blocked messages for a specific key.
+    /// Used when a poison-dropped key needs its blocked queue cleared.
+    pub(crate) fn drain_blocked_for_key(&mut self, key: &str) -> Vec<StreamMessage> {
+        let mut drained = Vec::new();
+        let mut i = 0;
+        while i < self.blocked_queue.len() {
+            if self.blocked_queue[i].effective_routing_key() == key {
+                if let Some(msg) = self.blocked_queue.remove(i) {
+                    drained.push(msg);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        drained
+    }
+
+    /// Check if a consumer has capacity for more in-flight messages.
+    pub(crate) fn consumer_has_capacity(&self, consumer_id: u64) -> bool {
+        let count = self.per_consumer_in_flight.get(&consumer_id).copied().unwrap_or(0);
+        count < self.max_per_consumer
+    }
+
+    /// Remove all in-flight entries for a given consumer (e.g., on disconnect/eviction).
     /// Returns the list of routing keys that were freed.
+    ///
+    /// Adds removed offsets to `acked_offsets` so the safe cursor can advance
+    /// past them. Without this, orphaned offsets permanently stall cursor
+    /// advancement since they're no longer in `in_flight` but were never acked.
     pub(crate) fn remove_consumer_entries(&mut self, consumer_id: u64) -> Vec<String> {
         let offsets: Vec<u64> = self
             .in_flight
@@ -189,16 +251,24 @@ impl InFlightWindow {
             .collect();
 
         let mut freed_keys = Vec::new();
-        for offset in offsets {
-            if let Some(entry) = self.in_flight.remove(&offset) {
-                if self.active_keys.get(&entry.routing_key) == Some(&offset) {
+        for offset in &offsets {
+            if let Some(entry) = self.in_flight.remove(offset) {
+                if self.active_keys.get(&entry.routing_key) == Some(offset) {
                     self.active_keys.remove(&entry.routing_key);
                     freed_keys.push(entry.routing_key);
                 }
-                // Don't advance cursor for removed entries —
-                // these messages need to be re-dispatched
+                // Mark as acked so safe_cursor can advance past this offset.
+                // The message is lost (consumer is gone), but the cursor must not stall.
+                self.acked_offsets.insert(*offset);
             }
         }
+        self.per_consumer_in_flight.remove(&consumer_id);
+
+        // Try to advance cursor past newly-acked offsets
+        if let Some(safe) = self.advance_safe_cursor() {
+            tracing::trace!(safe_cursor = %safe, "cursor advanced after consumer eviction");
+        }
+
         freed_keys
     }
 

@@ -5,9 +5,10 @@ This directory contains examples demonstrating various features of the Danube me
 ## Table of Contents
 
 1. [Basic Examples](#basic-examples)
-2. [Schema Registry Examples](#schema-registry-examples)
-3. [Advanced Features](#advanced-features)
-4. [Running Examples](#running-examples)
+2. [Key-Shared Examples](#key-shared-examples)
+3. [Schema Registry Examples](#schema-registry-examples)
+4. [Advanced Features](#advanced-features)
+5. [Running Examples](#running-examples)
 
 ---
 
@@ -70,9 +71,93 @@ cargo run --example reliable_dispatch_producer
 
 ---
 
+## Key-Shared Examples
+
+### 4. **key_shared_producer.rs** & **key_shared_consumer.rs**
+**Purpose**: Demonstrates Key-Shared subscriptions where messages are routed to consumers based on their routing key. All messages with the same key are guaranteed to reach the same consumer.
+
+**Key Features**:
+- Routing key-based message distribution via `send_with_key()`
+- Consistent hashing assigns keys to consumers automatically
+- Per-key ordering with multi-consumer parallelism
+- Consumer elasticity — keys redistribute when consumers join/leave
+
+**Use Case**: Order processing (group by order ID), per-user event streams, multi-tenant workloads.
+
+**What to expect**: Start two consumers, then the producer. Each consumer will receive a distinct subset of routing keys. For example, consumer_1 might get all "payment" and "invoice" events while consumer_2 gets "shipping" and "return" events. The key assignment is deterministic — re-running produces the same distribution.
+
+```bash
+# Terminal 1 - Start first consumer
+cargo run --example key_shared_consumer -- consumer_1
+
+# Terminal 2 - Start second consumer
+cargo run --example key_shared_consumer -- consumer_2
+
+# Terminal 3 - Start producer (sends 10 events with 4 different keys)
+cargo run --example key_shared_producer
+```
+
+**Example output** (consumer_1):
+```
+✅ Consumer 'consumer_1' subscribed to '/default/orders_topic' (Key-Shared)
+📥 [consumer_1] key=payment    | offset=0 | 'Payment received for order #1001'
+📥 [consumer_1] key=payment    | offset=2 | 'Payment received for order #1002'
+📥 [consumer_1] key=invoice    | offset=6 | 'Invoice generated for order #1001'
+📥 [consumer_1] key=payment    | offset=5 | 'Payment received for order #1003'
+📥 [consumer_1] key=invoice    | offset=9 | 'Invoice generated for order #1002'
+```
+
+---
+
+### 5. **key_shared_filtered_consumer.rs**
+**Purpose**: Demonstrates key filtering — consumers declare which routing key patterns they want to handle, giving explicit control over key-to-consumer assignment instead of relying on automatic consistent hashing.
+
+**Key Features**:
+- Glob-based key filter patterns (`"payment"`, `"ship*"`, `"eu-west-?"`)
+- Each consumer only receives messages matching its declared filters
+- Multiple filters per consumer
+- Combines with reliable dispatch for at-least-once delivery
+
+**Use Case**: Microservice specialization — a "payments" service handles only payment/invoice events while a "logistics" service handles shipping/returns. No key overlap, no wasted processing.
+
+**What to expect**: The "payments" consumer receives only messages with keys matching `"payment"` or `"invoice"`. The "logistics" consumer receives only messages with keys matching `"ship*"` (e.g., shipping, shipment) or `"return"`. Keys not matching any filter are handled by hash fallback.
+
+```bash
+# Terminal 1 - Payments consumer (filters: "payment", "invoice")
+cargo run --example key_shared_filtered_consumer -- payments
+
+# Terminal 2 - Logistics consumer (filters: "ship*", "return")
+cargo run --example key_shared_filtered_consumer -- logistics
+
+# Terminal 3 - Start producer
+cargo run --example key_shared_producer
+```
+
+**Example output** (payments consumer):
+```
+✅ Consumer 'consumer_payments' subscribed (Key-Shared, filters: ["payment", "invoice"])
+📥 [consumer_payments] key=payment    | 'Payment received for order #1001'
+📥 [consumer_payments] key=payment    | 'Payment received for order #1002'
+📥 [consumer_payments] key=invoice    | 'Invoice generated for order #1001'
+📥 [consumer_payments] key=payment    | 'Payment received for order #1003'
+📥 [consumer_payments] key=invoice    | 'Invoice generated for order #1002'
+```
+
+**Example output** (logistics consumer):
+```
+✅ Consumer 'consumer_logistics' subscribed (Key-Shared, filters: ["ship*", "return"])
+📥 [consumer_logistics] key=shipping  | 'Order #1001 shipped via express'
+📥 [consumer_logistics] key=return    | 'Return request for order #998'
+📥 [consumer_logistics] key=shipping  | 'Order #1002 shipped via standard'
+📥 [consumer_logistics] key=return    | 'Return approved for order #998'
+📥 [consumer_logistics] key=shipping  | 'Order #1003 shipped via express'
+```
+
+---
+
 ## Schema Registry Examples
 
-### 4. **json_producer.rs** & **json_consumer.rs**
+### 6. **json_producer.rs** & **json_consumer.rs**
 **Purpose**: Shows how to use JSON Schema for message validation with typed data structures.
 
 **Key Features**:
@@ -95,7 +180,7 @@ cargo run --example json_producer
 
 ---
 
-### 5. **json_consumer_validated.rs**
+### 7. **json_consumer_validated.rs**
 **Purpose**: Demonstrates consumer-side schema validation against the Schema Registry at startup.
 
 **Key Features**:
@@ -143,7 +228,7 @@ jsonschema = "0.18"
 
 ---
 
-### 6. **avro_producer.rs** & **avro_consumer.rs**
+### 8. **avro_producer.rs** & **avro_consumer.rs**
 **Purpose**: Demonstrates Apache Avro schema usage for efficient binary serialization.
 
 **Key Features**:
@@ -181,7 +266,7 @@ cargo run --example avro_producer
 
 ---
 
-### 7. **schema_evolution.rs**
+### 9. **schema_evolution.rs**
 **Purpose**: Comprehensive demonstration of schema evolution and compatibility checking.
 
 **Key Features**:
@@ -229,6 +314,36 @@ let mut producer = client
     .with_name("my_producer")
     .with_reliable_dispatch()  // Enable reliable delivery
     .build();
+```
+
+### Key-Shared Subscriptions
+Route messages by key so each key is handled by exactly one consumer:
+
+```rust
+use danube_client::SubType;
+
+// Producer: tag each message with a routing key
+producer.send_with_key(data, None, "order-123").await?;
+
+// Consumer: automatic key distribution via consistent hashing
+let mut consumer = client
+    .new_consumer()
+    .with_topic("/default/my_topic")
+    .with_consumer_name("worker_1")
+    .with_subscription("my_sub")
+    .with_subscription_type(SubType::KeyShared)
+    .build()?;
+
+// Consumer with key filters: only receive specific key patterns
+let mut filtered = client
+    .new_consumer()
+    .with_topic("/default/my_topic")
+    .with_consumer_name("payments_worker")
+    .with_subscription("my_sub")
+    .with_subscription_type(SubType::KeyShared)
+    .with_key_filter("payment")      // exact match
+    .with_key_filter("invoice-*")    // glob pattern
+    .build()?;
 ```
 
 ### Schema Validation
@@ -410,6 +525,11 @@ cargo run --example simple_producer_consumer
 cargo run --example partitions_producer
 cargo run --example partitions_consumer
 
+# Key-Shared examples
+cargo run --example key_shared_producer
+cargo run --example key_shared_consumer -- consumer_1
+cargo run --example key_shared_filtered_consumer -- payments
+
 # Schema registry examples
 cargo run --example json_producer
 cargo run --example json_consumer
@@ -428,6 +548,8 @@ cargo run --example schema_evolution
 5. **High performance**: `avro_producer.rs` + `avro_consumer.rs` - binary serialization
 6. **Scale up**: `partitions_producer.rs` + `partitions_consumer.rs` - horizontal scaling
 7. **Reliability**: `reliable_dispatch_*` examples - guaranteed delivery
+8. **Key routing**: `key_shared_producer.rs` + `key_shared_consumer.rs` - key-based distribution
+9. **Key filtering**: `key_shared_filtered_consumer.rs` - explicit key-to-consumer assignment
 
 ---
 
