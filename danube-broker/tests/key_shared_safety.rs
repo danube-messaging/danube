@@ -463,7 +463,7 @@ async fn key_shared_reliable_deadletter_routes_to_dlq_and_frees_key() -> Result<
 /// the heartbeat never sees the consumer as inactive but continues to work as expected
 /// as long as the consumer is on the same broker as the dispatcher (single-broker cluster).
 #[tokio::test]
-#[ignore = "requires single-broker cluster or cross-broker eviction protocol"]
+#[ignore = "works on single-broker cluster, need to dig more"]
 async fn key_shared_reliable_inactive_consumer_eviction() -> Result<()> {
     let client = test_utils::setup_client().await?;
     let topic = test_utils::unique_topic("/default/ks_safety_evict");
