@@ -1,3 +1,22 @@
+<!-- v0.12.0 START -->
+## v0.12.0 - 2026-04-23
+
+**Key-Shared Subscriptions & Dispatcher Safety**
+
+This release introduces the **Key-Shared subscription model**, a fourth subscription type that routes messages to consumers based on their routing key using consistent hashing. All messages with the same key go to the same consumer, in order, while different keys are processed in parallel. It also hardens the dispatcher with per-consumer backpressure, inactive consumer eviction, and centralized poison handling.
+
+### Key-Shared Subscriptions
+
+* **Consistent hash ring routing** (#213) — 100-vnode FNV-1a ring with ~1/N key remapping on consumer changes. by @danrusei in fc0f5e7
+* **Key filtering** (#213) — Glob-based patterns (`"payment"`, `"ship*"`, `"eu-west-?"`) for explicit key-to-consumer assignment. by @danrusei in fc0f5e7
+* **Multi-message in-flight window** (#213) — Per-key ordering with contiguous cursor advancement for safe broker restart. by @danrusei in fc0f5e7
+* **`send_with_key()` and `with_key_filter()` client APIs** — Producer routing key tagging and consumer key filter declaration.
+
+### 🛡️ Dispatcher Safety
+
+* **Per-consumer backpressure, inactive eviction, centralized poison handler, dispatcher deadlock fix** (#214) by @danrusei in 873818d
+<!-- v0.12.0 END -->
+
 <!-- v0.11.0 START -->
 ## v0.11.0 - 2026-04-05
 
