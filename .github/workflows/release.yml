@@ -263,24 +263,30 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          # Create release directory
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
           mkdir -p release
-          
-          # Copy and rename Linux binaries
-          cp artifacts/linux/danube-broker release/danube-broker-linux
-          cp artifacts/linux/danube-cli release/danube-cli-linux
-          cp artifacts/linux/danube-admin release/danube-admin-linux
-          
-          # Copy and rename MacOS binaries
-          cp artifacts/macos/danube-broker release/danube-broker-macos
-          cp artifacts/macos/danube-cli release/danube-cli-macos
-          cp artifacts/macos/danube-admin release/danube-admin-macos
-          
-          # Copy and rename Windows binaries
-          cp artifacts/windows/danube-broker.exe release/danube-broker-windows.exe
-          cp artifacts/windows/danube-cli.exe release/danube-cli-windows.exe
-          cp artifacts/windows/danube-admin.exe release/danube-admin-windows.exe
-          
+
+          # --- Linux (x86_64) ---
+          for bin in danube-broker danube-cli danube-admin; do
+            ARCHIVE="${bin}-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            chmod +x "artifacts/linux/${bin}"
+            tar czf "release/${ARCHIVE}" -C artifacts/linux "${bin}"
+          done
+
+          # --- macOS (Apple Silicon) ---
+          for bin in danube-broker danube-cli danube-admin; do
+            ARCHIVE="${bin}-${VERSION}-aarch64-apple-darwin.tar.gz"
+            chmod +x "artifacts/macos/${bin}"
+            tar czf "release/${ARCHIVE}" -C artifacts/macos "${bin}"
+          done
+
+          # --- Windows (x86_64) ---
+          for bin in danube-broker danube-cli danube-admin; do
+            ARCHIVE="${bin}-${VERSION}-x86_64-pc-windows-msvc.zip"
+            (cd artifacts/windows && zip -q "../../release/${ARCHIVE}" "${bin}.exe")
+          done
+
           # Generate checksums
           cd release
           sha256sum * > checksums.txt
@@ -303,60 +309,75 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > RELEASE_STATIC.md <<'EOF'
+          VERSION="${GITHUB_REF_NAME}"
+          cat > RELEASE_STATIC.md <<EOF
           ## Release Notes - Binaries
 
           ## Danube Broker:
-          - **Linux**: [danube-broker-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-linux)
-          - **MacOS (Apple Silicon)**: [danube-broker-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-macos)
-          - **Windows**: [danube-broker-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-broker-windows.exe)
+          - **Linux (x86_64)**: [danube-broker-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+          - **macOS (Apple Silicon)**: [danube-broker-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-aarch64-apple-darwin.tar.gz)
+          - **Windows (x86_64)**: [danube-broker-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-x86_64-pc-windows-msvc.zip)
 
           ## Client CLI:
-          - **Linux**: [danube-cli-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux)
-          - **MacOS (Apple Silicon)**: [danube-cli-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-macos)
-          - **Windows**: [danube-cli-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-windows.exe)
+          - **Linux (x86_64)**: [danube-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+          - **macOS (Apple Silicon)**: [danube-cli-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-cli-${VERSION}-aarch64-apple-darwin.tar.gz)
+          - **Windows (x86_64)**: [danube-cli-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-cli-${VERSION}-x86_64-pc-windows-msvc.zip)
 
           ## Admin (CLI + Server):
-          - **Linux**: [danube-admin-linux](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-linux)
-          - **MacOS (Apple Silicon)**: [danube-admin-macos](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-macos)
-          - **Windows**: [danube-admin-windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-admin-windows.exe)
+          - **Linux (x86_64)**: [danube-admin-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+          - **macOS (Apple Silicon)**: [danube-admin-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-aarch64-apple-darwin.tar.gz)
+          - **Windows (x86_64)**: [danube-admin-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-x86_64-pc-windows-msvc.zip)
  
           ## Checksums:
-          - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt)
+          - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${VERSION}/checksums.txt)
           
           ## Docker Images:
-          - **Danube Broker**: `ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}`
-          - **Danube CLI**: `ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }}`
-          - **Danube Admin**: `ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }}`
+          - **Danube Broker**: \`ghcr.io/${{ github.repository_owner }}/danube-broker:${VERSION}\`
+          - **Danube CLI**: \`ghcr.io/${{ github.repository_owner }}/danube-cli:${VERSION}\`
+          - **Danube Admin**: \`ghcr.io/${{ github.repository_owner }}/danube-admin:${VERSION}\`
           
           ### Quick Start with Docker:
-          ```bash
+          \`\`\`bash
           # Run Danube Broker
-          docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube-broker:${{ github.ref_name }}
+          docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube-broker:${VERSION}
           
           # Use Danube CLI (client operations)
-          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${{ github.ref_name }} danube-cli produce --help
+          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-cli:${VERSION} danube-cli produce --help
           
           # Use Danube Admin CLI (admin commands)
-          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }} brokers list
+          docker run --rm ghcr.io/${{ github.repository_owner }}/danube-admin:${VERSION} brokers list
           
           # Run Danube Admin Server (HTTP API for UI)
-          docker run -p 8080:8080 ghcr.io/${{ github.repository_owner }}/danube-admin:${{ github.ref_name }} serve \
-            --broker-endpoint host.docker.internal:50051 \
+          docker run -p 8080:8080 ghcr.io/${{ github.repository_owner }}/danube-admin:${VERSION} serve \\
+            --broker-endpoint host.docker.internal:50051 \\
             --prometheus-url http://host.docker.internal:9090
           
           # Use with Docker Compose
-          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
+          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/quickstart/docker-compose.yml
           docker-compose up -d
-          ```
+          \`\`\`
+
+          ### Install from Archive:
+          \`\`\`bash
+          # Linux
+          curl -LsS https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv danube-broker /usr/local/bin/
+
+          # macOS (Apple Silicon)
+          curl -LsS https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-aarch64-apple-darwin.tar.gz | tar xz
+          sudo mv danube-broker /usr/local/bin/
+
+          # Windows (PowerShell)
+          Invoke-WebRequest -Uri https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-broker-${VERSION}-x86_64-pc-windows-msvc.zip -OutFile danube-broker.zip
+          Expand-Archive danube-broker.zip -DestinationPath .
+          Move-Item danube-broker.exe C:\\Windows\\System32\\
+          \`\`\`
           
           ### Verify Downloads:
-          ```bash
-          # Download and verify checksums
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danube-cli-linux
-          sha256sum -c checksums.txt
-          ```
+          \`\`\`bash
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${VERSION}/checksums.txt
+          sha256sum -c checksums.txt --ignore-missing
+          \`\`\`
           EOF
           # Combine CHANGELOG section + static info
           cat RELEASE_NOTES.md RELEASE_STATIC.md > RELEASE_BODY.md
@@ -368,15 +389,6 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-          files: |
-            release/danube-broker-linux
-            release/danube-cli-linux
-            release/danube-admin-linux
-            release/danube-broker-macos
-            release/danube-cli-macos
-            release/danube-admin-macos
-            release/danube-broker-windows.exe
-            release/danube-cli-windows.exe
-            release/danube-admin-windows.exe
-            release/checksums.txt
+          files: release/*
           body_path: RELEASE_BODY.md
+
