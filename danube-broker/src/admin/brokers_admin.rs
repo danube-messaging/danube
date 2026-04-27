@@ -284,16 +284,21 @@ impl BrokerAdmin for DanubeAdminImpl {
         let security_context = get_security_context(&request)?;
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| tonic::Status::unimplemented(
+                "cluster balance not available in standalone/edge mode"
+            ))?;
+
         // Calculate current imbalance metrics
-        let metrics = self.load_manager.calculate_imbalance().await.map_err(|e| {
+        let metrics = cluster.load_manager.calculate_imbalance().await.map_err(|e| {
             tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
         })?;
 
         // Get broker rankings for detailed information
-        let rankings = self.load_manager.get_rankings().await;
+        let rankings = cluster.load_manager.get_rankings().await;
 
         // Get actual topic counts from broker usage reports
-        let brokers_usage = self.load_manager.get_brokers_usage().await;
+        let brokers_usage = cluster.load_manager.get_brokers_usage().await;
 
         // Build broker load info list
         let mut broker_infos = Vec::new();
@@ -324,7 +329,7 @@ impl BrokerAdmin for DanubeAdminImpl {
             std_deviation: metrics.std_deviation,
             broker_count: rankings.len() as u32,
             brokers: broker_infos,
-            assignment_strategy: format!("{:?}", self.load_manager.get_assignment_strategy()),
+            assignment_strategy: format!("{:?}", cluster.load_manager.get_assignment_strategy()),
         };
 
         Ok(Response::new(response))
@@ -340,6 +345,11 @@ impl BrokerAdmin for DanubeAdminImpl {
 
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| tonic::Status::unimplemented(
+                "rebalancing not available in standalone/edge mode"
+            ))?;
+
         info!(
             dry_run = req.dry_run,
             max_moves = ?req.max_moves,
@@ -347,7 +357,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         );
 
         // Get load manager config
-        let config = self
+        let config = cluster
             .load_manager
             .get_rebalancing_config()
             .await
@@ -356,7 +366,7 @@ impl BrokerAdmin for DanubeAdminImpl {
             })?;
 
         // Calculate imbalance
-        let metrics = self.load_manager.calculate_imbalance().await.map_err(|e| {
+        let metrics = cluster.load_manager.calculate_imbalance().await.map_err(|e| {
             tonic::Status::internal(format!("Failed to calculate imbalance: {}", e))
         })?;
 
@@ -377,7 +387,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         }
 
         // Select first rebalancing candidate to return to CLI
-        let first_candidate = self
+        let first_candidate = cluster
             .load_manager
             .select_rebalancing_candidate(&metrics, &config)
             .await
@@ -413,7 +423,7 @@ impl BrokerAdmin for DanubeAdminImpl {
         }
 
         // Execute rebalancing in background task - loop until cluster is balanced
-        let load_manager = self.load_manager.clone();
+        let load_manager = cluster.load_manager.clone();
         let max_moves = req.max_moves.map(|m| m as usize);
         tokio::spawn(async move {
             let mut total_executed = 0usize;

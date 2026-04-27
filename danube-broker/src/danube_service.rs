@@ -14,6 +14,7 @@ pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
 
+use crate::args_parse::BrokerMode;
 
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
@@ -26,7 +27,7 @@ use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
 use crate::{
-    admin::DanubeAdminImpl,
+    admin::{ClusterAdmin, DanubeAdminImpl},
     security::config::AuthMode,
     broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
@@ -36,6 +37,21 @@ use crate::{
     topic::SYSTEM_TOPIC,
     utils::join_path,
 };
+
+/// Cluster-only services that are constructed in `main.rs` and passed to
+/// `DanubeService::start()` only when running in cluster mode.
+pub(crate) struct ClusterServices {
+    pub leader_election: LeaderElection,
+    pub load_manager: LoadManager,
+    pub raft: Raft<danube_raft::typ::TypeConfig>,
+    pub leadership: LeadershipHandle,
+    pub raft_addr: String,
+    /// When true, the broker was started with --join and should wait
+    /// for cluster membership before registering. Joins as Drained.
+    pub join_cluster: bool,
+    /// True if bootstrap_cluster found persisted Raft state (restart, not first boot).
+    pub was_restart: bool,
+}
 
 // Danube Service has cluster and local Broker management & coordination responsabilities
 //
@@ -71,27 +87,18 @@ use crate::{
 // This includes limiting the number of topics, message rates, and storage usage.
 pub(crate) struct DanubeService {
     broker_id: u64,
+    mode: BrokerMode,
     broker: Arc<BrokerService>,
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
     resources: Resources,
-    leader_election: LeaderElection,
-    load_manager: LoadManager,
-    raft: Raft<danube_raft::typ::TypeConfig>,
-    leadership: LeadershipHandle,
-    raft_addr: String,
-    /// When true, the broker was started with --join and should wait
-    /// for cluster membership before registering. Joins as Drained.
-    join_cluster: bool,
-    /// True if bootstrap_cluster found persisted Raft state (restart, not first boot).
-    was_restart: bool,
 }
 
 impl std::fmt::Debug for DanubeService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DanubeService")
             .field("broker_id", &self.broker_id)
-            .field("leadership", &self.leadership)
+            .field("mode", &self.mode)
             .finish_non_exhaustive()
     }
 }
@@ -100,40 +107,36 @@ impl std::fmt::Debug for DanubeService {
 impl DanubeService {
     pub(crate) fn new(
         broker_id: u64,
+        mode: BrokerMode,
         broker: Arc<BrokerService>,
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
         resources: Resources,
-        leader_election: LeaderElection,
-        load_manager: LoadManager,
-        raft: Raft<danube_raft::typ::TypeConfig>,
-        leadership: LeadershipHandle,
-        raft_addr: String,
-        join_cluster: bool,
-        was_restart: bool,
     ) -> Self {
         DanubeService {
             broker_id,
+            mode,
             broker,
             service_config,
             meta_store,
             resources,
-            leader_election,
-            load_manager,
-            raft,
-            leadership,
-            raft_addr,
-            join_cluster,
-            was_restart,
         }
     }
 
-    pub(crate) async fn start(&mut self) -> Result<()> {
+    pub(crate) async fn start(
+        &mut self,
+        cluster: Option<ClusterServices>,
+    ) -> Result<()> {
         info!(
             cluster = %self.service_config.cluster_name,
             broker_id = %self.broker_id,
-            "initializing Danube cluster"
+            mode = ?self.mode,
+            "initializing Danube broker"
         );
+
+        // =====================================================================
+        // Common initialization (all modes)
+        // =====================================================================
 
         // Initialize Schema Registry Service (needed by both admin and broker gRPC)
         let schema_registry = Arc::new(SchemaRegistryService::new(
@@ -142,6 +145,14 @@ impl DanubeService {
             self.resources.security.clone(),
         ));
         info!("schema registry service initialized");
+
+        // Build ClusterAdmin for admin gRPC server (None in standalone/edge)
+        let cluster_admin = cluster.as_ref().map(|c| ClusterAdmin {
+            load_manager: c.load_manager.clone(),
+            raft: c.raft.clone(),
+            leadership: c.leadership.clone(),
+            raft_addr: c.raft_addr.clone(),
+        });
 
         // Start the Danube Admin GRPC server early
         //==========================================================================
@@ -155,10 +166,7 @@ impl DanubeService {
             self.service_config.auth.clone(),
             self.service_config.admin_tls,
             schema_registry.clone(),
-            self.load_manager.clone(),
-            self.raft.clone(),
-            self.leadership.clone(),
-            self.raft_addr.clone(),
+            cluster_admin,
         );
 
         let admin_handle: tokio::task::JoinHandle<()> = admin_server.start().await;
@@ -169,19 +177,58 @@ impl DanubeService {
             "admin gRPC server listening"
         );
 
+        // =====================================================================
+        // Mode-specific startup
+        // =====================================================================
+
+        match self.mode {
+            BrokerMode::Cluster => {
+                self.start_cluster_mode(
+                    cluster.expect("ClusterServices required for cluster mode"),
+                    schema_registry,
+                )
+                .await?;
+            }
+            BrokerMode::Standalone => {
+                self.start_standalone_mode(schema_registry).await?;
+            }
+            BrokerMode::Edge => {
+                unimplemented!("Edge mode startup — PR2");
+            }
+        }
+
+        // Wait for server tasks to complete
+        //==========================================================================
+        let (result_admin,) = tokio::join!(admin_handle);
+
+        if let Err(e) = result_admin {
+            eprintln!("Danube Admin failed: {:?}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Cluster-specific startup: registration, leader election, load manager,
+    /// load reports, rebalancing, broker watcher.
+    ///
+    /// Preserves the original startup sequence:
+    /// --join wait → register → state → reconciliation → metadata →
+    /// auth cache → broker gRPC → replicator → leader election →
+    /// load manager → rebalancing → load reports → broker watcher
+    async fn start_cluster_mode(
+        &mut self,
+        mut cluster: ClusterServices,
+        schema_registry: Arc<SchemaRegistryService>,
+    ) -> Result<()> {
         // --join mode: wait for Raft cluster membership
         //==========================================================================
-        // When started with --join, this node is not yet part of any cluster.
-        // The admin must run `danube-admin cluster add-node` + `promote-node`
-        // to add this node. We poll Raft metrics until we detect a leader,
-        // which means we've been added and replication has started.
-        if self.join_cluster {
+        if cluster.join_cluster {
             info!(
                 broker_id = %self.broker_id,
                 "waiting for cluster membership (use `danube-admin cluster add-node` to add this node)..."
             );
             loop {
-                let metrics = self.raft.metrics().borrow().clone();
+                let metrics = cluster.raft.metrics().borrow().clone();
                 if metrics.current_leader.is_some() {
                     info!(
                         broker_id = %self.broker_id,
@@ -194,7 +241,7 @@ impl DanubeService {
             }
         }
 
-        // Cluster metadata setup
+        // Cluster metadata setup (cluster record)
         //==========================================================================
         let _ = self
             .resources
@@ -202,14 +249,11 @@ impl DanubeService {
             .create_cluster(&self.service_config.cluster_name)
             .await;
 
-        // register the local broker to cluster
+        // Register the local broker to cluster
         let broker_url = &self.service_config.broker_url;
         let connect_url = &self.service_config.connect_url;
-
-        //check it is a secure connection
         let is_secure = self.service_config.auth.mode == AuthMode::Tls;
-
-        let ttl = 32; // Time to live for the lease in seconds
+        let ttl = 32;
         let admin_addr = self.service_config.admin_addr.to_string();
         let metrics_addr = self
             .service_config
@@ -229,16 +273,10 @@ impl DanubeService {
         )
         .await?;
 
-        // Determine initial broker state based on startup context:
-        //   --join mode       → "drained" (wait for admin to activate)
-        //   restart > TTL     → "drained" (registration expired, admin must investigate)
-        //   full cluster restart → "active" (all registrations expired, safe to auto-activate)
-        //   restart < TTL     → "active" (fast restart, still registered)
-        //   first boot        → "active"
-        let (initial_state, state_reason) = if self.join_cluster {
+        // Determine initial broker state based on startup context
+        let (initial_state, state_reason) = if cluster.join_cluster {
             ("drained", "join")
-        } else if self.was_restart {
-            // This is a restart (persisted Raft state). Check if our registration survived.
+        } else if cluster.was_restart {
             let my_reg_path = join_path(&[
                 crate::resources::BASE_REGISTER_PATH,
                 &self.broker_id.to_string(),
@@ -252,15 +290,12 @@ impl DanubeService {
                 .is_some();
 
             if my_reg_exists {
-                // Registration still valid → restart was within TTL
                 info!(
                     broker_id = %self.broker_id,
                     "restart detected: registration still valid (within TTL)"
                 );
                 ("active", "fast_restart")
             } else {
-                // Registration expired. Check if this is a full cluster restart
-                // (all registrations gone) vs single broker failure.
                 let all_regs = self
                     .meta_store
                     .get_childrens(crate::resources::BASE_REGISTER_PATH)
@@ -268,14 +303,12 @@ impl DanubeService {
                     .unwrap_or_default();
 
                 if all_regs.is_empty() {
-                    // No brokers registered → full cluster restart → safe to go active
                     info!(
                         broker_id = %self.broker_id,
                         "full cluster restart detected (no brokers registered). Registering as active."
                     );
                     ("active", "full_cluster_restart")
                 } else {
-                    // Other brokers are alive but we were declared dead
                     warn!(
                         broker_id = %self.broker_id,
                         registered_brokers = all_regs.len(),
@@ -286,7 +319,6 @@ impl DanubeService {
                 }
             }
         } else {
-            // First boot
             ("active", "boot")
         };
 
@@ -317,10 +349,6 @@ impl DanubeService {
 
         // Startup topic reconciliation
         //==========================================================================
-        // On restart, the in-memory TopicManager is empty but metadata may still
-        // have topics assigned to this broker. The broker_watcher only fires on
-        // *new* events, so pre-existing assignments are invisible. Scan and
-        // recreate them now, before accepting client connections.
         {
             let broker_path = join_path(&[
                 crate::resources::BASE_BROKER_PATH,
@@ -331,11 +359,9 @@ impl DanubeService {
                     let mut reconciled = 0u32;
                     for full_path in &children {
                         let parts: Vec<&str> = full_path.split('/').collect();
-                        // Expected: /cluster/brokers/{id}/{ns}/{topic}
                         if parts.len() < 6 {
                             continue;
                         }
-                        // Skip non-topic keys (e.g. /cluster/brokers/{id}/state)
                         if parts[4] == "state" {
                             continue;
                         }
@@ -372,7 +398,7 @@ impl DanubeService {
             }
         }
 
-        //create the default Namespace
+        // Create namespaces and system topic
         create_namespace_if_absent(
             &mut self.resources,
             DEFAULT_NAMESPACE,
@@ -411,8 +437,6 @@ impl DanubeService {
 
         // Initialize authorization cache
         //==========================================================================
-        // Load all roles and bindings into memory before accepting requests.
-        // The background watcher keeps the cache in sync on admin mutations.
         self.resources
             .security
             .load_cache()
@@ -422,10 +446,223 @@ impl DanubeService {
 
         // Start the Broker GRPC server
         //==========================================================================
+        let server_handle = self.start_broker_grpc(schema_registry).await?;
 
+        // Start the Leader Election Service
+        //==========================================================================
+        let leader_check_interval = time::interval(Duration::from_secs(10));
+        let mut leader_election_cloned = cluster.leader_election.clone();
+
+        tokio::spawn(async move {
+            leader_election_cloned.start(leader_check_interval).await;
+        });
+        info!("leader election service initialized and ready");
+
+        // Start the Load Manager Service
+        //==========================================================================
+        let rx_event = cluster.load_manager.bootstrap(self.broker_id).await?;
+
+        let mut load_manager_cloned = cluster.load_manager.clone();
+        let broker_id_cloned = self.broker_id;
+        let leader_election_cloned = cluster.leader_election.clone();
+        tokio::spawn(async move {
+            load_manager_cloned
+                .start(rx_event, broker_id_cloned, leader_election_cloned)
+                .await
+        });
+
+        let broker_service_cloned = Arc::clone(&self.broker);
+        let meta_store_cloned = self.meta_store.clone();
+
+        info!("load manager service initialized and ready");
+
+        // Start the Automated Rebalancing Loop
+        //==========================================================================
+        if let Some(ref load_manager_config) = self.service_config.load_manager {
+            if load_manager_config.rebalancing.enabled {
+                info!(
+                    check_interval_seconds = load_manager_config.rebalancing.check_interval_seconds,
+                    aggressiveness = ?load_manager_config.rebalancing.aggressiveness,
+                    max_moves_per_hour = load_manager_config.rebalancing.max_moves_per_hour,
+                    "starting automated rebalancing loop (moves 1 topic per cycle)"
+                );
+
+                let load_manager_for_rebalancing = cluster.load_manager.clone();
+                let rebalancing_config = load_manager_config.rebalancing.clone();
+                let leader_election_for_rebalancing = cluster.leader_election.clone();
+
+                tokio::spawn(async move {
+                    let _handle = load_manager_for_rebalancing.start_rebalancing_loop(
+                        rebalancing_config,
+                        leader_election_for_rebalancing,
+                    );
+                    // Loop runs forever in background
+                });
+
+                info!("automated rebalancing loop started successfully");
+            } else {
+                info!("automated rebalancing is disabled in configuration");
+            }
+        } else {
+            debug!("load manager configuration not found, rebalancing disabled by default");
+        }
+
+        // Publish periodic Load Reports
+        let load_report_interval = if let Some(ref lm_config) = self.service_config.load_manager {
+            lm_config.load_report_interval_seconds
+        } else {
+            30
+        };
+
+        tokio::spawn(async move {
+            post_broker_load_report(
+                broker_service_cloned,
+                meta_store_cloned,
+                load_report_interval,
+            )
+            .await
+        });
+
+        // Watch for events of Broker's interest
+        let broker_service_cloned = Arc::clone(&self.broker);
+        let meta_store_cloned = self.meta_store.clone();
+        broker_watcher::watch_events_for_broker(
+            meta_store_cloned,
+            broker_service_cloned,
+            self.broker_id,
+        )
+        .await;
+
+        // Wait for broker gRPC to complete (blocks until shutdown)
+        if let Err(e) = server_handle.await {
+            eprintln!("Broker Server failed: {:?}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Standalone-specific startup: minimal registration, no cluster orchestration.
+    ///
+    /// Sequence: register → state → metadata → auth cache → broker gRPC → replicator
+    async fn start_standalone_mode(
+        &mut self,
+        schema_registry: Arc<SchemaRegistryService>,
+    ) -> Result<()> {
+        // Register the broker (for admin CLI discoverability)
+        let broker_url = &self.service_config.broker_url;
+        let connect_url = &self.service_config.connect_url;
+        let is_secure = self.service_config.auth.mode == AuthMode::Tls;
+        let admin_addr = self.service_config.admin_addr.to_string();
+        let metrics_addr = self
+            .service_config
+            .prom_exporter
+            .as_ref()
+            .map(|a| a.to_string());
+
+        // One-time registration (no TTL renewal needed for standalone)
+        register_broker(
+            self.meta_store.clone(),
+            &self.broker_id.to_string(),
+            broker_url,
+            connect_url,
+            &admin_addr,
+            metrics_addr.as_deref(),
+            0, // no TTL for standalone
+            is_secure,
+        )
+        .await?;
+
+        // Set broker state to active immediately
+        if let Err(e) = self
+            .resources
+            .cluster
+            .set_broker_state(
+                &self.broker_id.to_string(),
+                "active",
+                Some("standalone"),
+            )
+            .await
+        {
+            warn!(error = %e, "failed to set standalone broker state");
+        }
+
+        // Cluster metadata setup (single-node Raft auto-commits)
+        //==========================================================================
+        let _ = self
+            .resources
+            .cluster
+            .create_cluster(&self.service_config.cluster_name)
+            .await;
+
+        create_namespace_if_absent(
+            &mut self.resources,
+            DEFAULT_NAMESPACE,
+            &self.service_config.policies,
+        )
+        .await?;
+
+        create_namespace_if_absent(
+            &mut self.resources,
+            SYSTEM_NAMESPACE,
+            &self.service_config.policies,
+        )
+        .await?;
+
+        if !self.resources.topic.topic_exists(SYSTEM_TOPIC).await? {
+            self.resources.topic.create_topic(SYSTEM_TOPIC, 0).await?;
+        }
+
+        for namespace in &self.service_config.bootstrap_namespaces {
+            create_namespace_if_absent(
+                &mut self.resources,
+                &namespace,
+                &self.service_config.policies,
+            )
+            .await?;
+        }
+
+        info!(
+            broker_id = %self.broker_id,
+            cluster = %self.service_config.cluster_name,
+            "metadata initialization completed successfully"
+        );
+
+        // Initialize authorization cache
+        //==========================================================================
+        self.resources
+            .security
+            .load_cache()
+            .await
+            .expect("failed to load authorization cache");
+        self.resources.security.start_watcher().await;
+
+        // Start the Broker GRPC server
+        //==========================================================================
+        let server_handle = self.start_broker_grpc(schema_registry).await?;
+
+        info!(
+            broker_id = %self.broker_id,
+            "standalone mode: broker active (no leader election, no load manager, no broker watcher)"
+        );
+
+        // Wait for broker gRPC to complete (blocks until shutdown)
+        if let Err(e) = server_handle.await {
+            eprintln!("Broker Server failed: {:?}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Starts the broker gRPC server and initializes the replicator client.
+    ///
+    /// Shared between cluster and standalone modes. Returns the server JoinHandle.
+    async fn start_broker_grpc(
+        &self,
+        schema_registry: Arc<SchemaRegistryService>,
+    ) -> Result<tokio::task::JoinHandle<()>> {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
-            schema_registry.clone(),
+            schema_registry,
             self.service_config.broker_addr.clone(),
             self.service_config.broker_url.clone(),
             self.service_config.connect_url.clone(),
@@ -435,7 +672,6 @@ impl DanubeService {
 
         // Create a oneshot channel for readiness signaling
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
         let server_handle = grpc_server.start(ready_tx).await;
 
         info!(
@@ -446,8 +682,6 @@ impl DanubeService {
 
         // Create internal DanubeClient for the Replicator (DLQ routing)
         //==========================================================================
-
-        // Wait for the server to signal that it has started
         ready_rx.await?;
 
         let broker_client_url = self.service_config.broker_url.clone();
@@ -491,121 +725,7 @@ impl DanubeService {
         self.broker.replicator.set_client(danube_client).await;
         info!("replicator DanubeClient initialized for DLQ routing");
 
-        // Start the Leader Election Service
-        //==========================================================================
-
-        // to be configurable
-        let leader_check_interval = time::interval(Duration::from_secs(10));
-
-        let mut leader_election_cloned = self.leader_election.clone();
-
-        tokio::spawn(async move {
-            leader_election_cloned.start(leader_check_interval).await;
-        });
-        info!("leader election service initialized and ready");
-
-        // Start the Load Manager Service
-        //==========================================================================
-        // at this point the broker will become visible to the rest of the brokers
-        // by creating the registration and also
-
-        let rx_event = self.load_manager.bootstrap(self.broker_id).await?;
-
-        let mut load_manager_cloned = self.load_manager.clone();
-
-        let broker_id_cloned = self.broker_id;
-        let leader_election_cloned = self.leader_election.clone();
-        // Process the ETCD Watch events
-        tokio::spawn(async move {
-            load_manager_cloned
-                .start(rx_event, broker_id_cloned, leader_election_cloned)
-                .await
-        });
-
-        let broker_service_cloned = Arc::clone(&self.broker);
-        let meta_store_cloned = self.meta_store.clone();
-
-        info!("load manager service initialized and ready");
-
-        // Start the Automated Rebalancing Loop
-        //==========================================================================
-        if let Some(ref load_manager_config) = self.service_config.load_manager {
-            if load_manager_config.rebalancing.enabled {
-                info!(
-                    check_interval_seconds = load_manager_config.rebalancing.check_interval_seconds,
-                    aggressiveness = ?load_manager_config.rebalancing.aggressiveness,
-                    max_moves_per_hour = load_manager_config.rebalancing.max_moves_per_hour,
-                    "starting automated rebalancing loop (moves 1 topic per cycle)"
-                );
-
-                let load_manager_for_rebalancing = self.load_manager.clone();
-                let rebalancing_config = load_manager_config.rebalancing.clone();
-                let leader_election_for_rebalancing = self.leader_election.clone();
-
-                tokio::spawn(async move {
-                    let _handle = load_manager_for_rebalancing.start_rebalancing_loop(
-                        rebalancing_config,
-                        leader_election_for_rebalancing,
-                    );
-                    // Loop runs forever in background
-                });
-
-                info!("automated rebalancing loop started successfully");
-            } else {
-                info!("automated rebalancing is disabled in configuration");
-            }
-        } else {
-            debug!("load manager configuration not found, rebalancing disabled by default");
-        }
-
-        // Publish periodic Load Reports
-        // This enable the broker to register with Load Manager
-        let load_report_interval = if let Some(ref lm_config) = self.service_config.load_manager {
-            lm_config.load_report_interval_seconds
-        } else {
-            30 // Default to 30 seconds if no config
-        };
-
-        tokio::spawn(async move {
-            post_broker_load_report(
-                broker_service_cloned,
-                meta_store_cloned,
-                load_report_interval,
-            )
-            .await
-        });
-
-        // Watch for events of Broker's interest
-        let broker_service_cloned = Arc::clone(&self.broker);
-        let meta_store_cloned = self.meta_store.clone();
-        broker_watcher::watch_events_for_broker(
-            meta_store_cloned,
-            broker_service_cloned,
-            self.broker_id,
-        )
-        .await;
-
-        // Wait for server tasks to complete
-        //==========================================================================
-        let (result_server, result_admin) = tokio::join!(server_handle, admin_handle);
-
-        if let Err(e) = result_server {
-            eprintln!("Broker Server failed: {:?}", e);
-        }
-
-        if let Err(e) = result_admin {
-            eprintln!("Danube Admin failed: {:?}", e);
-        }
-
-        Ok(())
-    }
-
-    // Checks whether the broker owns a specific topic
-    #[allow(dead_code)]
-    pub(crate) async fn check_topic_ownership(&self, topic_name: &str) -> bool {
-        self.load_manager
-            .check_ownership(self.broker_id, topic_name)
-            .await
+        Ok(server_handle)
     }
 }
 

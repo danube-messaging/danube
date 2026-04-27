@@ -28,10 +28,10 @@ mod utils;
 use std::{fs::read_to_string, path::Path, sync::Arc};
 
 use crate::{
-    args_parse::Args,
+    args_parse::{Args, BrokerMode},
     broker_metrics::init_metrics,
     broker_service::BrokerService,
-    danube_service::{DanubeService, LeaderElection, LoadManager},
+    danube_service::{ClusterServices, DanubeService, LeaderElection, LoadManager},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
     storage_configuration::{LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode},
@@ -70,20 +70,27 @@ async fn main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse()?;
 
-    let mut service_config: ServiceConfiguration = if args.single_node {
-        ServiceConfiguration::single_node(Path::new(
-            args.data_dir
+    // Build ServiceConfiguration based on mode
+    let mut service_config: ServiceConfiguration = match &args.mode {
+        BrokerMode::Standalone => {
+            ServiceConfiguration::standalone(Path::new(
+                args.data_dir
+                    .as_deref()
+                    .expect("standalone mode requires data-dir"),
+            ))?
+        }
+        BrokerMode::Cluster => {
+            let config_file = args
+                .config_file
                 .as_deref()
-                .expect("single-node mode requires data-dir"),
-        ))?
-    } else {
-        let config_file = args
-            .config_file
-            .as_deref()
-            .expect("config-file mode requires config file");
-        let config_content = read_to_string(Path::new(config_file))?;
-        let load_config: LoadConfiguration = serde_yaml::from_str(&config_content)?;
-        load_config.try_into()?
+                .expect("cluster mode requires config file");
+            let config_content = read_to_string(Path::new(config_file))?;
+            let load_config: LoadConfiguration = serde_yaml::from_str(&config_content)?;
+            load_config.try_into()?
+        }
+        BrokerMode::Edge => {
+            unreachable!("Edge mode is rejected at CLI parsing")
+        }
     };
 
     // If `broker_addr` is provided via command-line args, override the value from the config file
@@ -161,9 +168,10 @@ async fn main() -> Result<()> {
     }
 
     // If `data_dir` is provided via command-line args, override meta_store.data_dir
-    if !args.single_node {
+    // (but not in standalone mode where it's already set via ServiceConfiguration::standalone)
+    if args.mode != BrokerMode::Standalone {
         if let Some(data_dir) = args.data_dir {
-        service_config.meta_store.data_dir = data_dir;
+            service_config.meta_store.data_dir = data_dir;
         }
     }
 
@@ -184,7 +192,9 @@ async fn main() -> Result<()> {
         service_config.raft_port = addr.port() as usize;
     }
 
-    // initialize the Raft metadata storage layer
+    // =========================================================================
+    // Initialize the Raft metadata storage layer
+    // =========================================================================
     // node_id is auto-generated on first boot and persisted in {data_dir}/node_id
     let meta_cfg = &service_config.meta_store;
     let raft_addr: SocketAddr = format!(
@@ -204,7 +214,7 @@ async fn main() -> Result<()> {
             .strip_prefix("http://")
             .or_else(|| url.strip_prefix("https://"))
         {
-            let host = rest.split(':').next().unwrap_or("");
+            let host: &str = rest.split(':').next().unwrap_or("");
             if !host.is_empty() && host != "0.0.0.0" && host != "127.0.0.1" {
                 Some(format!("{}:{}", host, service_config.raft_port))
             } else {
@@ -285,11 +295,12 @@ async fn main() -> Result<()> {
     // for managing the cluster, namespaces & topics
     let resources = Resources::new(
         metadata_store.clone(),
-        Some(leadership_handle.clone()),
+        match args.mode {
+            BrokerMode::Cluster => Some(leadership_handle.clone()),
+            _ => None,
+        },
         service_config.auth.super_admins.clone(),
     );
-
-
 
     // The broker_id IS the Raft node_id — a single stable identity.
     let broker_id = node_id;
@@ -297,6 +308,7 @@ async fn main() -> Result<()> {
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
     let broker_service = BrokerService::new(
         broker_id,
+        args.mode.clone(),
         resources.clone(),
         storage_factory,
         service_config.auto_create_topics,
@@ -309,59 +321,76 @@ async fn main() -> Result<()> {
         init_metrics(None, broker_id);
     }
 
-    // Raft-based leader election: the Raft leader is the cluster leader.
-    let leader_election_service = LeaderElection::new(
-        leadership_handle.clone(),
-        metadata_store.clone(),
-        LEADER_ELECTION_PATH,
-        broker_id,
-    );
-
-    // Load Manager, monitor and distribute load across brokers.
-    let (assignment_strategy, rebalancing_config) =
-        if let Some(ref lm_config) = service_config.load_manager {
-            (
-                lm_config.assignment_strategy.clone(),
-                Some(lm_config.rebalancing.clone()),
-            )
-        } else {
-            (Default::default(), None)
-        };
-
-    let load_manager = LoadManager::with_config(
-        broker_id,
-        metadata_store.clone(),
-        assignment_strategy,
-        rebalancing_config,
-    );
-
     let broker: Arc<BrokerService> = Arc::new(broker_service);
 
     let broker_addr = service_config.broker_addr;
     info!(
         broker_addr = %broker_addr,
         broker_id = %broker_id,
+        mode = ?args.mode,
         "initializing Danube message broker service"
     );
+
+    // =========================================================================
+    // Mode dispatch: build ClusterServices only in cluster mode
+    // =========================================================================
+
+    let cluster_services = match args.mode {
+        BrokerMode::Cluster => {
+            // Raft-based leader election: the Raft leader is the cluster leader.
+            let leader_election_service = LeaderElection::new(
+                leadership_handle.clone(),
+                metadata_store.clone(),
+                LEADER_ELECTION_PATH,
+                broker_id,
+            );
+
+            // Load Manager, monitor and distribute load across brokers.
+            let (assignment_strategy, rebalancing_config) =
+                if let Some(ref lm_config) = service_config.load_manager {
+                    (
+                        lm_config.assignment_strategy.clone(),
+                        Some(lm_config.rebalancing.clone()),
+                    )
+                } else {
+                    (Default::default(), None)
+                };
+
+            let load_manager = LoadManager::with_config(
+                broker_id,
+                metadata_store.clone(),
+                assignment_strategy,
+                rebalancing_config,
+            );
+
+            Some(ClusterServices {
+                leader_election: leader_election_service,
+                load_manager,
+                raft: raft_handle,
+                leadership: leadership_handle,
+                raft_addr: advertised_raft_addr_str,
+                join_cluster,
+                was_restart,
+            })
+        }
+        BrokerMode::Standalone => None,
+        BrokerMode::Edge => {
+            unreachable!("Edge mode is rejected at CLI parsing")
+        }
+    };
 
     // DanubeService coordinate and start all the services
     let mut danube = DanubeService::new(
         broker_id,
+        args.mode.clone(),
         Arc::clone(&broker),
         service_config,
         metadata_store,
         resources,
-        leader_election_service,
-        load_manager,
-        raft_handle,
-        leadership_handle,
-        advertised_raft_addr_str,
-        join_cluster,
-        was_restart,
     );
 
     danube
-        .start()
+        .start(cluster_services)
         .await
         .expect("Danube Message Broker service unable to start");
 

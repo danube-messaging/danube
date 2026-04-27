@@ -18,7 +18,13 @@ impl ClusterAdmin for DanubeAdminImpl {
     ) -> Result<Response<ClusterStatusResponse>, Status> {
         let security_context = get_security_context(&request)?;
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
-        let metrics = self.raft.metrics().borrow().clone();
+
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| Status::unimplemented(
+                "cluster operations not available in standalone/edge mode"
+            ))?;
+
+        let metrics = cluster.raft.metrics().borrow().clone();
 
         let membership = metrics.membership_config.membership();
         let voters: Vec<u64> = membership
@@ -40,8 +46,8 @@ impl ClusterAdmin for DanubeAdminImpl {
             last_applied,
             voters,
             learners,
-            self_node_id: self.leadership.node_id(),
-            raft_addr: self.raft_addr.to_string(),
+            self_node_id: cluster.leadership.node_id(),
+            raft_addr: cluster.raft_addr.to_string(),
         }))
     }
 
@@ -55,6 +61,11 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| Status::unimplemented(
+                "cluster operations not available in standalone/edge mode"
+            ))?;
+
         if req.addr.is_empty() {
             return Err(Status::invalid_argument("addr is required"));
         }
@@ -66,7 +77,7 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         info!(node_id = req.node_id, addr = %req.addr, "adding learner node");
 
-        self.raft
+        cluster.raft
             .add_learner(
                 req.node_id,
                 BasicNode {
@@ -96,6 +107,11 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| Status::unimplemented(
+                "cluster operations not available in standalone/edge mode"
+            ))?;
+
         if req.node_id == 0 {
             return Err(Status::invalid_argument("node_id is required"));
         }
@@ -103,7 +119,7 @@ impl ClusterAdmin for DanubeAdminImpl {
         info!(node_id = req.node_id, "promoting learner to voter");
 
         // Get current voters and add the new one.
-        let metrics = self.raft.metrics().borrow().clone();
+        let metrics = cluster.raft.metrics().borrow().clone();
         let mut voters: std::collections::BTreeSet<u64> = metrics
             .membership_config
             .membership()
@@ -121,7 +137,7 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         voters.insert(req.node_id);
 
-        self.raft
+        cluster.raft
             .change_membership(voters, false)
             .await
             .map_err(|e| Status::internal(format!("failed to promote node: {}", e)))?;
@@ -144,6 +160,11 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         enforce_authorization(&security_context, &Resource::Cluster, Permission::ManageCluster, &self.resources.security).await?;
 
+        let cluster = self.cluster.as_ref()
+            .ok_or_else(|| Status::unimplemented(
+                "cluster operations not available in standalone/edge mode"
+            ))?;
+
         if req.node_id == 0 {
             return Err(Status::invalid_argument("node_id is required"));
         }
@@ -151,7 +172,7 @@ impl ClusterAdmin for DanubeAdminImpl {
         info!(node_id = req.node_id, "removing node from cluster");
 
         // Get current voters and remove the target.
-        let metrics = self.raft.metrics().borrow().clone();
+        let metrics = cluster.raft.metrics().borrow().clone();
         let mut voters: std::collections::BTreeSet<u64> = metrics
             .membership_config
             .membership()
@@ -173,7 +194,7 @@ impl ClusterAdmin for DanubeAdminImpl {
             ));
         }
 
-        self.raft
+        cluster.raft
             .change_membership(voters, false)
             .await
             .map_err(|e| Status::internal(format!("failed to remove node: {}", e)))?;
