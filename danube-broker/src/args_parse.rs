@@ -10,6 +10,7 @@ use std::env;
 pub(crate) enum BrokerMode {
     Cluster,
     Standalone,
+    #[allow(dead_code)]
     Edge,
 }
 
