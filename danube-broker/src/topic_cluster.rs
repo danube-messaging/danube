@@ -26,7 +26,7 @@ impl TopicCluster {
         Self { resources }
     }
 
-    /// Creates a topic in the cluster metadata.
+    /// Creates a topic in the cluster metadata (cluster mode).
     ///
     /// Validates topic format and required inputs (`dispatch_strategy`), ensures
     /// the namespace exists, and then posts the topic with delivery, schema_ref and policies.
@@ -38,6 +38,50 @@ impl TopicCluster {
         schema_ref: Option<SchemaReference>,
         policies: Option<Policies>,
     ) -> Result<(), Status> {
+        let ds = self.validate_topic_creation(topic_name, dispatch_strategy).await?;
+
+        self.post_new_topic(topic_name, ds, schema_ref, policies)
+            .await
+            .map_err(|e| {
+                Status::internal(format!(
+                    "The broker unable to post the topic to metadata store, due to error: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Creates a topic directly without posting to the unassigned path (standalone/edge mode).
+    ///
+    /// Performs the same validation as `create_on_cluster`, but writes metadata
+    /// directly via `create_on_cluster_direct()` — no LoadManager assignment needed.
+    pub(crate) async fn create_on_cluster_standalone(
+        &self,
+        topic_name: &str,
+        dispatch_strategy: Option<ProtoDispatchStrategy>,
+        schema_ref: Option<SchemaReference>,
+        policies: Option<Policies>,
+    ) -> Result<(), Status> {
+        let ds = self.validate_topic_creation(topic_name, dispatch_strategy).await?;
+
+        self.create_on_cluster_direct(topic_name, ds, schema_ref, policies)
+            .await
+            .map_err(|e| {
+                Status::internal(format!(
+                    "The broker unable to post the topic to metadata store, due to error: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Validates topic creation inputs: format, dispatch strategy, namespace existence,
+    /// duplicate detection, and partitioned/non-partitioned conflicts.
+    ///
+    /// Returns the unwrapped `ProtoDispatchStrategy` on success.
+    async fn validate_topic_creation(
+        &self,
+        topic_name: &str,
+        dispatch_strategy: Option<ProtoDispatchStrategy>,
+    ) -> Result<ProtoDispatchStrategy, Status> {
         // The topic format is /{namespace_name}/{topic_name}
         if !validate_topic_format(topic_name) {
             return Err(Status::invalid_argument(format!(
@@ -46,9 +90,8 @@ impl TopicCluster {
             )));
         }
 
-        if dispatch_strategy.is_none() {
-            return Err(Status::invalid_argument("Dispatch strategy is missing"));
-        }
+        let ds = dispatch_strategy
+            .ok_or_else(|| Status::invalid_argument("Dispatch strategy is missing"))?;
 
         let ns_name = get_nsname_from_topic(topic_name);
 
@@ -110,17 +153,11 @@ impl TopicCluster {
             }
         }
 
-        self.post_new_topic(topic_name, dispatch_strategy.unwrap(), schema_ref, policies)
-            .await
-            .map_err(|e| {
-                Status::internal(format!(
-                    "The broker unable to post the topic to metadata store, due to error: {}",
-                    e
-                ))
-            })
+        Ok(ds)
     }
 
     /// Posts a new topic and its metadata to the store (unassigned + namespace + delivery + schema_ref + policies).
+    /// Used by cluster mode: writes an unassigned marker so the LoadManager can assign it.
     pub(crate) async fn post_new_topic(
         &self,
         topic_name: &str,
@@ -128,19 +165,36 @@ impl TopicCluster {
         schema_ref: Option<SchemaReference>,
         policies: Option<Policies>,
     ) -> Result<()> {
-        // 1) add to unassigned
+        // 1) add to unassigned (cluster-only: triggers LoadManager assignment)
         self.resources
             .cluster
             .new_unassigned_topic(topic_name)
             .await?;
 
-        // 2) add to namespace topics
+        // 2-5) shared metadata writes
+        self.create_on_cluster_direct(topic_name, dispatch_strategy, schema_ref, policies)
+            .await
+    }
+
+    /// Writes topic metadata (namespace entry, dispatch strategy, policies, schema)
+    /// without posting to the unassigned path.
+    ///
+    /// Used by standalone and edge modes for direct topic loading where no
+    /// LoadManager assignment is needed.
+    pub(crate) async fn create_on_cluster_direct(
+        &self,
+        topic_name: &str,
+        dispatch_strategy: ProtoDispatchStrategy,
+        schema_ref: Option<SchemaReference>,
+        policies: Option<Policies>,
+    ) -> Result<()> {
+        // 1) add to namespace topics
         self.resources
             .namespace
             .create_new_topic(topic_name)
             .await?;
 
-        // 3) add delivery/retention strategy
+        // 2) add delivery/retention strategy
         let dispatch_strategy: ConfigDispatchStrategy = match dispatch_strategy {
             ProtoDispatchStrategy::NonReliable => ConfigDispatchStrategy::NonReliable,
             ProtoDispatchStrategy::Reliable => ConfigDispatchStrategy::Reliable,
@@ -150,7 +204,7 @@ impl TopicCluster {
             .add_topic_delivery(topic_name, dispatch_strategy)
             .await?;
 
-        // 4) add topic policies if any
+        // 3) add topic policies if any
         if let Some(policies) = policies {
             self.resources
                 .topic
@@ -158,7 +212,7 @@ impl TopicCluster {
                 .await?;
         }
 
-        // 5) add schema subject if provided
+        // 4) add schema subject if provided
         if let Some(schema_ref) = schema_ref {
             self.resources
                 .topic
@@ -273,6 +327,7 @@ impl TopicCluster {
 
     /// Helper function to delete a single topic (either a normal topic or a partition).
     /// Performs: broker assignment deletion, namespace removal, and metadata cleanup.
+    /// Used by cluster mode where topics have broker assignments.
     async fn delete_single_topic(&self, topic_name: &str) -> Result<()> {
         // Find the broker owning the topic
         let broker_id = match self
@@ -291,10 +346,21 @@ impl TopicCluster {
             .schedule_topic_deletion(&broker_id, topic_name)
             .await?;
 
-        // 2) Delete from namespace
+        // 2-3) Shared metadata cleanup
+        self.delete_topic_metadata(topic_name).await
+    }
+
+    /// Deletes topic metadata: namespace entry, producers, subscriptions, delivery,
+    /// policy, schema, and root.
+    ///
+    /// Does NOT touch broker assignments — used by both cluster mode (after
+    /// scheduling assignment deletion) and standalone/edge modes (where no
+    /// broker assignments exist).
+    pub(crate) async fn delete_topic_metadata(&self, topic_name: &str) -> Result<()> {
+        // Delete from namespace
         self.resources.namespace.delete_topic(topic_name).await?;
 
-        // 3) Delete topic metadata: producers, subscriptions, delivery, policy, schema, root
+        // Delete topic metadata: producers, subscriptions, delivery, policy, schema, root
         // Best-effort cleanup; continue even if individual steps fail
         let _ = self.resources.topic.delete_all_producers(topic_name).await;
         let _ = self

@@ -1,7 +1,5 @@
 use crate::security::config::{AuthConfig, AuthMode};
-use crate::danube_service::load_manager::config::{
-    AssignmentStrategy, LoadManagerConfig, RebalancingConfig,
-};
+use crate::danube_service::load_manager::config::LoadManagerConfig;
 use crate::policies::Policies;
 use crate::storage_configuration::StorageConfig;
 
@@ -128,16 +126,20 @@ pub(crate) struct MetaStoreConfig {
 }
 
 impl ServiceConfiguration {
-    pub(crate) fn single_node(base_dir: &Path) -> Result<Self> {
+    /// Creates a standalone configuration with sensible defaults.
+    ///
+    /// Standalone mode uses single-node Raft (auto-bootstraps), no LoadManager,
+    /// and no rebalancing. Topics are loaded directly without cluster orchestration.
+    pub(crate) fn standalone(base_dir: &Path) -> Result<Self> {
         let broker_addr: SocketAddr = "127.0.0.1:6650"
             .parse()
-            .context("Failed to create single-node broker_addr")?;
+            .context("Failed to create standalone broker_addr")?;
         let admin_addr: SocketAddr = "127.0.0.1:50051"
             .parse()
-            .context("Failed to create single-node admin_addr")?;
+            .context("Failed to create standalone admin_addr")?;
 
         Ok(Self {
-            cluster_name: "SINGLE_NODE".to_string(),
+            cluster_name: "STANDALONE".to_string(),
             broker_addr,
             broker_url: format!("http://{}", broker_addr),
             connect_url: format!("http://{}", broker_addr),
@@ -160,14 +162,7 @@ impl ServiceConfiguration {
                 super_admins: Vec::new(),
             },
             admin_tls: false,
-            load_manager: Some(LoadManagerConfig {
-                assignment_strategy: AssignmentStrategy::Fair,
-                load_report_interval_seconds: 30,
-                rebalancing: RebalancingConfig {
-                    enabled: false,
-                    ..Default::default()
-                },
-            }),
+            load_manager: None,
         })
     }
 }
@@ -267,16 +262,15 @@ fn ensure_scheme(url: &str, default_scheme: &str) -> String {
 mod tests {
     use super::ServiceConfiguration;
     use crate::security::config::AuthMode;
-    use crate::danube_service::load_manager::config::AssignmentStrategy;
     use crate::storage_configuration::StorageConfig;
     use std::path::Path;
 
     #[test]
-    fn builds_single_node_service_configuration() {
-        let config = ServiceConfiguration::single_node(Path::new("local-data"))
-            .expect("single-node config");
+    fn builds_standalone_service_configuration() {
+        let config = ServiceConfiguration::standalone(Path::new("local-data"))
+            .expect("standalone config");
 
-        assert_eq!(config.cluster_name, "SINGLE_NODE");
+        assert_eq!(config.cluster_name, "STANDALONE");
         assert_eq!(config.broker_addr.to_string(), "127.0.0.1:6650");
         assert_eq!(config.admin_addr.to_string(), "127.0.0.1:50051");
         assert_eq!(config.raft_port, 7650);
@@ -288,9 +282,8 @@ mod tests {
         assert!(!config.admin_tls);
         assert!(config.prom_exporter.is_none());
 
-        let load_manager = config.load_manager.expect("load manager config");
-        assert_eq!(load_manager.assignment_strategy, AssignmentStrategy::Fair);
-        assert!(!load_manager.rebalancing.enabled);
+        // Standalone mode has no load manager
+        assert!(config.load_manager.is_none());
 
         match config.storage {
             StorageConfig::Local { local_wal_root, .. } => {
@@ -299,7 +292,7 @@ mod tests {
                     Path::new("local-data").join("wal").to_string_lossy()
                 );
             }
-            _ => panic!("single-node storage must be local"),
+            _ => panic!("standalone storage must be local"),
         }
     }
 }

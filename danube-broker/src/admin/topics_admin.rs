@@ -149,22 +149,20 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let service = self.broker_service.as_ref();
 
-        let success = match service
-            .create_topic_cluster(&req.name, Some(dispatch_strategy), schema_ref)
+        // Unified create_topic dispatches based on BrokerMode
+        match service
+            .create_topic(&req.name, Some(dispatch_strategy), schema_ref)
             .await
         {
-            Ok(()) => true,
+            Ok(_) => Ok(tonic::Response::new(TopicResponse { success: true })),
             Err(err) => {
                 let status = Status::not_found(format!(
                     "Unable to create the topic {} due to {}",
                     req.name, err
                 ));
-                return Err(status);
+                Err(status)
             }
-        };
-
-        let response = TopicResponse { success };
-        Ok(tonic::Response::new(response))
+        }
     }
 
     #[tracing::instrument(level = Level::INFO, skip_all)]
@@ -204,8 +202,9 @@ impl TopicAdmin for DanubeAdminImpl {
         // Create all partitions; fail fast on error
         for partition_id in 0..req.partitions {
             let topic = format!("{}-part-{}", req.base_name, partition_id);
+            // Unified create_topic dispatches based on BrokerMode
             if let Err(err) = service
-                .create_topic_cluster(&topic, Some(dispatch_strategy), schema_ref.clone())
+                .create_topic(&topic, Some(dispatch_strategy), schema_ref.clone())
                 .await
             {
                 let status = Status::not_found(format!(
@@ -238,7 +237,8 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let service = self.broker_service.as_ref();
 
-        let success = match service.post_delete_topic(&req.name).await {
+        // Unified delete_topic dispatches based on BrokerMode
+        let success = match service.delete_topic(&req.name).await {
             Ok(()) => true,
             Err(err) => {
                 let status = Status::not_found(format!(
@@ -473,6 +473,17 @@ impl TopicAdmin for DanubeAdminImpl {
             Permission::ManageTopic,
             &self.resources.security,
         ).await?;
+
+        // Unload requires cluster mode (≥2 brokers to move topic to)
+        use crate::args_parse::BrokerMode;
+        match self.broker_service.mode {
+            BrokerMode::Standalone | BrokerMode::Edge => {
+                return Err(Status::unimplemented(
+                    "topic unload not available in standalone/edge mode"
+                ));
+            }
+            BrokerMode::Cluster => {} // proceed
+        }
 
         trace!(topic = %req.name, "unload the topic");
         let service = self.broker_service.as_ref();

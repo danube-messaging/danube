@@ -23,6 +23,26 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::warn;
 
+/// Cluster-specific admin state. Only available in cluster mode.
+///
+/// Contains the Raft handle, leadership handle, load manager, and raft address
+/// needed by cluster-only admin RPCs (cluster status, add/remove node, rebalancing).
+#[derive(Clone)]
+pub(crate) struct ClusterAdmin {
+    pub(crate) load_manager: LoadManager,
+    pub(crate) raft: Raft<danube_raft::typ::TypeConfig>,
+    pub(crate) leadership: LeadershipHandle,
+    pub(crate) raft_addr: String,
+}
+
+impl std::fmt::Debug for ClusterAdmin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterAdmin")
+            .field("leadership", &self.leadership)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct DanubeAdminImpl {
     admin_addr: SocketAddr,
@@ -31,20 +51,15 @@ pub(crate) struct DanubeAdminImpl {
     auth: AuthConfig,
     admin_tls: bool,
     schema_registry: Arc<SchemaRegistryService>,
-    load_manager: LoadManager,
-    /// Raft handle for cluster membership operations.
-    pub(crate) raft: Raft<danube_raft::typ::TypeConfig>,
-    /// Leadership handle for querying current leader.
-    pub(crate) leadership: LeadershipHandle,
-    /// This node's advertised Raft transport address (for ClusterStatus discovery).
-    pub(crate) raft_addr: String,
+    /// Cluster-specific admin state. `None` in standalone/edge mode.
+    pub(crate) cluster: Option<ClusterAdmin>,
 }
 
 impl std::fmt::Debug for DanubeAdminImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DanubeAdminImpl")
             .field("admin_addr", &self.admin_addr)
-            .field("leadership", &self.leadership)
+            .field("cluster", &self.cluster)
             .finish_non_exhaustive()
     }
 }
@@ -57,10 +72,7 @@ impl DanubeAdminImpl {
         auth: AuthConfig,
         admin_tls: bool,
         schema_registry: Arc<SchemaRegistryService>,
-        load_manager: LoadManager,
-        raft: Raft<danube_raft::typ::TypeConfig>,
-        leadership: LeadershipHandle,
-        raft_addr: String,
+        cluster: Option<ClusterAdmin>,
     ) -> Self {
         DanubeAdminImpl {
             admin_addr,
@@ -69,10 +81,7 @@ impl DanubeAdminImpl {
             auth,
             admin_tls,
             schema_registry,
-            load_manager,
-            raft,
-            leadership,
-            raft_addr,
+            cluster,
         }
     }
     pub(crate) async fn start(self) -> JoinHandle<()> {

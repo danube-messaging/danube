@@ -1,3 +1,4 @@
+use crate::args_parse::BrokerMode;
 use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 use crate::danube_service::metrics_collector::MetricsCollector;
 use anyhow::{anyhow, Result};
@@ -21,6 +22,14 @@ use crate::{
     topic_registry::TopicRegistry,
 };
 
+/// Result of a mode-aware topic creation.
+pub(crate) enum TopicCreated {
+    /// Topic is loaded locally and ready (standalone/edge).
+    Loaded,
+    /// Topic metadata was created; client must redo lookup to find the assigned broker (cluster).
+    Pending,
+}
+
 /// BrokerService is the broker API surface.
 ///
 /// It acts as a thin orchestrator:
@@ -33,6 +42,8 @@ use crate::{
 pub(crate) struct BrokerService {
     /// Unique identifier for this broker instance.
     pub(crate) broker_id: u64,
+    /// Deployment mode: Cluster, Standalone, or Edge.
+    pub(crate) mode: BrokerMode,
     /// Registry of local topics hosted by this broker.
     pub(crate) topic_registry: Arc<TopicRegistry>,
     /// Manager for local topic lifecycle and producer/consumer management.
@@ -58,6 +69,7 @@ impl BrokerService {
     /// persisted in `{data_dir}/node_id`), so the broker identity survives restarts.
     pub(crate) fn new(
         broker_id: u64,
+        mode: BrokerMode,
         resources: Resources,
         storage_factory: StorageFactory,
         auto_create_topics: bool,
@@ -87,6 +99,7 @@ impl BrokerService {
 
         BrokerService {
             broker_id,
+            mode,
             topic_registry,
             topic_manager,
             topic_cluster,
@@ -215,11 +228,15 @@ impl BrokerService {
         }
 
         match self
-            .create_topic_cluster(topic_name, dispatch_strategy, schema_ref)
+            .create_topic(topic_name, dispatch_strategy, schema_ref)
             .await
         {
-            Ok(()) => {
-                // Count redirect after auto-create path
+            Ok(TopicCreated::Loaded) => {
+                // Standalone/Edge: topic loaded directly, no redirect needed
+                Ok(true)
+            }
+            Ok(TopicCreated::Pending) => {
+                // Cluster: topic posted to unassigned, client must redo lookup
                 let ns = get_nsname_from_topic(topic_name).to_string();
                 counter!(
                     CLIENT_REDIRECTS_TOTAL.name,
@@ -293,28 +310,69 @@ impl BrokerService {
     }
 
     // =====================================================================
-    // Cluster operations
+    // Mode-aware topic lifecycle
     // =====================================================================
 
-    /// Creates a topic in the cluster metadata. Load Manager will assign it to a broker.
-    pub(crate) async fn create_topic_cluster(
+    /// Mode-aware topic creation entry point.
+    ///
+    /// Used by both producer auto-create and admin CLI.
+    /// - **Cluster**: posts to unassigned path for LoadManager assignment (redirect).
+    /// - **Standalone**: writes metadata + loads topic directly (no redirect).
+    /// - **Edge**: reserved for PR2 (cloud confirmation).
+    pub(crate) async fn create_topic(
         &self,
         topic_name: &str,
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema_ref: Option<SchemaReference>,
-    ) -> Result<(), Status> {
-        self.topic_cluster
-            .create_on_cluster(topic_name, dispatch_strategy, schema_ref, None)
-            .await
+    ) -> Result<TopicCreated, Status> {
+        match self.mode {
+            BrokerMode::Standalone => {
+                // Validate + write metadata directly (skip unassigned path)
+                self.topic_cluster
+                    .create_on_cluster_standalone(topic_name, dispatch_strategy, schema_ref, None)
+                    .await?;
+
+                // Load the topic directly into the local registry
+                self.topic_manager.ensure_local(topic_name).await
+                    .map_err(|e| Status::internal(format!("failed to load topic locally: {}", e)))?;
+
+                Ok(TopicCreated::Loaded)
+            }
+            BrokerMode::Cluster => {
+                // Full cluster pipeline: unassigned → LoadManager → broker_watcher
+                self.topic_cluster
+                    .create_on_cluster(topic_name, dispatch_strategy, schema_ref, None)
+                    .await?;
+                Ok(TopicCreated::Pending)
+            }
+            BrokerMode::Edge => {
+                unimplemented!("Edge mode topic creation — PR2")
+            }
+        }
     }
 
-    // (removed) post_new_topic moved to TopicCluster
-
-    /// Schedules deletion of a topic in the cluster metadata (triggers host broker cleanup).
-    /// Owning broker performs local cleanup via watch_events_for_broker upon receiving delete.
-    pub(crate) async fn post_delete_topic(&self, topic_name: &str) -> Result<()> {
-        self.topic_cluster.post_delete_topic(topic_name).await
+    /// Schedules deletion of a topic in a mode-aware manner.
+    ///
+    /// - **Cluster**: triggers the cluster deletion pipeline (broker assignment + watch).
+    /// - **Standalone**: removes the topic locally and cleans up metadata directly.
+    /// - **Edge**: reserved for PR2.
+    pub(crate) async fn delete_topic(&self, topic_name: &str) -> Result<()> {
+        match self.mode {
+            BrokerMode::Standalone => {
+                // Remove from local topic registry
+                self.topic_registry.remove_topic(topic_name);
+                // Clean up all metadata
+                self.topic_cluster.delete_topic_metadata(topic_name).await
+            }
+            BrokerMode::Cluster => {
+                self.topic_cluster.post_delete_topic(topic_name).await
+            }
+            BrokerMode::Edge => {
+                unimplemented!("Edge mode topic deletion — PR2")
+            }
+        }
     }
+
 
     // =====================================================================
     // Lookups and partitions
