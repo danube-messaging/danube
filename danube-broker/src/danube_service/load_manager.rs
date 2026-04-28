@@ -527,10 +527,8 @@ impl LoadManager {
                                 {
                                     exclude_broker = Some(from_broker);
                                 }
-                                unload_ready = obj
-                                    .get("ready")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
+                                unload_ready =
+                                    obj.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
                             }
 
                             // Handle rebalance (prefer target broker)
@@ -867,21 +865,6 @@ impl LoadManager {
         }
 
         Ok(())
-    }
-
-    /// Checks if a specific broker owns/manages a given topic.
-    pub(crate) async fn check_ownership(&self, broker_id: u64, topic_name: &str) -> bool {
-        let brokers_usage = self.brokers_usage.lock().await;
-        if let Some(load_report) = brokers_usage.get(&broker_id) {
-            if load_report
-                .topics
-                .iter()
-                .any(|t| t.topic_name == topic_name)
-            {
-                return true;
-            }
-        }
-        false
     }
 
     /// Calculates cluster imbalance metrics for rebalancing decisions
