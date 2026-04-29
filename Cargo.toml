@@ -17,6 +17,9 @@ members = [
     # -- Danube persistent storage
     "danube-persistent-storage",
 
+    # -- Danube edge broker (replication, MQTT, coordination)
+    "danube-edge",
+
     # -- Danube lib client
     "danube-client",
 

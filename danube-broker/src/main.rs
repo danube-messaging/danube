@@ -6,6 +6,7 @@ mod broker_service;
 mod consumer;
 mod danube_service;
 mod dispatcher;
+mod edge;
 mod message;
 mod metadata_storage;
 mod policies;
@@ -89,7 +90,16 @@ async fn main() -> Result<()> {
             load_config.try_into()?
         }
         BrokerMode::Edge => {
-            unreachable!("Edge mode is rejected at CLI parsing")
+            let data_dir = args
+                .data_dir
+                .as_deref()
+                .expect("edge mode requires data-dir");
+            ServiceConfiguration::edge(
+                Path::new(data_dir),
+                args.cloud_url.clone().expect("edge mode requires cloud-url"),
+                args.edge_name.clone().expect("edge mode requires edge-name"),
+                args.edge_token.clone().expect("edge mode requires edge-token"),
+            )?
         }
     };
 
@@ -374,9 +384,7 @@ async fn main() -> Result<()> {
             })
         }
         BrokerMode::Standalone => None,
-        BrokerMode::Edge => {
-            unreachable!("Edge mode is rejected at CLI parsing")
-        }
+        BrokerMode::Edge => None,
     };
 
     // DanubeService coordinate and start all the services

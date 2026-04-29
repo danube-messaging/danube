@@ -14,6 +14,9 @@ use danube_core::proto::{
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
+use danube_edge::proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
+
+use crate::edge::BrokerEdgeService;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,6 +36,7 @@ pub(crate) struct DanubeServerImpl {
     connect_url: String,
     proxy_enabled: bool,
     auth: AuthConfig,
+    edge_service: BrokerEdgeService,
 }
 
 impl DanubeServerImpl {
@@ -44,6 +48,7 @@ impl DanubeServerImpl {
         connect_url: String,
         proxy_enabled: bool,
         auth: AuthConfig,
+        edge_service: BrokerEdgeService,
     ) -> Self {
         DanubeServerImpl {
             service,
@@ -53,6 +58,7 @@ impl DanubeServerImpl {
             connect_url,
             proxy_enabled,
             auth,
+            edge_service,
         }
     }
 
@@ -71,6 +77,10 @@ impl DanubeServerImpl {
 
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
+
+        // Edge replicator service (handles its own auth via EdgeAuth trait)
+        let edge_replicator_service =
+            EdgeReplicatorServiceServer::new(self.edge_service.clone());
 
         // Always attach the auth interceptor. When mode=none it creates Anonymous
         // contexts that the authorization engine allows unconditionally.
@@ -99,7 +109,9 @@ impl DanubeServerImpl {
             .add_service(InterceptedService::new(
                 schema_registry_service,
                 interceptor,
-            ));
+            ))
+            // Edge replicator — uses its own edge-specific auth, not the broker interceptor
+            .add_service(edge_replicator_service);
 
         let server = server_builder.serve(socket_addr);
 

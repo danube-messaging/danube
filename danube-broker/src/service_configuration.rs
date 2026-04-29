@@ -69,6 +69,20 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_tls: bool,
     /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
+    /// Edge replication configuration (edge mode only)
+    #[serde(default)]
+    pub(crate) edge_config: Option<EdgeConfig>,
+}
+
+/// Configuration for edge-to-cloud replication.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct EdgeConfig {
+    /// Cloud cluster URL (e.g. "http://cloud-broker:6650")
+    pub(crate) cloud_url: String,
+    /// Unique name for this edge broker
+    pub(crate) edge_name: String,
+    /// Authentication token for cloud registration
+    pub(crate) token: String,
 }
 
 /// Broker services configuration
@@ -163,6 +177,57 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: None,
+            edge_config: None,
+        })
+    }
+
+    /// Creates an edge configuration with sensible defaults.
+    ///
+    /// Edge mode uses single-node Raft (like standalone), no LoadManager,
+    /// and includes the edge replication config for cloud connectivity.
+    pub(crate) fn edge(
+        base_dir: &Path,
+        cloud_url: String,
+        edge_name: String,
+        token: String,
+    ) -> Result<Self> {
+        let broker_addr: SocketAddr = "127.0.0.1:6650"
+            .parse()
+            .context("Failed to create edge broker_addr")?;
+        let admin_addr: SocketAddr = "127.0.0.1:50051"
+            .parse()
+            .context("Failed to create edge admin_addr")?;
+
+        Ok(Self {
+            cluster_name: format!("EDGE-{}", edge_name),
+            broker_addr,
+            broker_url: format!("http://{}", broker_addr),
+            connect_url: format!("http://{}", broker_addr),
+            proxy_enabled: false,
+            admin_addr,
+            prom_exporter: None,
+            raft_port: 7650,
+            meta_store: MetaStoreConfig {
+                data_dir: base_dir.join("raft").to_string_lossy().into_owned(),
+                seed_nodes: Vec::new(),
+            },
+            bootstrap_namespaces: vec!["default".to_string()],
+            auto_create_topics: true,
+            policies: Policies::new(),
+            storage: StorageConfig::single_node(base_dir),
+            auth: AuthConfig {
+                mode: AuthMode::None,
+                tls: None,
+                jwt: None,
+                super_admins: Vec::new(),
+            },
+            admin_tls: false,
+            load_manager: None,
+            edge_config: Some(EdgeConfig {
+                cloud_url,
+                edge_name,
+                token,
+            }),
         })
     }
 }
@@ -245,6 +310,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             auth,
             admin_tls,
             load_manager,
+            edge_config: None,
         })
     }
 }

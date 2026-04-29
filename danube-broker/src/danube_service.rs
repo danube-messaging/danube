@@ -20,18 +20,25 @@ use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
+use crate::edge::BrokerEdgeService;
+
 use crate::{
     admin::{ClusterAdmin, DanubeAdminImpl},
-    security::config::AuthMode,
     broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
+    edge::auth_adapter::BrokerEdgeAuth,
+    edge::storage_adapter::BrokerReplicationStorage,
     policies::Policies,
-    resources::{Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE},
+    resources::{
+        EdgeResources, Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE,
+    },
+    security::config::AuthMode,
     service_configuration::ServiceConfiguration,
     topic::SYSTEM_TOPIC,
     utils::join_path,
@@ -109,10 +116,7 @@ impl DanubeService {
     // Public entry point
     // =========================================================================
 
-    pub(crate) async fn start(
-        &mut self,
-        cluster: Option<ClusterServices>,
-    ) -> Result<()> {
+    pub(crate) async fn start(&mut self, cluster: Option<ClusterServices>) -> Result<()> {
         info!(
             cluster = %self.service_config.cluster_name,
             broker_id = %self.broker_id,
@@ -152,20 +156,36 @@ impl DanubeService {
             "admin gRPC server listening"
         );
 
+        // ----- Build edge replicator service (added to broker gRPC server)
+        let edge_service = {
+            let edge_resources = EdgeResources::new(self.meta_store.clone());
+            let auth = Arc::new(BrokerEdgeAuth::new(
+                edge_resources,
+                self.service_config.auth.clone(),
+            ));
+            let storage = Arc::new(BrokerReplicationStorage::new(
+                self.resources.clone(),
+                self.broker.topic_manager.storage_factory.clone(),
+            ));
+            BrokerEdgeService::new(storage, auth)
+        };
+
         // ----- Mode-specific startup
         match self.mode {
             BrokerMode::Cluster => {
                 self.start_cluster_mode(
                     cluster.expect("ClusterServices required for cluster mode"),
                     schema_registry,
+                    edge_service,
                 )
                 .await?;
             }
             BrokerMode::Standalone => {
-                self.start_standalone_mode(schema_registry).await?;
+                self.start_standalone_mode(schema_registry, edge_service)
+                    .await?;
             }
             BrokerMode::Edge => {
-                unimplemented!("Edge mode startup — PR2");
+                self.start_edge_mode(schema_registry, edge_service).await?;
             }
         }
 
@@ -196,6 +216,7 @@ impl DanubeService {
         &mut self,
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
+        edge_service: BrokerEdgeService,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -222,7 +243,9 @@ impl DanubeService {
         self.initialize_metadata_and_auth().await?;
 
         // 8. Broker gRPC + replicator
-        let server_handle = self.start_broker_grpc(schema_registry).await?;
+        let server_handle = self
+            .start_broker_grpc(schema_registry, edge_service)
+            .await?;
 
         // 9. Start cluster orchestration services
         self.start_orchestration_services(&mut cluster).await?;
@@ -249,6 +272,7 @@ impl DanubeService {
     async fn start_standalone_mode(
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
+        edge_service: BrokerEdgeService,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -256,11 +280,7 @@ impl DanubeService {
         if let Err(e) = self
             .resources
             .cluster
-            .set_broker_state(
-                &self.broker_id.to_string(),
-                "active",
-                Some("standalone"),
-            )
+            .set_broker_state(&self.broker_id.to_string(), "active", Some("standalone"))
             .await
         {
             warn!(error = %e, "failed to set standalone broker state");
@@ -277,11 +297,141 @@ impl DanubeService {
         self.initialize_metadata_and_auth().await?;
 
         // 5. Broker gRPC + replicator
-        let server_handle = self.start_broker_grpc(schema_registry).await?;
+        let server_handle = self
+            .start_broker_grpc(schema_registry, edge_service)
+            .await?;
 
         info!(
             broker_id = %self.broker_id,
             "standalone mode: broker active (no leader election, no load manager, no broker watcher)"
+        );
+
+        // Block until broker gRPC shuts down
+        if let Err(e) = server_handle.await {
+            eprintln!("Broker Server failed: {:?}", e);
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Edge mode
+    // =========================================================================
+
+    /// Edge broker startup sequence:
+    ///
+    /// 1. Register broker (single-node Raft, no TTL renewal)
+    /// 2. Set broker state to active
+    /// 3. Create cluster record
+    /// 4. Initialize default namespaces + auth cache
+    /// 5. Start broker gRPC (local producers/consumers still work)
+    /// 6. TODO: Start edge replicator (WAL tailer → cloud streaming)
+    async fn start_edge_mode(
+        &mut self,
+        schema_registry: Arc<SchemaRegistryService>,
+        edge_service: BrokerEdgeService,
+    ) -> Result<()> {
+        // 1–2. Register + immediate active state (same as standalone)
+        self.register_broker(0).await?;
+
+        if let Err(e) = self
+            .resources
+            .cluster
+            .set_broker_state(&self.broker_id.to_string(), "active", Some("edge"))
+            .await
+        {
+            warn!(error = %e, "failed to set edge broker state");
+        }
+
+        // Create cluster record (single-node Raft auto-commits)
+        let _ = self
+            .resources
+            .cluster
+            .create_cluster(&self.service_config.cluster_name)
+            .await;
+
+        // 3–4. Namespaces + auth cache
+        self.initialize_metadata_and_auth().await?;
+
+        // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
+        let server_handle = self
+            .start_broker_grpc(schema_registry, edge_service)
+            .await?;
+
+        // 6. Start edge-side replicator (WAL tailer → cloud streaming)
+        let edge_config = self
+            .service_config
+            .edge_config
+            .as_ref()
+            .expect("edge_config required in edge mode");
+
+        let cloud_client = danube_edge::edge::cloud_client::EdgeCloudClient::new(
+            &edge_config.cloud_url,
+            &edge_config.edge_name,
+            &edge_config.token,
+        );
+
+        // Register with cloud cluster (retries on transient failures)
+        let namespace = loop {
+            match cloud_client.register().await {
+                Ok(ns) => break ns,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        cloud_url = %edge_config.cloud_url,
+                        "failed to register with cloud cluster, retrying in 5s"
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        };
+
+        info!(
+            edge_name = %edge_config.edge_name,
+            namespace = %namespace,
+            "registered with cloud cluster"
+        );
+
+        // Create the edge replicator
+        let checkpoint_dir = PathBuf::from(&self.service_config.meta_store.data_dir)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("edge-checkpoints");
+
+        let replicator_config = danube_edge::edge::replicator::EdgeReplicatorConfig {
+            checkpoint_dir,
+            ..Default::default()
+        };
+
+        let replicator = Arc::new(
+            danube_edge::edge::replicator::EdgeReplicator::new(
+                cloud_client,
+                self.broker.topic_manager.storage_factory.clone(),
+                replicator_config,
+            )
+            .await,
+        );
+
+        // Discover existing local topics and start replicating them
+        let topics = self.broker.topic_registry.get_all_topics();
+        for topic_name in &topics {
+            // Create topic on cloud first
+            if let Err(e) = replicator.cloud_client().create_topic(topic_name).await {
+                warn!(
+                    topic = %topic_name,
+                    error = %e,
+                    "failed to create topic on cloud, will retry later"
+                );
+                continue;
+            }
+            replicator.add_topic(topic_name).await;
+        }
+
+        info!(
+            broker_id = %self.broker_id,
+            edge_name = %edge_config.edge_name,
+            active_topics = topics.len(),
+            "edge mode: broker active, replicating to cloud"
         );
 
         // Block until broker gRPC shuts down
@@ -374,6 +524,7 @@ impl DanubeService {
     async fn start_broker_grpc(
         &self,
         schema_registry: Arc<SchemaRegistryService>,
+        edge_service: BrokerEdgeService,
     ) -> Result<tokio::task::JoinHandle<()>> {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
@@ -383,6 +534,7 @@ impl DanubeService {
             self.service_config.connect_url.clone(),
             self.service_config.proxy_enabled,
             self.service_config.auth.clone(),
+            edge_service,
         );
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -445,10 +597,7 @@ impl DanubeService {
 
     /// Blocks until this node detects a Raft leader (meaning it has been added
     /// to the cluster via `danube-admin cluster add-node`).
-    async fn wait_for_cluster_membership(
-        &self,
-        raft: &Raft<danube_raft::typ::TypeConfig>,
-    ) {
+    async fn wait_for_cluster_membership(&self, raft: &Raft<danube_raft::typ::TypeConfig>) {
         info!(
             broker_id = %self.broker_id,
             "waiting for cluster membership (use `danube-admin cluster add-node`)..."
@@ -605,10 +754,7 @@ impl DanubeService {
 
     /// Starts the cluster orchestration background tasks:
     /// leader election, load manager, rebalancing, load reports, broker watcher.
-    async fn start_orchestration_services(
-        &self,
-        cluster: &mut ClusterServices,
-    ) -> Result<()> {
+    async fn start_orchestration_services(&self, cluster: &mut ClusterServices) -> Result<()> {
         // Leader election
         let leader_check_interval = time::interval(Duration::from_secs(10));
         let mut leader_election_cloned = cluster.leader_election.clone();
@@ -642,8 +788,8 @@ impl DanubeService {
                 let rebalancing_config = lm_config.rebalancing.clone();
                 let leader_election = cluster.leader_election.clone();
                 tokio::spawn(async move {
-                    let _handle = load_manager
-                        .start_rebalancing_loop(rebalancing_config, leader_election);
+                    let _handle =
+                        load_manager.start_rebalancing_loop(rebalancing_config, leader_election);
                 });
             } else {
                 info!("automated rebalancing is disabled");

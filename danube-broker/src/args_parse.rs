@@ -10,7 +10,6 @@ use std::env;
 pub(crate) enum BrokerMode {
     Cluster,
     Standalone,
-    #[allow(dead_code)]
     Edge,
 }
 
@@ -27,6 +26,12 @@ pub(crate) struct Args {
     pub(crate) data_dir: Option<String>,
     pub(crate) seed_nodes: Option<String>,
     pub(crate) join: bool,
+    /// Edge mode: cloud cluster URL to replicate to
+    pub(crate) cloud_url: Option<String>,
+    /// Edge mode: unique name for this edge broker
+    pub(crate) edge_name: Option<String>,
+    /// Edge mode: authentication token for cloud registration
+    pub(crate) edge_token: Option<String>,
 }
 
 impl Args {
@@ -43,6 +48,11 @@ impl Args {
         println!("  --data-dir           Base data directory (required for standalone mode)");
         println!("  --seed-nodes         Comma-separated Raft seed addresses (overrides meta_store.seed_nodes)");
         println!("  --join               Join an existing cluster (skip bootstrap, wait to be added via admin CLI)");
+        println!();
+        println!("Edge mode options:");
+        println!("  --cloud-url          Cloud cluster URL for edge replication (required for edge mode)");
+        println!("  --edge-name          Unique name for this edge broker (required for edge mode)");
+        println!("  --edge-token         Authentication token for cloud registration (required for edge mode)");
     }
 
     pub(crate) fn parse() -> Result<Self> {
@@ -72,6 +82,9 @@ impl Args {
         let mut data_dir = None;
         let mut seed_nodes = None;
         let mut join = false;
+        let mut cloud_url = None;
+        let mut edge_name = None;
+        let mut edge_token = None;
 
         let mut args_iter = args.iter().skip(1);
         while let Some(arg) = args_iter.next() {
@@ -109,6 +122,15 @@ impl Args {
                 "--join" => {
                     join = true;
                 }
+                "--cloud-url" => {
+                    cloud_url = args_iter.next().map(|s| s.to_string());
+                }
+                "--edge-name" => {
+                    edge_name = args_iter.next().map(|s| s.to_string());
+                }
+                "--edge-token" => {
+                    edge_token = args_iter.next().map(|s| s.to_string());
+                }
                 _ => return Err(anyhow::anyhow!("Unknown argument: {}", arg)),
             }
         }
@@ -118,11 +140,7 @@ impl Args {
             match mode_str.to_lowercase().as_str() {
                 "cluster" => BrokerMode::Cluster,
                 "standalone" => BrokerMode::Standalone,
-                "edge" => {
-                    return Err(anyhow::anyhow!(
-                        "Edge mode is not yet available. It will be implemented in a future release."
-                    ));
-                }
+                "edge" => BrokerMode::Edge,
                 _ => {
                     return Err(anyhow::anyhow!(
                         "Unknown mode '{}'. Valid modes: cluster, standalone",
@@ -167,8 +185,28 @@ impl Args {
                 }
             }
             BrokerMode::Edge => {
-                // Unreachable — rejected above. But for completeness:
-                unreachable!("Edge mode is rejected at parse time");
+                if config_file.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--mode edge cannot be used together with --config-file"
+                    ));
+                }
+                if join {
+                    return Err(anyhow::anyhow!(
+                        "--mode edge cannot be used together with --join"
+                    ));
+                }
+                if data_dir.is_none() {
+                    return Err(anyhow::anyhow!("--mode edge requires --data-dir"));
+                }
+                if cloud_url.is_none() {
+                    return Err(anyhow::anyhow!("--mode edge requires --cloud-url"));
+                }
+                if edge_name.is_none() {
+                    return Err(anyhow::anyhow!("--mode edge requires --edge-name"));
+                }
+                if edge_token.is_none() {
+                    return Err(anyhow::anyhow!("--mode edge requires --edge-token"));
+                }
             }
         }
 
@@ -184,6 +222,9 @@ impl Args {
             data_dir,
             seed_nodes,
             join,
+            cloud_url,
+            edge_name,
+            edge_token,
         })
     }
 }
@@ -233,17 +274,63 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mode_edge() {
+    fn parses_mode_edge() {
+        let args = Args::parse_from([
+            "danube-broker",
+            "--mode",
+            "edge",
+            "--data-dir",
+            "/tmp/danube-edge",
+            "--cloud-url",
+            "http://cloud:6650",
+            "--edge-name",
+            "edge1",
+            "--edge-token",
+            "secret-token",
+        ])
+        .expect("parse args");
+
+        assert_eq!(args.mode, BrokerMode::Edge);
+        assert_eq!(args.data_dir.as_deref(), Some("/tmp/danube-edge"));
+        assert_eq!(args.cloud_url.as_deref(), Some("http://cloud:6650"));
+        assert_eq!(args.edge_name.as_deref(), Some("edge1"));
+        assert_eq!(args.edge_token.as_deref(), Some("secret-token"));
+    }
+
+    #[test]
+    fn rejects_edge_without_cloud_url() {
         let err = Args::parse_from([
             "danube-broker",
             "--mode",
             "edge",
             "--data-dir",
             "/tmp/danube-edge",
+            "--edge-name",
+            "edge1",
+            "--edge-token",
+            "secret",
         ])
-        .expect_err("edge mode should be rejected");
+        .expect_err("edge without cloud-url should fail");
 
-        assert!(err.to_string().contains("Edge mode is not yet available"));
+        assert!(err.to_string().contains("requires --cloud-url"));
+    }
+
+    #[test]
+    fn rejects_edge_without_edge_name() {
+        let err = Args::parse_from([
+            "danube-broker",
+            "--mode",
+            "edge",
+            "--data-dir",
+            "/tmp/danube-edge",
+            "--cloud-url",
+            "http://cloud:6650",
+            "--edge-token",
+            "secret",
+        ])
+        .expect_err("edge without edge-name should fail");
+
+        assert!(err.to_string().contains("requires --edge-name"));
     }
 
     #[test]
