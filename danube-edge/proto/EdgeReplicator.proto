@@ -2,52 +2,35 @@ syntax = "proto3";
 
 package danube.edge;
 
-// Edge ↔ Cluster replication service.
-// Hosted on the cluster broker's admin gRPC port.
+// Edge → Cluster replication service.
+//
+// Hosted on the cluster broker's gRPC port, behind the standard auth interceptor.
+// Edge brokers authenticate using the same mechanisms as any client:
+// - JWT token (via `authorization` header) — scoped to the edge's namespace
+// - mTLS + internal-broker header — for trusted infrastructure
+//
+// The admin pre-provisions: namespace, JWT token, RBAC binding with Replicate permission.
 service EdgeReplicatorService {
 
-  // Step 1: Register edge with the cluster.
-  // - Validates the edge token (JWT scoped to the edge namespace)
-  // - Persists edge registration in Raft under /edge/registrations/{edge_name}
-  // - Returns success + the namespace the edge is authorized for
-  // Idempotent: re-registration with same token is a no-op.
-  rpc RegisterEdge(RegisterEdgeRequest) returns (RegisterEdgeResponse);
-
-  // Step 2: Create a topic on the cluster for edge replication.
-  // - Validates that the edge is registered
-  // - Validates that the topic belongs to the edge's namespace
+  // Create a topic on the cluster for edge replication.
+  // - Validates that the topic belongs to a namespace the caller has access to
   // - Creates topic metadata (always Reliable dispatch strategy)
   // - Creates WAL via StorageFactory
-  // - Optionally registers schema in the schema registry
-  // Fails if edge is not registered or topic namespace doesn't match.
+  // Auth: requires ManageTopic permission on the topic's namespace.
   rpc CreateEdgeTopic(CreateEdgeTopicRequest) returns (CreateEdgeTopicResponse);
 
-  // Step 3: Replicate message batches from edge to cluster.
+  // Replicate message batches from edge to cluster.
   // - Bidirectional stream: edge sends batches, cluster acks offsets
   // - Writes directly to WAL via Wal::append_batch() (no producer overhead)
-  // - Fails if edge is not registered or topic doesn't exist
+  // Auth: requires Replicate permission on the topic's namespace.
   rpc ReplicateData(stream ReplicateBatch) returns (stream ReplicateAck);
-}
-
-// ─── Registration ───────────────────────────────────────────────────────────
-
-message RegisterEdgeRequest {
-  string edge_name = 1;    // Unique edge identifier, e.g. "edge1"
-  string token = 2;        // JWT token (created by admin, scoped to namespace)
-}
-
-message RegisterEdgeResponse {
-  bool success = 1;
-  string namespace = 2;    // The namespace this edge is authorized for (e.g. "/edge1")
-  string message = 3;      // Error or info message
 }
 
 // ─── Topic Creation ─────────────────────────────────────────────────────────
 
 message CreateEdgeTopicRequest {
-  string edge_name = 1;                // Must match a registered edge
-  string topic_name = 2;               // Full topic path, e.g. "/edge1/sensor_temp"
-  optional EdgeSchemaInfo schema = 3;  // Optional schema for the topic
+  string topic_name = 1;               // Full topic path, e.g. "/edge1/sensor_temp"
+  optional EdgeSchemaInfo schema = 2;   // Optional schema for the topic
 }
 
 message EdgeSchemaInfo {
@@ -64,10 +47,9 @@ message CreateEdgeTopicResponse {
 // ─── Data Replication ───────────────────────────────────────────────────────
 
 message ReplicateBatch {
-  string edge_name = 1;                   // Must match a registered edge
-  string topic_name = 2;                  // Must be a created edge topic
-  repeated ReplicateMessage messages = 3;
-  uint64 batch_last_offset = 4;           // Highest edge WAL offset in this batch
+  string topic_name = 1;                  // Must be a created edge topic
+  repeated ReplicateMessage messages = 2;
+  uint64 batch_last_offset = 3;           // Highest edge WAL offset in this batch
 }
 
 message ReplicateMessage {

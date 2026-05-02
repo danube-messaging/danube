@@ -2,7 +2,6 @@ use crate::metadata_storage::MetadataStorage;
 use danube_raft::leadership::LeadershipHandle;
 
 mod cluster;
-pub(crate) mod edge;
 mod namespace;
 mod security;
 mod schema;
@@ -13,7 +12,6 @@ pub(crate) use namespace::NamespaceResources;
 pub(crate) use security::SecurityResources;
 pub(crate) use schema::SchemaResources;
 pub(crate) use topic::{TopicResources, TopicSchemaConfig};
-pub(crate) use edge::EdgeResources;
 
 pub(crate) static BASE_CLUSTER_PATH: &str = "/cluster";
 pub(crate) static BASE_REGISTER_PATH: &str = "/cluster/register";
@@ -23,7 +21,6 @@ pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
 pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
 pub(crate) static BASE_AUTH_ROLES_PATH: &str = "/auth/roles";
 pub(crate) static BASE_AUTH_BINDINGS_PATH: &str = "/auth/bindings";
-pub(crate) static BASE_EDGE_REGISTRATIONS_PATH: &str = "/edge/registrations";
 
 // Once new topic is created, it is posted to unassigned path in order to be alocated by Load Manager to a broker
 pub(crate) static BASE_UNASSIGNED_PATH: &str = "/cluster/unassigned";

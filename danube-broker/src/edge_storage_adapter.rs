@@ -16,6 +16,10 @@ use crate::policies::Policies;
 use crate::resources::Resources;
 use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 
+/// Concrete edge replicator service using the broker's storage adapter.
+pub(crate) type BrokerEdgeService =
+    danube_edge::cluster::service::EdgeReplicatorServiceImpl<BrokerReplicationStorage>;
+
 /// Broker-side implementation of the `ReplicationStorage` trait.
 ///
 /// Provides two key capabilities:

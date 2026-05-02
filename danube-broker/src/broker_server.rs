@@ -16,7 +16,7 @@ use danube_core::proto::{
 };
 use danube_edge::proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
 
-use crate::edge::BrokerEdgeService;
+use crate::edge_storage_adapter::BrokerEdgeService;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -78,7 +78,7 @@ impl DanubeServerImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        // Edge replicator service (handles its own auth via EdgeAuth trait)
+        // Edge replicator service
         let edge_replicator_service =
             EdgeReplicatorServiceServer::new(self.edge_service.clone());
 
@@ -108,10 +108,12 @@ impl DanubeServerImpl {
             ))
             .add_service(InterceptedService::new(
                 schema_registry_service,
-                interceptor,
+                interceptor.clone(),
             ))
-            // Edge replicator — uses its own edge-specific auth, not the broker interceptor
-            .add_service(edge_replicator_service);
+            .add_service(InterceptedService::new(
+                edge_replicator_service,
+                interceptor,
+            ));
 
         let server = server_builder.serve(socket_addr);
 

@@ -1,19 +1,23 @@
 //! gRPC client for connecting to the cloud cluster's `EdgeReplicatorService`.
 //!
 //! Wraps the generated `EdgeReplicatorServiceClient` with reconnection logic
-//! and provides typed methods for registration, topic creation, and data replication.
+//! and provides typed methods for topic creation and data replication.
+//!
+//! Authentication uses the same mechanism as any Danube client:
+//! - JWT token sent as `authorization: Bearer <token>` header
+//! - Or mTLS for trusted infrastructure
 
 use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
+use tonic::Request;
 use tracing::info;
 
 use crate::proto::edge_replicator_service_client::EdgeReplicatorServiceClient;
-use crate::proto::{
-    CreateEdgeTopicRequest, RegisterEdgeRequest, ReplicateBatch, ReplicateMessage,
-};
+use crate::proto::{CreateEdgeTopicRequest, ReplicateBatch, ReplicateMessage};
 use danube_core::message::StreamMessage;
 
 /// Client for connecting to the cloud cluster's EdgeReplicatorService.
@@ -39,45 +43,27 @@ impl EdgeCloudClient {
         Ok(client)
     }
 
-    /// Register this edge with the cloud cluster.
-    ///
-    /// Validates the token and persists the registration in the cluster's Raft store.
-    pub async fn register(&self) -> Result<String> {
-        let mut client = self.connect().await?;
-        let response = client
-            .register_edge(RegisterEdgeRequest {
-                edge_name: self.edge_name.clone(),
-                token: self.token.clone(),
-            })
-            .await?
-            .into_inner();
-
-        if response.success {
-            info!(
-                edge_name = %self.edge_name,
-                namespace = %response.namespace,
-                "registered with cloud cluster"
-            );
-            Ok(response.namespace)
-        } else {
-            Err(anyhow!(
-                "edge registration failed: {}",
-                response.message
-            ))
+    /// Attach the JWT bearer token to a gRPC request.
+    fn authenticate<T>(&self, request: &mut Request<T>) {
+        if !self.token.is_empty() {
+            let bearer = format!("Bearer {}", self.token);
+            if let Ok(value) = bearer.parse::<MetadataValue<_>>() {
+                request.metadata_mut().insert("authorization", value);
+            }
         }
     }
 
     /// Create a topic on the cloud cluster for replication.
     pub async fn create_topic(&self, topic_name: &str) -> Result<()> {
         let mut client = self.connect().await?;
-        let response = client
-            .create_edge_topic(CreateEdgeTopicRequest {
-                edge_name: self.edge_name.clone(),
-                topic_name: topic_name.to_string(),
-                schema: None, // TODO: schema support in Phase 2b
-            })
-            .await?
-            .into_inner();
+
+        let mut request = Request::new(CreateEdgeTopicRequest {
+            topic_name: topic_name.to_string(),
+            schema: None, // TODO: schema support in Phase 2b
+        });
+        self.authenticate(&mut request);
+
+        let response = client.create_edge_topic(request).await?.into_inner();
 
         if response.success {
             info!(
@@ -87,10 +73,7 @@ impl EdgeCloudClient {
             );
             Ok(())
         } else {
-            Err(anyhow!(
-                "topic creation failed: {}",
-                response.message
-            ))
+            Err(anyhow!("topic creation failed: {}", response.message))
         }
     }
 
@@ -117,7 +100,6 @@ impl EdgeCloudClient {
             .collect();
 
         let batch = ReplicateBatch {
-            edge_name: self.edge_name.clone(),
             topic_name: topic_name.to_string(),
             messages: replicate_messages,
             batch_last_offset,
@@ -125,24 +107,23 @@ impl EdgeCloudClient {
 
         // Create a one-shot stream for this batch
         let (tx, rx) = mpsc::channel(1);
-        tx.send(batch).await.map_err(|_| anyhow!("channel send failed"))?;
+        tx.send(batch)
+            .await
+            .map_err(|_| anyhow!("channel send failed"))?;
         drop(tx); // Close the sending side after sending the batch
 
         let request_stream = ReceiverStream::new(rx);
-        let response = client.replicate_data(request_stream).await?;
+        let mut request = Request::new(request_stream);
+        self.authenticate(&mut request);
+
+        let response = client.replicate_data(request).await?;
         let mut ack_stream = response.into_inner();
 
         // Wait for the ack
         match ack_stream.next().await {
-            Some(Ok(ack)) => {
-                Ok(ack.acked_offset)
-            }
-            Some(Err(e)) => {
-                Err(anyhow!("replication error: {}", e))
-            }
-            None => {
-                Err(anyhow!("no ack received from cloud cluster"))
-            }
+            Some(Ok(ack)) => Ok(ack.acked_offset),
+            Some(Err(e)) => Err(anyhow!("replication error: {}", e)),
+            None => Err(anyhow!("no ack received from cloud cluster")),
         }
     }
 

@@ -1,9 +1,12 @@
 //! gRPC implementation of `EdgeReplicatorService` (cluster side).
 //!
 //! This service runs on cloud cluster brokers and handles:
-//! 1. Edge registration (token validation + Raft persistence)
-//! 2. Edge topic creation (metadata + WAL provisioning)
-//! 3. Batch message ingestion (direct WAL writes via `append_batch()`)
+//! 1. Edge topic creation (metadata + WAL provisioning)
+//! 2. Batch message ingestion (direct WAL writes via `append_batch()`)
+//!
+//! Authentication and authorization are handled by the broker's standard
+//! gRPC interceptor (JWT or mTLS). The edge broker authenticates the same
+//! way any client or cluster broker does.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,186 +15,71 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::cluster::auth::{EdgeAuth, EdgeRegistration};
 use crate::cluster::ingestion::ReplicationStorage;
 use crate::proto::edge_replicator_service_server::EdgeReplicatorService;
 use crate::proto::{
-    CreateEdgeTopicRequest, CreateEdgeTopicResponse, RegisterEdgeRequest, RegisterEdgeResponse,
-    ReplicateAck, ReplicateBatch,
+    CreateEdgeTopicRequest, CreateEdgeTopicResponse, ReplicateAck, ReplicateBatch,
 };
 use danube_core::message::{MessageID, StreamMessage};
 
 /// Cluster-side gRPC service for edge replication.
 ///
-/// Generic over `S: ReplicationStorage` and `A: EdgeAuth` so the broker
-/// can inject its own implementations without circular dependencies.
-pub struct EdgeReplicatorServiceImpl<S: ReplicationStorage, A: EdgeAuth> {
+/// Generic over `S: ReplicationStorage` so the broker can inject its own
+/// storage implementation without circular dependencies.
+///
+/// Auth is handled externally by the broker's gRPC interceptor —
+/// this service does not perform any authentication or authorization checks.
+pub struct EdgeReplicatorServiceImpl<S: ReplicationStorage> {
     storage: Arc<S>,
-    auth: Arc<A>,
 }
 
-impl<S: ReplicationStorage, A: EdgeAuth> Clone for EdgeReplicatorServiceImpl<S, A> {
+impl<S: ReplicationStorage> Clone for EdgeReplicatorServiceImpl<S> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
-            auth: self.auth.clone(),
         }
     }
 }
 
-impl<S: ReplicationStorage, A: EdgeAuth> std::fmt::Debug for EdgeReplicatorServiceImpl<S, A> {
+impl<S: ReplicationStorage> std::fmt::Debug for EdgeReplicatorServiceImpl<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdgeReplicatorServiceImpl")
             .finish_non_exhaustive()
     }
 }
 
-impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorServiceImpl<S, A> {
-    pub fn new(storage: Arc<S>, auth: Arc<A>) -> Self {
-        Self { storage, auth }
+impl<S: ReplicationStorage> EdgeReplicatorServiceImpl<S> {
+    pub fn new(storage: Arc<S>) -> Self {
+        Self { storage }
     }
 }
 
 #[tonic::async_trait]
-impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorService
-    for EdgeReplicatorServiceImpl<S, A>
-{
-    /// Register an edge broker with the cluster.
-    ///
-    /// Flow:
-    /// 1. Validate the JWT token (subject must match edge_name)
-    /// 2. Ensure namespace /{edge_name} exists
-    /// 3. Persist registration in Raft metadata store
-    async fn register_edge(
-        &self,
-        request: Request<RegisterEdgeRequest>,
-    ) -> Result<Response<RegisterEdgeResponse>, Status> {
-        let req = request.into_inner();
-        info!(
-            edge_name = %req.edge_name,
-            "processing edge registration request"
-        );
-
-        // Check if already registered (idempotent)
-        if self.auth.is_edge_registered(&req.edge_name).await {
-            if let Some(ns) = self.auth.get_edge_namespace(&req.edge_name).await {
-                info!(
-                    edge_name = %req.edge_name,
-                    namespace = %ns,
-                    "edge already registered, returning existing registration"
-                );
-                return Ok(Response::new(RegisterEdgeResponse {
-                    success: true,
-                    namespace: ns,
-                    message: "edge already registered".to_string(),
-                }));
-            }
-        }
-
-        // Validate token
-        let namespace = match self.auth.validate_edge_token(&req.edge_name, &req.token).await {
-            Ok(ns) => ns,
-            Err(e) => {
-                warn!(
-                    edge_name = %req.edge_name,
-                    error = %e,
-                    "edge token validation failed"
-                );
-                return Ok(Response::new(RegisterEdgeResponse {
-                    success: false,
-                    namespace: String::new(),
-                    message: format!("token validation failed: {}", e),
-                }));
-            }
-        };
-
-        // Ensure namespace exists on the cluster
-        if let Err(e) = self.storage.ensure_namespace(&namespace).await {
-            error!(
-                edge_name = %req.edge_name,
-                namespace = %namespace,
-                error = %e,
-                "failed to ensure namespace for edge"
-            );
-            return Err(Status::internal(format!(
-                "failed to ensure namespace: {}",
-                e
-            )));
-        }
-
-        // Persist registration
-        let registration = EdgeRegistration {
-            edge_name: req.edge_name.clone(),
-            namespace: namespace.clone(),
-            registered_at: chrono::Utc::now().to_rfc3339(),
-            status: "active".to_string(),
-        };
-
-        if let Err(e) = self.auth.register_edge(&registration).await {
-            error!(
-                edge_name = %req.edge_name,
-                error = %e,
-                "failed to persist edge registration"
-            );
-            return Err(Status::internal(format!(
-                "failed to persist registration: {}",
-                e
-            )));
-        }
-
-        info!(
-            edge_name = %req.edge_name,
-            namespace = %namespace,
-            "edge registered successfully"
-        );
-
-        Ok(Response::new(RegisterEdgeResponse {
-            success: true,
-            namespace,
-            message: "registered successfully".to_string(),
-        }))
-    }
-
+impl<S: ReplicationStorage> EdgeReplicatorService for EdgeReplicatorServiceImpl<S> {
     /// Create a topic on the cluster for edge replication.
     ///
     /// Flow:
-    /// 1. Verify edge is registered
-    /// 2. Verify topic belongs to edge's namespace
-    /// 3. Create topic metadata (Reliable dispatch strategy)
-    /// 4. Create WAL via StorageFactory
+    /// 1. Ensure namespace exists
+    /// 2. Create topic metadata (Reliable dispatch strategy)
+    /// 3. Create WAL via StorageFactory
+    ///
+    /// Auth: the broker interceptor has already verified the caller has
+    /// ManageTopic permission on the topic's namespace.
     async fn create_edge_topic(
         &self,
         request: Request<CreateEdgeTopicRequest>,
     ) -> Result<Response<CreateEdgeTopicResponse>, Status> {
         let req = request.into_inner();
         info!(
-            edge_name = %req.edge_name,
             topic = %req.topic_name,
             "processing edge topic creation request"
         );
 
-        // Verify edge is registered
-        if !self.auth.is_edge_registered(&req.edge_name).await {
-            return Ok(Response::new(CreateEdgeTopicResponse {
-                success: false,
-                message: format!("edge '{}' is not registered", req.edge_name),
-            }));
-        }
-
-        // Verify topic belongs to edge namespace
-        if let Err(e) = self.auth.validate_topic_namespace(&req.edge_name, &req.topic_name) {
-            return Ok(Response::new(CreateEdgeTopicResponse {
-                success: false,
-                message: format!("namespace validation failed: {}", e),
-            }));
-        }
-
         // Create topic on cluster (metadata + WAL)
         if let Err(e) = self.storage.ensure_topic(&req.topic_name).await {
             error!(
-                edge_name = %req.edge_name,
                 topic = %req.topic_name,
                 error = %e,
                 "failed to create edge topic on cluster"
@@ -211,7 +99,6 @@ impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorService
         }
 
         info!(
-            edge_name = %req.edge_name,
             topic = %req.topic_name,
             "edge topic created successfully on cluster"
         );
@@ -230,13 +117,15 @@ impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorService
     /// Bidirectional stream:
     /// - Edge sends `ReplicateBatch` messages (many messages per batch, one topic per batch)
     /// - Cluster writes directly to WAL via `append_batch()` and sends `ReplicateAck`
+    ///
+    /// Auth: the broker interceptor has already verified the caller has
+    /// Replicate permission. No per-batch auth checks needed.
     async fn replicate_data(
         &self,
         request: Request<Streaming<ReplicateBatch>>,
     ) -> Result<Response<Self::ReplicateDataStream>, Status> {
         let mut stream = request.into_inner();
         let storage = self.storage.clone();
-        let auth = self.auth.clone();
 
         let (tx, rx) = mpsc::channel(32);
 
@@ -249,21 +138,6 @@ impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorService
                         break;
                     }
                 };
-
-                // Verify edge is registered
-                if !auth.is_edge_registered(&batch.edge_name).await {
-                    warn!(
-                        edge_name = %batch.edge_name,
-                        "rejecting batch from unregistered edge"
-                    );
-                    let _ = tx
-                        .send(Err(Status::permission_denied(format!(
-                            "edge '{}' is not registered",
-                            batch.edge_name
-                        ))))
-                        .await;
-                    break;
-                }
 
                 // Convert proto messages to StreamMessages
                 let stream_messages: Vec<StreamMessage> = batch
@@ -292,6 +166,12 @@ impl<S: ReplicationStorage, A: EdgeAuth> EdgeReplicatorService
                 if stream_messages.is_empty() {
                     continue;
                 }
+
+                debug!(
+                    topic = %batch.topic_name,
+                    count = stream_messages.len(),
+                    "ingesting replicated batch"
+                );
 
                 // Write batch directly to WAL
                 match storage

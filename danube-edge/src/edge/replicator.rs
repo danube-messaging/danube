@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::edge::checkpoint::CheckpointStore;
-use crate::edge::cloud_client::EdgeCloudClient;
+use crate::edge::cluster_client::EdgeCloudClient;
 use crate::edge::topic_replicator::TopicReplicator;
 
 /// Configuration for the edge replicator.

@@ -26,18 +26,14 @@ use std::sync::Arc;
 use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
-use crate::edge::BrokerEdgeService;
+use crate::edge_storage_adapter::{BrokerEdgeService, BrokerReplicationStorage};
 
 use crate::{
     admin::{ClusterAdmin, DanubeAdminImpl},
     broker_server::{self, SchemaRegistryService},
     broker_service::BrokerService,
-    edge::auth_adapter::BrokerEdgeAuth,
-    edge::storage_adapter::BrokerReplicationStorage,
     policies::Policies,
-    resources::{
-        EdgeResources, Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE,
-    },
+    resources::{Resources, BASE_BROKER_LOAD_PATH, DEFAULT_NAMESPACE, SYSTEM_NAMESPACE},
     security::config::AuthMode,
     service_configuration::ServiceConfiguration,
     topic::SYSTEM_TOPIC,
@@ -157,17 +153,13 @@ impl DanubeService {
         );
 
         // ----- Build edge replicator service (added to broker gRPC server)
+        // Auth is handled by the standard gRPC interceptor — no separate EdgeAuth needed.
         let edge_service = {
-            let edge_resources = EdgeResources::new(self.meta_store.clone());
-            let auth = Arc::new(BrokerEdgeAuth::new(
-                edge_resources,
-                self.service_config.auth.clone(),
-            ));
             let storage = Arc::new(BrokerReplicationStorage::new(
                 self.resources.clone(),
                 self.broker.topic_manager.storage_factory.clone(),
             ));
-            BrokerEdgeService::new(storage, auth)
+            BrokerEdgeService::new(storage)
         };
 
         // ----- Mode-specific startup
@@ -359,37 +351,22 @@ impl DanubeService {
             .await?;
 
         // 6. Start edge-side replicator (WAL tailer → cloud streaming)
+        //
+        // The edge broker authenticates with the cloud cluster using a JWT token
+        // (same as any Danube client). The admin pre-provisions:
+        //   - A namespace (e.g., /edge1)
+        //   - A JWT token (subject: edge1)
+        //   - An RBAC binding: edge1 → role with Replicate+ManageTopic → scoped to /edge1
         let edge_config = self
             .service_config
             .edge_config
             .as_ref()
             .expect("edge_config required in edge mode");
 
-        let cloud_client = danube_edge::edge::cloud_client::EdgeCloudClient::new(
+        let cloud_client = danube_edge::edge::cluster_client::EdgeCloudClient::new(
             &edge_config.cloud_url,
             &edge_config.edge_name,
             &edge_config.token,
-        );
-
-        // Register with cloud cluster (retries on transient failures)
-        let namespace = loop {
-            match cloud_client.register().await {
-                Ok(ns) => break ns,
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        cloud_url = %edge_config.cloud_url,
-                        "failed to register with cloud cluster, retrying in 5s"
-                    );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-            }
-        };
-
-        info!(
-            edge_name = %edge_config.edge_name,
-            namespace = %namespace,
-            "registered with cloud cluster"
         );
 
         // Create the edge replicator

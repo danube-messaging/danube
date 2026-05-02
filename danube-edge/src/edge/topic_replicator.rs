@@ -14,7 +14,7 @@ use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
 use crate::edge::checkpoint::CheckpointStore;
-use crate::edge::cloud_client::EdgeCloudClient;
+use crate::edge::cluster_client::EdgeCloudClient;
 
 /// Per-topic replication loop.
 ///
