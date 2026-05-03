@@ -161,9 +161,9 @@ impl EdgeReplicatorService for EdgeReplicatorServiceImpl {
                     "ingesting replicated batch"
                 );
 
-                // Write batch directly to WAL
+                // Write batch directly to WAL (with dedup check)
                 match storage
-                    .ingest_batch(&batch.topic_name, stream_messages)
+                    .ingest_batch(&batch.topic_name, batch.batch_last_offset, stream_messages)
                     .await
                 {
                     Ok(_last_offset) => {

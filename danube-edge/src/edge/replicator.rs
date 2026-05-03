@@ -41,7 +41,7 @@ impl Default for EdgeReplicatorConfig {
 /// Manages the lifecycle of per-topic `TopicReplicator` tasks. Each topic
 /// gets its own background task that tails the WAL and streams to the cloud.
 pub struct EdgeReplicator {
-    cloud_client: EdgeCloudClient,
+    cloud_client: Arc<EdgeCloudClient>,
     storage_factory: StorageFactory,
     config: EdgeReplicatorConfig,
     checkpoint: Arc<CheckpointStore>,
@@ -53,7 +53,7 @@ impl EdgeReplicator {
     ///
     /// Checkpoint state is persisted in Raft via the `metadata_store`.
     pub fn new(
-        cloud_client: EdgeCloudClient,
+        cloud_client: Arc<EdgeCloudClient>,
         storage_factory: StorageFactory,
         metadata_store: Arc<dyn MetadataStore>,
         config: EdgeReplicatorConfig,
@@ -74,7 +74,7 @@ impl EdgeReplicator {
     /// Spawns a background `TopicReplicator` task that:
     /// 1. Obtains the WAL handle via `StorageFactory`
     /// 2. Tails from the last checkpointed offset
-    /// 3. Batches and sends messages to the cloud
+    /// 3. Batches and sends messages to the cloud with retry
     ///
     /// Idempotent: if the topic is already being replicated, this is a no-op.
     pub async fn add_topic(&self, topic_name: &str) {
@@ -140,7 +140,7 @@ impl EdgeReplicator {
     }
 
     /// Get a reference to the cloud client.
-    pub fn cloud_client(&self) -> &EdgeCloudClient {
+    pub fn cloud_client(&self) -> &Arc<EdgeCloudClient> {
         &self.cloud_client
     }
 }

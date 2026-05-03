@@ -157,6 +157,7 @@ impl DanubeService {
             let storage = Arc::new(EdgeReplicationStorage::new(
                 self.resources.clone(),
                 self.broker.topic_manager.storage_factory.clone(),
+                self.meta_store.clone(),
             ));
             EdgeReplicatorServiceImpl::new(storage)
         };
@@ -362,10 +363,14 @@ impl DanubeService {
             .as_ref()
             .expect("edge_config required in edge mode");
 
-        let cloud_client = danube_edge::edge::cluster_client::EdgeCloudClient::new(
-            &edge_config.cloud_url,
-            &edge_config.edge_name,
-            &edge_config.token,
+        let cloud_client = Arc::new(
+            danube_edge::edge::cluster_client::EdgeCloudClient::new(
+                &edge_config.cloud_url,
+                &edge_config.edge_name,
+                &edge_config.token,
+            )
+            .await
+            .context("failed to create edge cloud client")?,
         );
 
         // Create the edge replicator (checkpoints stored in Raft)

@@ -4,7 +4,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Identity, Uri};
 
 use crate::{
     auth_service::AuthService,
-    connection_manager::{ConnectionManager, ConnectionOptions},
+    connection_manager::{BrokerAddress, ConnectionManager, ConnectionOptions},
     consumer::ConsumerBuilder,
     errors::Result,
     health_check::HealthCheckService,
@@ -84,6 +84,38 @@ impl DanubeClient {
     /// - `Err(e)`: An error if the lookup fails or if there are issues during the operation. This could include connectivity problems, invalid topic names, or other errors related to the lookup process.
     pub async fn lookup_topic(&self, addr: &Uri, topic: impl Into<String>) -> Result<LookupResult> {
         self.lookup_service.lookup_topic(addr, topic).await
+    }
+
+    /// Resolve which broker owns a topic in the cluster.
+    ///
+    /// Performs a topic lookup via the Discovery service and follows
+    /// redirects to find the owning broker. Returns the broker address
+    /// that the caller should connect to for this topic.
+    ///
+    /// This is the recommended way for edge brokers and external services
+    /// to discover topic-to-broker assignment without needing direct access
+    /// to internal `LookupService` or `ConnectionManager`.
+    pub async fn resolve_topic_broker(&self, topic: &str) -> Result<BrokerAddress> {
+        self.lookup_service.handle_lookup(&self.uri, topic).await
+    }
+
+    /// Get a gRPC channel to a specific broker.
+    ///
+    /// Uses the client's internal connection pool with TLS/mTLS already
+    /// configured (from `DanubeClientBuilder`). Connections are cached —
+    /// repeated calls for the same broker return the same channel.
+    ///
+    /// The returned `Channel` can be used to construct any gRPC service
+    /// client (e.g., `EdgeReplicatorServiceClient::new(channel)`).
+    pub async fn get_broker_channel(
+        &self,
+        broker: &BrokerAddress,
+    ) -> Result<tonic::transport::Channel> {
+        let cnx = self
+            .cnx_manager
+            .get_connection(&broker.broker_url, &broker.connect_url)
+            .await?;
+        Ok(cnx.grpc_cnx.clone())
     }
 }
 
