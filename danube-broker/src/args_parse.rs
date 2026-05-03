@@ -52,7 +52,7 @@ impl Args {
         println!("Edge mode options:");
         println!("  --cloud-url          Cloud cluster URL for edge replication (required for edge mode)");
         println!("  --edge-name          Unique name for this edge broker (required for edge mode)");
-        println!("  --edge-token         Authentication token for cloud registration (required for edge mode)");
+        println!("  --edge-token         Authentication token for cloud cluster (optional, needed when auth is enabled)");
     }
 
     pub(crate) fn parse() -> Result<Self> {
@@ -204,9 +204,9 @@ impl Args {
                 if edge_name.is_none() {
                     return Err(anyhow::anyhow!("--mode edge requires --edge-name"));
                 }
-                if edge_token.is_none() {
-                    return Err(anyhow::anyhow!("--mode edge requires --edge-token"));
-                }
+                // --edge-token is optional: only needed when the cloud cluster
+                // has auth enabled (auth.mode: tls or jwt). When auth.mode: none,
+                // the edge broker connects without a token.
             }
         }
 
@@ -298,6 +298,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_mode_edge_without_token() {
+        let args = Args::parse_from([
+            "danube-broker",
+            "--mode",
+            "edge",
+            "--data-dir",
+            "/tmp/danube-edge",
+            "--cloud-url",
+            "http://cloud:6650",
+            "--edge-name",
+            "edge1",
+        ])
+        .expect("edge without token should succeed");
+
+        assert_eq!(args.mode, BrokerMode::Edge);
+        assert_eq!(args.edge_token, None);
+    }
+
+    #[test]
     fn rejects_edge_without_cloud_url() {
         let err = Args::parse_from([
             "danube-broker",
@@ -307,8 +326,6 @@ mod tests {
             "/tmp/danube-edge",
             "--edge-name",
             "edge1",
-            "--edge-token",
-            "secret",
         ])
         .expect_err("edge without cloud-url should fail");
 
@@ -325,8 +342,6 @@ mod tests {
             "/tmp/danube-edge",
             "--cloud-url",
             "http://cloud:6650",
-            "--edge-token",
-            "secret",
         ])
         .expect_err("edge without edge-name should fail");
 

@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
                 Path::new(data_dir),
                 args.cloud_url.clone().expect("edge mode requires cloud-url"),
                 args.edge_name.clone().expect("edge mode requires edge-name"),
-                args.edge_token.clone().expect("edge mode requires edge-token"),
+                args.edge_token.clone().unwrap_or_default(),
             )?
         }
     };
