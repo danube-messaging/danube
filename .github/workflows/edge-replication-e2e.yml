@@ -1,0 +1,192 @@
+name: Edge Replication E2E
+
+on:
+  pull_request:
+    paths:
+      - 'danube-edge/**'
+      - 'danube-broker/src/edge_service/**'
+      - 'danube-core/proto/EdgeReplicator.proto'
+      - '.github/workflows/edge-replication-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  edge_replication_e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+
+      - name: Create certificate files
+        run: |
+          mkdir -p ./cert
+          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
+          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
+          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      # =====================================================================
+      # Start 3-broker cluster (same as pull-request-tests.yml)
+      # =====================================================================
+      - name: Start 3-broker cluster
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p temp danube-data/cloud-storage
+          SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
+
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6650 \
+            --admin-addr 0.0.0.0:50051 \
+            --raft-addr 0.0.0.0:7650 \
+            --data-dir ./danube-data/raft-1 \
+            --seed-nodes "$SEED_NODES" \
+            --prom-exporter 0.0.0.0:3000 \
+            > temp/broker_6650.log 2>&1 &
+
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6651 \
+            --admin-addr 0.0.0.0:50052 \
+            --raft-addr 0.0.0.0:7651 \
+            --data-dir ./danube-data/raft-2 \
+            --seed-nodes "$SEED_NODES" \
+            --prom-exporter 0.0.0.0:3001 \
+            > temp/broker_6651.log 2>&1 &
+
+          ./target/release/danube-broker \
+            --config-file config/danube_broker.yml \
+            --broker-addr 0.0.0.0:6652 \
+            --admin-addr 0.0.0.0:50053 \
+            --raft-addr 0.0.0.0:7652 \
+            --data-dir ./danube-data/raft-3 \
+            --seed-nodes "$SEED_NODES" \
+            --prom-exporter 0.0.0.0:3002 \
+            > temp/broker_6652.log 2>&1 &
+
+          sleep 10
+
+      - name: Wait for cluster brokers to be ready
+        run: |
+          for port in 6650 6651 6652; do
+            for i in {1..10}; do
+              if nc -zv 127.0.0.1 $port 2>/dev/null; then
+                echo "✅ Broker on port $port is ready."
+                break
+              elif [ $i -eq 10 ]; then
+                echo "❌ Broker on port $port failed to start."
+                cat temp/broker_${port}.log
+                exit 1
+              fi
+              echo "⏳ Waiting for broker on port $port... ($i/10)"
+              sleep 3
+            done
+          done
+
+      # =====================================================================
+      # Provision edge namespace and RBAC on the cluster
+      # =====================================================================
+      - name: Provision edge1 namespace on cluster
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          ADMIN_BIN=./target/release/danube-admin
+
+          echo "Creating namespace 'edge1'..."
+          $ADMIN_BIN namespaces create edge1 || true
+
+          echo "✅ Namespace 'edge1' provisioned"
+
+      # =====================================================================
+      # Start edge broker (standalone, mode=edge, connects to cluster)
+      # =====================================================================
+      - name: Start edge broker
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p danube-data/edge-1
+
+          ./target/release/danube-broker \
+            --mode edge \
+            --broker-addr 0.0.0.0:6653 \
+            --admin-addr 0.0.0.0:50054 \
+            --raft-addr 0.0.0.0:7653 \
+            --data-dir ./danube-data/edge-1 \
+            --cloud-url http://127.0.0.1:6650 \
+            --edge-name edge1 \
+            > temp/edge_broker.log 2>&1 &
+          echo $! > temp/edge_broker.pid
+
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 6653 2>/dev/null; then
+              echo "✅ Edge broker on port 6653 is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "❌ Edge broker failed to start."
+              cat temp/edge_broker.log
+              exit 1
+            fi
+            echo "⏳ Waiting for edge broker... ($i/10)"
+            sleep 3
+          done
+
+      # =====================================================================
+      # Run edge integration tests
+      # =====================================================================
+      - name: Run edge replication basic tests
+        env:
+          EDGE_BROKER_ENDPOINT: http://127.0.0.1:6653
+          CLOUD_BROKER_ENDPOINT: http://127.0.0.1:6650
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --release -p danube-edge --test edge_replication_basic -- --ignored --test-threads=1 --nocapture
+
+      - name: Run edge replication security tests
+        env:
+          EDGE_BROKER_ENDPOINT: http://127.0.0.1:6653
+          CLOUD_BROKER_ENDPOINT: http://127.0.0.1:6650
+          EDGE_TOKEN: ""
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test --release -p danube-edge --test edge_replication_security -- --ignored --test-threads=1 --nocapture
+
+      # =====================================================================
+      # Cleanup & diagnostics
+      # =====================================================================
+      - name: Print logs on failure
+        if: failure()
+        run: |
+          echo '=== Edge Broker Log ==='
+          cat temp/edge_broker.log || true
+          echo '=== Cluster Broker 6650 Log ==='
+          sed -n '1,200p' temp/broker_6650.log || true
+          echo '=== Cluster Broker 6651 Log ==='
+          sed -n '1,200p' temp/broker_6651.log || true
+          echo '=== Cluster Broker 6652 Log ==='
+          sed -n '1,200p' temp/broker_6652.log || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-replication-logs
+          path: |
+            temp/*.log
+
+      - name: Stop all brokers
+        if: always()
+        run: |
+          pkill -f danube-broker || true

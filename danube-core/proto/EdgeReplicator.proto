@@ -5,23 +5,31 @@ package danube.edge;
 // Edge → Cluster replication service.
 //
 // Hosted on the cluster broker's gRPC port, behind the standard auth interceptor.
-// Edge brokers authenticate using the same mechanisms as any client:
+// Edge brokers authenticate using the same mechanisms as any Danube client:
 // - JWT token (via `authorization` header) — scoped to the edge's namespace
 // - mTLS + internal-broker header — for trusted infrastructure
 //
-// The admin pre-provisions: namespace, JWT token, RBAC binding with Replicate permission.
+// The admin pre-provisions: namespace, JWT token, RBAC binding with
+// Replicate + ManageTopic permissions scoped to the edge namespace.
+//
+// The edge uses DanubeClient's topic lookup (Discovery service) to resolve
+// which cluster broker owns each topic, then opens a ReplicateData stream
+// to that broker. Different edge topics may route to different cluster brokers.
 service EdgeReplicatorService {
 
   // Create a topic on the cluster for edge replication.
-  // - Validates that the topic belongs to a namespace the caller has access to
+  // - Ensures the namespace exists (creates if missing)
   // - Creates topic metadata (always Reliable dispatch strategy)
-  // - Creates WAL via StorageFactory
+  // - Creates WAL storage via StorageFactory
+  // Idempotent: returns success if the topic already exists.
   // Auth: requires ManageTopic permission on the topic's namespace.
   rpc CreateEdgeTopic(CreateEdgeTopicRequest) returns (CreateEdgeTopicResponse);
 
   // Replicate message batches from edge to cluster.
   // - Bidirectional stream: edge sends batches, cluster acks offsets
-  // - Writes directly to WAL via Wal::append_batch() (no producer overhead)
+  // - Writes directly to WAL via append_batch() (no producer overhead)
+  // - Idempotent: uses batch_last_offset as an idempotency key to prevent
+  //   duplicate WAL writes on retry (tracked in Raft at /edge/replicated/{topic})
   // Auth: requires Replicate permission on the topic's namespace.
   rpc ReplicateData(stream ReplicateBatch) returns (stream ReplicateAck);
 }
@@ -30,7 +38,7 @@ service EdgeReplicatorService {
 
 message CreateEdgeTopicRequest {
   string topic_name = 1;               // Full topic path, e.g. "/edge1/sensor_temp"
-  optional EdgeSchemaInfo schema = 2;   // Optional schema for the topic
+  optional EdgeSchemaInfo schema = 2;   // Optional schema for the topic (Phase 2b)
 }
 
 message EdgeSchemaInfo {
@@ -49,16 +57,22 @@ message CreateEdgeTopicResponse {
 message ReplicateBatch {
   string topic_name = 1;                  // Must be a created edge topic
   repeated ReplicateMessage messages = 2;
-  uint64 batch_last_offset = 3;           // Highest edge WAL offset in this batch
+  uint64 batch_last_offset = 3;           // Highest edge WAL offset in this batch.
+                                          // Used as idempotency key on the cluster:
+                                          // if ≤ last replicated offset, batch is
+                                          // silently acked without re-writing to WAL.
 }
 
 message ReplicateMessage {
   bytes payload = 1;
   map<string, string> attributes = 2;
-  uint64 edge_offset = 3;                // Original WAL offset on the edge
+  uint64 edge_offset = 3;                // Original WAL offset on the edge broker
 }
 
 message ReplicateAck {
   string topic_name = 1;
-  uint64 acked_offset = 2;               // Cluster confirms: all edge offsets ≤ this are stored
+  uint64 acked_offset = 2;               // Echoes back batch_last_offset on success.
+                                          // Edge checkpoints this value in Raft at
+                                          // /edge/checkpoints/{topic} to resume
+                                          // replication after restart.
 }

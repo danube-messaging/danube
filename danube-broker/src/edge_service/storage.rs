@@ -15,15 +15,15 @@ use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
 use crate::resources::Resources;
 
-/// Raft key prefix for edge dedup markers.
-const EDGE_DEDUP_PREFIX: &str = "/edge/dedup";
+/// Raft key prefix for tracking the last replicated edge offset per topic.
+const EDGE_REPLICATED_PREFIX: &str = "/edge/replicated";
 
 /// Broker-side storage for edge replication.
 ///
 /// Provides three key capabilities:
 /// 1. **Metadata management** — ensures namespaces/topics exist in Raft
 /// 2. **WAL batch ingestion** — writes directly to topic WALs via `append_batch()`
-/// 3. **Deduplication** — idempotency via edge batch offset tracking in Raft
+/// 3. **Idempotency** — tracks last replicated offset per topic in Raft
 pub(crate) struct EdgeReplicationStorage {
     resources: Resources,
     storage_factory: StorageFactory,
@@ -57,15 +57,15 @@ impl EdgeReplicationStorage {
         messages: Vec<StreamMessage>,
     ) -> Result<u64> {
         // --- Deduplication check ---
-        let dedup_key = Self::dedup_key(topic_name);
-        if let Ok(Some(val)) = self.meta_store.get(&dedup_key, MetaOptions::None).await {
+        let replicated_key = Self::replicated_key(topic_name);
+        if let Ok(Some(val)) = self.meta_store.get(&replicated_key, MetaOptions::None).await {
             if let Some(last_ingested) = val.as_u64() {
                 if edge_batch_offset <= last_ingested {
                     debug!(
                         topic = %topic_name,
                         edge_batch_offset,
-                        last_ingested,
-                        "duplicate batch detected, skipping WAL write"
+                        last_replicated = last_ingested,
+                        "batch already replicated, skipping WAL write"
                     );
                     return Ok(last_ingested);
                 }
@@ -90,7 +90,7 @@ impl EdgeReplicationStorage {
         if let Err(e) = self
             .meta_store
             .put(
-                &dedup_key,
+                &replicated_key,
                 serde_json::Value::from(edge_batch_offset),
                 MetaOptions::None,
             )
@@ -101,7 +101,7 @@ impl EdgeReplicationStorage {
             debug!(
                 topic = %topic_name,
                 error = %e,
-                "failed to update dedup marker (non-fatal)"
+                "failed to update replicated offset marker (non-fatal)"
             );
         }
 
@@ -187,9 +187,10 @@ impl EdgeReplicationStorage {
         Ok(())
     }
 
-    /// Build the Raft key for a topic's dedup marker.
-    fn dedup_key(topic_name: &str) -> String {
-        let safe_name = topic_name.replace('/', "__");
-        format!("{}/{}", EDGE_DEDUP_PREFIX, safe_name)
+    /// Build the Raft key for a topic's replicated offset marker.
+    ///
+    /// E.g., topic `/edge1/sensors` → key `/edge/replicated/edge1/sensors`
+    fn replicated_key(topic_name: &str) -> String {
+        format!("{}{}", EDGE_REPLICATED_PREFIX, topic_name)
     }
 }

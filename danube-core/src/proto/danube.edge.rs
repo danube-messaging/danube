@@ -4,7 +4,7 @@ pub struct CreateEdgeTopicRequest {
     /// Full topic path, e.g. "/edge1/sensor_temp"
     #[prost(string, tag = "1")]
     pub topic_name: ::prost::alloc::string::String,
-    /// Optional schema for the topic
+    /// Optional schema for the topic (Phase 2b)
     #[prost(message, optional, tag = "2")]
     pub schema: ::core::option::Option<EdgeSchemaInfo>,
 }
@@ -34,7 +34,7 @@ pub struct ReplicateBatch {
     pub topic_name: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
     pub messages: ::prost::alloc::vec::Vec<ReplicateMessage>,
-    /// Highest edge WAL offset in this batch
+    /// Highest edge WAL offset in this batch.
     #[prost(uint64, tag = "3")]
     pub batch_last_offset: u64,
 }
@@ -47,7 +47,7 @@ pub struct ReplicateMessage {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
-    /// Original WAL offset on the edge
+    /// Original WAL offset on the edge broker
     #[prost(uint64, tag = "3")]
     pub edge_offset: u64,
 }
@@ -55,7 +55,7 @@ pub struct ReplicateMessage {
 pub struct ReplicateAck {
     #[prost(string, tag = "1")]
     pub topic_name: ::prost::alloc::string::String,
-    /// Cluster confirms: all edge offsets ≤ this are stored
+    /// Echoes back batch_last_offset on success.
     #[prost(uint64, tag = "2")]
     pub acked_offset: u64,
 }
@@ -73,12 +73,17 @@ pub mod edge_replicator_service_client {
     /// Edge → Cluster replication service.
     ///
     /// Hosted on the cluster broker's gRPC port, behind the standard auth interceptor.
-    /// Edge brokers authenticate using the same mechanisms as any client:
+    /// Edge brokers authenticate using the same mechanisms as any Danube client:
     ///
     /// * JWT token (via `authorization` header) — scoped to the edge's namespace
     /// * mTLS + internal-broker header — for trusted infrastructure
     ///
-    /// The admin pre-provisions: namespace, JWT token, RBAC binding with Replicate permission.
+    /// The admin pre-provisions: namespace, JWT token, RBAC binding with
+    /// Replicate + ManageTopic permissions scoped to the edge namespace.
+    ///
+    /// The edge uses DanubeClient's topic lookup (Discovery service) to resolve
+    /// which cluster broker owns each topic, then opens a ReplicateData stream
+    /// to that broker. Different edge topics may route to different cluster brokers.
     #[derive(Debug, Clone)]
     pub struct EdgeReplicatorServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -161,9 +166,10 @@ pub mod edge_replicator_service_client {
         }
         /// Create a topic on the cluster for edge replication.
         ///
-        /// * Validates that the topic belongs to a namespace the caller has access to
+        /// * Ensures the namespace exists (creates if missing)
         /// * Creates topic metadata (always Reliable dispatch strategy)
-        /// * Creates WAL via StorageFactory
+        /// * Creates WAL storage via StorageFactory
+        ///  Idempotent: returns success if the topic already exists.
         ///  Auth: requires ManageTopic permission on the topic's namespace.
         pub async fn create_edge_topic(
             &mut self,
@@ -197,7 +203,9 @@ pub mod edge_replicator_service_client {
         /// Replicate message batches from edge to cluster.
         ///
         /// * Bidirectional stream: edge sends batches, cluster acks offsets
-        /// * Writes directly to WAL via Wal::append_batch() (no producer overhead)
+        /// * Writes directly to WAL via append_batch() (no producer overhead)
+        /// * Idempotent: uses batch_last_offset as an idempotency key to prevent
+        ///  duplicate WAL writes on retry (tracked in Raft at /edge/replicated/{topic})
         ///  Auth: requires Replicate permission on the topic's namespace.
         pub async fn replicate_data(
             &mut self,
@@ -242,9 +250,10 @@ pub mod edge_replicator_service_server {
     pub trait EdgeReplicatorService: std::marker::Send + std::marker::Sync + 'static {
         /// Create a topic on the cluster for edge replication.
         ///
-        /// * Validates that the topic belongs to a namespace the caller has access to
+        /// * Ensures the namespace exists (creates if missing)
         /// * Creates topic metadata (always Reliable dispatch strategy)
-        /// * Creates WAL via StorageFactory
+        /// * Creates WAL storage via StorageFactory
+        ///  Idempotent: returns success if the topic already exists.
         ///  Auth: requires ManageTopic permission on the topic's namespace.
         async fn create_edge_topic(
             &self,
@@ -262,7 +271,9 @@ pub mod edge_replicator_service_server {
         /// Replicate message batches from edge to cluster.
         ///
         /// * Bidirectional stream: edge sends batches, cluster acks offsets
-        /// * Writes directly to WAL via Wal::append_batch() (no producer overhead)
+        /// * Writes directly to WAL via append_batch() (no producer overhead)
+        /// * Idempotent: uses batch_last_offset as an idempotency key to prevent
+        ///  duplicate WAL writes on retry (tracked in Raft at /edge/replicated/{topic})
         ///  Auth: requires Replicate permission on the topic's namespace.
         async fn replicate_data(
             &self,
@@ -275,12 +286,17 @@ pub mod edge_replicator_service_server {
     /// Edge → Cluster replication service.
     ///
     /// Hosted on the cluster broker's gRPC port, behind the standard auth interceptor.
-    /// Edge brokers authenticate using the same mechanisms as any client:
+    /// Edge brokers authenticate using the same mechanisms as any Danube client:
     ///
     /// * JWT token (via `authorization` header) — scoped to the edge's namespace
     /// * mTLS + internal-broker header — for trusted infrastructure
     ///
-    /// The admin pre-provisions: namespace, JWT token, RBAC binding with Replicate permission.
+    /// The admin pre-provisions: namespace, JWT token, RBAC binding with
+    /// Replicate + ManageTopic permissions scoped to the edge namespace.
+    ///
+    /// The edge uses DanubeClient's topic lookup (Discovery service) to resolve
+    /// which cluster broker owns each topic, then opens a ReplicateData stream
+    /// to that broker. Different edge topics may route to different cluster brokers.
     #[derive(Debug)]
     pub struct EdgeReplicatorServiceServer<T> {
         inner: Arc<T>,
