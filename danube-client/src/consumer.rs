@@ -150,9 +150,10 @@ impl Consumer {
         }
 
         if topic_consumers.is_empty() {
-            return Err(DanubeError::Unrecoverable(
-                "No partitions found".to_string(),
-            ));
+            return Err(DanubeError::Unrecoverable(format!(
+                "No topics found for '{}'",
+                self.topic_name
+            )));
         }
 
         self.consumers.extend(topic_consumers.into_iter());
