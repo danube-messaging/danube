@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "proto/DanubeAdmin.proto",
                 "proto/SchemaRegistry.proto",
                 "proto/raft_transport.proto",
+                "proto/EdgeReplicator.proto",
             ],
             &["proto"],
         )?;

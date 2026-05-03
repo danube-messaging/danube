@@ -23,10 +23,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 metrics = { workspace = true }
-chrono = { version = "0.4", features = ["clock"] }
-
-[build-dependencies]
-tonic-prost-build = "0.14.2"
 
 [lints]
 workspace = true

@@ -1,48 +1,45 @@
-//! Broker-side implementation of `ReplicationStorage` trait.
+//! Edge replication storage — WAL ingestion and metadata management.
 //!
 //! Uses the broker's `StorageFactory` for WAL access and `Resources`
 //! for metadata management (namespace/topic creation in Raft).
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tracing::{debug, info};
 
+use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 use danube_core::message::StreamMessage;
 use danube_persistent_storage::StorageFactory;
 
-use danube_edge::cluster::ingestion::ReplicationStorage;
-
 use crate::policies::Policies;
 use crate::resources::Resources;
-use danube_core::dispatch_strategy::ConfigDispatchStrategy;
 
-/// Concrete edge replicator service using the broker's storage adapter.
-pub(crate) type BrokerEdgeService =
-    danube_edge::cluster::service::EdgeReplicatorServiceImpl<BrokerReplicationStorage>;
-
-/// Broker-side implementation of the `ReplicationStorage` trait.
+/// Broker-side storage for edge replication.
 ///
 /// Provides two key capabilities:
 /// 1. **Metadata management** — ensures namespaces/topics exist in Raft
 /// 2. **WAL batch ingestion** — writes directly to topic WALs via `append_batch()`
-pub(crate) struct BrokerReplicationStorage {
+pub(crate) struct EdgeReplicationStorage {
     resources: Resources,
     storage_factory: StorageFactory,
 }
 
-impl BrokerReplicationStorage {
+impl EdgeReplicationStorage {
     pub(crate) fn new(resources: Resources, storage_factory: StorageFactory) -> Self {
         Self {
             resources,
             storage_factory,
         }
     }
-}
 
-#[async_trait]
-impl ReplicationStorage for BrokerReplicationStorage {
-    async fn ingest_batch(&self, topic_name: &str, messages: Vec<StreamMessage>) -> Result<u64> {
-        // Get or create the WAL for this topic
+    /// Write a batch of messages directly to the topic's WAL.
+    ///
+    /// Returns the last WAL offset written on the cluster side.
+    pub(crate) async fn ingest_batch(
+        &self,
+        topic_name: &str,
+        messages: Vec<StreamMessage>,
+    ) -> Result<u64> {
+        // Get or create the WAL for this topic (cached in DashMap)
         let wal_storage = self
             .storage_factory
             .for_topic(topic_name)
@@ -67,7 +64,15 @@ impl ReplicationStorage for BrokerReplicationStorage {
         Ok(last)
     }
 
-    async fn ensure_topic(&self, topic_name: &str) -> Result<()> {
+    /// Ensure topic metadata and WAL exist on the cluster.
+    ///
+    /// Creates:
+    /// - Namespace (extracted from topic path)
+    /// - Topic entry with Reliable dispatch strategy
+    /// - WAL storage via StorageFactory
+    ///
+    /// Idempotent: returns Ok if the topic already exists.
+    pub(crate) async fn ensure_topic(&self, topic_name: &str) -> Result<()> {
         // Extract namespace from topic name (e.g., "/edge1/sensor" → "edge1")
         let parts: Vec<&str> = topic_name.split('/').collect();
         if parts.len() < 3 {
@@ -77,6 +82,18 @@ impl ReplicationStorage for BrokerReplicationStorage {
             ));
         }
         let ns_name = parts[1];
+
+        // Ensure namespace exists
+        if !self.resources.namespace.namespace_exist(ns_name).await? {
+            self.resources
+                .namespace
+                .create_namespace(ns_name, Some(&Policies::new()))
+                .await?;
+            info!(
+                namespace = %ns_name,
+                "edge namespace created on cluster"
+            );
+        }
 
         // Check if topic already exists (idempotent)
         if self
@@ -114,30 +131,6 @@ impl ReplicationStorage for BrokerReplicationStorage {
         info!(
             topic = %topic_name,
             "edge topic created on cluster (metadata + WAL)"
-        );
-        Ok(())
-    }
-
-    async fn ensure_namespace(&self, namespace: &str) -> Result<()> {
-        // Namespace format: "/edge1" — extract the name part
-        let ns_name = namespace.strip_prefix('/').unwrap_or(namespace);
-
-        if self.resources.namespace.namespace_exist(ns_name).await? {
-            debug!(
-                namespace = %ns_name,
-                "namespace already exists, skipping creation"
-            );
-            return Ok(());
-        }
-
-        self.resources
-            .namespace
-            .create_namespace(ns_name, Some(&Policies::new()))
-            .await?;
-
-        info!(
-            namespace = %ns_name,
-            "edge namespace created on cluster"
         );
         Ok(())
     }

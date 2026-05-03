@@ -6,10 +6,10 @@
 //! to the cloud cluster.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use danube_core::metadata::MetadataStore;
 use danube_persistent_storage::StorageFactory;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -25,8 +25,6 @@ pub struct EdgeReplicatorConfig {
     pub batch_size: usize,
     /// Maximum time to wait before sending a partial batch.
     pub batch_timeout: Duration,
-    /// Directory for checkpoint persistence.
-    pub checkpoint_dir: PathBuf,
 }
 
 impl Default for EdgeReplicatorConfig {
@@ -34,7 +32,6 @@ impl Default for EdgeReplicatorConfig {
         Self {
             batch_size: 100,
             batch_timeout: Duration::from_millis(1000),
-            checkpoint_dir: PathBuf::from("/tmp/danube-edge-checkpoints"),
         }
     }
 }
@@ -53,17 +50,15 @@ pub struct EdgeReplicator {
 
 impl EdgeReplicator {
     /// Create a new edge replicator.
-    pub async fn new(
+    ///
+    /// Checkpoint state is persisted in Raft via the `metadata_store`.
+    pub fn new(
         cloud_client: EdgeCloudClient,
         storage_factory: StorageFactory,
+        metadata_store: Arc<dyn MetadataStore>,
         config: EdgeReplicatorConfig,
     ) -> Self {
-        let checkpoint = Arc::new(CheckpointStore::new(config.checkpoint_dir.clone()));
-
-        // Load existing checkpoints from disk
-        if let Err(e) = checkpoint.load_all().await {
-            warn!(error = %e, "failed to load replication checkpoints");
-        }
+        let checkpoint = Arc::new(CheckpointStore::new(metadata_store));
 
         Self {
             cloud_client,
@@ -123,7 +118,7 @@ impl EdgeReplicator {
 
     /// Stop replicating a topic.
     ///
-    /// Aborts the background task. The last checkpoint is preserved on disk,
+    /// Aborts the background task. The last checkpoint is preserved in Raft,
     /// so replication can resume later from where it left off.
     pub async fn remove_topic(&self, topic_name: &str) {
         let mut tasks = self.tasks.lock().await;

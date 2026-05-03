@@ -6,7 +6,7 @@ mod broker_service;
 mod consumer;
 mod danube_service;
 mod dispatcher;
-mod edge_storage_adapter;
+mod edge_service;
 mod message;
 mod metadata_storage;
 mod policies;

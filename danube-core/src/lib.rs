@@ -20,3 +20,7 @@ pub mod admin_proto {
 pub mod raft_proto {
     include!("proto/danube.raft.rs");
 }
+
+pub mod edge_proto {
+    include!("proto/danube.edge.rs");
+}

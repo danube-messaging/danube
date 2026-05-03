@@ -20,13 +20,12 @@ use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
-use crate::edge_storage_adapter::{BrokerEdgeService, BrokerReplicationStorage};
+use crate::edge_service::{EdgeReplicatorServiceImpl, EdgeReplicationStorage};
 
 use crate::{
     admin::{ClusterAdmin, DanubeAdminImpl},
@@ -155,11 +154,11 @@ impl DanubeService {
         // ----- Build edge replicator service (added to broker gRPC server)
         // Auth is handled by the standard gRPC interceptor — no separate EdgeAuth needed.
         let edge_service = {
-            let storage = Arc::new(BrokerReplicationStorage::new(
+            let storage = Arc::new(EdgeReplicationStorage::new(
                 self.resources.clone(),
                 self.broker.topic_manager.storage_factory.clone(),
             ));
-            BrokerEdgeService::new(storage)
+            EdgeReplicatorServiceImpl::new(storage)
         };
 
         // ----- Mode-specific startup
@@ -208,7 +207,7 @@ impl DanubeService {
         &mut self,
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: BrokerEdgeService,
+        edge_service: EdgeReplicatorServiceImpl,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -264,7 +263,7 @@ impl DanubeService {
     async fn start_standalone_mode(
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: BrokerEdgeService,
+        edge_service: EdgeReplicatorServiceImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -321,7 +320,7 @@ impl DanubeService {
     async fn start_edge_mode(
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: BrokerEdgeService,
+        edge_service: EdgeReplicatorServiceImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -369,24 +368,16 @@ impl DanubeService {
             &edge_config.token,
         );
 
-        // Create the edge replicator
-        let checkpoint_dir = PathBuf::from(&self.service_config.meta_store.data_dir)
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("edge-checkpoints");
-
-        let replicator_config = danube_edge::edge::replicator::EdgeReplicatorConfig {
-            checkpoint_dir,
-            ..Default::default()
-        };
+        // Create the edge replicator (checkpoints stored in Raft)
+        let replicator_config = danube_edge::edge::replicator::EdgeReplicatorConfig::default();
 
         let replicator = Arc::new(
             danube_edge::edge::replicator::EdgeReplicator::new(
                 cloud_client,
                 self.broker.topic_manager.storage_factory.clone(),
+                Arc::new(self.meta_store.clone()),
                 replicator_config,
-            )
-            .await,
+            ),
         );
 
         // Discover existing local topics and start replicating them
@@ -501,7 +492,7 @@ impl DanubeService {
     async fn start_broker_grpc(
         &self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: BrokerEdgeService,
+        edge_service: EdgeReplicatorServiceImpl,
     ) -> Result<tokio::task::JoinHandle<()>> {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),

@@ -14,9 +14,9 @@ use danube_core::proto::{
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
-use danube_edge::proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
+use danube_core::edge_proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
 
-use crate::edge_storage_adapter::BrokerEdgeService;
+use crate::edge_service::EdgeReplicatorServiceImpl;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ pub(crate) struct DanubeServerImpl {
     connect_url: String,
     proxy_enabled: bool,
     auth: AuthConfig,
-    edge_service: BrokerEdgeService,
+    edge_service: EdgeReplicatorServiceImpl,
 }
 
 impl DanubeServerImpl {
@@ -48,7 +48,7 @@ impl DanubeServerImpl {
         connect_url: String,
         proxy_enabled: bool,
         auth: AuthConfig,
-        edge_service: BrokerEdgeService,
+        edge_service: EdgeReplicatorServiceImpl,
     ) -> Self {
         DanubeServerImpl {
             service,

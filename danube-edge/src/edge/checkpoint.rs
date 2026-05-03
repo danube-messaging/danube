@@ -1,113 +1,58 @@
-//! Local offset checkpoint persistence for edge replication.
+//! Replication checkpoint persistence via Raft metadata store.
 //!
 //! Tracks the last successfully replicated WAL offset per topic so the edge
 //! can resume from the correct position after restart.
+//!
+//! Checkpoints are stored in Raft under `/edge/checkpoints/{topic_name}`.
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use std::sync::Arc;
+use tracing::debug;
 
-/// Checkpoint record for a single topic.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TopicCheckpoint {
-    pub last_replicated_offset: u64,
-}
+use danube_core::metadata::{MetaOptions, MetadataStore};
 
-/// Persistent checkpoint store for edge replication offsets.
+/// Base path for edge replication checkpoints in the metadata store.
+const CHECKPOINT_PREFIX: &str = "/edge/checkpoints";
+
+/// Checkpoint store backed by the Raft metadata store.
 ///
-/// Stores per-topic checkpoints as JSON files under a configured directory.
-/// Thread-safe via internal mutex.
+/// Thread-safe via the underlying `MetadataStore` implementation.
 pub struct CheckpointStore {
-    dir: PathBuf,
-    cache: Mutex<HashMap<String, u64>>,
+    store: Arc<dyn MetadataStore>,
 }
 
 impl CheckpointStore {
-    /// Create a new checkpoint store rooted at `dir`.
-    pub fn new(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            cache: Mutex::new(HashMap::new()),
-        }
+    /// Create a new checkpoint store using the given metadata store.
+    pub fn new(store: Arc<dyn MetadataStore>) -> Self {
+        Self { store }
     }
 
-    /// Load all checkpoints from disk into the in-memory cache.
-    pub async fn load_all(&self) -> Result<()> {
-        if !self.dir.exists() {
-            tokio::fs::create_dir_all(&self.dir).await?;
-            return Ok(());
-        }
-
-        let mut entries = tokio::fs::read_dir(&self.dir).await?;
-        let mut cache = self.cache.lock().await;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                if let Some(topic) = path.file_stem().and_then(|s| s.to_str()) {
-                    match tokio::fs::read_to_string(&path).await {
-                        Ok(data) => match serde_json::from_str::<TopicCheckpoint>(&data) {
-                            Ok(ckpt) => {
-                                let topic_name = topic.replace("__", "/");
-                                debug!(
-                                    topic = %topic_name,
-                                    offset = ckpt.last_replicated_offset,
-                                    "loaded replication checkpoint"
-                                );
-                                cache.insert(topic_name, ckpt.last_replicated_offset);
-                            }
-                            Err(e) => {
-                                warn!(path = %path.display(), error = %e, "invalid checkpoint file");
-                            }
-                        },
-                        Err(e) => {
-                            warn!(path = %path.display(), error = %e, "failed to read checkpoint");
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get the last replicated offset for a topic (from cache).
+    /// Get the last replicated offset for a topic.
     pub async fn load(&self, topic_name: &str) -> Option<u64> {
-        let cache = self.cache.lock().await;
-        cache.get(topic_name).copied()
+        let key = Self::key_for(topic_name);
+        match self.store.get(&key, MetaOptions::None).await {
+            Ok(Some(value)) => value.as_u64(),
+            _ => None,
+        }
     }
 
-    /// Save a checkpoint for a topic (cache + disk).
+    /// Save a checkpoint for a topic.
     pub async fn save(&self, topic_name: &str, offset: u64) -> Result<()> {
-        // Update cache
-        {
-            let mut cache = self.cache.lock().await;
-            cache.insert(topic_name.to_string(), offset);
-        }
-
-        // Persist to disk
-        tokio::fs::create_dir_all(&self.dir).await?;
-        let file_name = topic_name.replace('/', "__");
-        let path = self.dir.join(format!("{}.json", file_name));
-        let ckpt = TopicCheckpoint {
-            last_replicated_offset: offset,
-        };
-        let data = serde_json::to_string(&ckpt)?;
-
-        // Atomic write via tmp + rename
-        let tmp_path = path.with_extension("tmp");
-        tokio::fs::write(&tmp_path, &data).await?;
-        tokio::fs::rename(&tmp_path, &path).await?;
+        let key = Self::key_for(topic_name);
+        let value = serde_json::Value::from(offset);
+        self.store
+            .put(&key, value, MetaOptions::None)
+            .await
+            .map_err(|e| anyhow::anyhow!("checkpoint save failed: {}", e))?;
 
         debug!(topic = %topic_name, offset, "saved replication checkpoint");
         Ok(())
     }
 
-    /// Get checkpoint directory path.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// Build the metadata store key for a topic checkpoint.
+    fn key_for(topic_name: &str) -> String {
+        // Replace '/' with '__' to create a flat key
+        let safe_name = topic_name.replace('/', "__");
+        format!("{}/{}", CHECKPOINT_PREFIX, safe_name)
     }
 }

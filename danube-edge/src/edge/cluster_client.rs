@@ -16,8 +16,8 @@ use tonic::transport::Channel;
 use tonic::Request;
 use tracing::info;
 
-use crate::proto::edge_replicator_service_client::EdgeReplicatorServiceClient;
-use crate::proto::{CreateEdgeTopicRequest, ReplicateBatch, ReplicateMessage};
+use danube_core::edge_proto::edge_replicator_service_client::EdgeReplicatorServiceClient;
+use danube_core::edge_proto::{CreateEdgeTopicRequest, ReplicateBatch, ReplicateMessage};
 use danube_core::message::StreamMessage;
 
 /// Client for connecting to the cloud cluster's EdgeReplicatorService.

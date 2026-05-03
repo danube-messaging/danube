@@ -17,51 +17,42 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
 
-use crate::cluster::ingestion::ReplicationStorage;
-use crate::proto::edge_replicator_service_server::EdgeReplicatorService;
-use crate::proto::{
+use danube_core::edge_proto::edge_replicator_service_server::EdgeReplicatorService;
+use danube_core::edge_proto::{
     CreateEdgeTopicRequest, CreateEdgeTopicResponse, ReplicateAck, ReplicateBatch,
 };
 use danube_core::message::{MessageID, StreamMessage};
 
+use super::storage::EdgeReplicationStorage;
+
 /// Cluster-side gRPC service for edge replication.
 ///
-/// Generic over `S: ReplicationStorage` so the broker can inject its own
-/// storage implementation without circular dependencies.
-///
-/// Auth is handled externally by the broker's gRPC interceptor —
-/// this service does not perform any authentication or authorization checks.
-pub struct EdgeReplicatorServiceImpl<S: ReplicationStorage> {
-    storage: Arc<S>,
+/// Uses concrete `EdgeReplicationStorage` — no trait indirection.
+/// Auth is handled externally by the broker's gRPC interceptor.
+#[derive(Clone)]
+pub(crate) struct EdgeReplicatorServiceImpl {
+    storage: Arc<EdgeReplicationStorage>,
 }
 
-impl<S: ReplicationStorage> Clone for EdgeReplicatorServiceImpl<S> {
-    fn clone(&self) -> Self {
-        Self {
-            storage: self.storage.clone(),
-        }
-    }
-}
-
-impl<S: ReplicationStorage> std::fmt::Debug for EdgeReplicatorServiceImpl<S> {
+impl std::fmt::Debug for EdgeReplicatorServiceImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdgeReplicatorServiceImpl")
             .finish_non_exhaustive()
     }
 }
 
-impl<S: ReplicationStorage> EdgeReplicatorServiceImpl<S> {
-    pub fn new(storage: Arc<S>) -> Self {
+impl EdgeReplicatorServiceImpl {
+    pub(crate) fn new(storage: Arc<EdgeReplicationStorage>) -> Self {
         Self { storage }
     }
 }
 
 #[tonic::async_trait]
-impl<S: ReplicationStorage> EdgeReplicatorService for EdgeReplicatorServiceImpl<S> {
+impl EdgeReplicatorService for EdgeReplicatorServiceImpl {
     /// Create a topic on the cluster for edge replication.
     ///
     /// Flow:
-    /// 1. Ensure namespace exists
+    /// 1. Ensure namespace exists (extracted from topic path)
     /// 2. Create topic metadata (Reliable dispatch strategy)
     /// 3. Create WAL via StorageFactory
     ///
@@ -84,10 +75,7 @@ impl<S: ReplicationStorage> EdgeReplicatorService for EdgeReplicatorServiceImpl<
                 error = %e,
                 "failed to create edge topic on cluster"
             );
-            return Err(Status::internal(format!(
-                "failed to create topic: {}",
-                e
-            )));
+            return Err(Status::internal(format!("failed to create topic: {}", e)));
         }
 
         // TODO: Handle schema registration (Phase 2b)
@@ -152,7 +140,7 @@ impl<S: ReplicationStorage> EdgeReplicatorService for EdgeReplicatorServiceImpl<
                             // Offsets will be reassigned by Wal::append_batch()
                             topic_offset: 0,
                         },
-                        payload: bytes::Bytes::from(msg.payload),
+                        payload: msg.payload.into(),
                         publish_time: 0,
                         producer_name: String::new(),
                         subscription_name: None,
@@ -195,10 +183,7 @@ impl<S: ReplicationStorage> EdgeReplicatorService for EdgeReplicatorServiceImpl<
                             "failed to ingest replicated batch"
                         );
                         let _ = tx
-                            .send(Err(Status::internal(format!(
-                                "ingestion failed: {}",
-                                e
-                            ))))
+                            .send(Err(Status::internal(format!("ingestion failed: {}", e))))
                             .await;
                         break;
                     }

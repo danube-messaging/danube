@@ -1,16 +1,12 @@
-//! Edge ↔ Cluster replication for Danube messaging.
+//! Edge replication for Danube messaging.
 //!
-//! This crate provides both sides of the edge replication pipeline:
+//! This crate provides the **edge-side** replication pipeline:
+//! - Background replicator that tails local WAL, batches messages,
+//!   and streams them to the cloud cluster via gRPC.
+//! - Cluster client for connecting to the cloud broker's `EdgeReplicatorService`.
+//! - Per-topic WAL tailer and checkpointing.
 //!
-//! - **`cluster`** — gRPC service hosted on cloud brokers that receives batches
-//!   from edge brokers and writes directly to WAL via `append_batch()`.
-//! - **`edge`** — background replicator that tails local WAL, batches messages,
-//!   and streams them to the cloud cluster.
+//! The cluster-side gRPC service (which receives edge data) lives in
+//! `danube-broker/src/edge_service/`.
 
-pub mod cluster;
 pub mod edge;
-
-/// Generated protobuf types and gRPC client/server for `EdgeReplicatorService`.
-pub mod proto {
-    include!("proto/danube.edge.rs");
-}
