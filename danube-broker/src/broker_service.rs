@@ -346,7 +346,15 @@ impl BrokerService {
                 Ok(TopicCreated::Pending)
             }
             BrokerMode::Edge => {
-                unimplemented!("Edge mode topic creation — PR2")
+                // Edge is single-node Raft — same direct path as standalone
+                self.topic_cluster
+                    .create_on_cluster_standalone(topic_name, dispatch_strategy, schema_ref, None)
+                    .await?;
+
+                self.topic_manager.ensure_local(topic_name).await
+                    .map_err(|e| Status::internal(format!("failed to load topic locally: {}", e)))?;
+
+                Ok(TopicCreated::Loaded)
             }
         }
     }
@@ -368,7 +376,9 @@ impl BrokerService {
                 self.topic_cluster.post_delete_topic(topic_name).await
             }
             BrokerMode::Edge => {
-                unimplemented!("Edge mode topic deletion — PR2")
+                // Edge is single-node — same direct cleanup as standalone
+                self.topic_registry.remove_topic(topic_name);
+                self.topic_cluster.delete_topic_metadata(topic_name).await
             }
         }
     }

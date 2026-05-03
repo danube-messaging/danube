@@ -211,7 +211,7 @@ impl ServiceConfiguration {
                 data_dir: base_dir.join("raft").to_string_lossy().into_owned(),
                 seed_nodes: Vec::new(),
             },
-            bootstrap_namespaces: vec!["default".to_string()],
+            bootstrap_namespaces: vec!["default".to_string(), edge_name.clone()],
             auto_create_topics: true,
             policies: Policies::new(),
             storage: StorageConfig::single_node(base_dir),
