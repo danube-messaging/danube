@@ -18,6 +18,7 @@ use crate::args_parse::BrokerMode;
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
+use danube_edge::edge::replicator::EdgeReplicator;
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
 use std::sync::Arc;
@@ -77,6 +78,7 @@ pub(crate) struct DanubeService {
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
     resources: Resources,
+    edge_replicator: Option<Arc<EdgeReplicator>>,
 }
 
 impl std::fmt::Debug for DanubeService {
@@ -96,6 +98,7 @@ impl DanubeService {
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
         resources: Resources,
+        edge_replicator: Option<Arc<danube_edge::edge::replicator::EdgeReplicator>>,
     ) -> Self {
         DanubeService {
             broker_id,
@@ -104,6 +107,7 @@ impl DanubeService {
             service_config,
             meta_store,
             resources,
+            edge_replicator,
         }
     }
 
@@ -151,16 +155,19 @@ impl DanubeService {
             "admin gRPC server listening"
         );
 
-        // ----- Build edge replicator service (added to broker gRPC server)
-        // Auth is handled by the standard gRPC interceptor — no separate EdgeAuth needed.
-        let edge_service = {
+        // ----- Build edge replicator gRPC service (only for Cluster/Standalone).
+        // Edge brokers are the *client* side — they don't host this service.
+        // Auth is handled by the standard gRPC interceptor.
+        let edge_service = if self.mode != BrokerMode::Edge {
             let storage = Arc::new(EdgeReplicationStorage::new(
                 self.broker.topic_manager.storage_factory.clone(),
                 self.meta_store.clone(),
             ));
             let topic_cluster =
                 crate::topic_cluster::TopicCluster::new(self.broker.resources.clone());
-            EdgeReplicatorServiceImpl::new(storage, topic_cluster)
+            Some(EdgeReplicatorServiceImpl::new(storage, topic_cluster))
+        } else {
+            None
         };
 
         // ----- Mode-specific startup
@@ -178,7 +185,14 @@ impl DanubeService {
                     .await?;
             }
             BrokerMode::Edge => {
-                self.start_edge_mode(schema_registry, edge_service).await?;
+                self.start_edge_mode(
+                    schema_registry,
+                    edge_service,
+                    self.edge_replicator
+                        .clone()
+                        .expect("edge_replicator must be set for Edge mode"),
+                )
+                .await?;
             }
         }
 
@@ -209,7 +223,7 @@ impl DanubeService {
         &mut self,
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: EdgeReplicatorServiceImpl,
+        edge_service: Option<EdgeReplicatorServiceImpl>,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -265,7 +279,7 @@ impl DanubeService {
     async fn start_standalone_mode(
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: EdgeReplicatorServiceImpl,
+        edge_service: Option<EdgeReplicatorServiceImpl>,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -318,11 +332,12 @@ impl DanubeService {
     /// 3. Create cluster record
     /// 4. Initialize default namespaces + auth cache
     /// 5. Start broker gRPC (local producers/consumers still work)
-    /// 6. TODO: Start edge replicator (WAL tailer → cloud streaming)
+    /// 6. Reconcile pre-existing topics and start WAL replication
     async fn start_edge_mode(
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: EdgeReplicatorServiceImpl,
+        edge_service: Option<EdgeReplicatorServiceImpl>,
+        replicator: Arc<danube_edge::edge::replicator::EdgeReplicator>,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -346,50 +361,14 @@ impl DanubeService {
         // 3–4. Namespaces + auth cache
         self.initialize_metadata_and_auth().await?;
 
-        // 5. Create the edge replicator and install it in BrokerService
-        //    BEFORE starting gRPC, so we can use Arc::get_mut (no clones yet).
-        //
-        // The edge broker authenticates with the cloud cluster using a JWT token
-        // (same as any Danube client). The admin pre-provisions:
-        //   - A namespace (e.g., /edge1)
-        //   - A JWT token (subject: edge1)
-        //   - An RBAC binding: edge1 → role with Replicate+ManageTopic → scoped to /edge1
-        let edge_config = self
-            .service_config
-            .edge_config
-            .as_ref()
-            .expect("edge_config required in edge mode");
-
-        let cloud_client = Arc::new(
-            danube_edge::edge::cluster_client::EdgeCloudClient::new(
-                &edge_config.cloud_url,
-                &edge_config.edge_name,
-                &edge_config.token,
-            )
-            .await
-            .context("failed to create edge cloud client")?,
-        );
-
-        let replicator_config = danube_edge::edge::replicator::EdgeReplicatorConfig::default();
-
-        let replicator = Arc::new(danube_edge::edge::replicator::EdgeReplicator::new(
-            cloud_client,
-            self.broker.topic_manager.storage_factory.clone(),
-            Arc::new(self.meta_store.clone()),
-            replicator_config,
-        ));
-
-        // Install before the Arc is cloned by start_broker_grpc
-        Arc::get_mut(&mut self.broker)
-            .expect("BrokerService Arc should not be shared yet")
-            .set_edge_replicator(replicator.clone());
-
-        // 6. Broker gRPC (local producers/consumers for edge MQTT/client usage)
+        // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
+        // Edge replicator was already created and installed in start() before
+        // the Arc was shared.
         let server_handle = self
             .start_broker_grpc(schema_registry, edge_service)
             .await?;
 
-        // 7. Reconcile: any topics from a previous run that already exist locally
+        // 6. Reconcile: any topics from a previous run that already exist locally
         // need to be registered on the cloud and start replicating again.
         let topics = self.broker.topic_registry.get_all_topics();
         for topic_name in &topics {
@@ -404,9 +383,16 @@ impl DanubeService {
             replicator.add_topic(topic_name).await;
         }
 
+        let edge_name = &self
+            .service_config
+            .edge_config
+            .as_ref()
+            .expect("edge_config required in edge mode")
+            .edge_name;
+
         info!(
             broker_id = %self.broker_id,
-            edge_name = %edge_config.edge_name,
+            edge_name = %edge_name,
             active_topics = topics.len(),
             "edge mode: broker active, replicating to cloud"
         );
@@ -501,7 +487,7 @@ impl DanubeService {
     async fn start_broker_grpc(
         &self,
         schema_registry: Arc<SchemaRegistryService>,
-        edge_service: EdgeReplicatorServiceImpl,
+        edge_service: Option<EdgeReplicatorServiceImpl>,
     ) -> Result<tokio::task::JoinHandle<()>> {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),

@@ -63,7 +63,7 @@ pub(crate) struct BrokerService {
     /// Shared broker-level Replicator
     pub(crate) replicator: Arc<Replicator>,
     /// Edge replicator (only set in Edge mode).
-    /// Used by `create_topic` to register new topics for cloud replication.
+    /// Used by `create_topic` and `delete_topic` to coordinate with the cloud.
     edge_replicator: Option<Arc<EdgeReplicator>>,
 }
 
@@ -72,12 +72,17 @@ impl BrokerService {
     ///
     /// `broker_id` is the stable Raft node ID (auto-generated on first boot and
     /// persisted in `{data_dir}/node_id`), so the broker identity survives restarts.
+    ///
+    /// `edge_replicator` is `Some` only in Edge mode — it's created beforehand in
+    /// `main.rs` and injected here so BrokerService can coordinate topic
+    /// creation/deletion with the cloud cluster.
     pub(crate) fn new(
         broker_id: u64,
         mode: BrokerMode,
         resources: Resources,
         storage_factory: StorageFactory,
         auto_create_topics: bool,
+        edge_replicator: Option<Arc<EdgeReplicator>>,
     ) -> Self {
         let producers = ProducerRegistry::new();
         let consumers = ConsumerRegistry::new();
@@ -112,16 +117,8 @@ impl BrokerService {
             auto_create_topics,
             metrics_collector,
             replicator,
-            edge_replicator: None,
+            edge_replicator,
         }
-    }
-
-    /// Install the edge replicator (called once during edge mode startup).
-    ///
-    /// After this, `create_topic` in edge mode will synchronously coordinate
-    /// with the cloud cluster and register new topics for WAL replication.
-    pub(crate) fn set_edge_replicator(&mut self, replicator: Arc<EdgeReplicator>) {
-        self.edge_replicator = Some(replicator);
     }
 
     /// Get a reference to the metrics collector for dual-tracking
@@ -369,9 +366,7 @@ impl BrokerService {
                 // Flow: CreateEdgeTopic on cloud → local Raft → local load → start WAL tailing.
                 // If cloud is unreachable, the producer gets an error (fail-fast).
                 let edge_rep = self.edge_replicator.as_ref().ok_or_else(|| {
-                    Status::unavailable(
-                        "edge replicator not initialized yet, retry shortly",
-                    )
+                    Status::unavailable("edge replicator not initialized yet, retry shortly")
                 })?;
 
                 // 1. Create topic on cloud cluster (synchronous — blocks until confirmed)
@@ -434,7 +429,7 @@ impl BrokerService {
                 // Edge mode: coordinate with cloud cluster, then clean up locally.
                 //
                 // Flow: stop WAL tailing → DeleteEdgeTopic on cloud → local cleanup.
-                if let Some(ref edge_rep) = self.edge_replicator {
+                if let Some(edge_rep) = self.edge_replicator.as_ref() {
                     // 1. Stop WAL tailing for this topic
                     edge_rep.remove_topic(topic_name).await;
 

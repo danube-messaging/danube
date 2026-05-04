@@ -22,8 +22,8 @@ mod subscription;
 mod topic;
 mod topic_cluster;
 mod topic_control;
-mod topic_schema;
 mod topic_registry;
+mod topic_schema;
 mod utils;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};
@@ -35,18 +35,22 @@ use crate::{
     danube_service::{ClusterServices, DanubeService, LeaderElection, LoadManager},
     resources::{Resources, LEADER_ELECTION_PATH},
     service_configuration::{LoadConfiguration, ServiceConfiguration},
-    storage_configuration::{LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode},
+    storage_configuration::{
+        LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode,
+    },
 };
 
 use anyhow::{Context, Result};
+use danube_edge::edge::cluster_client::EdgeCloudClient;
+use danube_edge::edge::replicator::{EdgeReplicator, EdgeReplicatorConfig};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
     ObjectStoreBackend, ObjectStoreConfig, RetentionConfig, StorageFactory, StorageFactoryConfig,
 };
 use danube_raft::node::{RaftNode, RaftNodeConfig};
 use danube_raft::BootstrapResult;
-use std::{net::SocketAddr, path::PathBuf};
 use std::collections::HashMap;
+use std::{net::SocketAddr, path::PathBuf};
 
 use crate::metadata_storage::MetadataStorage;
 
@@ -73,13 +77,11 @@ async fn main() -> Result<()> {
 
     // Build ServiceConfiguration based on mode
     let mut service_config: ServiceConfiguration = match &args.mode {
-        BrokerMode::Standalone => {
-            ServiceConfiguration::standalone(Path::new(
-                args.data_dir
-                    .as_deref()
-                    .expect("standalone mode requires data-dir"),
-            ))?
-        }
+        BrokerMode::Standalone => ServiceConfiguration::standalone(Path::new(
+            args.data_dir
+                .as_deref()
+                .expect("standalone mode requires data-dir"),
+        ))?,
         BrokerMode::Cluster => {
             let config_file = args
                 .config_file
@@ -96,8 +98,12 @@ async fn main() -> Result<()> {
                 .expect("edge mode requires data-dir");
             ServiceConfiguration::edge(
                 Path::new(data_dir),
-                args.cloud_url.clone().expect("edge mode requires cloud-url"),
-                args.edge_name.clone().expect("edge mode requires edge-name"),
+                args.cloud_url
+                    .clone()
+                    .expect("edge mode requires cloud-url"),
+                args.edge_name
+                    .clone()
+                    .expect("edge mode requires edge-name"),
                 args.edge_token.clone().unwrap_or_default(),
             )?
         }
@@ -315,6 +321,35 @@ async fn main() -> Result<()> {
     // The broker_id IS the Raft node_id — a single stable identity.
     let broker_id = node_id;
 
+    // Edge mode: create the edge replicator
+    let edge_replicator = if args.mode == BrokerMode::Edge {
+        let edge_config = service_config
+            .edge_config
+            .as_ref()
+            .expect("edge_config required in edge mode");
+
+        let cloud_client = Arc::new(
+            EdgeCloudClient::new(
+                &edge_config.cloud_url,
+                &edge_config.edge_name,
+                &edge_config.token,
+            )
+            .await
+            .context("failed to create edge cloud client")?,
+        );
+
+        let replicator_config = EdgeReplicatorConfig::default();
+
+        Some(Arc::new(EdgeReplicator::new(
+            cloud_client,
+            storage_factory.clone(),
+            Arc::new(metadata_store.clone()),
+            replicator_config,
+        )))
+    } else {
+        None
+    };
+
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
     let broker_service = BrokerService::new(
         broker_id,
@@ -322,6 +357,7 @@ async fn main() -> Result<()> {
         resources.clone(),
         storage_factory,
         service_config.auto_create_topics,
+        edge_replicator.clone(),
     );
 
     // Init metrics with or without prometheus exporter
@@ -395,6 +431,7 @@ async fn main() -> Result<()> {
         service_config,
         metadata_store,
         resources,
+        edge_replicator,
     );
 
     danube
