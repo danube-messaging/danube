@@ -400,18 +400,23 @@ impl Wal {
             .await
             .map_err(|_| PersistentStorageError::Other("wal writer channel closed".to_string()))?;
 
-        // 4. ONE cache lock — bulk insert all messages
+        // 4. ONE cache lock — bulk insert all messages + broadcast
         {
             let mut cache = self.inner.cache.lock().await;
             for (offset, msg) in stamped_msgs {
                 cache.insert(offset, msg);
             }
             cache.evict_to(self.inner.cache_capacity);
-        }
 
-        // 5. NO broadcast — replicated data doesn't need live tailing.
-        //    Consumers discover new messages via heartbeat lag detection
-        //    (wal.current_offset() vs last_acked).
+            // 5. Broadcast to live tailing readers — replicated topics on the cloud
+            //    side have consumers subscribed via the broadcast channel, so we must
+            //    notify them just like single-message append() does.
+            for offset in first_offset..=last_offset {
+                if let Some((off, msg)) = cache.get(offset) {
+                    let _ = self.inner.tx.send((off, msg));
+                }
+            }
+        }
 
         Ok((first_offset, last_offset))
     }

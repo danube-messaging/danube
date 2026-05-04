@@ -65,7 +65,9 @@ impl TopicReplicator {
             let start_pos = if start_offset > 0 {
                 StartPosition::Offset(start_offset + 1)
             } else {
-                StartPosition::Latest
+                // First run (no checkpoint): start from the very beginning of the WAL
+                // so we don't miss messages written before the replicator attached.
+                StartPosition::Offset(0)
             };
 
             info!(
