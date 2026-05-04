@@ -22,7 +22,7 @@ use danube_core::edge_proto::{
     CreateEdgeTopicRequest, CreateEdgeTopicResponse, DeleteEdgeTopicRequest,
     DeleteEdgeTopicResponse, ReplicateAck, ReplicateBatch,
 };
-use danube_core::message::{MessageID, StreamMessage};
+use danube_core::message::StreamMessage;
 use danube_core::proto::DispatchStrategy as ProtoDispatchStrategy;
 
 use super::storage::EdgeReplicationStorage;
@@ -170,11 +170,7 @@ impl EdgeReplicatorService for EdgeReplicatorServiceImpl {
         }
 
         // Delete topic via cluster pipeline (unassign + metadata cleanup)
-        if let Err(e) = self
-            .topic_cluster
-            .post_delete_topic(&req.topic_name)
-            .await
-        {
+        if let Err(e) = self.topic_cluster.post_delete_topic(&req.topic_name).await {
             error!(
                 topic = %req.topic_name,
                 error = %e,
@@ -187,9 +183,7 @@ impl EdgeReplicatorService for EdgeReplicatorServiceImpl {
         }
 
         // Clean up edge-specific replicated offset marker
-        self.storage
-            .delete_replicated_marker(&req.topic_name)
-            .await;
+        self.storage.delete_replicated_marker(&req.topic_name).await;
 
         info!(
             topic = %req.topic_name,
@@ -232,28 +226,11 @@ impl EdgeReplicatorService for EdgeReplicatorServiceImpl {
                     }
                 };
 
-                // Convert proto messages to StreamMessages
+                // Convert proto StreamMessages to internal StreamMessages.
                 let stream_messages: Vec<StreamMessage> = batch
                     .messages
                     .into_iter()
-                    .map(|msg| StreamMessage {
-                        request_id: 0,
-                        msg_id: MessageID {
-                            producer_id: 0,
-                            topic_name: batch.topic_name.clone(),
-                            broker_addr: String::new(),
-                            // Offsets will be reassigned by Wal::append_batch()
-                            topic_offset: 0,
-                        },
-                        payload: msg.payload.into(),
-                        publish_time: 0,
-                        producer_name: String::new(),
-                        subscription_name: None,
-                        attributes: msg.attributes,
-                        schema_id: None,
-                        schema_version: None,
-                        routing_key: None,
-                    })
+                    .map(StreamMessage::from)
                     .collect();
 
                 if stream_messages.is_empty() {

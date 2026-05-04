@@ -31,8 +31,9 @@ use tracing::{debug, error, info};
 
 use danube_client::DanubeClient;
 use danube_core::edge_proto::edge_replicator_service_client::EdgeReplicatorServiceClient;
-use danube_core::edge_proto::{CreateEdgeTopicRequest, DeleteEdgeTopicRequest, ReplicateBatch, ReplicateMessage};
+use danube_core::edge_proto::{CreateEdgeTopicRequest, DeleteEdgeTopicRequest, ReplicateBatch};
 use danube_core::message::StreamMessage;
+use danube_core::proto::StreamMessage as ProtoStreamMessage;
 
 type EdgeGrpcClient = EdgeReplicatorServiceClient<tonic::transport::Channel>;
 
@@ -275,19 +276,13 @@ impl EdgeCloudClient {
     ) -> Result<u64> {
         let mut client = self.get_or_connect(topic_name).await?;
 
-        // Convert StreamMessages to proto ReplicateMessages
-        let replicate_messages: Vec<ReplicateMessage> = messages
-            .into_iter()
-            .map(|msg| ReplicateMessage {
-                payload: msg.payload.to_vec(),
-                attributes: msg.attributes,
-                edge_offset: msg.msg_id.topic_offset,
-            })
-            .collect();
+        // Convert internal StreamMessages to proto StreamMessages
+        let proto_messages: Vec<ProtoStreamMessage> =
+            messages.into_iter().map(ProtoStreamMessage::from).collect();
 
         let batch = ReplicateBatch {
             topic_name: topic_name.to_string(),
-            messages: replicate_messages,
+            messages: proto_messages,
             batch_last_offset,
         };
 
