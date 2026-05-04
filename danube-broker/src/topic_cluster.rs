@@ -15,7 +15,7 @@ use crate::{broker_service::validate_topic_format, policies::Policies, resources
 /// - Attach delivery strategy, schema, and optional policies to topics.
 /// - Resolve which broker serves a given topic using cluster assignments.
 /// - Provide lightweight read helpers used by `BrokerService`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TopicCluster {
     resources: Arc<Resources>,
 }

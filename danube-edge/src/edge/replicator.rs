@@ -48,6 +48,12 @@ pub struct EdgeReplicator {
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
+impl std::fmt::Debug for EdgeReplicator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeReplicator").finish_non_exhaustive()
+    }
+}
+
 impl EdgeReplicator {
     /// Create a new edge replicator.
     ///

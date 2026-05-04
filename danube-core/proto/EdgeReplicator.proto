@@ -25,6 +25,14 @@ service EdgeReplicatorService {
   // Auth: requires ManageTopic permission on the topic's namespace.
   rpc CreateEdgeTopic(CreateEdgeTopicRequest) returns (CreateEdgeTopicResponse);
 
+  // Delete a topic from the cluster that was created for edge replication.
+  // - Removes topic metadata from Raft
+  // - Cleans up the replicated offset marker (/edge/replicated/{topic})
+  // - WAL data is retained for a configurable retention period (Phase 2)
+  // Idempotent: returns success if the topic does not exist.
+  // Auth: requires ManageTopic permission on the topic's namespace.
+  rpc DeleteEdgeTopic(DeleteEdgeTopicRequest) returns (DeleteEdgeTopicResponse);
+
   // Replicate message batches from edge to cluster.
   // - Bidirectional stream: edge sends batches, cluster acks offsets
   // - Writes directly to WAL via append_batch() (no producer overhead)
@@ -48,6 +56,15 @@ message EdgeSchemaInfo {
 }
 
 message CreateEdgeTopicResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteEdgeTopicRequest {
+  string topic_name = 1;               // Full topic path, e.g. "/edge1/sensor_temp"
+}
+
+message DeleteEdgeTopicResponse {
   bool success = 1;
   string message = 2;
 }

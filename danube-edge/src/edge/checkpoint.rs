@@ -50,9 +50,9 @@ impl CheckpointStore {
     }
 
     /// Build the metadata store key for a topic checkpoint.
+    ///
+    /// E.g., topic `/edge1/sensors` → key `/edge/checkpoints/edge1/sensors`
     fn key_for(topic_name: &str) -> String {
-        // Replace '/' with '__' to create a flat key
-        let safe_name = topic_name.replace('/', "__");
-        format!("{}/{}", CHECKPOINT_PREFIX, safe_name)
+        format!("{}{}", CHECKPOINT_PREFIX, topic_name)
     }
 }

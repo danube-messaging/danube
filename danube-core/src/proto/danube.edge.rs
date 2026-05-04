@@ -27,6 +27,19 @@ pub struct CreateEdgeTopicResponse {
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteEdgeTopicRequest {
+    /// Full topic path, e.g. "/edge1/sensor_temp"
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteEdgeTopicResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReplicateBatch {
     /// Must be a created edge topic
@@ -200,6 +213,42 @@ pub mod edge_replicator_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Delete a topic from the cluster that was created for edge replication.
+        ///
+        /// * Removes topic metadata from Raft
+        /// * Cleans up the replicated offset marker (/edge/replicated/{topic})
+        /// * WAL data is retained for a configurable retention period (Phase 2)
+        ///  Idempotent: returns success if the topic does not exist.
+        ///  Auth: requires ManageTopic permission on the topic's namespace.
+        pub async fn delete_edge_topic(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteEdgeTopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteEdgeTopicResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.edge.EdgeReplicatorService/DeleteEdgeTopic",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube.edge.EdgeReplicatorService",
+                        "DeleteEdgeTopic",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Replicate message batches from edge to cluster.
         ///
         /// * Bidirectional stream: edge sends batches, cluster acks offsets
@@ -260,6 +309,20 @@ pub mod edge_replicator_service_server {
             request: tonic::Request<super::CreateEdgeTopicRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CreateEdgeTopicResponse>,
+            tonic::Status,
+        >;
+        /// Delete a topic from the cluster that was created for edge replication.
+        ///
+        /// * Removes topic metadata from Raft
+        /// * Cleans up the replicated offset marker (/edge/replicated/{topic})
+        /// * WAL data is retained for a configurable retention period (Phase 2)
+        ///  Idempotent: returns success if the topic does not exist.
+        ///  Auth: requires ManageTopic permission on the topic's namespace.
+        async fn delete_edge_topic(
+            &self,
+            request: tonic::Request<super::DeleteEdgeTopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteEdgeTopicResponse>,
             tonic::Status,
         >;
         /// Server streaming response type for the ReplicateData method.
@@ -408,6 +471,55 @@ pub mod edge_replicator_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CreateEdgeTopicSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.edge.EdgeReplicatorService/DeleteEdgeTopic" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteEdgeTopicSvc<T: EdgeReplicatorService>(pub Arc<T>);
+                    impl<
+                        T: EdgeReplicatorService,
+                    > tonic::server::UnaryService<super::DeleteEdgeTopicRequest>
+                    for DeleteEdgeTopicSvc<T> {
+                        type Response = super::DeleteEdgeTopicResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteEdgeTopicRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as EdgeReplicatorService>::delete_edge_topic(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteEdgeTopicSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

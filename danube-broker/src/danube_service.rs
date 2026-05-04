@@ -25,7 +25,7 @@ use std::sync::Arc;
 use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
-use crate::edge_service::{EdgeReplicatorServiceImpl, EdgeReplicationStorage};
+use crate::edge_service::{EdgeReplicationStorage, EdgeReplicatorServiceImpl};
 
 use crate::{
     admin::{ClusterAdmin, DanubeAdminImpl},
@@ -155,11 +155,12 @@ impl DanubeService {
         // Auth is handled by the standard gRPC interceptor — no separate EdgeAuth needed.
         let edge_service = {
             let storage = Arc::new(EdgeReplicationStorage::new(
-                self.resources.clone(),
                 self.broker.topic_manager.storage_factory.clone(),
                 self.meta_store.clone(),
             ));
-            EdgeReplicatorServiceImpl::new(storage)
+            let topic_cluster =
+                crate::topic_cluster::TopicCluster::new(self.broker.resources.clone());
+            EdgeReplicatorServiceImpl::new(storage, topic_cluster)
         };
 
         // ----- Mode-specific startup
@@ -345,12 +346,8 @@ impl DanubeService {
         // 3–4. Namespaces + auth cache
         self.initialize_metadata_and_auth().await?;
 
-        // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
-        let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service)
-            .await?;
-
-        // 6. Start edge-side replicator (WAL tailer → cloud streaming)
+        // 5. Create the edge replicator and install it in BrokerService
+        //    BEFORE starting gRPC, so we can use Arc::get_mut (no clones yet).
         //
         // The edge broker authenticates with the cloud cluster using a JWT token
         // (same as any Danube client). The admin pre-provisions:
@@ -373,27 +370,34 @@ impl DanubeService {
             .context("failed to create edge cloud client")?,
         );
 
-        // Create the edge replicator (checkpoints stored in Raft)
         let replicator_config = danube_edge::edge::replicator::EdgeReplicatorConfig::default();
 
-        let replicator = Arc::new(
-            danube_edge::edge::replicator::EdgeReplicator::new(
-                cloud_client,
-                self.broker.topic_manager.storage_factory.clone(),
-                Arc::new(self.meta_store.clone()),
-                replicator_config,
-            ),
-        );
+        let replicator = Arc::new(danube_edge::edge::replicator::EdgeReplicator::new(
+            cloud_client,
+            self.broker.topic_manager.storage_factory.clone(),
+            Arc::new(self.meta_store.clone()),
+            replicator_config,
+        ));
 
-        // Discover existing local topics and start replicating them
+        // Install before the Arc is cloned by start_broker_grpc
+        Arc::get_mut(&mut self.broker)
+            .expect("BrokerService Arc should not be shared yet")
+            .set_edge_replicator(replicator.clone());
+
+        // 6. Broker gRPC (local producers/consumers for edge MQTT/client usage)
+        let server_handle = self
+            .start_broker_grpc(schema_registry, edge_service)
+            .await?;
+
+        // 7. Reconcile: any topics from a previous run that already exist locally
+        // need to be registered on the cloud and start replicating again.
         let topics = self.broker.topic_registry.get_all_topics();
         for topic_name in &topics {
-            // Create topic on cloud first
             if let Err(e) = replicator.cloud_client().create_topic(topic_name).await {
                 warn!(
                     topic = %topic_name,
                     error = %e,
-                    "failed to create topic on cloud, will retry later"
+                    "failed to create pre-existing topic on cloud, will retry later"
                 );
                 continue;
             }

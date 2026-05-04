@@ -239,7 +239,7 @@ impl TopicReplicator {
                         "batch send failed, retrying"
                     );
                     // Invalidate cached broker — it may have moved
-                    cloud_client.invalidate_topic_broker(topic_name).await;
+                    cloud_client.invalidate_topic_client(topic_name).await;
                     tokio::time::sleep(backoff).await;
                 }
             }

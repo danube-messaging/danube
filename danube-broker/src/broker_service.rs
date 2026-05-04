@@ -3,11 +3,13 @@ use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 use crate::danube_service::metrics_collector::MetricsCollector;
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
+use danube_edge::edge::replicator::EdgeReplicator;
 use danube_persistent_storage::StorageFactory;
 use metrics::counter;
 use std::sync::Arc;
+
 use tonic::Status;
-use tracing::info;
+use tracing::{info, warn};
 
 use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaReference};
 
@@ -60,6 +62,9 @@ pub(crate) struct BrokerService {
     pub(crate) metrics_collector: Arc<MetricsCollector>,
     /// Shared broker-level Replicator
     pub(crate) replicator: Arc<Replicator>,
+    /// Edge replicator (only set in Edge mode).
+    /// Used by `create_topic` to register new topics for cloud replication.
+    edge_replicator: Option<Arc<EdgeReplicator>>,
 }
 
 impl BrokerService {
@@ -107,7 +112,16 @@ impl BrokerService {
             auto_create_topics,
             metrics_collector,
             replicator,
+            edge_replicator: None,
         }
+    }
+
+    /// Install the edge replicator (called once during edge mode startup).
+    ///
+    /// After this, `create_topic` in edge mode will synchronously coordinate
+    /// with the cloud cluster and register new topics for WAL replication.
+    pub(crate) fn set_edge_replicator(&mut self, replicator: Arc<EdgeReplicator>) {
+        self.edge_replicator = Some(replicator);
     }
 
     /// Get a reference to the metrics collector for dual-tracking
@@ -333,8 +347,12 @@ impl BrokerService {
                     .await?;
 
                 // Load the topic directly into the local registry
-                self.topic_manager.ensure_local(topic_name).await
-                    .map_err(|e| Status::internal(format!("failed to load topic locally: {}", e)))?;
+                self.topic_manager
+                    .ensure_local(topic_name)
+                    .await
+                    .map_err(|e| {
+                        Status::internal(format!("failed to load topic locally: {}", e))
+                    })?;
 
                 Ok(TopicCreated::Loaded)
             }
@@ -346,13 +364,52 @@ impl BrokerService {
                 Ok(TopicCreated::Pending)
             }
             BrokerMode::Edge => {
-                // Edge is single-node Raft — same direct path as standalone
+                // Edge mode: coordinate with cloud cluster BEFORE accepting the producer.
+                //
+                // Flow: CreateEdgeTopic on cloud → local Raft → local load → start WAL tailing.
+                // If cloud is unreachable, the producer gets an error (fail-fast).
+                let edge_rep = self.edge_replicator.as_ref().ok_or_else(|| {
+                    Status::unavailable(
+                        "edge replicator not initialized yet, retry shortly",
+                    )
+                })?;
+
+                // 1. Create topic on cloud cluster (synchronous — blocks until confirmed)
+                edge_rep
+                    .cloud_client()
+                    .create_topic(topic_name)
+                    .await
+                    .map_err(|e| {
+                        warn!(
+                            topic = %topic_name,
+                            error = %e,
+                            "cloud rejected edge topic creation"
+                        );
+                        Status::unavailable(format!(
+                            "failed to create topic on cloud cluster: {}",
+                            e
+                        ))
+                    })?;
+
+                // 2. Create topic locally (single-node Raft + load into registry)
                 self.topic_cluster
                     .create_on_cluster_standalone(topic_name, dispatch_strategy, schema_ref, None)
                     .await?;
 
-                self.topic_manager.ensure_local(topic_name).await
-                    .map_err(|e| Status::internal(format!("failed to load topic locally: {}", e)))?;
+                self.topic_manager
+                    .ensure_local(topic_name)
+                    .await
+                    .map_err(|e| {
+                        Status::internal(format!("failed to load topic locally: {}", e))
+                    })?;
+
+                // 3. Start WAL tailing → cloud replication for this topic
+                edge_rep.add_topic(topic_name).await;
+
+                info!(
+                    topic = %topic_name,
+                    "edge topic created: cloud confirmed, local loaded, replication started"
+                );
 
                 Ok(TopicCreated::Loaded)
             }
@@ -372,17 +429,31 @@ impl BrokerService {
                 // Clean up all metadata
                 self.topic_cluster.delete_topic_metadata(topic_name).await
             }
-            BrokerMode::Cluster => {
-                self.topic_cluster.post_delete_topic(topic_name).await
-            }
+            BrokerMode::Cluster => self.topic_cluster.post_delete_topic(topic_name).await,
             BrokerMode::Edge => {
-                // Edge is single-node — same direct cleanup as standalone
+                // Edge mode: coordinate with cloud cluster, then clean up locally.
+                //
+                // Flow: stop WAL tailing → DeleteEdgeTopic on cloud → local cleanup.
+                if let Some(ref edge_rep) = self.edge_replicator {
+                    // 1. Stop WAL tailing for this topic
+                    edge_rep.remove_topic(topic_name).await;
+
+                    // 2. Delete topic on cloud cluster
+                    if let Err(e) = edge_rep.cloud_client().delete_topic(topic_name).await {
+                        warn!(
+                            topic = %topic_name,
+                            error = %e,
+                            "failed to delete topic on cloud cluster (continuing local cleanup)"
+                        );
+                    }
+                }
+
+                // 3. Clean up locally (registry + Raft metadata)
                 self.topic_registry.remove_topic(topic_name);
                 self.topic_cluster.delete_topic_metadata(topic_name).await
             }
         }
     }
-
 
     // =====================================================================
     // Lookups and partitions
@@ -635,7 +706,6 @@ impl BrokerService {
             topic_count = %topic_count,
             "shutting down broker service"
         );
-
 
         info!(
             broker_id = %self.broker_id,
