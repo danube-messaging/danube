@@ -154,14 +154,16 @@ jobs:
         run: |
           cargo test --release -p danube-edge --test edge_replication_basic -- --ignored --test-threads=1 --nocapture
 
-      - name: Run edge replication security tests
-        env:
-          EDGE_BROKER_ENDPOINT: http://127.0.0.1:6653
-          CLOUD_BROKER_ENDPOINT: http://127.0.0.1:6650
-          EDGE_TOKEN: ""
-          RUST_BACKTRACE: 1
-        run: |
-          cargo test --release -p danube-edge --test edge_replication_security -- --ignored --test-threads=1 --nocapture
+      # TODO: Enable once RBAC/JWT auth is configured in this workflow.
+      # These tests require a valid EDGE_TOKEN and security-enabled brokers.
+      # - name: Run edge replication security tests
+      #   env:
+      #     EDGE_BROKER_ENDPOINT: http://127.0.0.1:6653
+      #     CLOUD_BROKER_ENDPOINT: http://127.0.0.1:6650
+      #     EDGE_TOKEN: ""
+      #     RUST_BACKTRACE: 1
+      #   run: |
+      #     cargo test --release -p danube-edge --test edge_replication_security -- --ignored --test-threads=1 --nocapture
 
       # =====================================================================
       # Cleanup & diagnostics
