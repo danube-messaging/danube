@@ -1,0 +1,29 @@
+[package]
+name = "danube-edge"
+version = "0.12.0"
+description = "Edge broker services for Danube messaging (replication, MQTT, coordination)"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+license = "Apache-2.0"
+edition = "2021"
+
+[dependencies]
+danube-core = { path = "../danube-core" }
+danube-client = { path = "../danube-client" }
+danube-persistent-storage = { path = "../danube-persistent-storage" }
+
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+metrics = { workspace = true }
+
+[lints]
+workspace = true

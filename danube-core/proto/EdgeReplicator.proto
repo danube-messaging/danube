@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package danube.edge;
+
+import "DanubeApi.proto";
+
+// Edge → Cluster replication service.
+// Hosted on cluster brokers, behind the standard auth interceptor.
+service EdgeReplicatorService {
+
+  // Create a topic on the cluster for edge replication. Idempotent.
+  rpc CreateEdgeTopic(CreateEdgeTopicRequest) returns (CreateEdgeTopicResponse);
+
+  // Delete an edge-replicated topic from the cluster. Idempotent.
+  rpc DeleteEdgeTopic(DeleteEdgeTopicRequest) returns (DeleteEdgeTopicResponse);
+
+  // Bidirectional stream: edge sends message batches, cluster acks offsets.
+  // Uses batch_last_offset as idempotency key to prevent duplicate writes.
+  rpc ReplicateData(stream ReplicateBatch) returns (stream ReplicateAck);
+}
+
+// ─── Topic Lifecycle ────────────────────────────────────────────────────────
+
+message CreateEdgeTopicRequest {
+  string topic_name = 1;               // e.g. "/edge1/sensor_temp"
+  optional EdgeSchemaInfo schema = 2;
+}
+
+message EdgeSchemaInfo {
+  string subject = 1;
+  string schema_type = 2;              // "json_schema", "avro", "protobuf", "string", "bytes"
+  bytes schema_data = 3;
+}
+
+message CreateEdgeTopicResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteEdgeTopicRequest {
+  string topic_name = 1;
+}
+
+message DeleteEdgeTopicResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ─── Data Replication ───────────────────────────────────────────────────────
+
+message ReplicateBatch {
+  string topic_name = 1;
+  repeated danube.StreamMessage messages = 2; // Full messages from edge WAL
+  uint64 batch_last_offset = 3;               // Idempotency key (highest edge offset)
+}
+
+message ReplicateAck {
+  string topic_name = 1;
+  uint64 acked_offset = 2;                    // Echoes batch_last_offset on success
+}

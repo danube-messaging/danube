@@ -28,6 +28,13 @@ pub(crate) enum LogCommand {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// Batch write: pre-encoded frames for efficient replication ingestion.
+    /// The `frames` buffer contains already-framed data (header + payload for each message).
+    WriteBatch {
+        first_offset: u64,
+        last_offset: u64,
+        frames: Vec<u8>,
+    },
     /// Set the topic name used for labeling writer metrics (optional).
     SetTopic(String),
     #[allow(dead_code)]
@@ -103,6 +110,35 @@ impl WriterState {
         if should_flush_by_bytes {
             // This will write the buffer, flush it, clear it, update timers, and persist a checkpoint
             // using `last_offset_written`.
+            self.process_flush().await?;
+        }
+        Ok(())
+    }
+
+    /// Handle a `WriteBatch` command by appending pre-encoded frames into the buffer.
+    ///
+    /// Unlike `process_write`, the frames are already serialized and framed by the caller
+    /// (`Wal::append_batch`), so this method only needs to:
+    /// 1. Check rotation thresholds
+    /// 2. Append raw bytes to the write buffer
+    /// 3. Update offset tracking and byte counters
+    /// 4. Flush if the batch-size threshold is exceeded
+    async fn process_write_batch(
+        &mut self,
+        first_offset: u64,
+        last_offset: u64,
+        frames: &[u8],
+    ) -> Result<(), PersistentStorageError> {
+        self.rotate_if_needed().await?;
+        if self.current_file_first_offset.is_none() {
+            self.current_file_first_offset = Some(first_offset);
+        }
+        // Append pre-encoded frames directly — no per-message framing overhead
+        self.write_buf.extend_from_slice(frames);
+        self.bytes_in_file += frames.len() as u64;
+        self.last_offset_written = Some(last_offset);
+
+        if self.write_buf.len() >= self.flush_max_batch_bytes {
             self.process_flush().await?;
         }
         Ok(())
@@ -341,6 +377,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
                     Some(cmd) => {
                         let res = match cmd {
                             LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
+                            LogCommand::WriteBatch { first_offset, last_offset, frames } => state.process_write_batch(first_offset, last_offset, &frames).await,
                             LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) },
                             LogCommand::Flush(ack_tx) => {
                                 let res = state.process_flush().await;

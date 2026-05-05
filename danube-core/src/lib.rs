@@ -11,6 +11,13 @@ pub mod proto {
     pub mod danube_schema {
         include!("proto/danube_schema.rs");
     }
+
+    // Edge Replicator proto module — nested under `proto` (package `danube`)
+    // so that `super::StreamMessage` in the generated code resolves to
+    // the `danube.StreamMessage` proto type defined in `danube.rs`.
+    pub mod edge {
+        include!("proto/danube.edge.rs");
+    }
 }
 
 pub mod admin_proto {
@@ -20,3 +27,7 @@ pub mod admin_proto {
 pub mod raft_proto {
     include!("proto/danube.raft.rs");
 }
+
+/// Re-export for backward compatibility.
+pub use proto::edge as edge_proto;
+

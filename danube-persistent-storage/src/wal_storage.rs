@@ -81,6 +81,31 @@ impl WalStorage {
         self.wal.append(msg).await
     }
 
+    /// Append a batch of messages atomically to the underlying WAL.
+    ///
+    /// Optimized for replication ingestion: one atomic offset bump, one channel send,
+    /// one cache lock, pre-encoded frames. See `Wal::append_batch()` for details.
+    ///
+    /// Returns `(first_offset, last_offset)` of the written batch.
+    pub async fn append_batch(
+        &self,
+        topic_name: &str,
+        messages: &[StreamMessage],
+    ) -> Result<(u64, u64), PersistentStorageError> {
+        self.wal
+            .set_topic_for_metrics(topic_name.to_string())
+            .await;
+        let total_bytes: u64 = messages.iter().map(|m| m.payload.len() as u64).sum();
+        let count = messages.len() as u64;
+        let result = self.wal.append_batch(messages).await;
+        if result.is_ok() {
+            counter!(WAL_APPEND_TOTAL.name, "topic" => topic_name.to_string()).increment(count);
+            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic" => topic_name.to_string())
+                .increment(total_bytes);
+        }
+        result
+    }
+
     async fn create_hot_reader(
         &self,
         topic_name: &str,

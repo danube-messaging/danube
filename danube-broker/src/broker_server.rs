@@ -14,6 +14,9 @@ use danube_core::proto::{
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
 };
+use danube_core::edge_proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
+
+use crate::edge_service::EdgeReplicatorServiceImpl;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,6 +36,8 @@ pub(crate) struct DanubeServerImpl {
     connect_url: String,
     proxy_enabled: bool,
     auth: AuthConfig,
+    /// Edge replicator service (only for Cluster/Standalone — edge brokers are the client).
+    edge_service: Option<EdgeReplicatorServiceImpl>,
 }
 
 impl DanubeServerImpl {
@@ -44,6 +49,7 @@ impl DanubeServerImpl {
         connect_url: String,
         proxy_enabled: bool,
         auth: AuthConfig,
+        edge_service: Option<EdgeReplicatorServiceImpl>,
     ) -> Self {
         DanubeServerImpl {
             service,
@@ -53,6 +59,7 @@ impl DanubeServerImpl {
             connect_url,
             proxy_enabled,
             auth,
+            edge_service,
         }
     }
 
@@ -79,7 +86,7 @@ impl DanubeServerImpl {
         let jwt_cache = crate::security::authn::JwtValidationCache::new();
         let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
-        let server_builder = server_builder
+        let mut server_builder = server_builder
             .add_service(InterceptedService::new(
                 producer_service,
                 interceptor.clone(),
@@ -98,8 +105,18 @@ impl DanubeServerImpl {
             ))
             .add_service(InterceptedService::new(
                 schema_registry_service,
+                interceptor.clone(),
+            ));
+
+        // Edge replicator service (only for Cluster/Standalone — edge brokers are the client)
+        if let Some(ref edge_svc) = self.edge_service {
+            let edge_replicator_service =
+                EdgeReplicatorServiceServer::new(edge_svc.clone());
+            server_builder = server_builder.add_service(InterceptedService::new(
+                edge_replicator_service,
                 interceptor,
             ));
+        }
 
         let server = server_builder.serve(socket_addr);
 

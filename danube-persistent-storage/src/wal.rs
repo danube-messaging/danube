@@ -315,9 +315,10 @@ impl Wal {
     /// - The background writer batches frames and flushes buffered writes periodically; rotation/checkpointing handled there.
     /// - On-disk frame layout: `[u64 offset][u32 len][u32 crc][bytes]` with CRC32 over `bytes`.
     pub async fn append(&self, msg: &StreamMessage) -> Result<u64, PersistentStorageError> {
-        let permit = self.inner.cmd_tx.reserve().await.map_err(|_| {
-            PersistentStorageError::Other("wal writer channel closed".to_string())
-        })?;
+        let permit =
+            self.inner.cmd_tx.reserve().await.map_err(|_| {
+                PersistentStorageError::Other("wal writer channel closed".to_string())
+            })?;
 
         let offset = self.inner.next_offset.fetch_add(1, Ordering::AcqRel);
         // Clone and stamp the message with its assigned offset so all downstream paths
@@ -343,6 +344,81 @@ impl Wal {
         // as we can always replay reliable from the WAL
         let _ = self.inner.tx.send((offset, stamped.clone()));
         Ok(offset)
+    }
+
+    /// Append a batch of messages atomically and return (first_offset, last_offset).
+    ///
+    /// Optimized for replication ingestion: collapses per-message overhead into a single
+    /// batch operation.
+    ///
+    /// What happens
+    /// - **One** atomic offset bump for the entire batch (`fetch_add(count)`).
+    /// - Pre-serializes and frames all messages into a single contiguous buffer.
+    /// - **One** `LogCommand::WriteBatch` sent to the background writer (pre-encoded frames).
+    /// - **One** cache lock acquisition for bulk insert.
+    /// - **No** per-message broadcast — replicated topics rely on heartbeat lag detection
+    ///   for consumer dispatch, not live broadcast.
+    ///
+    /// Returns `(first_offset, last_offset)` of the written batch.
+    pub async fn append_batch(
+        &self,
+        messages: &[StreamMessage],
+    ) -> Result<(u64, u64), PersistentStorageError> {
+        if messages.is_empty() {
+            return Err(PersistentStorageError::Other("empty batch".into()));
+        }
+
+        let count = messages.len() as u64;
+
+        // 1. ONE atomic offset bump for entire batch
+        let first_offset = self.inner.next_offset.fetch_add(count, Ordering::AcqRel);
+        let last_offset = first_offset + count - 1;
+
+        // 2. Pre-serialize + frame ALL messages into one buffer
+        let mut frames_buf = Vec::new();
+        let mut stamped_msgs = Vec::with_capacity(messages.len());
+        for (i, msg) in messages.iter().enumerate() {
+            let offset = first_offset + i as u64;
+            let mut stamped = msg.clone();
+            stamped.msg_id.topic_offset = offset;
+            let bytes = bincode::serde::encode_to_vec(&stamped, bincode::config::standard())
+                .map_err(|e| {
+                    PersistentStorageError::Io(format!("bincode serialize failed: {}", e))
+                })?;
+            crate::frames::append_encoded_frame(&mut frames_buf, offset, &bytes);
+            stamped_msgs.push((offset, stamped));
+        }
+
+        // 3. ONE channel send — pre-encoded frames go directly to background writer
+        self.inner
+            .cmd_tx
+            .send(LogCommand::WriteBatch {
+                first_offset,
+                last_offset,
+                frames: frames_buf,
+            })
+            .await
+            .map_err(|_| PersistentStorageError::Other("wal writer channel closed".to_string()))?;
+
+        // 4. ONE cache lock — bulk insert all messages + broadcast
+        {
+            let mut cache = self.inner.cache.lock().await;
+            for (offset, msg) in stamped_msgs {
+                cache.insert(offset, msg);
+            }
+            cache.evict_to(self.inner.cache_capacity);
+
+            // 5. Broadcast to live tailing readers — replicated topics on the cloud
+            //    side have consumers subscribed via the broadcast channel, so we must
+            //    notify them just like single-message append() does.
+            for offset in first_offset..=last_offset {
+                if let Some((off, msg)) = cache.get(offset) {
+                    let _ = self.inner.tx.send((off, msg));
+                }
+            }
+        }
+
+        Ok((first_offset, last_offset))
     }
 
     /// Create a reader stream starting from a given offset.
@@ -439,7 +515,10 @@ impl Wal {
         PersistentStorageError::Wal(format!("wal writer dropped {} acknowledgement", command))
     }
 
-    fn writer_control_result(command: &str, result: Result<(), String>) -> Result<(), PersistentStorageError> {
+    fn writer_control_result(
+        command: &str,
+        result: Result<(), String>,
+    ) -> Result<(), PersistentStorageError> {
         result.map_err(|e| PersistentStorageError::Wal(format!("wal {} failed: {}", command, e)))
     }
 

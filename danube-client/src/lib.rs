@@ -34,7 +34,9 @@ pub use danube_core::proto::SchemaReference;
 mod lookup_service;
 
 mod connection_manager;
+pub use connection_manager::BrokerAddress;
 
 mod health_check;
 
 mod retry_manager;
+pub use retry_manager::RetryManager;
