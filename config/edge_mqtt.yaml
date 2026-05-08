@@ -1,0 +1,41 @@
+# Edge MQTT Gateway Configuration
+#
+# Defines how MQTT devices connect to the Danube Edge broker and how
+# MQTT topics are mapped to Danube topics for efficient WAL ingestion.
+
+mqtt:
+  # TCP listener address for MQTT connections
+  listener: "0.0.0.0:1883"
+
+  # Topic mapping rules (evaluated in order, first match wins).
+  #
+  # Supported MQTT wildcards:
+  #   +  — single-level wildcard (matches one path segment)
+  #   #  — multi-level wildcard (matches remainder of path)
+  #
+  # `extract_attributes` maps wildcard captures ($1, $2, ...) to
+  # Danube StreamMessage attributes. These propagate to cloud consumers.
+  topic_mappings:
+    - mqtt_pattern: "device/+/telemetry"
+      danube_topic: "/default/telemetry"
+      extract_attributes:
+        device_id: "$1"
+
+    - mqtt_pattern: "sensors/+/+"
+      danube_topic: "/default/sensors"
+      extract_attributes:
+        sensor_type: "$1"
+        measurement: "$2"
+
+    # Catch-all: any unmatched MQTT topic goes here
+    - mqtt_pattern: "#"
+      danube_topic: "/default/mqtt"
+
+  # Ingestion batching configuration.
+  # Messages are buffered per-topic and flushed to the local WAL in bulk
+  # to maximize throughput and minimize I/O overhead.
+  ingestion:
+    # Flush when this many messages accumulate for a single topic
+    batch_size: 100
+    # Flush after this timeout (ms) even if batch_size is not reached
+    batch_timeout_ms: 500

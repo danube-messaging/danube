@@ -32,6 +32,8 @@ pub(crate) struct Args {
     pub(crate) edge_name: Option<String>,
     /// Edge mode: authentication token for cloud registration
     pub(crate) edge_token: Option<String>,
+    /// Edge mode: path to MQTT gateway config file
+    pub(crate) mqtt_config: Option<String>,
 }
 
 impl Args {
@@ -53,6 +55,7 @@ impl Args {
         println!("  --cloud-url          Cloud cluster URL for edge replication (required for edge mode)");
         println!("  --edge-name          Unique name for this edge broker (required for edge mode)");
         println!("  --edge-token         Authentication token for cloud cluster (optional, needed when auth is enabled)");
+        println!("  --mqtt-config        Path to MQTT gateway config file (optional, enables MQTT ingestion)");
     }
 
     pub(crate) fn parse() -> Result<Self> {
@@ -85,6 +88,7 @@ impl Args {
         let mut cloud_url = None;
         let mut edge_name = None;
         let mut edge_token = None;
+        let mut mqtt_config = None;
 
         let mut args_iter = args.iter().skip(1);
         while let Some(arg) = args_iter.next() {
@@ -130,6 +134,9 @@ impl Args {
                 }
                 "--edge-token" => {
                     edge_token = args_iter.next().map(|s| s.to_string());
+                }
+                "--mqtt-config" => {
+                    mqtt_config = args_iter.next().map(|s| s.to_string());
                 }
                 _ => return Err(anyhow::anyhow!("Unknown argument: {}", arg)),
             }
@@ -225,6 +232,7 @@ impl Args {
             cloud_url,
             edge_name,
             edge_token,
+            mqtt_config,
         })
     }
 }

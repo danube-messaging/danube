@@ -10,3 +10,4 @@
 //! `danube-broker/src/edge_service/`.
 
 pub mod edge;
+pub mod mqtt;

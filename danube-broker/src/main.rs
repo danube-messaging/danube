@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
                     .clone()
                     .expect("edge mode requires edge-name"),
                 args.edge_token.clone().unwrap_or_default(),
+                args.mqtt_config.clone(),
             )?
         }
     };

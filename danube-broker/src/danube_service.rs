@@ -383,12 +383,13 @@ impl DanubeService {
             replicator.add_topic(topic_name).await;
         }
 
-        let edge_name = &self
+        let edge_config = self
             .service_config
             .edge_config
             .as_ref()
-            .expect("edge_config required in edge mode")
-            .edge_name;
+            .expect("edge_config required in edge mode");
+
+        let edge_name = &edge_config.edge_name;
 
         info!(
             broker_id = %self.broker_id,
@@ -396,6 +397,101 @@ impl DanubeService {
             active_topics = topics.len(),
             "edge mode: broker active, replicating to cloud"
         );
+
+        // 7. MQTT gateway (if --mqtt-config was provided)
+        if let Some(ref mqtt_config_path) = edge_config.mqtt_config_path.clone() {
+            info!(
+                config = %mqtt_config_path,
+                "loading MQTT gateway configuration"
+            );
+
+            match danube_edge::mqtt::config::MqttConfig::from_file(mqtt_config_path) {
+                Ok(mqtt_config) => {
+                    let storage_factory = self.broker.topic_manager.storage_factory.clone();
+
+                    let ingester_config = danube_edge::mqtt::ingester::MqttIngesterConfig {
+                        batch_size: mqtt_config.mqtt.ingestion.batch_size,
+                        batch_timeout: mqtt_config.mqtt.ingestion.batch_timeout(),
+                    };
+
+                    let ingester = std::sync::Arc::new(
+                        danube_edge::mqtt::ingester::MqttIngester::new(
+                            storage_factory,
+                            ingester_config,
+                        ),
+                    );
+
+                    // Pre-provision Danube topics from config mapping
+                    let danube_topics = mqtt_config.danube_topics();
+                    for topic_name in &danube_topics {
+                        // Ensure the topic exists in the broker's topic registry
+                        if let Err(e) = self.broker.topic_manager.ensure_local(topic_name).await {
+                            warn!(
+                                topic = %topic_name,
+                                error = %e,
+                                "failed to ensure local topic for MQTT mapping"
+                            );
+                        }
+
+                        // Provision WAL handle in the ingester
+                        if let Err(e) = ingester.provision_topic(topic_name).await {
+                            warn!(
+                                topic = %topic_name,
+                                error = %e,
+                                "failed to provision MQTT ingester topic"
+                            );
+                            continue;
+                        }
+
+                        // Register with EdgeReplicator for cloud replication
+                        if let Err(e) = replicator.cloud_client().create_topic(topic_name).await {
+                            warn!(
+                                topic = %topic_name,
+                                error = %e,
+                                "failed to create MQTT topic on cloud, will retry later"
+                            );
+                        }
+                        replicator.add_topic(topic_name).await;
+                    }
+
+                    info!(
+                        topics = danube_topics.len(),
+                        "MQTT ingester: topics provisioned"
+                    );
+
+                    // Build topic router
+                    let router = std::sync::Arc::new(
+                        danube_edge::mqtt::bridge::TopicRouter::new(
+                            &mqtt_config.mqtt.topic_mappings,
+                        ),
+                    );
+
+                    // Spawn background flush loop
+                    let ingester_flush = ingester.clone();
+                    tokio::spawn(async move {
+                        ingester_flush.run_flush_loop().await;
+                    });
+
+                    // Spawn MQTT TCP listener
+                    let listener_addr = mqtt_config.mqtt.listener.clone();
+                    tokio::spawn(async move {
+                        danube_edge::mqtt::server::start_listener(
+                            &listener_addr,
+                            router,
+                            ingester,
+                        )
+                        .await;
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        config = %mqtt_config_path,
+                        error = %e,
+                        "failed to load MQTT config, MQTT gateway disabled"
+                    );
+                }
+            }
+        }
 
         // Block until broker gRPC shuts down
         if let Err(e) = server_handle.await {

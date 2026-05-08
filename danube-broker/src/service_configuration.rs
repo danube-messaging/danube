@@ -83,6 +83,9 @@ pub(crate) struct EdgeConfig {
     pub(crate) edge_name: String,
     /// Authentication token for cloud registration
     pub(crate) token: String,
+    /// Path to MQTT gateway config file (enables MQTT ingestion when set)
+    #[serde(default)]
+    pub(crate) mqtt_config_path: Option<String>,
 }
 
 /// Broker services configuration
@@ -190,6 +193,7 @@ impl ServiceConfiguration {
         cloud_url: String,
         edge_name: String,
         token: String,
+        mqtt_config_path: Option<String>,
     ) -> Result<Self> {
         let broker_addr: SocketAddr = "127.0.0.1:6650"
             .parse()
@@ -227,6 +231,7 @@ impl ServiceConfiguration {
                 cloud_url,
                 edge_name,
                 token,
+                mqtt_config_path,
             }),
         })
     }
