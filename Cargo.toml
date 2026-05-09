@@ -17,6 +17,9 @@ members = [
     # -- Danube persistent storage
     "danube-persistent-storage",
 
+    # -- Danube schema registry (validation, compatibility, metadata)
+    "danube-schema",
+
     # -- Danube edge broker (replication, MQTT, coordination)
     "danube-edge",
 

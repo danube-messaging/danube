@@ -1,5 +1,5 @@
-use crate::resources::{SchemaResources, SecurityResources};
-use crate::schema::{SchemaRegistry, ValidationPolicy};
+use crate::resources::SecurityResources;
+use danube_schema::{SchemaRegistry, SchemaResources, ValidationPolicy};
 use crate::security::authz::{enforce_authorization, Permission, Resource};
 use crate::security::authn::get_security_context;
 use crate::topic_control::TopicManager;
@@ -32,7 +32,9 @@ impl SchemaRegistryService {
         topic_manager: TopicManager,
         security: SecurityResources,
     ) -> Self {
-        let schema_resources = SchemaResources::new(metadata_storage);
+        let schema_resources = SchemaResources::new(
+            std::sync::Arc::new(metadata_storage) as std::sync::Arc<dyn danube_core::metadata::MetadataStore>,
+        );
         let registry = Arc::new(SchemaRegistry::new(Arc::new(schema_resources)));
 
         Self {
@@ -299,7 +301,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
         let mode_override = req
             .compatibility_mode
             .as_ref()
-            .and_then(|s| crate::schema::CompatibilityMode::from_str(s));
+            .and_then(|s| danube_schema::CompatibilityMode::from_str(s));
 
         info!(
             subject = %req.subject,
@@ -389,7 +391,7 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             "Setting compatibility mode for subject"
         );
 
-        let mode = crate::schema::CompatibilityMode::from_str(&req.compatibility_mode).ok_or_else(
+        let mode = danube_schema::CompatibilityMode::from_str(&req.compatibility_mode).ok_or_else(
             || {
                 Status::invalid_argument(format!(
                     "Invalid compatibility mode: {}",

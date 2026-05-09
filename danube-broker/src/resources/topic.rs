@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    policies::Policies, resources::BASE_TOPICS_PATH, schema::types::ValidationPolicy,
-    subscription::SubscriptionFailurePolicy, utils::join_path,
+    policies::Policies, resources::BASE_TOPICS_PATH, subscription::SubscriptionFailurePolicy,
+    utils::join_path,
 };
+use danube_schema::ValidationPolicy;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TopicResources {
@@ -295,8 +296,10 @@ impl TopicResources {
 
         match self.store.get(&path, MetaOptions::None).await? {
             Some(value) => {
-                let policy: SubscriptionFailurePolicy = serde_json::from_value(value)
-                    .map_err(|e| anyhow!("Failed to deserialize subscription failure policy: {}", e))?;
+                let policy: SubscriptionFailurePolicy =
+                    serde_json::from_value(value).map_err(|e| {
+                        anyhow!("Failed to deserialize subscription failure policy: {}", e)
+                    })?;
                 Ok(Some(policy))
             }
             None => Ok(None),

@@ -14,7 +14,6 @@ mod producer;
 mod rate_limiter;
 mod replicator;
 mod resources;
-mod schema;
 mod security;
 mod service_configuration;
 mod storage_configuration;
@@ -23,7 +22,6 @@ mod topic;
 mod topic_cluster;
 mod topic_control;
 mod topic_registry;
-mod topic_schema;
 mod utils;
 
 use std::{fs::read_to_string, path::Path, sync::Arc};

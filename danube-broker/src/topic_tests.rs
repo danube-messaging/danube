@@ -11,7 +11,8 @@ use tokio::time::timeout;
 use crate::metadata_storage::MetadataStorage;
 use crate::policies::Policies;
 use crate::replicator::Replicator;
-use crate::resources::{SchemaResources, TopicResources};
+use crate::resources::TopicResources;
+use danube_schema::SchemaResources;
 use crate::subscription::{
     SubscriptionFailurePolicy, SubscriptionOptions, SubscriptionPoisonPolicy,
 };
@@ -70,7 +71,7 @@ async fn mk_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store.clone());
-    let schema_resources = SchemaResources::new(store.clone());
+    let schema_resources = SchemaResources::new(std::sync::Arc::new(store.clone()) as std::sync::Arc<dyn danube_core::metadata::MetadataStore>);
     use crate::danube_service::metrics_collector::MetricsCollector;
 
     Topic::new(
@@ -88,7 +89,7 @@ async fn mk_reliable_topic(name: &str) -> Topic {
     let mem = MemoryStore::new().await.expect("init memory store");
     let store = MetadataStorage::InMemory(mem);
     let topic_resources = TopicResources::new(store.clone());
-    let schema_resources = SchemaResources::new(store.clone());
+    let schema_resources = SchemaResources::new(std::sync::Arc::new(store.clone()) as std::sync::Arc<dyn danube_core::metadata::MetadataStore>);
     use crate::danube_service::metrics_collector::MetricsCollector;
 
     let wal = Wal::with_config(WalConfig::default())
