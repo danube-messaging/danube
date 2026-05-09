@@ -57,18 +57,13 @@ impl EdgeService {
         token_override: Option<String>,
     ) -> Result<Self> {
         // Resolve token: CLI override > config file
-        let token = token_override
-            .unwrap_or_else(|| config.edge.token.clone());
+        let token = token_override.unwrap_or_else(|| config.edge.token.clone());
 
         // --- Replicator ---
         let cloud_client = Arc::new(
-            EdgeCloudClient::new(
-                &config.edge.cluster_url,
-                &config.edge.edge_name,
-                &token,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to create edge cloud client: {}", e))?,
+            EdgeCloudClient::new(&config.edge.cluster_url, &config.edge.edge_name, &token)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to create edge cloud client: {}", e))?,
         );
 
         let replicator_config = EdgeReplicatorConfig {
@@ -92,10 +87,7 @@ impl EdgeService {
                 batch_timeout: mqtt.ingestion.batch_timeout(),
             };
 
-            let ingester = Arc::new(MqttIngester::new(
-                storage_factory.clone(),
-                ingester_config,
-            ));
+            let ingester = Arc::new(MqttIngester::new(storage_factory.clone(), ingester_config));
 
             let router = Arc::new(TopicRouter::new(&mqtt.topic_mappings));
 
@@ -126,7 +118,12 @@ impl EdgeService {
 
         // --- Reconcile pre-existing topics ---
         for topic_name in existing_topics {
-            if let Err(e) = self.replicator.cloud_client().create_topic(topic_name).await {
+            if let Err(e) = self
+                .replicator
+                .cloud_client()
+                .create_topic(topic_name)
+                .await
+            {
                 warn!(
                     topic = %topic_name,
                     error = %e,
@@ -161,7 +158,12 @@ impl EdgeService {
                 }
 
                 // Register with EdgeReplicator for cloud replication
-                if let Err(e) = self.replicator.cloud_client().create_topic(topic_name).await {
+                if let Err(e) = self
+                    .replicator
+                    .cloud_client()
+                    .create_topic(topic_name)
+                    .await
+                {
                     warn!(
                         topic = %topic_name,
                         error = %e,
@@ -187,12 +189,8 @@ impl EdgeService {
             let router_clone = router.clone();
             let ingester_clone = ingester.clone();
             tokio::spawn(async move {
-                crate::mqtt::server::start_listener(
-                    &listener_addr,
-                    router_clone,
-                    ingester_clone,
-                )
-                .await;
+                crate::mqtt::server::start_listener(&listener_addr, router_clone, ingester_clone)
+                    .await;
             });
 
             info!(
