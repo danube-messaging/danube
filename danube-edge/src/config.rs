@@ -147,9 +147,13 @@ impl EdgeConfig {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read edge config '{}': {}", path, e))?;
-        let config: EdgeConfig = serde_yaml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("failed to parse edge config '{}': {}", path, e))?;
-        Ok(config)
+        Self::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("failed to parse edge config '{}': {}", path, e))
+    }
+
+    /// Parse configuration from a YAML string.
+    pub fn from_str(yaml: &str) -> Result<Self, serde_yaml::Error> {
+        serde_yaml::from_str(yaml)
     }
 
     /// Get the list of unique Danube topic names from the MQTT mapping rules.
@@ -170,3 +174,138 @@ impl EdgeConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL_CONFIG: &str = r##"
+edge:
+  edge_name: "test-edge"
+  cluster_url: "http://cluster:6650"
+  token: "secret"
+
+replicator:
+  batch_size: 50
+  batch_timeout_ms: 2000
+
+mqtt:
+  listener: "0.0.0.0:1884"
+  topic_mappings:
+    - mqtt_pattern: "device/+/telemetry"
+      danube_topic: "/default/telemetry"
+      extract_attributes:
+        device_id: "$1"
+    - mqtt_pattern: "#"
+      danube_topic: "/default/mqtt"
+  ingestion:
+    batch_size: 200
+    batch_timeout_ms: 750
+"##;
+
+    const MINIMAL_CONFIG: &str = r#"
+edge:
+  edge_name: "edge-minimal"
+  cluster_url: "http://localhost:6650"
+"#;
+
+    #[test]
+    fn parse_full_config() {
+        let config = EdgeConfig::from_str(FULL_CONFIG).expect("parse full config");
+
+        assert_eq!(config.edge.edge_name, "test-edge");
+        assert_eq!(config.edge.cluster_url, "http://cluster:6650");
+        assert_eq!(config.edge.token, "secret");
+
+        assert_eq!(config.replicator.batch_size, 50);
+        assert_eq!(config.replicator.batch_timeout_ms, 2000);
+        assert_eq!(config.replicator.batch_timeout(), Duration::from_millis(2000));
+
+        let mqtt = config.mqtt.as_ref().expect("mqtt section present");
+        assert_eq!(mqtt.listener, "0.0.0.0:1884");
+        assert_eq!(mqtt.topic_mappings.len(), 2);
+        assert_eq!(mqtt.topic_mappings[0].mqtt_pattern, "device/+/telemetry");
+        assert_eq!(mqtt.topic_mappings[0].danube_topic, "/default/telemetry");
+        assert_eq!(
+            mqtt.topic_mappings[0].extract_attributes.get("device_id"),
+            Some(&"$1".to_string())
+        );
+        assert_eq!(mqtt.ingestion.batch_size, 200);
+        assert_eq!(mqtt.ingestion.batch_timeout_ms, 750);
+    }
+
+    #[test]
+    fn parse_minimal_config_uses_defaults() {
+        let config = EdgeConfig::from_str(MINIMAL_CONFIG).expect("parse minimal config");
+
+        assert_eq!(config.edge.edge_name, "edge-minimal");
+        assert_eq!(config.edge.cluster_url, "http://localhost:6650");
+        assert_eq!(config.edge.token, ""); // default empty
+
+        // Replicator uses defaults
+        assert_eq!(config.replicator.batch_size, 100);
+        assert_eq!(config.replicator.batch_timeout_ms, 1000);
+
+        // No MQTT section
+        assert!(config.mqtt.is_none());
+    }
+
+    #[test]
+    fn mqtt_danube_topics_deduplicates() {
+        let yaml = r#"
+edge:
+  edge_name: "e1"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "a/+"
+      danube_topic: "/default/data"
+    - mqtt_pattern: "b/+"
+      danube_topic: "/default/data"
+    - mqtt_pattern: "c/+"
+      danube_topic: "/default/other"
+"#;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        let topics = config.mqtt_danube_topics();
+
+        assert_eq!(topics, vec!["/default/data", "/default/other"]);
+    }
+
+    #[test]
+    fn mqtt_danube_topics_empty_without_mqtt() {
+        let config = EdgeConfig::from_str(MINIMAL_CONFIG).unwrap();
+        assert!(config.mqtt_danube_topics().is_empty());
+    }
+
+    #[test]
+    fn mqtt_defaults_applied() {
+        let yaml = r##"
+edge:
+  edge_name: "e1"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "#"
+      danube_topic: "/default/all"
+"##;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        let mqtt = config.mqtt.unwrap();
+
+        assert_eq!(mqtt.listener, "0.0.0.0:1883"); // default
+        assert_eq!(mqtt.ingestion.batch_size, 100); // default
+        assert_eq!(mqtt.ingestion.batch_timeout_ms, 500); // default
+    }
+
+    #[test]
+    fn config_from_file_loads_actual_config() {
+        // Test against the real config/edge.yaml in the repo
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let config_path = format!("{}/../config/edge.yaml", manifest_dir);
+        let config = EdgeConfig::from_file(&config_path).expect("load config/edge.yaml");
+
+        assert_eq!(config.edge.edge_name, "edge1");
+        assert!(!config.edge.cluster_url.is_empty());
+        assert!(config.mqtt.is_some());
+    }
+}
+

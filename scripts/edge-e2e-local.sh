@@ -139,17 +139,29 @@ echo -e "${GREEN}✅ Namespace 'edge1' provisioned.${NC}"
 # Step 5: Start edge broker
 # =============================================================================
 echo -e "${YELLOW}Starting edge broker...${NC}"
+
+# Generate edge config for the test
+cat > "${TEMP_DIR}/edge.yaml" <<EOF
+edge:
+  edge_name: "edge1"
+  cluster_url: "http://127.0.0.1:6650"
+  token: ""
+
+replicator:
+  batch_size: 100
+  batch_timeout_ms: 1000
+EOF
+
 RUST_LOG="$LOG_LEVEL" "$BIN" \
     --mode edge \
     --broker-addr 0.0.0.0:6653 \
     --admin-addr 0.0.0.0:50054 \
     --raft-addr 0.0.0.0:7653 \
     --data-dir "${DATA_DIR}/edge-1" \
-    --cloud-url http://127.0.0.1:6650 \
-    --edge-name edge1 \
+    --edge-config "${TEMP_DIR}/edge.yaml" \
     > "${TEMP_DIR}/edge_broker.log" 2>&1 &
 
-echo "  Edge broker: client=6653 admin=50054 cloud=6650 (log: ${TEMP_DIR}/edge_broker.log)"
+echo "  Edge broker: client=6653 admin=50054 cluster=6650 (log: ${TEMP_DIR}/edge_broker.log)"
 
 for attempt in $(seq 1 15); do
     if nc -zv 127.0.0.1 6653 2>/dev/null; then
