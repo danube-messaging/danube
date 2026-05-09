@@ -1,12 +1,13 @@
-//! Edge replication for Danube messaging.
+//! Edge services for Danube messaging.
 //!
-//! This crate provides the **edge-side** replication pipeline:
-//! - Background replicator that tails local WAL, batches messages,
-//!   and streams them to the cloud cluster via gRPC.
-//! - Cluster client for connecting to the cloud broker's `EdgeReplicatorService`.
-//! - Per-topic WAL tailer and checkpointing.
+//! This crate provides the complete **edge-side** runtime:
 //!
-//! The cluster-side gRPC service (which receives edge data) lives in
-//! `danube-broker/src/edge_service/`.
+//! - **`config`** — Unified configuration (edge identity, replicator, MQTT)
+//! - **`edge_service`** — Orchestrator that owns replicator + MQTT gateway
+//! - **`replicator`** — Background WAL tailing, batching, and cloud replication
+//! - **`mqtt`** — MQTT device ingestion (TCP server, session, topic mapping, batched WAL writes)
 
-pub mod edge;
+pub mod config;
+pub mod edge_service;
+pub mod mqtt;
+pub mod replicator;

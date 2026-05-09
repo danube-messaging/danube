@@ -4,9 +4,11 @@ on:
   pull_request:
     paths:
       - 'danube-edge/**'
-      - 'danube-broker/src/edge_service/**'
+      - 'danube-broker/src/danube_service.rs'
+      - 'danube-broker/src/broker_service.rs'
       - 'danube-core/proto/EdgeReplicator.proto'
       - '.github/workflows/edge-replication-e2e.yml'
+      - 'config/edge.yaml'
   workflow_dispatch:
 
 jobs:
@@ -119,14 +121,28 @@ jobs:
         run: |
           mkdir -p danube-data/edge-1
 
+          # Generate edge config for the test
+          cat > temp/edge.yaml <<EOF
+          edge:
+            edge_name: "edge1"
+            cluster_url: "http://127.0.0.1:6650"
+            token: ""
+
+          replicator:
+            batch_size: 100
+            batch_timeout_ms: 1000
+          EOF
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' temp/edge.yaml
+
           ./target/release/danube-broker \
             --mode edge \
             --broker-addr 0.0.0.0:6653 \
             --admin-addr 0.0.0.0:50054 \
             --raft-addr 0.0.0.0:7653 \
             --data-dir ./danube-data/edge-1 \
-            --cloud-url http://127.0.0.1:6650 \
-            --edge-name edge1 \
+            --edge-config temp/edge.yaml \
             > temp/edge_broker.log 2>&1 &
           echo $! > temp/edge_broker.pid
 

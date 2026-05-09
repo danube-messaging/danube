@@ -1,4 +1,4 @@
-//! Edge-side replication: WAL tailing, batching, cloud client, and checkpointing.
+//! Edge replication pipeline: WAL tailing, batching, cloud client, and checkpointing.
 
 pub mod checkpoint;
 pub mod cluster_client;

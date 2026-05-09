@@ -18,7 +18,7 @@ use crate::args_parse::BrokerMode;
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
 use danube_core::metadata::{MetaOptions, MetadataStore};
-use danube_edge::edge::replicator::EdgeReplicator;
+use danube_edge::edge_service::EdgeService;
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
 use std::sync::Arc;
@@ -78,7 +78,7 @@ pub(crate) struct DanubeService {
     service_config: ServiceConfiguration,
     meta_store: MetadataStorage,
     resources: Resources,
-    edge_replicator: Option<Arc<EdgeReplicator>>,
+    edge_service: Option<Arc<EdgeService>>,
 }
 
 impl std::fmt::Debug for DanubeService {
@@ -98,7 +98,7 @@ impl DanubeService {
         service_config: ServiceConfiguration,
         meta_store: MetadataStorage,
         resources: Resources,
-        edge_replicator: Option<Arc<danube_edge::edge::replicator::EdgeReplicator>>,
+        edge_service: Option<Arc<EdgeService>>,
     ) -> Self {
         DanubeService {
             broker_id,
@@ -107,7 +107,7 @@ impl DanubeService {
             service_config,
             meta_store,
             resources,
-            edge_replicator,
+            edge_service,
         }
     }
 
@@ -188,9 +188,9 @@ impl DanubeService {
                 self.start_edge_mode(
                     schema_registry,
                     edge_service,
-                    self.edge_replicator
+                    self.edge_service
                         .clone()
-                        .expect("edge_replicator must be set for Edge mode"),
+                        .expect("edge_service must be set for Edge mode"),
                 )
                 .await?;
             }
@@ -337,7 +337,7 @@ impl DanubeService {
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
-        replicator: Arc<danube_edge::edge::replicator::EdgeReplicator>,
+        edge_svc: Arc<EdgeService>,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -362,39 +362,34 @@ impl DanubeService {
         self.initialize_metadata_and_auth().await?;
 
         // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
-        // Edge replicator was already created and installed in start() before
-        // the Arc was shared.
         let server_handle = self
             .start_broker_grpc(schema_registry, edge_service)
             .await?;
 
-        // 6. Reconcile: any topics from a previous run that already exist locally
-        // need to be registered on the cloud and start replicating again.
-        let topics = self.broker.topic_registry.get_all_topics();
-        for topic_name in &topics {
-            if let Err(e) = replicator.cloud_client().create_topic(topic_name).await {
+        // 6. Ensure MQTT-mapped topics exist locally in the broker
+        let mqtt_topics = edge_svc.mqtt_danube_topics();
+        for topic_name in &mqtt_topics {
+            if let Err(e) = self.broker.topic_manager.ensure_local(topic_name).await {
                 warn!(
                     topic = %topic_name,
                     error = %e,
-                    "failed to create pre-existing topic on cloud, will retry later"
+                    "failed to ensure local topic for MQTT mapping"
                 );
-                continue;
             }
-            replicator.add_topic(topic_name).await;
         }
 
-        let edge_name = &self
-            .service_config
-            .edge_config
-            .as_ref()
-            .expect("edge_config required in edge mode")
-            .edge_name;
+        // 7. Start all edge background tasks (replicator + MQTT gateway).
+        // EdgeService handles: topic reconciliation, MQTT provisioning,
+        // flush loop, and TCP listener — all in one call.
+        let existing_topics = self.broker.topic_registry.get_all_topics();
+        edge_svc.start(&existing_topics).await?;
 
         info!(
             broker_id = %self.broker_id,
-            edge_name = %edge_name,
-            active_topics = topics.len(),
-            "edge mode: broker active, replicating to cloud"
+            edge_name = %edge_svc.edge_name(),
+            existing_topics = existing_topics.len(),
+            mqtt_topics = mqtt_topics.len(),
+            "edge mode: broker active"
         );
 
         // Block until broker gRPC shuts down

@@ -41,8 +41,8 @@ use crate::{
 };
 
 use anyhow::{Context, Result};
-use danube_edge::edge::cluster_client::EdgeCloudClient;
-use danube_edge::edge::replicator::{EdgeReplicator, EdgeReplicatorConfig};
+use danube_edge::edge_service::EdgeService;
+use danube_edge::replicator::replicator::EdgeReplicator;
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{
     ObjectStoreBackend, ObjectStoreConfig, RetentionConfig, StorageFactory, StorageFactoryConfig,
@@ -96,15 +96,14 @@ async fn main() -> Result<()> {
                 .data_dir
                 .as_deref()
                 .expect("edge mode requires data-dir");
+            let edge_config_path = args
+                .edge_config
+                .clone()
+                .expect("edge mode requires edge-config");
             ServiceConfiguration::edge(
                 Path::new(data_dir),
-                args.cloud_url
-                    .clone()
-                    .expect("edge mode requires cloud-url"),
-                args.edge_name
-                    .clone()
-                    .expect("edge mode requires edge-name"),
-                args.edge_token.clone().unwrap_or_default(),
+                edge_config_path,
+                args.edge_token.clone(),
             )?
         }
     };
@@ -321,34 +320,33 @@ async fn main() -> Result<()> {
     // The broker_id IS the Raft node_id — a single stable identity.
     let broker_id = node_id;
 
-    // Edge mode: create the edge replicator
-    let edge_replicator = if args.mode == BrokerMode::Edge {
+    // Edge mode: create the EdgeService (owns replicator + MQTT gateway)
+    let edge_service = if args.mode == BrokerMode::Edge {
         let edge_config = service_config
             .edge_config
             .as_ref()
             .expect("edge_config required in edge mode");
 
-        let cloud_client = Arc::new(
-            EdgeCloudClient::new(
-                &edge_config.cloud_url,
-                &edge_config.edge_name,
-                &edge_config.token,
-            )
-            .await
-            .context("failed to create edge cloud client")?,
-        );
+        let edge_cfg = danube_edge::config::EdgeConfig::from_file(&edge_config.config_path)
+            .context("failed to load edge config")?;
 
-        let replicator_config = EdgeReplicatorConfig::default();
-
-        Some(Arc::new(EdgeReplicator::new(
-            cloud_client,
+        let edge_svc = EdgeService::new(
+            edge_cfg,
             storage_factory.clone(),
             Arc::new(metadata_store.clone()),
-            replicator_config,
-        )))
+            edge_config.token_override.clone(),
+        )
+        .await
+        .context("failed to create EdgeService")?;
+
+        Some(Arc::new(edge_svc))
     } else {
         None
     };
+
+    // Extract edge replicator for BrokerService (topic create/delete coordination)
+    let edge_replicator: Option<Arc<EdgeReplicator>> =
+        edge_service.as_ref().map(|es| es.replicator().clone());
 
     // the broker service, is responsible to reliable deliver the messages from producers to consumers.
     let broker_service = BrokerService::new(
@@ -357,7 +355,7 @@ async fn main() -> Result<()> {
         resources.clone(),
         storage_factory,
         service_config.auto_create_topics,
-        edge_replicator.clone(),
+        edge_replicator,
     );
 
     // Init metrics with or without prometheus exporter
@@ -431,7 +429,7 @@ async fn main() -> Result<()> {
         service_config,
         metadata_store,
         resources,
-        edge_replicator,
+        edge_service,
     );
 
     danube

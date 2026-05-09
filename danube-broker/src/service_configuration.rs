@@ -74,15 +74,18 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) edge_config: Option<EdgeConfig>,
 }
 
-/// Configuration for edge-to-cloud replication.
+/// Edge mode configuration (broker-side).
+///
+/// All edge settings (identity, replicator, MQTT) are loaded from the
+/// edge config file pointed to by `config_path`. The token can be
+/// overridden via `--edge-token` CLI arg.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct EdgeConfig {
-    /// Cloud cluster URL (e.g. "http://cloud-broker:6650")
-    pub(crate) cloud_url: String,
-    /// Unique name for this edge broker
-    pub(crate) edge_name: String,
-    /// Authentication token for cloud registration
-    pub(crate) token: String,
+    /// Path to the unified edge config file (e.g. "config/edge.yaml")
+    pub(crate) config_path: String,
+    /// Authentication token override (from --edge-token CLI arg)
+    #[serde(default)]
+    pub(crate) token_override: Option<String>,
 }
 
 /// Broker services configuration
@@ -183,14 +186,20 @@ impl ServiceConfiguration {
 
     /// Creates an edge configuration with sensible defaults.
     ///
-    /// Edge mode uses single-node Raft (like standalone), no LoadManager,
-    /// and includes the edge replication config for cloud connectivity.
+    /// Edge mode uses single-node Raft (like standalone), no LoadManager.
+    /// All edge-specific settings (identity, replicator, MQTT) are loaded
+    /// from the config file at runtime by `EdgeService`.
     pub(crate) fn edge(
         base_dir: &Path,
-        cloud_url: String,
-        edge_name: String,
-        token: String,
+        config_path: String,
+        token_override: Option<String>,
     ) -> Result<Self> {
+        // Read the edge config to extract edge_name for cluster naming
+        // and bootstrap namespaces.
+        let edge_cfg = danube_edge::config::EdgeConfig::from_file(&config_path)
+            .context("failed to load edge config for bootstrap")?;
+        let edge_name = edge_cfg.edge.edge_name.clone();
+
         let broker_addr: SocketAddr = "127.0.0.1:6650"
             .parse()
             .context("Failed to create edge broker_addr")?;
@@ -211,7 +220,7 @@ impl ServiceConfiguration {
                 data_dir: base_dir.join("raft").to_string_lossy().into_owned(),
                 seed_nodes: Vec::new(),
             },
-            bootstrap_namespaces: vec!["default".to_string(), edge_name.clone()],
+            bootstrap_namespaces: vec!["default".to_string(), edge_name],
             auto_create_topics: true,
             policies: Policies::new(),
             storage: StorageConfig::single_node(base_dir),
@@ -224,9 +233,8 @@ impl ServiceConfiguration {
             admin_tls: false,
             load_manager: None,
             edge_config: Some(EdgeConfig {
-                cloud_url,
-                edge_name,
-                token,
+                config_path,
+                token_override,
             }),
         })
     }

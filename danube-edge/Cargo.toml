@@ -11,19 +11,23 @@ edition = "2021"
 danube-core = { path = "../danube-core" }
 danube-client = { path = "../danube-client" }
 danube-persistent-storage = { path = "../danube-persistent-storage" }
+mqtt-frame = "0.1"
 
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { version = "0.7", features = ["codec"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 tracing = { workspace = true }
 anyhow = { workspace = true }
 metrics = { workspace = true }
+futures = { workspace = true }
 
 [lints]
 workspace = true

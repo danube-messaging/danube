@@ -9,15 +9,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use danube_core::metadata::MetadataStore;
 use danube_persistent_storage::StorageFactory;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::edge::checkpoint::CheckpointStore;
-use crate::edge::cluster_client::EdgeCloudClient;
-use crate::edge::topic_replicator::TopicReplicator;
+use crate::replicator::checkpoint::CheckpointStore;
+use crate::replicator::cluster_client::EdgeCloudClient;
+use crate::replicator::topic_replicator::TopicReplicator;
 
 /// Configuration for the edge replicator.
 pub struct EdgeReplicatorConfig {
@@ -57,15 +56,13 @@ impl std::fmt::Debug for EdgeReplicator {
 impl EdgeReplicator {
     /// Create a new edge replicator.
     ///
-    /// Checkpoint state is persisted in Raft via the `metadata_store`.
+    /// Checkpoint state is persisted in Raft via the provided `CheckpointStore`.
     pub fn new(
         cloud_client: Arc<EdgeCloudClient>,
         storage_factory: StorageFactory,
-        metadata_store: Arc<dyn MetadataStore>,
+        checkpoint: Arc<CheckpointStore>,
         config: EdgeReplicatorConfig,
     ) -> Self {
-        let checkpoint = Arc::new(CheckpointStore::new(metadata_store));
-
         Self {
             cloud_client,
             storage_factory,
