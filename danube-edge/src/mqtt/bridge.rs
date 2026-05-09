@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use danube_core::message::{MessageID, StreamMessage};
 
-use crate::mqtt::config::TopicMapping;
+use crate::config::TopicMapping;
 
 /// Compiled topic matcher built from the config at startup.
 ///
@@ -171,7 +171,7 @@ pub fn build_stream_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mqtt::config::TopicMapping;
+    use crate::config::TopicMapping;
 
     fn make_mapping(pattern: &str, topic: &str, attrs: Vec<(&str, &str)>) -> TopicMapping {
         TopicMapping {

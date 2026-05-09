@@ -26,14 +26,10 @@ pub(crate) struct Args {
     pub(crate) data_dir: Option<String>,
     pub(crate) seed_nodes: Option<String>,
     pub(crate) join: bool,
-    /// Edge mode: cloud cluster URL to replicate to
-    pub(crate) cloud_url: Option<String>,
-    /// Edge mode: unique name for this edge broker
-    pub(crate) edge_name: Option<String>,
-    /// Edge mode: authentication token for cloud registration
+    /// Edge mode: path to unified edge config file (required for edge mode)
+    pub(crate) edge_config: Option<String>,
+    /// Edge mode: authentication token (overrides config file, can come from env)
     pub(crate) edge_token: Option<String>,
-    /// Edge mode: path to MQTT gateway config file
-    pub(crate) mqtt_config: Option<String>,
 }
 
 impl Args {
@@ -52,10 +48,8 @@ impl Args {
         println!("  --join               Join an existing cluster (skip bootstrap, wait to be added via admin CLI)");
         println!();
         println!("Edge mode options:");
-        println!("  --cloud-url          Cloud cluster URL for edge replication (required for edge mode)");
-        println!("  --edge-name          Unique name for this edge broker (required for edge mode)");
-        println!("  --edge-token         Authentication token for cloud cluster (optional, needed when auth is enabled)");
-        println!("  --mqtt-config        Path to MQTT gateway config file (optional, enables MQTT ingestion)");
+        println!("  --edge-config        Path to edge config file (required for edge mode)");
+        println!("  --edge-token         Authentication token override (optional, can come from env)");
     }
 
     pub(crate) fn parse() -> Result<Self> {
@@ -85,10 +79,8 @@ impl Args {
         let mut data_dir = None;
         let mut seed_nodes = None;
         let mut join = false;
-        let mut cloud_url = None;
-        let mut edge_name = None;
+        let mut edge_config = None;
         let mut edge_token = None;
-        let mut mqtt_config = None;
 
         let mut args_iter = args.iter().skip(1);
         while let Some(arg) = args_iter.next() {
@@ -126,17 +118,11 @@ impl Args {
                 "--join" => {
                     join = true;
                 }
-                "--cloud-url" => {
-                    cloud_url = args_iter.next().map(|s| s.to_string());
-                }
-                "--edge-name" => {
-                    edge_name = args_iter.next().map(|s| s.to_string());
+                "--edge-config" => {
+                    edge_config = args_iter.next().map(|s| s.to_string());
                 }
                 "--edge-token" => {
                     edge_token = args_iter.next().map(|s| s.to_string());
-                }
-                "--mqtt-config" => {
-                    mqtt_config = args_iter.next().map(|s| s.to_string());
                 }
                 _ => return Err(anyhow::anyhow!("Unknown argument: {}", arg)),
             }
@@ -205,15 +191,10 @@ impl Args {
                 if data_dir.is_none() {
                     return Err(anyhow::anyhow!("--mode edge requires --data-dir"));
                 }
-                if cloud_url.is_none() {
-                    return Err(anyhow::anyhow!("--mode edge requires --cloud-url"));
+                if edge_config.is_none() {
+                    return Err(anyhow::anyhow!("--mode edge requires --edge-config"));
                 }
-                if edge_name.is_none() {
-                    return Err(anyhow::anyhow!("--mode edge requires --edge-name"));
-                }
-                // --edge-token is optional: only needed when the cloud cluster
-                // has auth enabled (auth.mode: tls or jwt). When auth.mode: none,
-                // the edge broker connects without a token.
+                // --edge-token is optional: overrides config file's edge.token
             }
         }
 
@@ -229,10 +210,8 @@ impl Args {
             data_dir,
             seed_nodes,
             join,
-            cloud_url,
-            edge_name,
+            edge_config,
             edge_token,
-            mqtt_config,
         })
     }
 }
@@ -289,10 +268,8 @@ mod tests {
             "edge",
             "--data-dir",
             "/tmp/danube-edge",
-            "--cloud-url",
-            "http://cloud:6650",
-            "--edge-name",
-            "edge1",
+            "--edge-config",
+            "config/edge.yaml",
             "--edge-token",
             "secret-token",
         ])
@@ -300,8 +277,7 @@ mod tests {
 
         assert_eq!(args.mode, BrokerMode::Edge);
         assert_eq!(args.data_dir.as_deref(), Some("/tmp/danube-edge"));
-        assert_eq!(args.cloud_url.as_deref(), Some("http://cloud:6650"));
-        assert_eq!(args.edge_name.as_deref(), Some("edge1"));
+        assert_eq!(args.edge_config.as_deref(), Some("config/edge.yaml"));
         assert_eq!(args.edge_token.as_deref(), Some("secret-token"));
     }
 
@@ -313,10 +289,8 @@ mod tests {
             "edge",
             "--data-dir",
             "/tmp/danube-edge",
-            "--cloud-url",
-            "http://cloud:6650",
-            "--edge-name",
-            "edge1",
+            "--edge-config",
+            "config/edge.yaml",
         ])
         .expect("edge without token should succeed");
 
@@ -325,35 +299,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_edge_without_cloud_url() {
+    fn rejects_edge_without_edge_config() {
         let err = Args::parse_from([
             "danube-broker",
             "--mode",
             "edge",
             "--data-dir",
             "/tmp/danube-edge",
-            "--edge-name",
-            "edge1",
         ])
-        .expect_err("edge without cloud-url should fail");
+        .expect_err("edge without edge-config should fail");
 
-        assert!(err.to_string().contains("requires --cloud-url"));
-    }
-
-    #[test]
-    fn rejects_edge_without_edge_name() {
-        let err = Args::parse_from([
-            "danube-broker",
-            "--mode",
-            "edge",
-            "--data-dir",
-            "/tmp/danube-edge",
-            "--cloud-url",
-            "http://cloud:6650",
-        ])
-        .expect_err("edge without edge-name should fail");
-
-        assert!(err.to_string().contains("requires --edge-name"));
+        assert!(err.to_string().contains("requires --edge-config"));
     }
 
     #[test]

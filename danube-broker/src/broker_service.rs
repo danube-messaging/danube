@@ -3,7 +3,7 @@ use crate::broker_metrics::CLIENT_REDIRECTS_TOTAL;
 use crate::danube_service::metrics_collector::MetricsCollector;
 use anyhow::{anyhow, Result};
 use danube_core::message::StreamMessage;
-use danube_edge::edge::replicator::EdgeReplicator;
+use danube_edge::replicator::replicator::EdgeReplicator;
 use danube_persistent_storage::StorageFactory;
 use metrics::counter;
 use std::sync::Arc;

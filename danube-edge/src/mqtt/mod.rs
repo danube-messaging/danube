@@ -19,7 +19,6 @@
 //! ```
 
 pub mod bridge;
-pub mod config;
 pub mod ingester;
 pub mod server;
 pub mod session;

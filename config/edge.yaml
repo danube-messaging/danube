@@ -1,7 +1,23 @@
-# Edge MQTT Gateway Configuration
+# Danube Edge Configuration
 #
-# Defines how MQTT devices connect to the Danube Edge broker and how
-# MQTT topics are mapped to Danube topics for efficient WAL ingestion.
+# Unified configuration for the edge broker covering:
+# - Edge identity and cluster connectivity
+# - WAL-to-cluster replication batching
+# - MQTT gateway (listener, topic mappings, ingestion batching)
+
+edge:
+  # Unique name for this edge broker
+  edge_name: "edge1"
+  # Cluster broker URL for replication
+  cluster_url: "http://cluster-broker:6650"
+  # Authentication token (can be overridden via --edge-token CLI arg)
+  token: ""
+
+replicator:
+  # Number of messages per batch before sending to cluster
+  batch_size: 100
+  # Maximum time (ms) to wait before sending a partial batch
+  batch_timeout_ms: 1000
 
 mqtt:
   # TCP listener address for MQTT connections
@@ -14,7 +30,7 @@ mqtt:
   #   #  — multi-level wildcard (matches remainder of path)
   #
   # `extract_attributes` maps wildcard captures ($1, $2, ...) to
-  # Danube StreamMessage attributes. These propagate to cloud consumers.
+  # Danube StreamMessage attributes. These propagate to cluster consumers.
   topic_mappings:
     - mqtt_pattern: "device/+/telemetry"
       danube_topic: "/default/telemetry"
@@ -32,8 +48,7 @@ mqtt:
       danube_topic: "/default/mqtt"
 
   # Ingestion batching configuration.
-  # Messages are buffered per-topic and flushed to the local WAL in bulk
-  # to maximize throughput and minimize I/O overhead.
+  # Messages are buffered per-topic and flushed to the local WAL in bulk.
   ingestion:
     # Flush when this many messages accumulate for a single topic
     batch_size: 100

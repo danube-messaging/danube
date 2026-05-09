@@ -20,8 +20,8 @@ use danube_persistent_storage::WalStorage;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
-use crate::edge::checkpoint::CheckpointStore;
-use crate::edge::cluster_client::EdgeCloudClient;
+use crate::replicator::checkpoint::CheckpointStore;
+use crate::replicator::cluster_client::EdgeCloudClient;
 
 /// How long to wait before retrying after all batch retries are exhausted.
 const RECOVERY_BACKOFF: Duration = Duration::from_secs(30);
