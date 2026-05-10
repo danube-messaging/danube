@@ -15,7 +15,10 @@ use tracing::{debug, info};
 use danube_core::metadata::{MetaOptions, MetadataStore};
 
 /// Raft key prefix for edge registry data.
-const EDGE_REGISTRY_PREFIX: &str = "/edge_registry";
+/// Path format: /edge_registry/edges/{edge_name}
+/// The 3-segment prefix (/edge_registry/edges) satisfies MetadataStore's
+/// path structure; the edge name is the key component.
+const EDGE_REGISTRY_PREFIX: &str = "/edge_registry/edges";
 
 /// Serializable per-edge state stored in Raft.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,15 +136,16 @@ impl<S: MetadataStore> EdgeRegistry<S> {
 
     /// List all registered edge names.
     pub(crate) async fn list_edge_names(&self) -> Result<Vec<String>> {
-        let children = self
+        let entries = self
             .store
-            .get_childrens(EDGE_REGISTRY_PREFIX)
+            .get_bulk(EDGE_REGISTRY_PREFIX)
             .await
             .unwrap_or_default();
 
-        let names: Vec<String> = children
+        let prefix_with_slash = format!("{}/", EDGE_REGISTRY_PREFIX);
+        let names: Vec<String> = entries
             .iter()
-            .filter_map(|key| key.strip_prefix(&format!("{}/", EDGE_REGISTRY_PREFIX)))
+            .filter_map(|kv| kv.key.strip_prefix(&prefix_with_slash))
             .map(|s| s.to_string())
             .collect();
 
@@ -155,4 +159,152 @@ pub(crate) fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata_storage::MetadataStorage;
+    use danube_core::metadata::MemoryStore;
+
+    async fn test_registry() -> EdgeRegistry<MetadataStorage> {
+        let mem = MemoryStore::new().await.expect("init memory store");
+        EdgeRegistry::new(MetadataStorage::InMemory(mem))
+    }
+
+    fn make_edge_state(topics: Vec<(&str, Option<&str>)>) -> EdgeState {
+        let mut topic_map = HashMap::new();
+        for (name, subject) in topics {
+            topic_map.insert(
+                name.to_string(),
+                EdgeTopicState {
+                    schema_subject: subject.map(|s| s.to_string()),
+                    schema_id: subject.map(|_| 1),
+                    schema_version: subject.map(|_| 1),
+                    schema_fingerprint: subject.map(|_| "fp".to_string()),
+                },
+            );
+        }
+        EdgeState {
+            config_version: 1,
+            registered_at: now_secs(),
+            last_heartbeat: now_secs(),
+            topics: topic_map,
+        }
+    }
+
+    #[tokio::test]
+    async fn store_and_load_roundtrip() {
+        let reg = test_registry().await;
+        let state = make_edge_state(vec![("/e1/data", Some("events")), ("/e1/raw", None)]);
+
+        reg.store_edge_state("edge1", &state).await.unwrap();
+        let loaded = reg.load_edge_state("edge1").await.unwrap().unwrap();
+
+        assert_eq!(loaded.config_version, 1);
+        assert_eq!(loaded.topics.len(), 2);
+        assert_eq!(
+            loaded.topics["/e1/data"].schema_subject,
+            Some("events".to_string())
+        );
+        assert_eq!(loaded.topics["/e1/raw"].schema_subject, None);
+    }
+
+    #[tokio::test]
+    async fn load_missing_returns_none() {
+        let reg = test_registry().await;
+        let result = reg.load_edge_state("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn bump_version_for_subject_targets_correct_edges() {
+        let reg = test_registry().await;
+
+        // edge1 uses "events" schema
+        let state1 = make_edge_state(vec![("/e1/data", Some("events"))]);
+        reg.store_edge_state("edge1", &state1).await.unwrap();
+
+        // edge2 uses "metrics" schema
+        let state2 = make_edge_state(vec![("/e2/metrics", Some("metrics"))]);
+        reg.store_edge_state("edge2", &state2).await.unwrap();
+
+        // edge3 uses "events" schema too
+        let state3 = make_edge_state(vec![("/e3/data", Some("events"))]);
+        reg.store_edge_state("edge3", &state3).await.unwrap();
+
+        // Bump for "events" — should only affect edge1 and edge3
+        let bumped = reg.bump_version_for_subject("events").await.unwrap();
+        assert_eq!(bumped.len(), 2);
+        assert!(bumped.contains(&"edge1".to_string()));
+        assert!(bumped.contains(&"edge3".to_string()));
+
+        // Verify versions
+        let e1 = reg.load_edge_state("edge1").await.unwrap().unwrap();
+        assert_eq!(e1.config_version, 2);
+
+        let e2 = reg.load_edge_state("edge2").await.unwrap().unwrap();
+        assert_eq!(e2.config_version, 1); // unchanged
+
+        let e3 = reg.load_edge_state("edge3").await.unwrap().unwrap();
+        assert_eq!(e3.config_version, 2);
+    }
+
+    #[tokio::test]
+    async fn bump_version_no_match_returns_empty() {
+        let reg = test_registry().await;
+        let state = make_edge_state(vec![("/e1/raw", None)]);
+        reg.store_edge_state("edge1", &state).await.unwrap();
+
+        let bumped = reg
+            .bump_version_for_subject("nonexistent-subject")
+            .await
+            .unwrap();
+        assert!(bumped.is_empty());
+
+        // Version unchanged
+        let loaded = reg.load_edge_state("edge1").await.unwrap().unwrap();
+        assert_eq!(loaded.config_version, 1);
+    }
+
+    #[tokio::test]
+    async fn touch_heartbeat_updates_timestamp() {
+        let reg = test_registry().await;
+        let mut state = make_edge_state(vec![]);
+        state.last_heartbeat = 1000; // old timestamp
+        reg.store_edge_state("edge1", &state).await.unwrap();
+
+        reg.touch_heartbeat("edge1").await.unwrap();
+
+        let loaded = reg.load_edge_state("edge1").await.unwrap().unwrap();
+        assert!(loaded.last_heartbeat > 1000); // updated to current time
+    }
+
+    #[tokio::test]
+    async fn touch_heartbeat_noop_for_missing_edge() {
+        let reg = test_registry().await;
+        // Should not panic
+        reg.touch_heartbeat("nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_edge_names_returns_all_registered() {
+        let reg = test_registry().await;
+        let state = make_edge_state(vec![]);
+
+        reg.store_edge_state("alpha", &state).await.unwrap();
+        reg.store_edge_state("beta", &state).await.unwrap();
+        reg.store_edge_state("gamma", &state).await.unwrap();
+
+        let mut names = reg.list_edge_names().await.unwrap();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[tokio::test]
+    async fn list_edge_names_empty_when_none_registered() {
+        let reg = test_registry().await;
+        let names = reg.list_edge_names().await.unwrap();
+        assert!(names.is_empty());
+    }
 }
