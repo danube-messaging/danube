@@ -10,7 +10,7 @@
 #   ./scripts/edge-e2e-local.sh --debug       # use debug build instead of release
 #
 # Prerequisites:
-#   - Ports 6650-6653, 7650-7653, 50051-50054 must be free
+#   - Ports 1883, 6650-6653, 7650-7653, 50051-50054 must be free
 #   - No other danube-broker instances running
 # =============================================================================
 set -euo pipefail
@@ -136,7 +136,19 @@ DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$ADMIN_BIN" namespaces create ed
 echo -e "${GREEN}✅ Namespace 'edge1' provisioned.${NC}"
 
 # =============================================================================
-# Step 5: Start edge broker
+# Step 5: Register schema on cluster
+# =============================================================================
+echo -e "${YELLOW}Registering 'telemetry-events' schema on cluster...${NC}"
+DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$ADMIN_BIN" schemas register \
+    --subject telemetry-events \
+    --schema-type json_schema \
+    --schema-definition '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
+    --description "Edge telemetry events schema" \
+    2>/dev/null || true
+echo -e "${GREEN}✅ Schema 'telemetry-events' registered.${NC}"
+
+# =============================================================================
+# Step 6: Start edge broker
 # =============================================================================
 echo -e "${YELLOW}Starting edge broker...${NC}"
 
@@ -146,10 +158,25 @@ edge:
   edge_name: "edge1"
   cluster_url: "http://127.0.0.1:6650"
   token: ""
+  heartbeat_interval_ms: 10000
 
 replicator:
   batch_size: 100
   batch_timeout_ms: 1000
+
+mqtt:
+  listener: "0.0.0.0:1883"
+  topic_mappings:
+    - mqtt_pattern: "device/+/telemetry"
+      danube_topic: "/edge1/telemetry"
+      schema_subject: "telemetry-events"
+      extract_attributes:
+        device_id: "\$1"
+    - mqtt_pattern: "#"
+      danube_topic: "/edge1/raw"
+  ingestion:
+    batch_size: 100
+    batch_timeout_ms: 500
 EOF
 
 RUST_LOG="$LOG_LEVEL" "$BIN" \
@@ -161,7 +188,7 @@ RUST_LOG="$LOG_LEVEL" "$BIN" \
     --edge-config "${TEMP_DIR}/edge.yaml" \
     > "${TEMP_DIR}/edge_broker.log" 2>&1 &
 
-echo "  Edge broker: client=6653 admin=50054 cluster=6650 (log: ${TEMP_DIR}/edge_broker.log)"
+echo "  Edge broker: client=6653 admin=50054 mqtt=1883 cluster=6650 (log: ${TEMP_DIR}/edge_broker.log)"
 
 for attempt in $(seq 1 15); do
     if nc -zv 127.0.0.1 6653 2>/dev/null; then
@@ -177,7 +204,7 @@ for attempt in $(seq 1 15); do
 done
 
 # =============================================================================
-# Step 6: Run tests
+# Step 7: Run tests
 # =============================================================================
 echo ""
 echo -e "${YELLOW}========================================${NC}"

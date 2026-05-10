@@ -77,7 +77,7 @@ async fn edge_allowed_namespace_produce() -> Result<()> {
 /// The edge cloud client authenticates to the cluster with a JWT scoped to /edge1.
 /// Attempting to create a topic on /edge2 should be denied by RBAC.
 ///
-/// This tests the cluster-side authorization of CreateEdgeTopic RPC.
+/// This tests the cluster-side authorization of RegisterEdge RPC.
 #[tokio::test]
 #[ignore = "requires edge replication e2e workflow"]
 async fn edge_denied_namespace_topic_creation() -> Result<()> {

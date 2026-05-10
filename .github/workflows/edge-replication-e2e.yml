@@ -6,7 +6,9 @@ on:
       - 'danube-edge/**'
       - 'danube-broker/src/danube_service.rs'
       - 'danube-broker/src/broker_service.rs'
+      - 'danube-broker/src/edge_service/**'
       - 'danube-core/proto/EdgeReplicator.proto'
+      - 'danube-schema/**'
       - '.github/workflows/edge-replication-e2e.yml'
       - 'config/edge.yaml'
   workflow_dispatch:
@@ -113,6 +115,25 @@ jobs:
           echo "✅ Namespace 'edge1' provisioned"
 
       # =====================================================================
+      # Provision schema on cluster for edge topic validation
+      # =====================================================================
+      - name: Register test schema on cluster
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+        run: |
+          ADMIN_BIN=./target/release/danube-admin
+
+          echo "Registering 'telemetry-events' schema on cluster..."
+          $ADMIN_BIN schemas register \
+            --subject telemetry-events \
+            --schema-type json_schema \
+            --schema-definition '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
+            --description "Edge telemetry events schema" \
+            || true
+
+          echo "✅ Schema 'telemetry-events' registered"
+
+      # =====================================================================
       # Start edge broker (standalone, mode=edge, connects to cluster)
       # =====================================================================
       - name: Start edge broker
@@ -127,10 +148,22 @@ jobs:
             edge_name: "edge1"
             cluster_url: "http://127.0.0.1:6650"
             token: ""
+            heartbeat_interval_ms: 10000
 
           replicator:
             batch_size: 100
             batch_timeout_ms: 1000
+
+          mqtt:
+            listener: "0.0.0.0:1883"
+            topic_mappings:
+              - mqtt_pattern: "device/+/telemetry"
+                danube_topic: "/edge1/telemetry"
+                schema_subject: "telemetry-events"
+                extract_attributes:
+                  device_id: "$1"
+              - mqtt_pattern: "#"
+                danube_topic: "/edge1/raw"
           EOF
 
           # Remove leading whitespace from heredoc

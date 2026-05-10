@@ -1,7 +1,7 @@
+use crate::edge_service::edge_registry::EdgeRegistry;
 use crate::resources::SecurityResources;
-use danube_schema::{SchemaRegistry, SchemaResources, ValidationPolicy};
-use crate::security::authz::{enforce_authorization, Permission, Resource};
 use crate::security::authn::get_security_context;
+use crate::security::authz::{enforce_authorization, Permission, Resource};
 use crate::topic_control::TopicManager;
 use crate::MetadataStorage;
 use anyhow::Result;
@@ -14,6 +14,7 @@ use danube_core::proto::danube_schema::{
     SchemaVersionInfo, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
     UpdateTopicValidationPolicyRequest, UpdateTopicValidationPolicyResponse,
 };
+use danube_schema::{SchemaRegistry, SchemaResources, ValidationPolicy};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
@@ -24,6 +25,8 @@ pub struct SchemaRegistryService {
     registry: Arc<SchemaRegistry>,
     topic_manager: TopicManager,
     security: SecurityResources,
+    /// Edge registry for bumping edge config_version on schema changes.
+    edge_registry: EdgeRegistry<MetadataStorage>,
 }
 
 impl SchemaRegistryService {
@@ -32,15 +35,15 @@ impl SchemaRegistryService {
         topic_manager: TopicManager,
         security: SecurityResources,
     ) -> Self {
-        let schema_resources = SchemaResources::new(
-            std::sync::Arc::new(metadata_storage) as std::sync::Arc<dyn danube_core::metadata::MetadataStore>,
-        );
+        let schema_resources = SchemaResources::new(std::sync::Arc::new(metadata_storage.clone())
+            as std::sync::Arc<dyn danube_core::metadata::MetadataStore>);
         let registry = Arc::new(SchemaRegistry::new(Arc::new(schema_resources)));
 
         Self {
             registry,
             topic_manager,
             security,
+            edge_registry: EdgeRegistry::new(metadata_storage),
         }
     }
 
@@ -64,7 +67,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(
             subject = %req.subject,
             schema_type = %req.schema_type,
@@ -97,6 +101,21 @@ impl SchemaRegistryTrait for SchemaRegistryService {
                     "schema registered"
                 );
 
+                // Post-hook: bump config_version for edges using this schema subject
+                if is_new_version {
+                    if let Err(e) = self
+                        .edge_registry
+                        .bump_version_for_subject(&req.subject)
+                        .await
+                    {
+                        warn!(
+                            subject = %req.subject,
+                            error = %e,
+                            "failed to bump edge versions after schema registration"
+                        );
+                    }
+                }
+
                 Ok(Response::new(RegisterSchemaResponse {
                     schema_id,
                     version,
@@ -125,7 +144,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::Cluster,
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(schema_id = %req.schema_id, version = ?req.version, "getting schema by ID");
 
         // Use reverse index to look up subject and fetch schema
@@ -181,7 +201,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(subject = %req.subject, "getting latest schema for subject");
 
         match self.registry.get_latest_schema(&req.subject).await {
@@ -233,7 +254,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(subject = %req.subject, "listing versions for subject");
 
         // Get metadata for schema_id
@@ -295,7 +317,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
 
         // Parse compatibility mode if provided
         let mode_override = req
@@ -344,7 +367,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(
             subject = %req.subject,
             version = %req.version,
@@ -356,13 +380,28 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             .delete_schema_version(&req.subject, req.version)
             .await
         {
-            Ok(_) => Ok(Response::new(DeleteSchemaVersionResponse {
-                success: true,
-                message: format!(
-                    "Deleted version {} for subject {}",
-                    req.version, req.subject
-                ),
-            })),
+            Ok(_) => {
+                // Post-hook: bump config_version for edges using this schema subject
+                if let Err(e) = self
+                    .edge_registry
+                    .bump_version_for_subject(&req.subject)
+                    .await
+                {
+                    warn!(
+                        subject = %req.subject,
+                        error = %e,
+                        "failed to bump edge versions after schema deletion"
+                    );
+                }
+
+                Ok(Response::new(DeleteSchemaVersionResponse {
+                    success: true,
+                    message: format!(
+                        "Deleted version {} for subject {}",
+                        req.version, req.subject
+                    ),
+                }))
+            }
             Err(e) => {
                 error!(subject = %req.subject, version = %req.version, error = %e, "failed to delete schema version");
                 Err(Status::internal(format!(
@@ -384,7 +423,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::SchemaSubject(req.subject.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
         info!(
             subject = %req.subject,
             mode = %req.compatibility_mode,
@@ -405,13 +445,28 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             .set_compatibility_mode(&req.subject, mode)
             .await
         {
-            Ok(_) => Ok(Response::new(SetCompatibilityModeResponse {
-                success: true,
-                message: format!(
-                    "Set compatibility mode to {} for subject {}",
-                    req.compatibility_mode, req.subject
-                ),
-            })),
+            Ok(_) => {
+                // Post-hook: bump config_version for edges using this schema subject
+                if let Err(e) = self
+                    .edge_registry
+                    .bump_version_for_subject(&req.subject)
+                    .await
+                {
+                    warn!(
+                        subject = %req.subject,
+                        error = %e,
+                        "failed to bump edge versions after compatibility mode change"
+                    );
+                }
+
+                Ok(Response::new(SetCompatibilityModeResponse {
+                    success: true,
+                    message: format!(
+                        "Set compatibility mode to {} for subject {}",
+                        req.compatibility_mode, req.subject
+                    ),
+                }))
+            }
             Err(e) => {
                 error!(subject = %req.subject, error = %e, "Failed to set compatibility mode");
                 Err(Status::internal(format!(
@@ -435,7 +490,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::Topic(req.topic_name.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
 
         // Parse validation policy
         let validation_policy = match req.validation_policy.to_lowercase().as_str() {
@@ -489,7 +545,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::Topic(req.topic_name.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
 
         // Parse validation policy
         let validation_policy = match req.validation_policy.to_lowercase().as_str() {
@@ -531,7 +588,8 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             &Resource::Topic(req.topic_name.clone()),
             Permission::ManageSchema,
             &self.security,
-        ).await?;
+        )
+        .await?;
 
         // Delegate to TopicManager
         let (schema_subject, validation_policy, enable_payload_validation, schema_id) = self

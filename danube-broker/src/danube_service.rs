@@ -165,7 +165,12 @@ impl DanubeService {
             ));
             let topic_cluster =
                 crate::topic_cluster::TopicCluster::new(self.broker.resources.clone());
-            Some(EdgeReplicatorServiceImpl::new(storage, topic_cluster))
+            Some(EdgeReplicatorServiceImpl::new(
+                storage,
+                topic_cluster,
+                self.meta_store.clone(),
+                self.broker.resources.schema.clone(),
+            ))
         } else {
             None
         };
