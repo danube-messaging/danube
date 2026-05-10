@@ -5,6 +5,7 @@ use danube_core::{
     storage::{PersistentStorage, StartPosition, TopicStream},
 };
 use danube_persistent_storage::WalStorage;
+use danube_schema::{SchemaResources, TopicSchemaContext};
 use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
@@ -24,9 +25,8 @@ use crate::{
     producer::Producer,
     rate_limiter::RateLimiter,
     replicator::Replicator,
-    resources::{SchemaResources, TopicResources},
+    resources::TopicResources,
     subscription::{Subscription, SubscriptionFailurePolicy, SubscriptionOptions},
-    topic_schema::TopicSchemaContext,
 };
 
 #[cfg(test)]
@@ -635,7 +635,7 @@ impl Topic {
     /// Configure schema validation settings (admin-only)
     pub(crate) async fn configure_schema_validation(
         &self,
-        validation_policy: crate::schema::ValidationPolicy,
+        validation_policy: danube_schema::ValidationPolicy,
         enable_payload_validation: bool,
     ) {
         self.schema_context
@@ -644,7 +644,7 @@ impl Topic {
     }
 
     /// Get validation policy
-    pub(crate) async fn get_validation_policy(&self) -> crate::schema::ValidationPolicy {
+    pub(crate) async fn get_validation_policy(&self) -> danube_schema::ValidationPolicy {
         self.schema_context.validation_policy().await
     }
 

@@ -1,4 +1,4 @@
-use crate::schema::metadata::AvroSchema;
+use crate::metadata::AvroSchema;
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
@@ -107,7 +107,6 @@ mod tests {
 
     #[test]
     fn test_fingerprint_consistency_for_deduplication() {
-        // Critical: Same schema must always produce same fingerprint for deduplication
         let fp1 = AvroHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
         let fp2 = AvroHandler::compute_fingerprint(VALID_AVRO_SCHEMA);
         assert_eq!(fp1, fp2);
@@ -115,7 +114,6 @@ mod tests {
 
     #[test]
     fn test_different_schemas_have_different_fingerprints() {
-        // Critical: Different schemas must have different fingerprints
         let schema1 =
             r#"{"type": "record", "name": "A", "fields": [{"name": "x", "type": "int"}]}"#;
         let schema2 =
@@ -128,7 +126,6 @@ mod tests {
 
     #[test]
     fn test_canonicalization_normalizes_whitespace() {
-        // Different formatting should produce same fingerprint after canonicalization
         let schema_pretty = r#"{
             "type": "record",
             "name": "User",
@@ -142,7 +139,6 @@ mod tests {
         let fp1 = AvroHandler::compute_fingerprint(schema_pretty);
         let fp2 = AvroHandler::compute_fingerprint(schema_compact);
 
-        // After canonicalization, fingerprints should match
         assert_eq!(fp1, fp2);
     }
 }

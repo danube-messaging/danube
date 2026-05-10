@@ -1,4 +1,4 @@
-use crate::schema::validator::PayloadValidator;
+use crate::validator::PayloadValidator;
 use anyhow::{anyhow, Result};
 
 /// Avro validator (validates against Avro schema)
@@ -68,10 +68,6 @@ mod tests {
         }"#;
 
         let validator = AvroValidator::new(schema.to_string()).unwrap();
-
-        // Valid Avro binary data for the User record
-        // This would need actual Avro-encoded data to test properly
-        // For now, just verify validator creation works
         assert_eq!(validator.schema_type(), "avro");
     }
 }

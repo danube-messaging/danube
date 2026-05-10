@@ -1,4 +1,4 @@
-use crate::schema::types::{CompatibilityMode, SchemaType};
+use crate::types::{CompatibilityMode, SchemaType};
 use serde::{Deserialize, Serialize};
 
 /// Schema definition wrapping different format-specific schemas

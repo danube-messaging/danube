@@ -5,11 +5,7 @@
 //! - Compatibility checking (protobuf_compatibility)
 //! - Payload validation (protobuf_validator)
 //!
-//! Protocol Buffers (protobuf) is Google's language-neutral, platform-neutral,
-//! extensible mechanism for serializing structured data.
-//!
-//! **Note**: This implementation is currently a stub. Full protobuf support is planned
-//! for future releases.
+//! **Note**: This implementation is currently a stub. Full protobuf support is planned.
 
 mod protobuf_compatibility;
 mod protobuf_handler;

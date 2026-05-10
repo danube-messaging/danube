@@ -1,16 +1,15 @@
 use crate::metadata_storage::MetadataStorage;
 use danube_raft::leadership::LeadershipHandle;
+use danube_schema::SchemaResources;
 
 mod cluster;
 mod namespace;
 mod security;
-mod schema;
 mod topic;
 
 pub(crate) use cluster::ClusterResources;
 pub(crate) use namespace::NamespaceResources;
 pub(crate) use security::SecurityResources;
-pub(crate) use schema::SchemaResources;
 pub(crate) use topic::{TopicResources, TopicSchemaConfig};
 
 pub(crate) static BASE_CLUSTER_PATH: &str = "/cluster";
@@ -18,7 +17,6 @@ pub(crate) static BASE_REGISTER_PATH: &str = "/cluster/register";
 pub(crate) static BASE_BROKER_PATH: &str = "/cluster/brokers";
 pub(crate) static BASE_NAMESPACES_PATH: &str = "/namespaces";
 pub(crate) static BASE_TOPICS_PATH: &str = "/topics";
-pub(crate) static BASE_SCHEMAS_PATH: &str = "/schemas";
 pub(crate) static BASE_AUTH_ROLES_PATH: &str = "/auth/roles";
 pub(crate) static BASE_AUTH_BINDINGS_PATH: &str = "/auth/bindings";
 
@@ -69,13 +67,16 @@ impl Resources {
         leadership: Option<LeadershipHandle>,
         super_admins: Vec<String>,
     ) -> Self {
+        use danube_core::metadata::MetadataStore;
+        use std::sync::Arc;
         Resources {
             store: store.clone(),
             cluster: ClusterResources::new(store.clone(), leadership),
             namespace: NamespaceResources::new(store.clone()),
             topic: TopicResources::new(store.clone()),
             security: SecurityResources::new(store.clone(), super_admins),
-            schema: SchemaResources::new(store),
+            schema: SchemaResources::new(Arc::new(store) as Arc<dyn MetadataStore>),
         }
     }
 }
+

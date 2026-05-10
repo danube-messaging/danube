@@ -10,6 +10,7 @@ danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
 danube-persistent-storage = {path = "../danube-persistent-storage"}
 danube-raft = {path = "../danube-raft"}
+danube-schema = {path = "../danube-schema"}
 danube-edge = {path = "../danube-edge"}
 
 async-trait = { workspace = true }
@@ -37,11 +38,7 @@ flume = "0.11.1"
 num_cpus = "1.17.0"
 sysinfo = "0.37.2"
 
-# Schema registry dependencies
-apache-avro = "0.21"
-jsonschema = { workspace = true }
-sha2 = "0.10"
-hex = "0.4"
+# Schema registry (types, validation, compatibility) provided by danube-schema
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18"

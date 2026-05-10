@@ -10,7 +10,7 @@ use crate::broker_metrics::{TOPIC_ACTIVE_CONSUMERS, TOPIC_ACTIVE_PRODUCERS};
 use crate::danube_service::metrics_collector::MetricsCollector;
 use crate::replicator::Replicator;
 use crate::resources::BASE_TOPICS_PATH;
-use crate::schema::ValidationPolicy;
+use danube_schema::ValidationPolicy;
 use crate::utils::join_path;
 use crate::{
     broker_metrics::BROKER_TOPICS_OWNED,
