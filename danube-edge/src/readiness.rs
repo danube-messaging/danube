@@ -294,4 +294,146 @@ mod tests {
         let not_ready = readiness.not_ready_topics().await;
         assert_eq!(not_ready, vec!["/edge1/notready"]);
     }
+
+    // --- Heartbeat simulation tests ---
+    // These simulate what run_heartbeat_loop does when it receives
+    // change events from the cluster.
+
+    fn make_schema(subject: &str, version: u32, fingerprint: &str) -> CachedSchema {
+        CachedSchema {
+            subject: subject.into(),
+            schema_id: 42,
+            schema_version: version,
+            schema_type: "json_schema".into(),
+            fingerprint: fingerprint.into(),
+            schema_definition: b"{}".to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_schema_update_keeps_topic_ready() {
+        // Simulates: admin updates schema → heartbeat detects → edge updates cache
+        let readiness = TopicReadiness::new();
+        readiness.track_topic("/edge1/telemetry").await;
+        readiness.mark_local_provisioned("/edge1/telemetry").await;
+        readiness
+            .mark_cluster_registered("/edge1/telemetry")
+            .await;
+        readiness
+            .mark_schema_resolved(
+                "/edge1/telemetry",
+                Some(make_schema("events", 1, "fp-v1")),
+            )
+            .await;
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+
+        // Heartbeat: schema updated (new version, new fingerprint)
+        readiness
+            .update_schema(
+                "/edge1/telemetry",
+                make_schema("events", 2, "fp-v2"),
+            )
+            .await;
+
+        // Topic should still be ready with updated schema
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+        let info = readiness.get_schema_info("/edge1/telemetry").await.unwrap();
+        assert_eq!(info.schema_version, 2);
+        assert_eq!(info.fingerprint, "fp-v2");
+    }
+
+    #[tokio::test]
+    async fn fingerprint_tracks_schema_changes() {
+        // Simulates: heartbeat uses fingerprint to detect schema content changes
+        let readiness = TopicReadiness::new();
+        readiness.track_topic("/edge1/t").await;
+        readiness.mark_local_provisioned("/edge1/t").await;
+        readiness.mark_cluster_registered("/edge1/t").await;
+        readiness
+            .mark_schema_resolved(
+                "/edge1/t",
+                Some(make_schema("events", 1, "fingerprint-aaa")),
+            )
+            .await;
+
+        // Check fingerprint (used by heartbeat for change detection)
+        assert_eq!(
+            readiness.get_fingerprint("/edge1/t").await,
+            Some("fingerprint-aaa".to_string())
+        );
+
+        // Update schema → fingerprint changes
+        readiness
+            .update_schema("/edge1/t", make_schema("events", 2, "fingerprint-bbb"))
+            .await;
+        assert_eq!(
+            readiness.get_fingerprint("/edge1/t").await,
+            Some("fingerprint-bbb".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn full_bootstrap_to_heartbeat_lifecycle() {
+        // Simulates the complete edge lifecycle:
+        // bootstrap → heartbeat (no change) → schema update → schema remove → recovery
+        let readiness = TopicReadiness::new();
+
+        // Phase 1: Bootstrap — track 2 topics (1 with schema, 1 raw)
+        readiness.track_topic("/edge1/telemetry").await;
+        readiness.track_topic("/edge1/raw").await;
+
+        // Phase 2: Local provisioning
+        readiness.mark_local_provisioned("/edge1/telemetry").await;
+        readiness.mark_local_provisioned("/edge1/raw").await;
+
+        // Phase 3: Cluster registration
+        readiness
+            .mark_cluster_registered("/edge1/telemetry")
+            .await;
+        readiness.mark_cluster_registered("/edge1/raw").await;
+
+        // Phase 4: Schema resolution
+        readiness
+            .mark_schema_resolved(
+                "/edge1/telemetry",
+                Some(make_schema("events", 1, "fp1")),
+            )
+            .await;
+        readiness.mark_schema_resolved("/edge1/raw", None).await;
+
+        // All ready
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+        assert!(readiness.is_ready("/edge1/raw").await);
+        assert!(readiness.not_ready_topics().await.is_empty());
+
+        // Heartbeat 1: no changes (fast path) — state unchanged
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+        assert!(readiness.is_ready("/edge1/raw").await);
+
+        // Heartbeat 2: schema updated for telemetry
+        readiness
+            .update_schema(
+                "/edge1/telemetry",
+                make_schema("events", 2, "fp2"),
+            )
+            .await;
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+        assert!(readiness.is_ready("/edge1/raw").await);
+
+        // Heartbeat 3: schema removed for telemetry
+        readiness.mark_schema_unresolved("/edge1/telemetry").await;
+        assert!(!readiness.is_ready("/edge1/telemetry").await);
+        assert!(readiness.is_ready("/edge1/raw").await); // raw unaffected
+
+        // Heartbeat 4: schema re-added
+        readiness
+            .mark_schema_resolved(
+                "/edge1/telemetry",
+                Some(make_schema("events", 3, "fp3")),
+            )
+            .await;
+        assert!(readiness.is_ready("/edge1/telemetry").await);
+        assert!(readiness.is_ready("/edge1/raw").await);
+        assert!(readiness.not_ready_topics().await.is_empty());
+    }
 }

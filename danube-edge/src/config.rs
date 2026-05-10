@@ -211,6 +211,23 @@ impl EdgeConfig {
             None => Vec::new(),
         }
     }
+
+    /// Validate that all MQTT topic mappings are under the edge's namespace.
+    ///
+    /// Returns a list of topics that violate the `/{edge_name}/` prefix constraint.
+    /// An empty list means all topics are valid.
+    pub fn validate_namespaces(&self) -> Vec<String> {
+        let prefix = format!("/{}/", self.edge.edge_name);
+        match &self.mqtt {
+            Some(mqtt) => mqtt
+                .topic_mappings
+                .iter()
+                .filter(|m| !m.danube_topic.starts_with(&prefix))
+                .map(|m| m.danube_topic.clone())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -401,5 +418,73 @@ mqtt:
             mqtt.topic_mappings[0].schema_subject,
             Some("telemetry-events".to_string())
         );
+    }
+
+    // --- Namespace validation tests ---
+
+    #[test]
+    fn validate_namespaces_all_valid() {
+        let yaml = r##"
+edge:
+  edge_name: "edge1"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "a/+"
+      danube_topic: "/edge1/data"
+    - mqtt_pattern: "#"
+      danube_topic: "/edge1/raw"
+"##;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        assert!(
+            config.validate_namespaces().is_empty(),
+            "all topics under /edge1/ should be valid"
+        );
+    }
+
+    #[test]
+    fn validate_namespaces_rejects_wrong_namespace() {
+        let yaml = r##"
+edge:
+  edge_name: "edge1"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "a/+"
+      danube_topic: "/edge2/data"
+    - mqtt_pattern: "#"
+      danube_topic: "/default/sneaky"
+"##;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        let violations = config.validate_namespaces();
+        assert_eq!(violations.len(), 2);
+        assert!(violations.contains(&"/edge2/data".to_string()));
+        assert!(violations.contains(&"/default/sneaky".to_string()));
+    }
+
+    #[test]
+    fn validate_namespaces_mixed_valid_and_invalid() {
+        let yaml = r##"
+edge:
+  edge_name: "factory-01"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "sensors/#"
+      danube_topic: "/factory-01/telemetry"
+    - mqtt_pattern: "alerts/#"
+      danube_topic: "/other-edge/alerts"
+    - mqtt_pattern: "#"
+      danube_topic: "/factory-01/raw"
+"##;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        let violations = config.validate_namespaces();
+        assert_eq!(violations, vec!["/other-edge/alerts"]);
+    }
+
+    #[test]
+    fn validate_namespaces_no_mqtt_section() {
+        let config = EdgeConfig::from_str(MINIMAL_CONFIG).unwrap();
+        assert!(config.validate_namespaces().is_empty());
     }
 }
