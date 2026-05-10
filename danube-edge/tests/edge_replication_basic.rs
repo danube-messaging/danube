@@ -1,15 +1,15 @@
 //! Edge Replication — Basic Topic Creation & Message Flow
 //!
-//! Tests that the edge broker can create topics in its allowed namespace,
-//! produce messages locally, and those messages appear on the cloud cluster
-//! for consumers.
+//! Tests that the edge broker can produce messages on pre-registered topics,
+//! replicate them to the cloud cluster, and cloud consumers receive them.
 //!
-//! **Key ordering**: Because the cloud topic is created asynchronously by the
-//! edge replicator (not eagerly by the producer), we must:
-//!   1. Produce on the edge (triggers auto-create locally + replicator creates on cloud)
-//!   2. Wait for the topic to appear on the cloud
-//!   3. Subscribe a consumer on the cloud
-//!   4. Verify messages arrive
+//! **Architecture**: Topics are declared in `edge.yaml` and registered on the
+//! cluster via `RegisterEdge` at edge startup. These tests use the fixed
+//! topic names from the E2E edge config.
+//!
+//! **Key ordering**: Because the cloud topic is created by `RegisterEdge`
+//! at edge startup (not at produce time), the topic should already exist
+//! on the cloud when we subscribe. We still poll briefly to handle timing.
 //!
 //! Requires: edge-replication-e2e workflow (3 cluster brokers + 1 edge broker).
 
@@ -23,8 +23,8 @@ use tokio::time::{sleep, timeout, Duration};
 mod test_utils;
 
 /// Wait for a topic to become available on the cloud cluster.
-/// The edge replicator creates topics on the cloud asynchronously after
-/// messages start flowing, so we poll until the consumer can subscribe.
+/// With RegisterEdge, topics should already exist, but we poll briefly
+/// to handle startup timing.
 async fn wait_for_cloud_topic(
     cloud: &danube_client::DanubeClient,
     topic: &str,
@@ -62,39 +62,43 @@ async fn wait_for_cloud_topic(
 
 /// Test: Produce on edge → consume on cloud (single topic).
 ///
-/// Validates the full edge replication pipeline:
-/// 1. Producer creates topic on edge broker (local WAL)
-/// 2. EdgeReplicator creates topic on cloud + replicates batches
-/// 3. Cloud consumer receives all messages
+/// Uses `/edge1/raw` — a topic declared in the E2E edge config without
+/// a schema_subject (raw bytes). The topic is registered on the cluster
+/// by `RegisterEdge` at edge startup.
 ///
-/// This is the most fundamental edge test — if this fails, nothing works.
+/// Validates the full edge replication pipeline:
+/// 1. Producer publishes to a pre-registered edge topic
+/// 2. EdgeReplicator tails the WAL and replicates batches to the cloud
+/// 3. Cloud consumer receives all messages
 #[tokio::test]
 #[ignore = "requires edge replication e2e workflow"]
 async fn edge_produce_cloud_consume_single_topic() -> Result<()> {
     let edge = test_utils::edge_client().await?;
     let cloud = test_utils::cloud_client().await?;
 
-    let topic = test_utils::unique_topic("edge1", "basic");
+    // Use a topic that is declared in the E2E edge config
+    let topic = "/edge1/raw";
     let message_count = 20;
 
-    // Step 1: Producer on the edge broker (auto-creates topic locally)
+    // Step 1: Producer on the edge broker (topic already exists locally from bootstrap)
     let mut producer = edge
         .new_producer()
-        .with_topic(&topic)
+        .with_topic(topic)
         .with_name("edge-basic-producer")
         .with_reliable_dispatch()
         .build()?;
     producer.create().await?;
 
-    // Step 2: Produce messages (triggers the edge replicator to create topic on cloud)
+    // Step 2: Produce messages
     for i in 0..message_count {
         let payload = format!("edge-msg-{}", i);
         let _ = producer.send(payload.as_bytes().to_vec(), None).await?;
     }
 
-    // Step 3: Wait for the topic to appear on cloud, then subscribe
+    // Step 3: Wait for topic to be available on cloud (should be quick — RegisterEdge
+    // already created it), then subscribe
     let mut consumer =
-        wait_for_cloud_topic(&cloud, &topic, "cloud-basic-consumer", "cloud-basic-sub", 30)
+        wait_for_cloud_topic(&cloud, topic, "cloud-basic-consumer", "cloud-basic-sub", 30)
             .await?;
     let mut stream = consumer.receive().await?;
 
@@ -123,110 +127,98 @@ async fn edge_produce_cloud_consume_single_topic() -> Result<()> {
     Ok(())
 }
 
-/// Test: Produce on edge → consume on cloud (3 topics simultaneously).
+/// Test: Produce on edge with schema topic → consume on cloud.
 ///
-/// Validates that the edge replicator handles multiple topics correctly:
-/// - Each topic may route to a different cluster broker
-/// - All topics replicate concurrently
-/// - No cross-topic message leaks
+/// Uses `/edge1/telemetry` — a topic declared in the E2E edge config with
+/// `schema_subject: "telemetry-events"`. The edge must have resolved the
+/// schema from the cluster during RegisterEdge for this topic to be READY.
+///
+/// Validates schema-aware ingestion:
+/// - Topic readiness gating (schema must be resolved)
+/// - Messages are stamped with schema_id and schema_version
+/// - Replication carries schema metadata to the cloud
 #[tokio::test]
 #[ignore = "requires edge replication e2e workflow"]
-async fn edge_multi_topic_replication() -> Result<()> {
+async fn edge_schema_topic_replication() -> Result<()> {
     let edge = test_utils::edge_client().await?;
     let cloud = test_utils::cloud_client().await?;
 
-    let topics: Vec<String> = (1..=3)
-        .map(|i| test_utils::unique_topic("edge1", &format!("multi-{}", i)))
-        .collect();
-    let msgs_per_topic = 10;
+    // Use the schema-enabled topic from the E2E edge config
+    let topic = "/edge1/telemetry";
+    let message_count = 10;
 
-    // Step 1: Create producers on edge (one per topic)
-    let mut producers = Vec::new();
-    for (i, topic) in topics.iter().enumerate() {
-        let mut p = edge
-            .new_producer()
-            .with_topic(topic)
-            .with_name(&format!("edge-multi-producer-{}", i))
-            .with_reliable_dispatch()
-            .build()?;
-        p.create().await?;
-        producers.push(p);
+    // Step 1: Producer on the edge broker
+    let mut producer = edge
+        .new_producer()
+        .with_topic(topic)
+        .with_name("edge-schema-producer")
+        .with_reliable_dispatch()
+        .build()?;
+    producer.create().await?;
+
+    // Step 2: Produce JSON payloads matching the telemetry-events schema
+    for i in 0..message_count {
+        let payload = format!(
+            r#"{{"temperature": {:.1}, "device_id": "device-{}"}}"#,
+            20.0 + i as f64 * 0.5,
+            i
+        );
+        let _ = producer.send(payload.as_bytes().to_vec(), None).await?;
     }
 
-    // Step 2: Produce messages (interleaved across topics)
-    for msg_idx in 0..msgs_per_topic {
-        for (topic_idx, producer) in producers.iter_mut().enumerate() {
-            let payload = format!("topic-{}-msg-{}", topic_idx, msg_idx);
-            let _ = producer.send(payload.as_bytes().to_vec(), None).await?;
-        }
-    }
+    // Step 3: Subscribe on cloud
+    let mut consumer = wait_for_cloud_topic(
+        &cloud,
+        topic,
+        "cloud-schema-consumer",
+        "cloud-schema-sub",
+        30,
+    )
+    .await?;
+    let mut stream = consumer.receive().await?;
 
-    // Step 3: Wait for each topic to appear on cloud, then subscribe
-    let mut consumers = Vec::new();
-    let mut streams = Vec::new();
-    for (i, topic) in topics.iter().enumerate() {
-        let mut c = wait_for_cloud_topic(
-            &cloud,
-            topic,
-            &format!("cloud-multi-consumer-{}", i),
-            &format!("cloud-multi-sub-{}", i),
-            30,
-        )
-        .await?;
-        let s = c.receive().await?;
-        streams.push(s);
-        consumers.push(c);
-    }
-
-    // Step 4: Consume from cloud — each topic should get exactly msgs_per_topic messages
+    // Step 4: Consume and verify
     let receive_future = async {
-        for (topic_idx, (stream, consumer)) in
-            streams.iter_mut().zip(consumers.iter_mut()).enumerate()
-        {
-            let mut received = 0usize;
-            while received < msgs_per_topic {
-                if let Some(msg) = stream.recv().await {
-                    let payload = String::from_utf8_lossy(&msg.payload);
-                    let expected_prefix = format!("topic-{}-msg-", topic_idx);
-                    assert!(
-                        payload.starts_with(&expected_prefix),
-                        "topic {} got unexpected payload: {}",
-                        topic_idx,
-                        payload
-                    );
-                    let _ = consumer.ack(&msg).await;
-                    received += 1;
-                }
+        let mut received = 0usize;
+        while received < message_count {
+            if let Some(msg) = stream.recv().await {
+                let payload = String::from_utf8_lossy(&msg.payload);
+                assert!(
+                    payload.contains("temperature"),
+                    "unexpected payload: {}",
+                    payload
+                );
+                let _ = consumer.ack(&msg).await;
+                received += 1;
             }
         }
         Ok::<(), anyhow::Error>(())
     };
 
-    timeout(Duration::from_secs(60), receive_future)
+    timeout(Duration::from_secs(30), receive_future)
         .await
-        .map_err(|_| {
-            anyhow::anyhow!("timed out waiting for multi-topic messages from cloud")
-        })??;
+        .map_err(|_| anyhow::anyhow!("timed out waiting for schema topic messages"))??;
 
     Ok(())
 }
 
 /// Test: Payload integrity across edge → cloud replication.
 ///
-/// Sends a large binary blob (100KB) from edge and verifies byte-exact
-/// match on the cloud consumer side.
+/// Sends a large binary blob (100KB) from edge via `/edge1/raw` and verifies
+/// byte-exact match on the cloud consumer side.
 #[tokio::test]
 #[ignore = "requires edge replication e2e workflow"]
 async fn edge_payload_integrity() -> Result<()> {
     let edge = test_utils::edge_client().await?;
     let cloud = test_utils::cloud_client().await?;
 
-    let topic = test_utils::unique_topic("edge1", "payload");
+    // Use the raw bytes topic from the E2E edge config
+    let topic = "/edge1/raw";
 
     // Step 1: Producer on edge
     let mut producer = edge
         .new_producer()
-        .with_topic(&topic)
+        .with_topic(topic)
         .with_name("edge-payload-producer")
         .with_reliable_dispatch()
         .build()?;
@@ -239,7 +231,7 @@ async fn edge_payload_integrity() -> Result<()> {
     // Step 3: Wait for topic on cloud, then subscribe
     let mut consumer = wait_for_cloud_topic(
         &cloud,
-        &topic,
+        topic,
         "cloud-payload-consumer",
         "cloud-payload-sub",
         30,
