@@ -18,6 +18,8 @@ use danube_persistent_storage::{StorageFactory, WalStorage};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use crate::readiness::TopicReadiness;
+
 /// Configuration for the ingester's batching behavior.
 #[derive(Debug, Clone)]
 pub struct MqttIngesterConfig {
@@ -53,6 +55,8 @@ pub struct MqttIngester {
     storage_factory: StorageFactory,
     config: MqttIngesterConfig,
     buffers: Arc<Mutex<HashMap<String, TopicBuffer>>>,
+    /// Shared readiness tracker. Messages for not-ready topics are rejected.
+    readiness: TopicReadiness,
 }
 
 impl MqttIngester {
@@ -60,11 +64,16 @@ impl MqttIngester {
     ///
     /// Call `provision_topic()` for each Danube topic from the config
     /// before accepting MQTT traffic, then spawn `run_flush_loop()`.
-    pub fn new(storage_factory: StorageFactory, config: MqttIngesterConfig) -> Self {
+    pub fn new(
+        storage_factory: StorageFactory,
+        config: MqttIngesterConfig,
+        readiness: TopicReadiness,
+    ) -> Self {
         Self {
             storage_factory,
             config,
             buffers: Arc::new(Mutex::new(HashMap::new())),
+            readiness,
         }
     }
 
@@ -91,12 +100,32 @@ impl MqttIngester {
 
     /// Enqueue a message for batched WAL ingestion.
     ///
+    /// **Readiness gate**: rejects messages if the topic is not fully ready
+    /// (local + cluster + schema). QoS 1 MQTT clients will retry later.
+    ///
+    /// **Schema stamping**: if a schema is configured for this topic, stamps
+    /// `schema_id` and `schema_version` on the message before buffering.
+    ///
     /// If the buffer for this topic reaches `batch_size`, it is flushed
     /// immediately (inline). Otherwise the background flush loop will
     /// pick it up on the next timeout tick.
     ///
-    /// Returns an error if the topic was not provisioned.
-    pub async fn ingest(&self, topic_name: &str, message: StreamMessage) -> Result<()> {
+    /// Returns an error if the topic was not provisioned or is not ready.
+    pub async fn ingest(&self, topic_name: &str, mut message: StreamMessage) -> Result<()> {
+        // Gate: reject if topic is not ready
+        if !self.readiness.is_ready(topic_name).await {
+            return Err(anyhow::anyhow!(
+                "topic '{}' is not ready for ingestion (waiting for cluster registration or schema resolution)",
+                topic_name
+            ));
+        }
+
+        // Stamp schema metadata if a schema is configured for this topic
+        if let Some(schema_info) = self.readiness.get_schema_info(topic_name).await {
+            message.schema_id = Some(schema_info.schema_id);
+            message.schema_version = Some(schema_info.schema_version);
+        }
+
         let mut buffers = self.buffers.lock().await;
 
         let buffer = buffers.get_mut(topic_name).ok_or_else(|| {

@@ -9,7 +9,7 @@ use metrics::counter;
 use std::sync::Arc;
 
 use tonic::Status;
-use tracing::{info, warn};
+use tracing::info;
 
 use danube_core::proto::{DispatchStrategy as ProtoDispatchStrategy, SchemaReference};
 
@@ -361,32 +361,13 @@ impl BrokerService {
                 Ok(TopicCreated::Pending)
             }
             BrokerMode::Edge => {
-                // Edge mode: coordinate with cloud cluster BEFORE accepting the producer.
+                // Edge mode: topics are managed exclusively via RegisterEdge at bootstrap.
+                // Runtime topic creation is not supported — topics must be declared
+                // in edge.yaml and registered with the cluster at startup.
                 //
-                // Flow: CreateEdgeTopic on cloud → local Raft → local load → start WAL tailing.
-                // If cloud is unreachable, the producer gets an error (fail-fast).
-                let edge_rep = self.edge_replicator.as_ref().ok_or_else(|| {
-                    Status::unavailable("edge replicator not initialized yet, retry shortly")
-                })?;
-
-                // 1. Create topic on cloud cluster (synchronous — blocks until confirmed)
-                edge_rep
-                    .cloud_client()
-                    .create_topic(topic_name)
-                    .await
-                    .map_err(|e| {
-                        warn!(
-                            topic = %topic_name,
-                            error = %e,
-                            "cloud rejected edge topic creation"
-                        );
-                        Status::unavailable(format!(
-                            "failed to create topic on cloud cluster: {}",
-                            e
-                        ))
-                    })?;
-
-                // 2. Create topic locally (single-node Raft + load into registry)
+                // If a producer tries to create a topic that wasn't in the config,
+                // we create it locally (for the WAL) but it won't be replicated
+                // to the cluster until the edge restarts with the topic in its config.
                 self.topic_cluster
                     .create_on_cluster_standalone(topic_name, dispatch_strategy, schema_ref, None)
                     .await?;
@@ -398,12 +379,10 @@ impl BrokerService {
                         Status::internal(format!("failed to load topic locally: {}", e))
                     })?;
 
-                // 3. Start WAL tailing → cloud replication for this topic
-                edge_rep.add_topic(topic_name).await;
-
                 info!(
                     topic = %topic_name,
-                    "edge topic created: cloud confirmed, local loaded, replication started"
+                    "edge topic created locally (note: not registered with cluster — \
+                     add to edge.yaml and restart to enable replication)"
                 );
 
                 Ok(TopicCreated::Loaded)
@@ -426,24 +405,14 @@ impl BrokerService {
             }
             BrokerMode::Cluster => self.topic_cluster.post_delete_topic(topic_name).await,
             BrokerMode::Edge => {
-                // Edge mode: coordinate with cloud cluster, then clean up locally.
-                //
-                // Flow: stop WAL tailing → DeleteEdgeTopic on cloud → local cleanup.
+                // Edge mode: local cleanup only. The topic will be removed from
+                // the cluster on next RegisterEdge if removed from edge.yaml.
                 if let Some(edge_rep) = self.edge_replicator.as_ref() {
-                    // 1. Stop WAL tailing for this topic
+                    // Stop WAL tailing for this topic
                     edge_rep.remove_topic(topic_name).await;
-
-                    // 2. Delete topic on cloud cluster
-                    if let Err(e) = edge_rep.cloud_client().delete_topic(topic_name).await {
-                        warn!(
-                            topic = %topic_name,
-                            error = %e,
-                            "failed to delete topic on cloud cluster (continuing local cleanup)"
-                        );
-                    }
                 }
 
-                // 3. Clean up locally (registry + Raft metadata)
+                // Clean up locally (registry + Raft metadata)
                 self.topic_registry.remove_topic(topic_name);
                 self.topic_cluster.delete_topic_metadata(topic_name).await
             }

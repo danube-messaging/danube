@@ -177,6 +177,7 @@ mod tests {
         TopicMapping {
             mqtt_pattern: pattern.to_string(),
             danube_topic: topic.to_string(),
+            schema_subject: None,
             extract_attributes: attrs
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

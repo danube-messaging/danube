@@ -36,6 +36,21 @@ pub struct EdgeIdentity {
     /// Authentication token (can be overridden via `--edge-token` CLI arg).
     #[serde(default)]
     pub token: String,
+
+    /// How often (ms) the edge sends a heartbeat to the cluster.
+    /// Default: 30000 (30 seconds).
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
+}
+
+impl EdgeIdentity {
+    pub fn heartbeat_interval(&self) -> Duration {
+        Duration::from_millis(self.heartbeat_interval_ms)
+    }
+}
+
+fn default_heartbeat_interval_ms() -> u64 {
+    30_000
 }
 
 /// WAL-to-cloud replication batching.
@@ -94,8 +109,15 @@ pub struct TopicMapping {
     /// MQTT topic pattern with `+` (single-level) and `#` (multi-level) wildcards.
     pub mqtt_pattern: String,
 
-    /// Target Danube topic name (e.g. `/default/telemetry`).
+    /// Target Danube topic name (e.g. `/edge1/telemetry`).
     pub danube_topic: String,
+
+    /// Optional schema subject to resolve from the cluster registry.
+    /// If set, the edge validates MQTT payloads against this schema
+    /// and stamps `schema_id`/`schema_version` on messages.
+    /// If absent, messages pass through as raw bytes.
+    #[serde(default)]
+    pub schema_subject: Option<String>,
 
     /// Optional attribute extraction from wildcard captures.
     /// Keys are attribute names, values are `$1`, `$2`, etc.
@@ -173,6 +195,22 @@ impl EdgeConfig {
             None => Vec::new(),
         }
     }
+
+    /// Build the list of (topic_name, schema_subject) declarations for RegisterEdge.
+    /// Deduplicated by topic name. Used at bootstrap.
+    pub fn topic_declarations(&self) -> Vec<(String, Option<String>)> {
+        match &self.mqtt {
+            Some(mqtt) => {
+                let mut seen = std::collections::HashSet::new();
+                mqtt.topic_mappings
+                    .iter()
+                    .filter(|m| seen.insert(m.danube_topic.clone()))
+                    .map(|m| (m.danube_topic.clone(), m.schema_subject.clone()))
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +222,7 @@ edge:
   edge_name: "test-edge"
   cluster_url: "http://cluster:6650"
   token: "secret"
+  heartbeat_interval_ms: 15000
 
 replicator:
   batch_size: 50
@@ -193,11 +232,12 @@ mqtt:
   listener: "0.0.0.0:1884"
   topic_mappings:
     - mqtt_pattern: "device/+/telemetry"
-      danube_topic: "/default/telemetry"
+      danube_topic: "/test-edge/telemetry"
+      schema_subject: "telemetry-events"
       extract_attributes:
         device_id: "$1"
     - mqtt_pattern: "#"
-      danube_topic: "/default/mqtt"
+      danube_topic: "/test-edge/mqtt"
   ingestion:
     batch_size: 200
     batch_timeout_ms: 750
@@ -216,20 +256,34 @@ edge:
         assert_eq!(config.edge.edge_name, "test-edge");
         assert_eq!(config.edge.cluster_url, "http://cluster:6650");
         assert_eq!(config.edge.token, "secret");
+        assert_eq!(config.edge.heartbeat_interval_ms, 15000);
+        assert_eq!(
+            config.edge.heartbeat_interval(),
+            Duration::from_millis(15000)
+        );
 
         assert_eq!(config.replicator.batch_size, 50);
         assert_eq!(config.replicator.batch_timeout_ms, 2000);
-        assert_eq!(config.replicator.batch_timeout(), Duration::from_millis(2000));
+        assert_eq!(
+            config.replicator.batch_timeout(),
+            Duration::from_millis(2000)
+        );
 
         let mqtt = config.mqtt.as_ref().expect("mqtt section present");
         assert_eq!(mqtt.listener, "0.0.0.0:1884");
         assert_eq!(mqtt.topic_mappings.len(), 2);
         assert_eq!(mqtt.topic_mappings[0].mqtt_pattern, "device/+/telemetry");
-        assert_eq!(mqtt.topic_mappings[0].danube_topic, "/default/telemetry");
+        assert_eq!(mqtt.topic_mappings[0].danube_topic, "/test-edge/telemetry");
+        assert_eq!(
+            mqtt.topic_mappings[0].schema_subject,
+            Some("telemetry-events".to_string())
+        );
         assert_eq!(
             mqtt.topic_mappings[0].extract_attributes.get("device_id"),
             Some(&"$1".to_string())
         );
+        // Catch-all has no schema
+        assert_eq!(mqtt.topic_mappings[1].schema_subject, None);
         assert_eq!(mqtt.ingestion.batch_size, 200);
         assert_eq!(mqtt.ingestion.batch_timeout_ms, 750);
     }
@@ -241,6 +295,7 @@ edge:
         assert_eq!(config.edge.edge_name, "edge-minimal");
         assert_eq!(config.edge.cluster_url, "http://localhost:6650");
         assert_eq!(config.edge.token, ""); // default empty
+        assert_eq!(config.edge.heartbeat_interval_ms, 30_000); // default
 
         // Replicator uses defaults
         assert_eq!(config.replicator.batch_size, 100);
@@ -259,16 +314,16 @@ edge:
 mqtt:
   topic_mappings:
     - mqtt_pattern: "a/+"
-      danube_topic: "/default/data"
+      danube_topic: "/e1/data"
     - mqtt_pattern: "b/+"
-      danube_topic: "/default/data"
+      danube_topic: "/e1/data"
     - mqtt_pattern: "c/+"
-      danube_topic: "/default/other"
+      danube_topic: "/e1/other"
 "#;
         let config = EdgeConfig::from_str(yaml).unwrap();
         let topics = config.mqtt_danube_topics();
 
-        assert_eq!(topics, vec!["/default/data", "/default/other"]);
+        assert_eq!(topics, vec!["/e1/data", "/e1/other"]);
     }
 
     #[test]
@@ -286,7 +341,7 @@ edge:
 mqtt:
   topic_mappings:
     - mqtt_pattern: "#"
-      danube_topic: "/default/all"
+      danube_topic: "/e1/all"
 "##;
         let config = EdgeConfig::from_str(yaml).unwrap();
         let mqtt = config.mqtt.unwrap();
@@ -294,6 +349,40 @@ mqtt:
         assert_eq!(mqtt.listener, "0.0.0.0:1883"); // default
         assert_eq!(mqtt.ingestion.batch_size, 100); // default
         assert_eq!(mqtt.ingestion.batch_timeout_ms, 500); // default
+    }
+
+    #[test]
+    fn topic_declarations_deduplicates_with_schema() {
+        let yaml = r##"
+edge:
+  edge_name: "e1"
+  cluster_url: "http://localhost:6650"
+mqtt:
+  topic_mappings:
+    - mqtt_pattern: "a/+"
+      danube_topic: "/e1/data"
+      schema_subject: "data-events"
+    - mqtt_pattern: "b/+"
+      danube_topic: "/e1/data"
+      schema_subject: "data-events"
+    - mqtt_pattern: "#"
+      danube_topic: "/e1/raw"
+"##;
+        let config = EdgeConfig::from_str(yaml).unwrap();
+        let decls = config.topic_declarations();
+
+        // Deduplicated: 2 unique topics
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].0, "/e1/data");
+        assert_eq!(decls[0].1, Some("data-events".to_string()));
+        assert_eq!(decls[1].0, "/e1/raw");
+        assert_eq!(decls[1].1, None);
+    }
+
+    #[test]
+    fn topic_declarations_empty_without_mqtt() {
+        let config = EdgeConfig::from_str(MINIMAL_CONFIG).unwrap();
+        assert!(config.topic_declarations().is_empty());
     }
 
     #[test]
@@ -306,6 +395,11 @@ mqtt:
         assert_eq!(config.edge.edge_name, "edge1");
         assert!(!config.edge.cluster_url.is_empty());
         assert!(config.mqtt.is_some());
+        // Verify schema_subject is parsed from the real config
+        let mqtt = config.mqtt.as_ref().unwrap();
+        assert_eq!(
+            mqtt.topic_mappings[0].schema_subject,
+            Some("telemetry-events".to_string())
+        );
     }
 }
-

@@ -1,17 +1,24 @@
 # Danube Edge Configuration
 #
 # Unified configuration for the edge broker covering:
-# - Edge identity and cluster connectivity
+# - Edge identity, cluster connectivity, and heartbeat
 # - WAL-to-cluster replication batching
 # - MQTT gateway (listener, topic mappings, ingestion batching)
+#
+# The edge is a constrained gateway for MQTT ingestion into the cloud.
+# Topics are defined here and registered with the cluster at startup via
+# RegisterEdge. The cluster maintains per-edge state in Raft.
 
 edge:
-  # Unique name for this edge broker
+  # Unique name for this edge broker.
+  # Topics must be under the /{edge_name}/ namespace.
   edge_name: "edge1"
   # Cluster broker URL for replication
   cluster_url: "http://cluster-broker:6650"
   # Authentication token (can be overridden via --edge-token CLI arg)
   token: ""
+  # How often (ms) the edge pings the cluster for changes (default: 30000)
+  heartbeat_interval_ms: 30000
 
 replicator:
   # Number of messages per batch before sending to cluster
@@ -31,21 +38,28 @@ mqtt:
   #
   # `extract_attributes` maps wildcard captures ($1, $2, ...) to
   # Danube StreamMessage attributes. These propagate to cluster consumers.
+  #
+  # `schema_subject` (optional) declares which schema from the cluster
+  # registry to use for payload validation. The admin registers schemas
+  # on the cluster, and the edge pulls them during bootstrap.
+  # If absent, messages pass through as raw bytes (no validation).
   topic_mappings:
     - mqtt_pattern: "device/+/telemetry"
-      danube_topic: "/default/telemetry"
+      danube_topic: "/edge1/telemetry"
+      schema_subject: "telemetry-events"
       extract_attributes:
         device_id: "$1"
 
     - mqtt_pattern: "sensors/+/+"
-      danube_topic: "/default/sensors"
+      danube_topic: "/edge1/sensors"
+      schema_subject: "sensor-readings"
       extract_attributes:
         sensor_type: "$1"
         measurement: "$2"
 
-    # Catch-all: any unmatched MQTT topic goes here
+    # Catch-all: any unmatched MQTT topic goes here (no schema, raw bytes)
     - mqtt_pattern: "#"
-      danube_topic: "/default/mqtt"
+      danube_topic: "/edge1/unrouted"
 
   # Ingestion batching configuration.
   # Messages are buffered per-topic and flushed to the local WAL in bulk.

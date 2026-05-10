@@ -123,6 +123,7 @@ impl EdgeReplicationStorage {
     }
 
     /// Remove cached WAL handle and dedup marker for a deleted topic.
+    #[allow(dead_code)]
     pub(crate) async fn delete_replicated_marker(&self, topic_name: &str) {
         // Remove cached WAL handle
         {

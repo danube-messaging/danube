@@ -4,57 +4,107 @@ package danube.edge;
 
 import "DanubeApi.proto";
 
-// Edge → Cluster replication service.
+// Edge ↔ Cluster coordination and replication service.
 // Hosted on cluster brokers, behind the standard auth interceptor.
+//
+// The edge is a constrained gateway for MQTT ingestion into the cloud.
+// Topics are defined by edge config (edge.yaml) and registered with the
+// cluster at startup. The cluster maintains per-edge state in Raft.
 service EdgeReplicatorService {
 
-  // Create a topic on the cluster for edge replication. Idempotent.
-  rpc CreateEdgeTopic(CreateEdgeTopicRequest) returns (CreateEdgeTopicResponse);
+  // Register (or re-register) an edge broker with the cluster.
+  // Called once at startup. Creates topics on the cluster, resolves schemas
+  // from the cluster registry, and stores per-edge state in Raft.
+  // Idempotent: re-registration diffs against previous state.
+  rpc RegisterEdge(RegisterEdgeRequest) returns (RegisterEdgeResponse);
 
-  // Delete an edge-replicated topic from the cluster. Idempotent.
-  rpc DeleteEdgeTopic(DeleteEdgeTopicRequest) returns (DeleteEdgeTopicResponse);
+  // Periodic heartbeat + change detection.
+  // Edge sends its config_version; cluster compares against Raft state.
+  // Fast path: versions match → no changes. Slow path: returns changelog.
+  rpc EdgeHeartbeat(EdgeHeartbeatRequest) returns (EdgeHeartbeatResponse);
 
   // Bidirectional stream: edge sends message batches, cluster acks offsets.
   // Uses batch_last_offset as idempotency key to prevent duplicate writes.
   rpc ReplicateData(stream ReplicateBatch) returns (stream ReplicateAck);
 }
 
-// ─── Topic Lifecycle ────────────────────────────────────────────────────────
+// ─── Edge Registration ──────────────────────────────────────────────────────
 
-message CreateEdgeTopicRequest {
-  string topic_name = 1;               // e.g. "/edge1/sensor_temp"
-  optional EdgeSchemaInfo schema = 2;
+message RegisterEdgeRequest {
+  string edge_name = 1;                          // e.g. "edge1"
+  repeated EdgeTopicDeclaration topics = 2;      // Full list of topics from config
 }
 
-message EdgeSchemaInfo {
-  string subject = 1;
-  string schema_type = 2;              // "json_schema", "avro", "protobuf", "string", "bytes"
-  bytes schema_data = 3;
+// A topic declared in the edge's config (edge.yaml).
+message EdgeTopicDeclaration {
+  string topic_name = 1;                         // e.g. "/edge1/telemetry"
+  optional string schema_subject = 2;            // e.g. "telemetry-events" (absent = raw bytes)
 }
 
-message CreateEdgeTopicResponse {
+message RegisterEdgeResponse {
   bool success = 1;
   string message = 2;
+  uint64 config_version = 3;                     // Initial config version from Raft
+  repeated TopicRegistrationResult topics = 4;   // Per-topic resolution results
 }
 
-message DeleteEdgeTopicRequest {
+// Result of registering a single topic during RegisterEdge.
+message TopicRegistrationResult {
   string topic_name = 1;
+  bool topic_created = 2;                        // true if newly created on cluster
+  bool schema_resolved = 3;                      // true if schema_subject found in registry
+  optional ResolvedSchema schema = 4;            // Full schema info (only if resolved)
+  string error = 5;                              // Non-empty if topic/schema setup failed
 }
 
-message DeleteEdgeTopicResponse {
-  bool success = 1;
-  string message = 2;
+// Schema definition resolved by the cluster from its registry.
+// Sent to the edge so it can cache and validate MQTT payloads locally.
+message ResolvedSchema {
+  string subject = 1;
+  uint64 schema_id = 2;
+  uint32 schema_version = 3;
+  string schema_type = 4;                        // "json_schema", "avro", "protobuf", etc.
+  bytes schema_definition = 5;                   // Full definition for edge to cache
+  string fingerprint = 6;                        // SHA-256 for change detection
+  string compatibility_mode = 7;                 // "none", "backward", "forward", "full"
+}
+
+// ─── Heartbeat ──────────────────────────────────────────────────────────────
+
+message EdgeHeartbeatRequest {
+  string edge_name = 1;
+  uint64 config_version = 2;                     // Edge's current config version
+}
+
+message EdgeHeartbeatResponse {
+  bool changed = 1;                              // false = fast path, nothing to do
+  uint64 config_version = 2;                     // Current version (same if changed=false)
+  repeated EdgeChange changes = 3;               // Only populated if changed=true
+}
+
+// A single change detected during heartbeat.
+message EdgeChange {
+  string topic_name = 1;
+  EdgeChangeType change_type = 2;
+  optional ResolvedSchema schema = 3;            // Set for SCHEMA_UPDATED
+  string detail = 4;                             // Human-readable context
+}
+
+enum EdgeChangeType {
+  SCHEMA_UPDATED = 0;       // Schema subject has a new version on the cluster
+  SCHEMA_REMOVED = 1;       // Schema subject was deleted from cluster registry
+  TOPIC_REMOVED = 2;        // Topic was deleted from cluster (admin action)
 }
 
 // ─── Data Replication ───────────────────────────────────────────────────────
 
 message ReplicateBatch {
   string topic_name = 1;
-  repeated danube.StreamMessage messages = 2; // Full messages from edge WAL
-  uint64 batch_last_offset = 3;               // Idempotency key (highest edge offset)
+  repeated danube.StreamMessage messages = 2;    // Full messages from edge WAL
+  uint64 batch_last_offset = 3;                  // Idempotency key (highest edge offset)
 }
 
 message ReplicateAck {
   string topic_name = 1;
-  uint64 acked_offset = 2;                    // Echoes batch_last_offset on success
+  uint64 acked_offset = 2;                       // Echoes batch_last_offset on success
 }

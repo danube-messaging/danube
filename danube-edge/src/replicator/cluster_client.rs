@@ -8,15 +8,17 @@
 //! The edge may connect to multiple brokers in the cluster simultaneously,
 //! since different topics can be assigned to different brokers.
 //!
-//! ## Topic lifecycle
+//! ## Lifecycle
 //!
-//! A topic must be **created** on the cloud via `create_topic()` before any
-//! data can be replicated. The client tracks which topics have been confirmed
-//! by the cloud in `created_topics`.
+//! At startup, `register_edge()` sends the full topic list + schema subjects
+//! to any cluster broker (via the entry-point URL). The cluster creates topics,
+//! resolves schemas, and stores per-edge state in Raft.
 //!
-//! `get_or_connect()` only does a topic lookup for topics that are in
-//! `created_topics`. If the lookup fails for a created topic, the topic was
-//! deleted from the remote cluster — replication for that topic should stop.
+//! Periodically, `edge_heartbeat()` sends the current `config_version` to
+//! detect schema or topic changes on the cluster.
+//!
+//! For data replication, `get_or_connect()` does per-topic lookups to find
+//! the owning broker, caching the connection for reuse.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,18 +33,25 @@ use tracing::{debug, error, info};
 
 use danube_client::DanubeClient;
 use danube_core::edge_proto::edge_replicator_service_client::EdgeReplicatorServiceClient;
-use danube_core::edge_proto::{CreateEdgeTopicRequest, DeleteEdgeTopicRequest, ReplicateBatch};
+use danube_core::edge_proto::{
+    EdgeHeartbeatRequest, EdgeTopicDeclaration, RegisterEdgeRequest, ReplicateBatch,
+};
 use danube_core::message::StreamMessage;
 use danube_core::proto::StreamMessage as ProtoStreamMessage;
+
+use crate::edge_service::{
+    EdgeChangeType, HeartbeatChange, HeartbeatResponse, RegisterEdgeResult,
+    ResolvedSchemaInfo, TopicRegistrationInfo,
+};
 
 type EdgeGrpcClient = EdgeReplicatorServiceClient<tonic::transport::Channel>;
 
 /// Client for connecting to the cloud cluster's EdgeReplicatorService.
 ///
-/// Maintains two pieces of per-topic state:
+/// Maintains per-topic state for data replication:
 ///
-/// - **`created_topics`** — Topics confirmed to exist on the cloud cluster.
-///   Populated by `create_topic()`. A topic must be in this set before
+/// - **`registered_topics`** — Topics confirmed to exist on the cloud cluster.
+///   Populated by `register_edge()`. A topic must be in this set before
 ///   `get_or_connect()` will attempt a lookup.
 ///
 /// - **`topic_clients`** — Cached gRPC clients for data replication (post-lookup).
@@ -51,13 +60,13 @@ type EdgeGrpcClient = EdgeReplicatorServiceClient<tonic::transport::Channel>;
 pub struct EdgeCloudClient {
     client: DanubeClient,
     /// Cloud cluster entry-point URL (e.g., `http://cloud:6650`).
-    /// Used for `CreateEdgeTopic` calls — goes to any cluster broker since
-    /// the topic doesn't exist yet (can't do a topic lookup).
+    /// Used for `RegisterEdge` and `EdgeHeartbeat` calls — goes to any
+    /// cluster broker since these operate on Raft (not topic-specific).
     cloud_url: String,
     edge_name: String,
     token: String,
-    /// Topics that have been successfully created on the cloud cluster.
-    created_topics: Mutex<HashSet<String>>,
+    /// Topics that have been successfully registered on the cloud cluster.
+    registered_topics: Mutex<HashSet<String>>,
     /// Cache: topic_name → ready gRPC client for the broker that owns this topic.
     topic_clients: Mutex<HashMap<String, EdgeGrpcClient>>,
 }
@@ -66,8 +75,8 @@ impl EdgeCloudClient {
     /// Create a new edge cloud client.
     ///
     /// The `cloud_url` is the initial entry point for topic lookups and
-    /// `CreateEdgeTopic` calls. Data connections may go to different brokers
-    /// depending on topic assignment.
+    /// `RegisterEdge`/`EdgeHeartbeat` calls. Data connections may go to
+    /// different brokers depending on topic assignment.
     pub async fn new(cloud_url: &str, edge_name: &str, token: &str) -> Result<Self> {
         let mut builder = DanubeClient::builder().service_url(cloud_url);
 
@@ -82,111 +91,167 @@ impl EdgeCloudClient {
             cloud_url: cloud_url.to_string(),
             edge_name: edge_name.to_string(),
             token: token.to_string(),
-            created_topics: Mutex::new(HashSet::new()),
+            registered_topics: Mutex::new(HashSet::new()),
             topic_clients: Mutex::new(HashMap::new()),
         })
     }
 
     // =====================================================================
-    // Topic creation
+    // Edge Registration
     // =====================================================================
 
-    /// Create a topic on the cloud cluster for replication.
+    /// Register this edge with the cluster.
     ///
-    /// Uses the entry-point broker (`cloud_url`) directly — not a topic
-    /// lookup — because the topic may not exist on the cloud yet.
-    /// `CreateEdgeTopic` writes to shared Raft, so any cluster broker handles it.
+    /// Sends the full list of topics and schema subjects to the cluster.
+    /// The cluster creates topics (idempotent), resolves schemas from its
+    /// registry, stores per-edge state in Raft, and returns the resolved state.
     ///
-    /// Idempotent: if the topic was already created in this session, returns Ok
-    /// immediately without a gRPC call.
-    pub async fn create_topic(&self, topic_name: &str) -> Result<()> {
-        // Fast path: already created in this session
+    /// Called once at startup. Uses the entry-point broker (`cloud_url`)
+    /// directly — not a topic lookup — because `RegisterEdge` writes to
+    /// shared Raft, so any cluster broker handles it.
+    pub async fn register_edge(
+        &self,
+        edge_name: &str,
+        topics: Vec<(String, Option<String>)>,
+    ) -> Result<RegisterEdgeResult> {
+        let mut client = self.connect_entry_point().await?;
+
+        let declarations: Vec<EdgeTopicDeclaration> = topics
+            .iter()
+            .map(|(topic_name, schema_subject)| EdgeTopicDeclaration {
+                topic_name: topic_name.clone(),
+                schema_subject: schema_subject.clone(),
+            })
+            .collect();
+
+        let mut request = Request::new(RegisterEdgeRequest {
+            edge_name: edge_name.to_string(),
+            topics: declarations,
+        });
+        self.authenticate(&mut request);
+
+        let response = client.register_edge(request).await?.into_inner();
+
+        if !response.success {
+            return Err(anyhow!("edge registration failed: {}", response.message));
+        }
+
+        // Update registered topics set
         {
-            let created = self.created_topics.lock().await;
-            if created.contains(topic_name) {
-                debug!(topic = %topic_name, "topic already created on cloud, skipping");
-                return Ok(());
+            let mut registered = self.registered_topics.lock().await;
+            for result in &response.topics {
+                if result.error.is_empty() {
+                    registered.insert(result.topic_name.clone());
+                }
             }
         }
 
-        // Connect to the entry-point broker (any cluster node works)
-        let mut client = self.connect_entry_point().await?;
+        // Convert proto response to domain types
+        let topic_results: Vec<TopicRegistrationInfo> = response
+            .topics
+            .into_iter()
+            .map(|t| {
+                let schema = t.schema.map(|s| ResolvedSchemaInfo {
+                    subject: s.subject,
+                    schema_id: s.schema_id,
+                    schema_version: s.schema_version,
+                    schema_type: s.schema_type,
+                    schema_definition: s.schema_definition,
+                    fingerprint: s.fingerprint,
+                });
+                TopicRegistrationInfo {
+                    topic_name: t.topic_name,
+                    topic_created: t.topic_created,
+                    schema_resolved: t.schema_resolved,
+                    schema,
+                    error: t.error,
+                }
+            })
+            .collect();
 
-        let mut request = Request::new(CreateEdgeTopicRequest {
-            topic_name: topic_name.to_string(),
-            schema: None, // TODO: schema support in Phase 2b
-        });
-        self.authenticate(&mut request);
+        info!(
+            edge_name = %edge_name,
+            topics = topic_results.len(),
+            config_version = response.config_version,
+            "edge registered with cluster"
+        );
 
-        let response = client.create_edge_topic(request).await?.into_inner();
-
-        if response.success {
-            self.created_topics
-                .lock()
-                .await
-                .insert(topic_name.to_string());
-            info!(
-                edge_name = %self.edge_name,
-                topic = %topic_name,
-                "topic created on cloud cluster"
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("topic creation failed: {}", response.message))
-        }
-    }
-
-    /// Check if a topic has been created on the cloud cluster.
-    pub async fn is_topic_created(&self, topic_name: &str) -> bool {
-        self.created_topics.lock().await.contains(topic_name)
-    }
-
-    /// Delete a topic from the cloud cluster.
-    ///
-    /// Calls `DeleteEdgeTopic` on the entry-point broker, then removes the
-    /// topic from `created_topics` and `topic_clients`.
-    ///
-    /// Idempotent: if the topic is not in `created_topics`, returns Ok.
-    pub async fn delete_topic(&self, topic_name: &str) -> Result<()> {
-        // Connect to entry-point broker (same as create — any node works)
-        let mut client = self.connect_entry_point().await?;
-
-        let mut request = Request::new(DeleteEdgeTopicRequest {
-            topic_name: topic_name.to_string(),
-        });
-        self.authenticate(&mut request);
-
-        let response = client.delete_edge_topic(request).await?.into_inner();
-
-        if response.success {
-            // Clean up local state
-            self.created_topics.lock().await.remove(topic_name);
-            self.topic_clients.lock().await.remove(topic_name);
-
-            info!(
-                edge_name = %self.edge_name,
-                topic = %topic_name,
-                "topic deleted from cloud cluster"
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("topic deletion failed: {}", response.message))
-        }
+        Ok(RegisterEdgeResult {
+            config_version: response.config_version,
+            topics: topic_results,
+        })
     }
 
     // =====================================================================
-    // Data connection (post-creation)
+    // Heartbeat
+    // =====================================================================
+
+    /// Periodic heartbeat to detect changes on the cluster.
+    ///
+    /// Sends the current `config_version`. If the cluster's version matches,
+    /// returns a fast "no changes" response. If it differs, returns a list
+    /// of changes (schema updates, topic removals, etc.).
+    pub async fn edge_heartbeat(
+        &self,
+        edge_name: &str,
+        config_version: u64,
+    ) -> Result<HeartbeatResponse> {
+        let mut client = self.connect_entry_point().await?;
+
+        let mut request = Request::new(EdgeHeartbeatRequest {
+            edge_name: edge_name.to_string(),
+            config_version,
+        });
+        self.authenticate(&mut request);
+
+        let response = client.edge_heartbeat(request).await?.into_inner();
+
+        let changes: Vec<HeartbeatChange> = response
+            .changes
+            .into_iter()
+            .map(|c| {
+                let change_type = match c.change_type {
+                    0 => EdgeChangeType::SchemaUpdated,
+                    1 => EdgeChangeType::SchemaRemoved,
+                    2 => EdgeChangeType::TopicRemoved,
+                    _ => EdgeChangeType::SchemaUpdated, // fallback
+                };
+                let schema = c.schema.map(|s| ResolvedSchemaInfo {
+                    subject: s.subject,
+                    schema_id: s.schema_id,
+                    schema_version: s.schema_version,
+                    schema_type: s.schema_type,
+                    schema_definition: s.schema_definition,
+                    fingerprint: s.fingerprint,
+                });
+                HeartbeatChange {
+                    topic_name: c.topic_name,
+                    change_type,
+                    schema,
+                }
+            })
+            .collect();
+
+        Ok(HeartbeatResponse {
+            changed: response.changed,
+            config_version: response.config_version,
+            changes,
+        })
+    }
+
+    // =====================================================================
+    // Data connection (post-registration)
     // =====================================================================
 
     /// Get or create a cached gRPC client for the broker that owns a topic.
     ///
-    /// **Precondition**: the topic must have been created via `create_topic()`.
-    /// If the topic is not in `created_topics`, this returns an error.
+    /// **Precondition**: the topic must have been registered via `register_edge()`.
+    /// If the topic is not in `registered_topics`, this returns an error.
     ///
     /// On first call for a topic: does a topic lookup to resolve the owning
     /// broker, connects, caches the client.
     ///
-    /// If the topic lookup fails for a topic that *was* created, it means the
+    /// If the topic lookup fails for a topic that *was* registered, it means the
     /// topic was deleted from the remote cluster. Returns a specific error
     /// so the caller can stop replication for this topic.
     async fn get_or_connect(&self, topic_name: &str) -> Result<EdgeGrpcClient> {
@@ -198,12 +263,12 @@ impl EdgeCloudClient {
             }
         }
 
-        // Verify the topic was created on cloud
+        // Verify the topic was registered on cloud
         {
-            let created = self.created_topics.lock().await;
-            if !created.contains(topic_name) {
+            let registered = self.registered_topics.lock().await;
+            if !registered.contains(topic_name) {
                 return Err(anyhow!(
-                    "topic '{}' was not created on the cloud cluster — cannot connect",
+                    "topic '{}' was not registered on the cloud cluster — cannot connect",
                     topic_name
                 ));
             }
@@ -216,7 +281,7 @@ impl EdgeCloudClient {
                 error!(
                     topic = %topic_name,
                     error = %e,
-                    "topic lookup failed for a created topic — topic may have been \
+                    "topic lookup failed for a registered topic — topic may have been \
                      deleted from the remote cluster, replication should stop"
                 );
                 return Err(anyhow!(
@@ -314,9 +379,10 @@ impl EdgeCloudClient {
 
     /// Connect to the cloud cluster entry-point broker.
     ///
-    /// Used for `CreateEdgeTopic` which can go to any cluster node (the RPC
-    /// writes to shared Raft). The connection is cached by DanubeClient's
-    /// connection manager, so repeated calls reuse the same channel.
+    /// Used for `RegisterEdge` and `EdgeHeartbeat` which can go to any
+    /// cluster node (these RPCs operate on shared Raft). The connection is
+    /// cached by DanubeClient's connection manager, so repeated calls reuse
+    /// the same channel.
     async fn connect_entry_point(&self) -> Result<EdgeGrpcClient> {
         let cloud_uri: tonic::transport::Uri = self
             .cloud_url
