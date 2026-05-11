@@ -236,8 +236,16 @@ impl EdgeService {
                                 fingerprint: s.fingerprint.clone(),
                                 schema_definition: s.schema_definition.clone(),
                             });
+
+                            // Look up validation_policy from config for this topic
+                            let enforce = mqtt_config.topic_mappings.iter()
+                                .find(|m| m.danube_topic == result.topic_name)
+                                .and_then(|m| m.validation_policy.as_deref())
+                                .map(|p| p.eq_ignore_ascii_case("enforce"))
+                                .unwrap_or(false);
+
                             self.readiness
-                                .mark_schema_resolved(&result.topic_name, cached)
+                                .mark_schema_resolved(&result.topic_name, cached, enforce)
                                 .await;
                         } else {
                             warn!(

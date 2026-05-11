@@ -120,6 +120,11 @@ impl MqttIngester {
             ));
         }
 
+        // Validate payload against schema (if enforce mode is active for this topic)
+        self.readiness
+            .validate_payload(topic_name, &message.payload)
+            .await?;
+
         // Stamp schema metadata if a schema is configured for this topic
         if let Some(schema_info) = self.readiness.get_schema_info(topic_name).await {
             message.schema_id = Some(schema_info.schema_id);
