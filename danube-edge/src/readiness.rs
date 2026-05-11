@@ -5,14 +5,19 @@
 //! 2. Cluster has confirmed registration (via `RegisterEdge`)
 //! 3. Schema is resolved (if `schema_subject` is configured; auto-true for raw-bytes topics)
 //!
+//! When a schema is resolved and `enforce_validation` is true, payloads are
+//! validated against the compiled schema before WAL write.
+//!
 //! The `MqttIngester` checks readiness before accepting messages. Messages
 //! for not-ready topics are rejected (QoS 1 devices will retry).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use danube_schema::metadata::{AvroSchema, JsonSchemaDefinition, SchemaDefinition};
+use danube_schema::validator::{PayloadValidator, ValidatorFactory};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Cached schema information resolved from the cluster registry.
 #[derive(Debug, Clone)]
@@ -32,7 +37,7 @@ pub struct CachedSchema {
 }
 
 /// Per-topic readiness state.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TopicState {
     /// WAL handle has been created in the ingester.
     pub local_provisioned: bool,
@@ -42,6 +47,23 @@ pub struct TopicState {
     pub schema_resolved: bool,
     /// Cached schema info (None for raw-bytes topics).
     pub schema_info: Option<CachedSchema>,
+    /// Compiled payload validator (built from schema_definition at resolve time).
+    validator: Option<Arc<dyn PayloadValidator>>,
+    /// If true, invalid payloads are rejected. If false, validation is skipped.
+    pub enforce_validation: bool,
+}
+
+impl Clone for TopicState {
+    fn clone(&self) -> Self {
+        Self {
+            local_provisioned: self.local_provisioned,
+            cluster_registered: self.cluster_registered,
+            schema_resolved: self.schema_resolved,
+            schema_info: self.schema_info.clone(),
+            validator: self.validator.clone(),
+            enforce_validation: self.enforce_validation,
+        }
+    }
 }
 
 impl TopicState {
@@ -51,12 +73,57 @@ impl TopicState {
             cluster_registered: false,
             schema_resolved: false,
             schema_info: None,
+            validator: None,
+            enforce_validation: false,
         }
     }
 
     /// A topic is ready for MQTT ingestion when all conditions are met.
     pub fn is_ready(&self) -> bool {
         self.local_provisioned && self.cluster_registered && self.schema_resolved
+    }
+}
+
+/// Build a `SchemaDefinition` from schema type string and raw definition bytes.
+/// Returns `None` for unknown types or empty definitions.
+fn build_schema_definition(schema_type: &str, definition: &[u8]) -> Option<SchemaDefinition> {
+    if definition.is_empty() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(definition).to_string();
+    match schema_type {
+        "json_schema" | "json" => {
+            // Use an empty fingerprint; the edge doesn't need it for validation.
+            Some(SchemaDefinition::JsonSchema(JsonSchemaDefinition::new(
+                raw,
+                String::new(),
+            )))
+        }
+        "avro" => Some(SchemaDefinition::Avro(AvroSchema::new(raw, String::new()))),
+        "string" => Some(SchemaDefinition::String),
+        "bytes" => Some(SchemaDefinition::Bytes),
+        "number" | "int" | "float" | "double" => Some(SchemaDefinition::Number),
+        _ => {
+            warn!(schema_type = %schema_type, "unknown schema type, skipping validator");
+            None
+        }
+    }
+}
+
+/// Try to compile a `PayloadValidator` from a `CachedSchema`.
+fn compile_validator(schema: &CachedSchema) -> Option<Arc<dyn PayloadValidator>> {
+    let schema_def = build_schema_definition(&schema.schema_type, &schema.schema_definition)?;
+    match ValidatorFactory::create(&schema_def) {
+        Ok(v) => Some(Arc::from(v)),
+        Err(e) => {
+            warn!(
+                subject = %schema.subject,
+                schema_type = %schema.schema_type,
+                error = %e,
+                "failed to compile payload validator"
+            );
+            None
+        }
     }
 }
 
@@ -79,7 +146,9 @@ impl TopicReadiness {
     /// Initialize tracking for a topic (called during bootstrap).
     pub async fn track_topic(&self, topic_name: &str) {
         let mut topics = self.topics.write().await;
-        topics.entry(topic_name.to_string()).or_insert_with(TopicState::new);
+        topics
+            .entry(topic_name.to_string())
+            .or_insert_with(TopicState::new);
     }
 
     /// Mark a topic as locally provisioned (WAL handle created).
@@ -99,24 +168,40 @@ impl TopicReadiness {
     }
 
     /// Mark a topic's schema as resolved. Pass `None` for raw-bytes topics.
+    ///
+    /// If `enforce` is true and the schema has a definition, a payload validator
+    /// is compiled and stored for use during ingestion.
     pub async fn mark_schema_resolved(
         &self,
         topic_name: &str,
         schema: Option<CachedSchema>,
+        enforce: bool,
     ) {
         let mut topics = self.topics.write().await;
         if let Some(state) = topics.get_mut(topic_name) {
             state.schema_resolved = true;
-            state.schema_info = schema;
+            state.enforce_validation = enforce;
+
+            // Compile validator if enforce mode and schema has a definition
+            if enforce {
+                state.validator = schema.as_ref().and_then(compile_validator);
+            } else {
+                state.validator = None;
+            }
+
             info!(
                 topic = %topic_name,
-                has_schema = state.schema_info.is_some(),
+                has_schema = schema.is_some(),
+                enforce = enforce,
+                has_validator = state.validator.is_some(),
                 "topic schema resolved"
             );
+            state.schema_info = schema;
         }
     }
 
     /// Update the cached schema for a topic (called on heartbeat schema change).
+    /// Recompiles the validator if enforce mode is active.
     pub async fn update_schema(&self, topic_name: &str, schema: CachedSchema) {
         let mut topics = self.topics.write().await;
         if let Some(state) = topics.get_mut(topic_name) {
@@ -126,6 +211,12 @@ impl TopicReadiness {
                 version = schema.schema_version,
                 "schema updated from cluster"
             );
+
+            // Recompile validator if enforce mode
+            if state.enforce_validation {
+                state.validator = compile_validator(&schema);
+            }
+
             state.schema_info = Some(schema);
         }
     }
@@ -148,9 +239,7 @@ impl TopicReadiness {
     /// Get cached schema info for a topic (for stamping messages).
     pub async fn get_schema_info(&self, topic_name: &str) -> Option<CachedSchema> {
         let topics = self.topics.read().await;
-        topics
-            .get(topic_name)
-            .and_then(|s| s.schema_info.clone())
+        topics.get(topic_name).and_then(|s| s.schema_info.clone())
     }
 
     /// Get the fingerprint for a topic's cached schema (for heartbeat comparison).
@@ -180,260 +269,50 @@ impl TopicReadiness {
             .map(|(name, state)| (name.clone(), state.is_ready()))
             .collect()
     }
+
+    /// Validate a payload against the topic's compiled schema.
+    ///
+    /// Returns `Ok(())` if:
+    /// - Topic has no validator (no schema, or enforce=false)
+    /// - Topic is not tracked
+    /// - Payload passes validation
+    ///
+    /// Returns `Err` only when `enforce_validation=true` and the payload
+    /// fails schema validation.
+    pub async fn validate_payload(
+        &self,
+        topic_name: &str,
+        payload: &[u8],
+    ) -> Result<(), anyhow::Error> {
+        let topics = self.topics.read().await;
+        let state = match topics.get(topic_name) {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let validator = match &state.validator {
+            Some(v) => v,
+            None => return Ok(()), // no validator → no validation
+        };
+
+        match validator.validate(payload) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(
+                    topic = %topic_name,
+                    error = %e,
+                    "payload validation failed"
+                );
+                Err(anyhow::anyhow!(
+                    "payload validation failed for topic '{}': {}",
+                    topic_name,
+                    e
+                ))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn topic_not_ready_by_default() {
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/test").await;
-        assert!(!readiness.is_ready("/edge1/test").await);
-    }
-
-    #[tokio::test]
-    async fn unknown_topic_is_not_ready() {
-        let readiness = TopicReadiness::new();
-        assert!(!readiness.is_ready("/edge1/unknown").await);
-    }
-
-    #[tokio::test]
-    async fn raw_bytes_topic_ready_after_local_and_cluster() {
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/raw").await;
-
-        readiness.mark_local_provisioned("/edge1/raw").await;
-        assert!(!readiness.is_ready("/edge1/raw").await);
-
-        readiness.mark_cluster_registered("/edge1/raw").await;
-        assert!(!readiness.is_ready("/edge1/raw").await);
-
-        // Raw bytes topic: schema_resolved with None
-        readiness
-            .mark_schema_resolved("/edge1/raw", None)
-            .await;
-        assert!(readiness.is_ready("/edge1/raw").await);
-        assert!(readiness.get_schema_info("/edge1/raw").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn schema_topic_ready_after_all_three() {
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/telemetry").await;
-
-        readiness.mark_local_provisioned("/edge1/telemetry").await;
-        readiness
-            .mark_cluster_registered("/edge1/telemetry")
-            .await;
-
-        // Not ready yet — schema not resolved
-        assert!(!readiness.is_ready("/edge1/telemetry").await);
-
-        let schema = CachedSchema {
-            subject: "telemetry-events".into(),
-            schema_id: 42,
-            schema_version: 1,
-            schema_type: "json_schema".into(),
-            fingerprint: "abc123".into(),
-            schema_definition: b"{}".to_vec(),
-        };
-        readiness
-            .mark_schema_resolved("/edge1/telemetry", Some(schema))
-            .await;
-
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        let info = readiness.get_schema_info("/edge1/telemetry").await.unwrap();
-        assert_eq!(info.schema_id, 42);
-        assert_eq!(info.schema_version, 1);
-    }
-
-    #[tokio::test]
-    async fn schema_unresolved_makes_topic_not_ready() {
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/t").await;
-        readiness.mark_local_provisioned("/edge1/t").await;
-        readiness.mark_cluster_registered("/edge1/t").await;
-        readiness
-            .mark_schema_resolved(
-                "/edge1/t",
-                Some(CachedSchema {
-                    subject: "s".into(),
-                    schema_id: 1,
-                    schema_version: 1,
-                    schema_type: "json_schema".into(),
-                    fingerprint: "x".into(),
-                    schema_definition: vec![],
-                }),
-            )
-            .await;
-        assert!(readiness.is_ready("/edge1/t").await);
-
-        // Schema removed on cluster
-        readiness.mark_schema_unresolved("/edge1/t").await;
-        assert!(!readiness.is_ready("/edge1/t").await);
-    }
-
-    #[tokio::test]
-    async fn not_ready_topics_returns_incomplete() {
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/ready").await;
-        readiness.track_topic("/edge1/notready").await;
-
-        // Make "ready" fully ready
-        readiness.mark_local_provisioned("/edge1/ready").await;
-        readiness.mark_cluster_registered("/edge1/ready").await;
-        readiness
-            .mark_schema_resolved("/edge1/ready", None)
-            .await;
-
-        // "notready" only has local provisioned
-        readiness.mark_local_provisioned("/edge1/notready").await;
-
-        let not_ready = readiness.not_ready_topics().await;
-        assert_eq!(not_ready, vec!["/edge1/notready"]);
-    }
-
-    // --- Heartbeat simulation tests ---
-    // These simulate what run_heartbeat_loop does when it receives
-    // change events from the cluster.
-
-    fn make_schema(subject: &str, version: u32, fingerprint: &str) -> CachedSchema {
-        CachedSchema {
-            subject: subject.into(),
-            schema_id: 42,
-            schema_version: version,
-            schema_type: "json_schema".into(),
-            fingerprint: fingerprint.into(),
-            schema_definition: b"{}".to_vec(),
-        }
-    }
-
-    #[tokio::test]
-    async fn heartbeat_schema_update_keeps_topic_ready() {
-        // Simulates: admin updates schema → heartbeat detects → edge updates cache
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/telemetry").await;
-        readiness.mark_local_provisioned("/edge1/telemetry").await;
-        readiness
-            .mark_cluster_registered("/edge1/telemetry")
-            .await;
-        readiness
-            .mark_schema_resolved(
-                "/edge1/telemetry",
-                Some(make_schema("events", 1, "fp-v1")),
-            )
-            .await;
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-
-        // Heartbeat: schema updated (new version, new fingerprint)
-        readiness
-            .update_schema(
-                "/edge1/telemetry",
-                make_schema("events", 2, "fp-v2"),
-            )
-            .await;
-
-        // Topic should still be ready with updated schema
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        let info = readiness.get_schema_info("/edge1/telemetry").await.unwrap();
-        assert_eq!(info.schema_version, 2);
-        assert_eq!(info.fingerprint, "fp-v2");
-    }
-
-    #[tokio::test]
-    async fn fingerprint_tracks_schema_changes() {
-        // Simulates: heartbeat uses fingerprint to detect schema content changes
-        let readiness = TopicReadiness::new();
-        readiness.track_topic("/edge1/t").await;
-        readiness.mark_local_provisioned("/edge1/t").await;
-        readiness.mark_cluster_registered("/edge1/t").await;
-        readiness
-            .mark_schema_resolved(
-                "/edge1/t",
-                Some(make_schema("events", 1, "fingerprint-aaa")),
-            )
-            .await;
-
-        // Check fingerprint (used by heartbeat for change detection)
-        assert_eq!(
-            readiness.get_fingerprint("/edge1/t").await,
-            Some("fingerprint-aaa".to_string())
-        );
-
-        // Update schema → fingerprint changes
-        readiness
-            .update_schema("/edge1/t", make_schema("events", 2, "fingerprint-bbb"))
-            .await;
-        assert_eq!(
-            readiness.get_fingerprint("/edge1/t").await,
-            Some("fingerprint-bbb".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn full_bootstrap_to_heartbeat_lifecycle() {
-        // Simulates the complete edge lifecycle:
-        // bootstrap → heartbeat (no change) → schema update → schema remove → recovery
-        let readiness = TopicReadiness::new();
-
-        // Phase 1: Bootstrap — track 2 topics (1 with schema, 1 raw)
-        readiness.track_topic("/edge1/telemetry").await;
-        readiness.track_topic("/edge1/raw").await;
-
-        // Phase 2: Local provisioning
-        readiness.mark_local_provisioned("/edge1/telemetry").await;
-        readiness.mark_local_provisioned("/edge1/raw").await;
-
-        // Phase 3: Cluster registration
-        readiness
-            .mark_cluster_registered("/edge1/telemetry")
-            .await;
-        readiness.mark_cluster_registered("/edge1/raw").await;
-
-        // Phase 4: Schema resolution
-        readiness
-            .mark_schema_resolved(
-                "/edge1/telemetry",
-                Some(make_schema("events", 1, "fp1")),
-            )
-            .await;
-        readiness.mark_schema_resolved("/edge1/raw", None).await;
-
-        // All ready
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        assert!(readiness.is_ready("/edge1/raw").await);
-        assert!(readiness.not_ready_topics().await.is_empty());
-
-        // Heartbeat 1: no changes (fast path) — state unchanged
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        assert!(readiness.is_ready("/edge1/raw").await);
-
-        // Heartbeat 2: schema updated for telemetry
-        readiness
-            .update_schema(
-                "/edge1/telemetry",
-                make_schema("events", 2, "fp2"),
-            )
-            .await;
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        assert!(readiness.is_ready("/edge1/raw").await);
-
-        // Heartbeat 3: schema removed for telemetry
-        readiness.mark_schema_unresolved("/edge1/telemetry").await;
-        assert!(!readiness.is_ready("/edge1/telemetry").await);
-        assert!(readiness.is_ready("/edge1/raw").await); // raw unaffected
-
-        // Heartbeat 4: schema re-added
-        readiness
-            .mark_schema_resolved(
-                "/edge1/telemetry",
-                Some(make_schema("events", 3, "fp3")),
-            )
-            .await;
-        assert!(readiness.is_ready("/edge1/telemetry").await);
-        assert!(readiness.is_ready("/edge1/raw").await);
-        assert!(readiness.not_ready_topics().await.is_empty());
-    }
-}
+#[path = "readiness_test.rs"]
+mod tests;

@@ -70,8 +70,7 @@ impl TopicRouter {
                     if let Some(idx) = template.strip_prefix('$') {
                         if let Ok(i) = idx.parse::<usize>() {
                             if i >= 1 && i <= captures.len() {
-                                attributes
-                                    .insert(attr_name.clone(), captures[i - 1].to_string());
+                                attributes.insert(attr_name.clone(), captures[i - 1].to_string());
                             }
                         }
                     }
@@ -92,10 +91,7 @@ impl TopicRouter {
     ///
     /// - `+` matches exactly one segment (captured)
     /// - `#` matches zero or more remaining segments (not captured individually)
-    fn try_match<'a>(
-        pattern: &[String],
-        topic: &[&'a str],
-    ) -> Option<Vec<&'a str>> {
+    fn try_match<'a>(pattern: &[String], topic: &[&'a str]) -> Option<Vec<&'a str>> {
         let mut captures = Vec::new();
         let mut pi = 0; // pattern index
         let mut ti = 0; // topic index
@@ -178,6 +174,7 @@ mod tests {
             mqtt_pattern: pattern.to_string(),
             danube_topic: topic.to_string(),
             schema_subject: None,
+            validation_policy: None,
             extract_attributes: attrs
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -226,11 +223,7 @@ mod tests {
 
     #[test]
     fn test_no_match() {
-        let router = TopicRouter::new(&[make_mapping(
-            "sensors/temp",
-            "/default/temp",
-            vec![],
-        )]);
+        let router = TopicRouter::new(&[make_mapping("sensors/temp", "/default/temp", vec![])]);
         assert!(router.resolve("other/topic").is_none());
     }
 
