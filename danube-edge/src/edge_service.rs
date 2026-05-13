@@ -15,6 +15,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use danube_core::metadata::MetadataStore;
 use danube_persistent_storage::StorageFactory;
+use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use crate::config::EdgeConfig;
@@ -39,6 +40,10 @@ pub struct EdgeService {
     readiness: TopicReadiness,
     /// Current config version from the cluster (set by RegisterEdge, updated by heartbeat).
     config_version: Arc<AtomicU64>,
+    /// Shutdown signal for MQTT tasks. The sender is kept alive here so
+    /// the watch::Receivers in the server and flush loop don't fire.
+    /// Send `true` to trigger graceful shutdown of all MQTT tasks.
+    mqtt_shutdown: watch::Sender<bool>,
 }
 
 impl std::fmt::Debug for EdgeService {
@@ -111,6 +116,8 @@ impl EdgeService {
             (None, None)
         };
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Ok(Self {
             config,
             replicator,
@@ -118,6 +125,7 @@ impl EdgeService {
             router,
             readiness,
             config_version: Arc::new(AtomicU64::new(0)),
+            mqtt_shutdown: shutdown_tx,
         })
     }
 
@@ -289,24 +297,41 @@ impl EdgeService {
 
             // Phase 6: Spawn background tasks
 
-            // Spawn background flush loop
+            // Subscribe to the shutdown channel. The sender lives in self.mqtt_shutdown
+            // and stays alive as long as this EdgeService exists.
+            let shutdown_rx = self.mqtt_shutdown.subscribe();
+
+            // Spawn background flush loop (shutdown-aware)
             let ingester_flush = ingester.clone();
+            let flush_shutdown = shutdown_rx.clone();
             tokio::spawn(async move {
-                ingester_flush.run_flush_loop().await;
+                ingester_flush.run_flush_loop(flush_shutdown).await;
             });
 
-            // Spawn MQTT TCP listener
+            // Spawn MQTT TCP listener (with connection limit + shutdown)
             let listener_addr = mqtt_config.listener.clone();
+            let max_payload_size = mqtt_config.max_payload_size;
+            let max_connections = mqtt_config.max_connections;
             let router_clone = router.clone();
             let ingester_clone = ingester.clone();
+            let listener_shutdown = shutdown_rx.clone();
             tokio::spawn(async move {
-                crate::mqtt::server::start_listener(&listener_addr, router_clone, ingester_clone)
-                    .await;
+                crate::mqtt::server::start_listener(
+                    &listener_addr,
+                    router_clone,
+                    ingester_clone,
+                    max_payload_size,
+                    max_connections,
+                    listener_shutdown,
+                )
+                .await;
             });
 
             info!(
                 edge_name = %edge_name,
                 listener = %mqtt_config.listener,
+                max_payload_size,
+                max_connections,
                 "MQTT gateway started"
             );
 

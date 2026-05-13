@@ -20,5 +20,6 @@
 
 pub mod bridge;
 pub mod ingester;
+pub mod metrics;
 pub mod server;
 pub mod session;

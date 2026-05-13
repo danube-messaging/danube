@@ -101,6 +101,16 @@ pub struct MqttSection {
     /// Ingestion batching configuration.
     #[serde(default)]
     pub ingestion: IngestionConfig,
+
+    /// Maximum MQTT packet size in bytes. Default: 262144 (256 KB).
+    /// Packets exceeding this limit are rejected at the codec level
+    /// before memory is allocated.
+    #[serde(default = "default_max_payload_size")]
+    pub max_payload_size: usize,
+
+    /// Maximum concurrent MQTT connections. Default: 10000.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
 }
 
 /// A single MQTT-to-Danube topic mapping rule.
@@ -169,6 +179,14 @@ fn default_ingestion_batch_size() -> usize {
 
 fn default_ingestion_batch_timeout_ms() -> u64 {
     500
+}
+
+fn default_max_payload_size() -> usize {
+    262_144 // 256 KB
+}
+
+fn default_max_connections() -> usize {
+    10_000
 }
 
 impl EdgeConfig {

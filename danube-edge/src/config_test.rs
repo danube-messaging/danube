@@ -133,6 +133,8 @@ mqtt:
     assert_eq!(mqtt.listener, "0.0.0.0:1883"); // default
     assert_eq!(mqtt.ingestion.batch_size, 100); // default
     assert_eq!(mqtt.ingestion.batch_timeout_ms, 500); // default
+    assert_eq!(mqtt.max_payload_size, 262_144); // default: 256 KB
+    assert_eq!(mqtt.max_connections, 10_000); // default
 }
 
 #[test]
