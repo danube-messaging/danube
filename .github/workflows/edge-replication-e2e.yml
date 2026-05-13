@@ -125,11 +125,10 @@ jobs:
 
           echo "Registering 'telemetry-events' schema on cluster..."
           $ADMIN_BIN schemas register \
-            --subject telemetry-events \
+            telemetry-events \
             --schema-type json_schema \
-            --schema-definition '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
-            --description "Edge telemetry events schema" \
-            || true
+            --schema '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
+            --description "Edge telemetry events schema"
 
           echo "✅ Schema 'telemetry-events' registered"
 
@@ -204,6 +203,15 @@ jobs:
         run: |
           cargo test --release -p danube-edge --test edge_replication_basic -- --ignored --test-threads=1 --nocapture
 
+      # =====================================================================
+      # Run MQTT E2E tests (Python: paho-mqtt + danube-client)
+      # =====================================================================
+      - name: Install Python test dependencies
+        run: pip install -r scripts/edge-e2e/requirements.txt
+
+      - name: Run MQTT E2E tests
+        run: python3 scripts/edge-e2e/test_mqtt_ingestion.py
+
       # TODO: Enable once RBAC/JWT auth is configured in this workflow.
       # These tests require a valid EDGE_TOKEN and security-enabled brokers.
       # - name: Run edge replication security tests
@@ -214,6 +222,7 @@ jobs:
       #     RUST_BACKTRACE: 1
       #   run: |
       #     cargo test --release -p danube-edge --test edge_replication_security -- --ignored --test-threads=1 --nocapture
+
 
       # =====================================================================
       # Cleanup & diagnostics
