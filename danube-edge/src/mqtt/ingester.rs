@@ -20,6 +20,7 @@ use danube_persistent_storage::{StorageFactory, WalStorage};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use crate::mqtt::metrics;
 use crate::readiness::TopicReadiness;
 
 /// Ingestion error categories.
@@ -204,12 +205,12 @@ impl MqttIngester {
         Ok(())
     }
 
-    /// Background flush loop. Runs forever, checking all topic buffers
-    /// every `batch_timeout` and flushing any that have pending messages
-    /// older than the timeout.
+    /// Background flush loop. Runs until the `shutdown` token is cancelled,
+    /// checking all topic buffers every `batch_timeout` and flushing any
+    /// that have pending messages older than the timeout.
     ///
-    /// Spawn this as a Tokio task at edge startup.
-    pub async fn run_flush_loop(self: Arc<Self>) {
+    /// On shutdown, flushes all remaining buffers before returning.
+    pub async fn run_flush_loop(self: Arc<Self>, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let interval = self.config.batch_timeout;
         info!(
             batch_size = self.config.batch_size,
@@ -218,26 +219,72 @@ impl MqttIngester {
         );
 
         loop {
-            tokio::time::sleep(interval).await;
+            tokio::select! {
+                biased;
 
-            let mut buffers = self.buffers.lock().await;
-            for (topic_name, buffer) in buffers.iter_mut() {
-                if buffer.messages.is_empty() {
-                    continue;
+                _ = shutdown.changed() => {
+                    info!("MQTT ingester: shutdown signal received, flushing all buffers");
+                    self.flush_all().await;
+                    return;
                 }
 
-                let age = buffer.last_flush.elapsed();
-                if age >= interval {
-                    if let Err(e) = Self::flush_buffer(topic_name, buffer).await {
-                        error!(
-                            topic = %topic_name,
-                            error = %e,
-                            "MQTT ingester: flush failed"
-                        );
+                _ = tokio::time::sleep(interval) => {
+                    let mut buffers = self.buffers.lock().await;
+                    for (topic_name, buffer) in buffers.iter_mut() {
+                        if buffer.messages.is_empty() {
+                            continue;
+                        }
+
+                        let age = buffer.last_flush.elapsed();
+                        if age >= interval {
+                            if let Err(e) = Self::flush_buffer(topic_name, buffer).await {
+                                error!(
+                                    topic = %topic_name,
+                                    error = %e,
+                                    "MQTT ingester: flush failed"
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Flush all topic buffers to WAL. Called during graceful shutdown
+    /// to avoid losing in-memory messages.
+    pub async fn flush_all(&self) {
+        let mut buffers = self.buffers.lock().await;
+        let mut flushed = 0;
+        let mut lost = 0;
+
+        for (topic_name, buffer) in buffers.iter_mut() {
+            if buffer.messages.is_empty() {
+                continue;
+            }
+
+            let count = buffer.messages.len();
+            match Self::flush_buffer(topic_name, buffer).await {
+                Ok(()) => {
+                    flushed += count;
+                }
+                Err(e) => {
+                    error!(
+                        topic = %topic_name,
+                        count,
+                        error = %e,
+                        "shutdown flush failed, messages lost"
+                    );
+                    lost += count;
+                }
+            }
+        }
+
+        info!(
+            flushed,
+            lost,
+            "MQTT ingester: shutdown flush complete"
+        );
     }
 
     /// Flush a topic buffer to the WAL via `append_batch`.
@@ -247,17 +294,22 @@ impl MqttIngester {
             return Ok(());
         }
 
+        let flush_start = Instant::now();
         let messages: Vec<StreamMessage> = buffer.messages.drain(..).collect();
 
         match buffer.wal.append_batch(topic_name, &messages).await {
             Ok((first, last)) => {
+                let elapsed_ms = flush_start.elapsed().as_secs_f64() * 1000.0;
                 debug!(
                     topic = %topic_name,
                     count,
                     first_offset = first,
                     last_offset = last,
+                    elapsed_ms = format!("{:.2}", elapsed_ms),
                     "MQTT ingester: batch flushed to WAL"
                 );
+                metrics::batch_flushed(topic_name, count);
+                metrics::flush_latency_ms(topic_name, elapsed_ms);
             }
             Err(e) => {
                 warn!(

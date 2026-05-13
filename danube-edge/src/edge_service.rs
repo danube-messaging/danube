@@ -289,24 +289,41 @@ impl EdgeService {
 
             // Phase 6: Spawn background tasks
 
-            // Spawn background flush loop
+            // Create a shutdown channel for graceful MQTT teardown.
+            // Sender stays in EdgeService (or signal handler); receivers in tasks.
+            let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+            // Spawn background flush loop (shutdown-aware)
             let ingester_flush = ingester.clone();
+            let flush_shutdown = shutdown_rx.clone();
             tokio::spawn(async move {
-                ingester_flush.run_flush_loop().await;
+                ingester_flush.run_flush_loop(flush_shutdown).await;
             });
 
-            // Spawn MQTT TCP listener
+            // Spawn MQTT TCP listener (with connection limit + shutdown)
             let listener_addr = mqtt_config.listener.clone();
+            let max_payload_size = mqtt_config.max_payload_size;
+            let max_connections = mqtt_config.max_connections;
             let router_clone = router.clone();
             let ingester_clone = ingester.clone();
+            let listener_shutdown = shutdown_rx.clone();
             tokio::spawn(async move {
-                crate::mqtt::server::start_listener(&listener_addr, router_clone, ingester_clone)
-                    .await;
+                crate::mqtt::server::start_listener(
+                    &listener_addr,
+                    router_clone,
+                    ingester_clone,
+                    max_payload_size,
+                    max_connections,
+                    listener_shutdown,
+                )
+                .await;
             });
 
             info!(
                 edge_name = %edge_name,
                 listener = %mqtt_config.listener,
+                max_payload_size,
+                max_connections,
                 "MQTT gateway started"
             );
 

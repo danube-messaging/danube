@@ -6,8 +6,15 @@
 //! - PUBLISH → topic mapping + ingestion
 //! - SUBSCRIBE → rejected (telemetry-only ingestion)
 //! - DISCONNECT → graceful teardown
+//!
+//! Production features:
+//! - **Keep-alive timeout**: session closes if no packet arrives within
+//!   1.5× the client's `keep_alive` value (per MQTT spec §3.1.2.10).
+//! - **Max payload size**: oversized packets rejected at codec level.
+//! - **Metrics**: connection/message counters instrumented via `metrics.rs`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -19,6 +26,12 @@ use tracing::{debug, info, warn};
 
 use crate::mqtt::bridge::{self, TopicRouter};
 use crate::mqtt::ingester::{IngestError, MqttIngester};
+use crate::mqtt::metrics;
+
+/// Default keep-alive timeout when the client sends `keep_alive: 0`.
+/// Per MQTT spec, 0 means "no keep-alive" but we still enforce a server-side
+/// timeout to prevent zombie sessions.
+const DEFAULT_KEEP_ALIVE_SECS: u64 = 300; // 5 minutes
 
 /// Run the session loop for a single MQTT connection.
 ///
@@ -26,25 +39,31 @@ use crate::mqtt::ingester::{IngestError, MqttIngester};
 /// 1. Waits for CONNECT (must be the first packet)
 /// 2. Replies with CONNACK
 /// 3. Enters the main packet loop (PUBLISH, PINGREQ, etc.)
-/// 4. Returns when the client disconnects or an error occurs
+/// 4. Returns when the client disconnects, times out, or an error occurs
 pub async fn run_session(
     socket: TcpStream,
     peer: std::net::SocketAddr,
     router: Arc<TopicRouter>,
     ingester: Arc<MqttIngester>,
+    max_payload_size: usize,
 ) {
-    let mut framed = Framed::new(socket, MqttCodec::new());
+    let mut framed = Framed::new(socket, MqttCodec::with_max_packet_size(max_payload_size));
 
     // ---- Step 1: CONNECT handshake ----
-    let (client_id, protocol_level) = match framed.next().await {
+    let (client_id, protocol_level, keep_alive) = match framed.next().await {
         Some(Ok(MqttPacket::Connect(connect))) => {
             debug!(
                 peer = %peer,
                 client_id = %connect.client_id,
                 protocol = ?connect.protocol_level,
+                keep_alive = connect.keep_alive,
                 "MQTT CONNECT received"
             );
-            (connect.client_id.clone(), connect.protocol_level)
+            (
+                connect.client_id.clone(),
+                connect.protocol_level,
+                connect.keep_alive,
+            )
         }
         Some(Ok(other)) => {
             warn!(peer = %peer, packet = ?other, "expected CONNECT as first packet, closing");
@@ -72,17 +91,49 @@ pub async fn run_session(
         return;
     }
 
+    // Calculate keep-alive timeout: 1.5× client value (per MQTT spec §3.1.2.10).
+    // If client sends 0, use a server-side default to prevent zombie sessions.
+    let timeout_secs = if keep_alive == 0 {
+        DEFAULT_KEEP_ALIVE_SECS
+    } else {
+        (keep_alive as u64 * 3) / 2
+    };
+    let session_timeout = Duration::from_secs(timeout_secs);
+
     info!(
         peer = %peer,
         client_id = %client_id,
+        keep_alive_secs = keep_alive,
+        timeout_secs,
         "MQTT session established"
     );
 
-    // ---- Step 3: Main packet loop ----
-    while let Some(result) = framed.next().await {
+    metrics::connection_opened();
+
+    // ---- Step 3: Main packet loop (with keep-alive timeout) ----
+    loop {
+        // Wait for the next packet, or time out if the device goes silent.
+        let result = tokio::time::timeout(session_timeout, framed.next()).await;
+
         let packet = match result {
-            Ok(p) => p,
-            Err(e) => {
+            // Timeout: device missed keep-alive
+            Err(_) => {
+                warn!(
+                    peer = %peer,
+                    client_id = %client_id,
+                    timeout_secs,
+                    "keep-alive timeout, closing session"
+                );
+                metrics::message_dropped("_session", "keep_alive_timeout");
+                break;
+            }
+            // Stream ended (TCP closed)
+            Ok(None) => {
+                debug!(peer = %peer, client_id = %client_id, "connection closed by peer");
+                break;
+            }
+            // Decode error
+            Ok(Some(Err(e))) => {
                 warn!(
                     peer = %peer,
                     client_id = %client_id,
@@ -91,6 +142,8 @@ pub async fn run_session(
                 );
                 break;
             }
+            // Got a packet
+            Ok(Some(Ok(p))) => p,
         };
 
         match packet {
@@ -98,6 +151,8 @@ pub async fn run_session(
                 let qos = publish.qos;
                 let packet_id = publish.packet_id;
                 let mqtt_topic = publish.topic.clone();
+
+                metrics::message_received(&mqtt_topic);
 
                 let mut validation_failed = false;
 
@@ -152,6 +207,7 @@ pub async fn run_session(
                                     "payload validation failed, acknowledging to stop retries"
                                 );
                                 validation_failed = true;
+                                metrics::message_dropped(&mqtt_topic, "validation_failed");
                                 // Fall through to PUBACK (with reason_code for v5)
                             }
                             Err(e) => {
@@ -164,6 +220,7 @@ pub async fn run_session(
                                     error = %e,
                                     "ingestion failed (transient), withholding PUBACK"
                                 );
+                                metrics::message_dropped(&mqtt_topic, "transient_error");
                                 continue;
                             }
                         }
@@ -174,6 +231,7 @@ pub async fn run_session(
                             mqtt_topic = %mqtt_topic,
                             "no topic mapping found, dropping message"
                         );
+                        metrics::message_dropped(&mqtt_topic, "no_mapping");
                         // Still send PUBACK so the client doesn't retry forever
                     }
                 }
@@ -255,6 +313,7 @@ pub async fn run_session(
         }
     }
 
+    metrics::connection_closed();
     debug!(
         peer = %peer,
         client_id = %client_id,

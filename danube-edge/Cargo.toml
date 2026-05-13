@@ -12,7 +12,7 @@ danube-core = { path = "../danube-core" }
 danube-client = { path = "../danube-client" }
 danube-persistent-storage = { path = "../danube-persistent-storage" }
 danube-schema = { path = "../danube-schema" }
-mqtt-frame = "0.1.4"
+mqtt-frame = "0.1.5"
 
 async-trait = { workspace = true }
 tokio = { workspace = true }
