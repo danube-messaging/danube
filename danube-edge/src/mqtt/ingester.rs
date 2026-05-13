@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use std::fmt;
+
 use anyhow::Result;
 use danube_core::message::StreamMessage;
 use danube_persistent_storage::{StorageFactory, WalStorage};
@@ -19,6 +21,47 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::readiness::TopicReadiness;
+
+/// Ingestion error categories.
+///
+/// MQTT v3.1.1 has no way to signal rejection in PUBACK, so the session
+/// layer must decide whether to acknowledge (and drop) vs. withhold PUBACK
+/// (so the device retries) based on the error category:
+///
+/// - **Permanent** (`ValidationFailed`): payload will never be valid;
+///   send PUBACK to stop retries, but don't ingest.
+/// - **Transient** (`NotReady`, `InternalError`): might succeed later;
+///   withhold PUBACK so QoS 1 clients retry.
+#[derive(Debug)]
+pub enum IngestError {
+    /// Topic is not ready (cluster registration or schema resolution pending).
+    NotReady(String),
+    /// Payload failed schema validation. This is a permanent error —
+    /// retrying the same payload will always fail.
+    ValidationFailed(String),
+    /// WAL write or internal error (transient).
+    InternalError(anyhow::Error),
+}
+
+impl IngestError {
+    /// Returns `true` for errors where the payload is permanently invalid.
+    /// The MQTT session should send PUBACK to stop the device from retrying.
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, IngestError::ValidationFailed(_))
+    }
+}
+
+impl fmt::Display for IngestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IngestError::NotReady(msg) => write!(f, "topic not ready: {}", msg),
+            IngestError::ValidationFailed(msg) => write!(f, "validation failed: {}", msg),
+            IngestError::InternalError(err) => write!(f, "internal error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for IngestError {}
 
 /// Configuration for the ingester's batching behavior.
 #[derive(Debug, Clone)]
@@ -100,8 +143,10 @@ impl MqttIngester {
 
     /// Enqueue a message for batched WAL ingestion.
     ///
-    /// **Readiness gate**: rejects messages if the topic is not fully ready
-    /// (local + cluster + schema). QoS 1 MQTT clients will retry later.
+    /// **Readiness gate**: returns `NotReady` if the topic is not fully ready.
+    /// **Validation gate**: returns `ValidationFailed` if the payload fails
+    /// schema enforcement. This is a permanent error — the session should
+    /// still send PUBACK (MQTT v3.1.1 has no rejection mechanism).
     ///
     /// **Schema stamping**: if a schema is configured for this topic, stamps
     /// `schema_id` and `schema_version` on the message before buffering.
@@ -109,21 +154,28 @@ impl MqttIngester {
     /// If the buffer for this topic reaches `batch_size`, it is flushed
     /// immediately (inline). Otherwise the background flush loop will
     /// pick it up on the next timeout tick.
-    ///
-    /// Returns an error if the topic was not provisioned or is not ready.
-    pub async fn ingest(&self, topic_name: &str, mut message: StreamMessage) -> Result<()> {
-        // Gate: reject if topic is not ready
+    pub async fn ingest(
+        &self,
+        topic_name: &str,
+        mut message: StreamMessage,
+    ) -> std::result::Result<(), IngestError> {
+        // Gate: reject if topic is not ready (transient — device should retry)
         if !self.readiness.is_ready(topic_name).await {
-            return Err(anyhow::anyhow!(
+            return Err(IngestError::NotReady(format!(
                 "topic '{}' is not ready for ingestion (waiting for cluster registration or schema resolution)",
                 topic_name
-            ));
+            )));
         }
 
-        // Validate payload against schema (if enforce mode is active for this topic)
-        self.readiness
+        // Validate payload against schema (if enforce mode is active for this topic).
+        // Validation failures are permanent — the same payload will always fail.
+        if let Err(e) = self
+            .readiness
             .validate_payload(topic_name, &message.payload)
-            .await?;
+            .await
+        {
+            return Err(IngestError::ValidationFailed(e.to_string()));
+        }
 
         // Stamp schema metadata if a schema is configured for this topic
         if let Some(schema_info) = self.readiness.get_schema_info(topic_name).await {
@@ -134,17 +186,19 @@ impl MqttIngester {
         let mut buffers = self.buffers.lock().await;
 
         let buffer = buffers.get_mut(topic_name).ok_or_else(|| {
-            anyhow::anyhow!(
+            IngestError::InternalError(anyhow::anyhow!(
                 "MQTT ingester: topic '{}' not provisioned (no mapping in config)",
                 topic_name
-            )
+            ))
         })?;
 
         buffer.messages.push(message);
 
         // Flush inline if batch is full
         if buffer.messages.len() >= self.config.batch_size {
-            Self::flush_buffer(topic_name, buffer).await?;
+            Self::flush_buffer(topic_name, buffer)
+                .await
+                .map_err(IngestError::InternalError)?;
         }
 
         Ok(())

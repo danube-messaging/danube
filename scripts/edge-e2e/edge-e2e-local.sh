@@ -16,17 +16,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_DIR"
 
 # Parse flags
 SKIP_BUILD=false
 BUILD_MODE="release"
 BUILD_FLAG="--release"
+KEEP_ALIVE=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-build) SKIP_BUILD=true; shift ;;
         --debug)      BUILD_MODE="debug"; BUILD_FLAG=""; shift ;;
+        --keep-alive) KEEP_ALIVE=true; shift ;;
         *)            echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -140,11 +142,10 @@ echo -e "${GREEN}✅ Namespace 'edge1' provisioned.${NC}"
 # =============================================================================
 echo -e "${YELLOW}Registering 'telemetry-events' schema on cluster...${NC}"
 DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$ADMIN_BIN" schemas register \
-    --subject telemetry-events \
+    telemetry-events \
     --schema-type json_schema \
-    --schema-definition '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
-    --description "Edge telemetry events schema" \
-    2>/dev/null || true
+    --schema '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
+    --description "Edge telemetry events schema"
 echo -e "${GREEN}✅ Schema 'telemetry-events' registered.${NC}"
 
 # =============================================================================
@@ -170,6 +171,7 @@ mqtt:
     - mqtt_pattern: "device/+/telemetry"
       danube_topic: "/edge1/telemetry"
       schema_subject: "telemetry-events"
+      validation_policy: "enforce"
       extract_attributes:
         device_id: "\$1"
     - mqtt_pattern: "#"
@@ -204,42 +206,24 @@ for attempt in $(seq 1 15); do
 done
 
 # =============================================================================
-# Step 7: Run tests
+# Step 7: Infrastructure ready
 # =============================================================================
 echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}Running edge replication basic tests...${NC}"
-echo -e "${YELLOW}========================================${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Edge E2E infrastructure is READY ✅${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo "  Cluster brokers: 127.0.0.1:{6650,6651,6652}"
+echo "  Edge broker:     127.0.0.1:6653"
+echo "  MQTT gateway:    127.0.0.1:1883"
+echo ""
+echo "Run the Python E2E tests:"
+echo "  python3 scripts/edge-e2e/test_mqtt_ingestion.py"
 echo ""
 
-export EDGE_BROKER_ENDPOINT="http://127.0.0.1:6653"
-export CLOUD_BROKER_ENDPOINT="http://127.0.0.1:6650"
-export RUST_BACKTRACE=1
-
-set +e
-cargo test ${BUILD_FLAG} -p danube-edge --test edge_replication_basic -- --ignored --test-threads=1 --nocapture
-TEST_EXIT=$?
-set -e
-
-echo ""
-if [ $TEST_EXIT -eq 0 ]; then
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  All edge replication tests PASSED! ✅${NC}"
-    echo -e "${GREEN}========================================${NC}"
-else
-    echo -e "${RED}========================================${NC}"
-    echo -e "${RED}  Edge replication tests FAILED ❌${NC}"
-    echo -e "${RED}========================================${NC}"
-    echo ""
-    echo "Logs:"
-    echo "  Cluster: ${TEMP_DIR}/broker_665{0,1,2}.log"
-    echo "  Edge:    ${TEMP_DIR}/edge_broker.log"
-    echo ""
-    echo "--- Edge Broker Log (last 50 lines) ---"
-    tail -50 "${TEMP_DIR}/edge_broker.log" || true
-    echo ""
-    echo "--- Cluster Broker 6650 Log (last 30 lines) ---"
-    tail -30 "${TEMP_DIR}/broker_6650.log" || true
+if [ "$KEEP_ALIVE" = true ]; then
+    echo -e "${YELLOW}  Brokers are running in the background.${NC}"
+    echo -e "${YELLOW}  Press [ENTER] to stop the brokers and exit...${NC}"
+    read -r
 fi
 
-exit $TEST_EXIT

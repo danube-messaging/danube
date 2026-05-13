@@ -401,3 +401,92 @@ async fn enforce_validator_recompiles_on_schema_update() {
         .await
         .is_err());
 }
+
+/// Verifies that `build_schema_definition` correctly handles the cluster's
+/// serialized `SchemaDefinition` enum envelope.
+///
+/// The cluster sends `serde_json::to_vec(&SchemaDefinition::JsonSchema(...))`
+/// which wraps the raw schema in a tagged enum like:
+///   `{"JsonSchema":{"raw_schema":"...","fingerprint":"..."}}`
+///
+/// This test ensures the fast-path deserialization works end-to-end.
+/// It would have caught the bug where we previously treated the envelope
+/// bytes as raw schema text (which compiled a useless validator).
+#[tokio::test]
+async fn enforce_with_cluster_serialized_schema_envelope() {
+    use danube_schema::metadata::{JsonSchemaDefinition, SchemaDefinition};
+
+    // Build schema bytes exactly as the cluster would: serialize the full enum
+    let raw_json_schema = r#"{"type":"object","properties":{"temperature":{"type":"number"}},"required":["temperature"]}"#;
+    let schema_def = SchemaDefinition::JsonSchema(JsonSchemaDefinition::new(
+        raw_json_schema.to_string(),
+        "sha256:test-fingerprint".to_string(),
+    ));
+    let cluster_bytes = serde_json::to_vec(&schema_def).unwrap();
+
+    // Verify it's the envelope format, not raw schema
+    let envelope_str = String::from_utf8_lossy(&cluster_bytes);
+    assert!(
+        envelope_str.contains("JsonSchema"),
+        "test setup: bytes should be the serde envelope, got: {}",
+        envelope_str
+    );
+
+    let schema = CachedSchema {
+        subject: "telemetry-events".into(),
+        schema_id: 10,
+        schema_version: 1,
+        schema_type: "json_schema".into(),
+        fingerprint: "sha256:test-fingerprint".into(),
+        schema_definition: cluster_bytes,
+    };
+
+    let readiness = TopicReadiness::new();
+    readiness.track_topic("/edge1/telemetry").await;
+    readiness.mark_local_provisioned("/edge1/telemetry").await;
+    readiness
+        .mark_cluster_registered("/edge1/telemetry")
+        .await;
+    readiness
+        .mark_schema_resolved("/edge1/telemetry", Some(schema), true)
+        .await;
+
+    // Valid: has required "temperature" field
+    assert!(
+        readiness
+            .validate_payload("/edge1/telemetry", br#"{"temperature": 22.5}"#)
+            .await
+            .is_ok(),
+        "should accept valid payload with cluster-serialized schema"
+    );
+
+    // Valid: extra fields are fine
+    assert!(
+        readiness
+            .validate_payload(
+                "/edge1/telemetry",
+                br#"{"temperature": 18, "humidity": 60}"#
+            )
+            .await
+            .is_ok(),
+        "should accept payload with extra fields"
+    );
+
+    // Invalid: missing required "temperature"
+    assert!(
+        readiness
+            .validate_payload("/edge1/telemetry", br#"{"humidity": 55}"#)
+            .await
+            .is_err(),
+        "should reject payload missing required field (cluster envelope format)"
+    );
+
+    // Invalid: not valid JSON at all
+    assert!(
+        readiness
+            .validate_payload("/edge1/telemetry", b"not json")
+            .await
+            .is_err(),
+        "should reject non-JSON payload (cluster envelope format)"
+    );
+}

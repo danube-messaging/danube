@@ -12,13 +12,13 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use mqtt_frame::packet::{ConnAck, PubAck};
-use mqtt_frame::{MqttCodec, MqttPacket};
+use mqtt_frame::{MqttCodec, MqttPacket, ProtocolLevel};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use tracing::{debug, info, warn};
 
 use crate::mqtt::bridge::{self, TopicRouter};
-use crate::mqtt::ingester::MqttIngester;
+use crate::mqtt::ingester::{IngestError, MqttIngester};
 
 /// Run the session loop for a single MQTT connection.
 ///
@@ -36,7 +36,7 @@ pub async fn run_session(
     let mut framed = Framed::new(socket, MqttCodec::new());
 
     // ---- Step 1: CONNECT handshake ----
-    let client_id = match framed.next().await {
+    let (client_id, protocol_level) = match framed.next().await {
         Some(Ok(MqttPacket::Connect(connect))) => {
             debug!(
                 peer = %peer,
@@ -44,7 +44,7 @@ pub async fn run_session(
                 protocol = ?connect.protocol_level,
                 "MQTT CONNECT received"
             );
-            connect.client_id.clone()
+            (connect.client_id.clone(), connect.protocol_level)
         }
         Some(Ok(other)) => {
             warn!(peer = %peer, packet = ?other, "expected CONNECT as first packet, closing");
@@ -99,6 +99,8 @@ pub async fn run_session(
                 let packet_id = publish.packet_id;
                 let mqtt_topic = publish.topic.clone();
 
+                let mut validation_failed = false;
+
                 // Route the MQTT topic to a Danube topic
                 match router.resolve(&mqtt_topic) {
                     Some(match_result) => {
@@ -130,18 +132,40 @@ pub async fn run_session(
                         );
 
                         // Ingest (batched)
-                        if let Err(e) =
-                            ingester.ingest(&match_result.danube_topic, stream_msg).await
-                        {
-                            warn!(
-                                peer = %peer,
-                                client_id = %client_id,
-                                mqtt_topic = %mqtt_topic,
-                                error = %e,
-                                "ingestion failed"
-                            );
-                            // Don't send PUBACK on failure (QoS 1 will retry)
-                            continue;
+                        match ingester.ingest(&match_result.danube_topic, stream_msg).await {
+                            Ok(()) => {
+                                // Success — fall through to send PUBACK
+                            }
+                            Err(IngestError::ValidationFailed(reason)) => {
+                                // Permanent error: payload will never be valid.
+                                // - MQTT v5: send PUBACK with reason_code 0x99
+                                //   (Payload format invalid) so the device knows why.
+                                // - MQTT v3.1.1: send normal PUBACK to stop retries
+                                //   (v3.1.1 has no rejection mechanism).
+                                // In both cases, the message is dropped (not ingested).
+                                warn!(
+                                    peer = %peer,
+                                    client_id = %client_id,
+                                    mqtt_topic = %mqtt_topic,
+                                    reason = %reason,
+                                    protocol = ?protocol_level,
+                                    "payload validation failed, acknowledging to stop retries"
+                                );
+                                validation_failed = true;
+                                // Fall through to PUBACK (with reason_code for v5)
+                            }
+                            Err(e) => {
+                                // Transient error (not ready, WAL failure, etc.).
+                                // Withhold PUBACK so QoS 1 clients retry later.
+                                warn!(
+                                    peer = %peer,
+                                    client_id = %client_id,
+                                    mqtt_topic = %mqtt_topic,
+                                    error = %e,
+                                    "ingestion failed (transient), withholding PUBACK"
+                                );
+                                continue;
+                            }
                         }
                     }
                     None => {
@@ -157,8 +181,21 @@ pub async fn run_session(
                 // QoS 1: acknowledge
                 if qos == 1 {
                     if let Some(pid) = packet_id {
+                        // For MQTT v5 validation failures, set reason_code 0x99
+                        // (Payload format invalid). For v3.1.1 or success, None.
+                        let reason_code = if validation_failed
+                            && protocol_level == ProtocolLevel::V5
+                        {
+                            Some(0x99) // Payload format invalid
+                        } else {
+                            None // Success (or v3.1.1 accept-but-drop)
+                        };
+
                         if let Err(e) = framed
-                            .send(MqttPacket::PubAck(PubAck { packet_id: pid }))
+                            .send(MqttPacket::PubAck(PubAck {
+                                packet_id: pid,
+                                reason_code,
+                            }))
                             .await
                         {
                             warn!(

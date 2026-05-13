@@ -85,15 +85,26 @@ impl TopicState {
 }
 
 /// Build a `SchemaDefinition` from schema type string and raw definition bytes.
-/// Returns `None` for unknown types or empty definitions.
+///
+/// The cluster sends `serde_json::to_vec(&SchemaDefinition)` which wraps the
+/// raw schema inside a tagged enum envelope (e.g.
+/// `{"JsonSchema":{"raw_schema":"…","fingerprint":"…"}}`).
+/// We first try to deserialize that envelope directly; if that fails (e.g.
+/// when the bytes are plain schema text), we fall back to manual construction.
 fn build_schema_definition(schema_type: &str, definition: &[u8]) -> Option<SchemaDefinition> {
     if definition.is_empty() {
         return None;
     }
+
+    // Fast path: the cluster serializes the full SchemaDefinition enum via serde_json.
+    if let Ok(schema_def) = serde_json::from_slice::<SchemaDefinition>(definition) {
+        return Some(schema_def);
+    }
+
+    // Fallback: treat the bytes as raw schema content (e.g. plain JSON schema text).
     let raw = String::from_utf8_lossy(definition).to_string();
     match schema_type {
         "json_schema" | "json" => {
-            // Use an empty fingerprint; the edge doesn't need it for validation.
             Some(SchemaDefinition::JsonSchema(JsonSchemaDefinition::new(
                 raw,
                 String::new(),
