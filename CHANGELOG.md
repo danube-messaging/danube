@@ -1,3 +1,33 @@
+<!-- v0.14.0 START -->
+## v0.14.0 - 2026-05-14
+
+**Danube Edge — IoT Ingestion at the Edge**
+
+This release introduces **Danube Edge**, a lightweight edge broker that accepts MQTT device connections and replicates data to the central Danube cluster. IoT devices publish via standard MQTT v3.1.1/v5.0; the edge broker validates payloads against schemas, batches messages into a local WAL, and continuously replicates to the cloud, bridging the gap between constrained edge networks and Danube's cluster-scale processing.
+
+### 🌐 Edge Broker
+
+* **MQTT ingestion gateway** (#217, #218) — Full MQTT v3.1.1 and v5.0 support with per-connection session management, topic routing via wildcard patterns (`device/+/telemetry`), and attribute extraction from topic segments. by @danrusei in 68fd53b, 2a40171
+
+* **WAL-based edge replication** (#220) — Messages are batched into a local WAL and tail-replicated to the cluster with checkpoint-based resumption. No data is lost on transient network failures. by @danrusei in c45eb04
+
+* **Schema enforcement at the edge** (#221, #222) — Schemas are resolved from the cluster registry at startup and enforced locally. Invalid payloads receive protocol-appropriate feedback: MQTT v5 gets `PUBACK` with reason code `0x99` (Payload format invalid); v3.1.1 gets accept-but-drop to prevent infinite retries. by @danrusei in 7f52e31, 7a23715
+
+### 🛡️ Production Hardening
+
+* **Keep-alive timeout & max payload size** (#223) — Sessions respect the MQTT keep-alive contract (1.5× timeout per spec); oversized packets are rejected at the codec level before memory allocation. by @danrusei in bf3033f
+
+* **Graceful shutdown** — MQTT server and ingester flush loop respond to shutdown signals; in-flight WAL batches are flushed before exit.
+
+* **Connection limits & observability** — Configurable `max_connections` semaphore prevents resource exhaustion; Prometheus metrics cover connections, message throughput, validation drops, and flush latency.
+
+### 🏗️ Infrastructure
+
+* **Schema registry extraction** (#219) — Moved the schema registry into its own `danube-schema` crate, enabling the edge broker to validate payloads without pulling in the full broker. by @danrusei in 1b852e1
+
+* **Broker startup refactor** (#215, #216) — Untangled cluster orchestration from the core `DanubeService`, enabling standalone and edge modes to start without Raft voter overhead. by @danrusei in 806e527, 3fe9604
+<!-- v0.14.0 END -->
+
 <!-- v0.12.0 START -->
 ## v0.12.0 - 2026-04-23
 
