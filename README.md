@@ -1,142 +1,135 @@
 # 🌊 Danube Messaging
 
-**A self-contained, lightweight Cloud-Native Messaging Platform, built in Rust**
-
-Danube is an open-source distributed messaging broker platform designed to be cloud-native and cost-effective. It features embedded Raft consensus for metadata replication, built on Tokio and openraft. For reliable topics, Danube combines a local Write-Ahead Log (WAL), durable segment storage, and metadata-driven recovery so it can deliver low-latency dispatch while supporting local disks, shared filesystems, and object stores.
+**A lightweight, cloud-native messaging platform built in Rust**
 
 [![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
 [![Rust](https://img.shields.io/badge/🦀-Rust-000000)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/📜-Apache%202.0-green)](LICENSE)
 
-## 🚀 Get Started with Danube
+Danube is an open-source messaging platform built in Rust for teams that need reliable pub/sub and streaming without the operational overhead. Built on [Tokio](https://tokio.rs/) and [openraft](https://github.com/databendlabs/openraft), metadata is replicated through embedded Raft consensus, so there are no external dependencies to deploy or manage. Run it as a single-node **standalone** broker, scale to a multi-node **cluster**, or deploy at the **edge** to ingest MQTT device data into the cloud, all from the same binary.
 
-### Deploy a Cluster with Docker Compose
+📖 **Full documentation at [danube-docs.dev-state.com](https://danube-docs.dev-state.com/)**
 
-Spin up a 3-broker high-availability cluster with Prometheus monitoring in seconds.
+---
 
-📖 **[Docker Setup Guide →](docker/README.md)**
+## Try It in 30 Seconds
 
-### Run a Single-Node Broker Locally
-
-No Docker, no config file needed. Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases), then:
+Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases) and start a broker:
 
 ```bash
-./danube-broker --single-node --data-dir ~/danube-data
+danube-broker --mode standalone --data-dir ./danube-data
 ```
 
-This starts a self-contained single-broker cluster with sensible local defaults:
+That's it. Broker on `127.0.0.1:6650`, admin on `127.0.0.1:50051`, no config file needed.
 
-- Broker on `127.0.0.1:6650`, Admin on `127.0.0.1:50051`
-- Embedded Raft metadata store persisted under `~/danube-data/raft`
-- Local WAL storage under `~/danube-data/wal`
-- No authentication, no TLS — ready for local development and testing
+Test with the CLI:
 
-Data is preserved across restarts. To start fresh, remove the data directory.
+```bash
+# Terminal 1: produce
+danube-cli produce -s http://127.0.0.1:6650 -t /default/demo -c 10 -m "Hello, Danube!"
 
-### Tools
+# Terminal 2: consume
+danube-cli consume -s http://127.0.0.1:6650 -t /default/demo -m my_sub
+```
 
-- **[danube-cli](https://danube-docs.dev-state.com/danube_cli/getting_started/)** — Command-line producer and consumer for quick testing
-- **[danube-admin](https://danube-docs.dev-state.com/danube_admin/getting_started/)** — Cluster administration (CLI, MCP, Web UI)
+Or use any of the [client libraries](#client-libraries) (Rust, Go, Java, Python).
 
-## Architecture
+---
 
-### 🏗️ **Cluster & Broker Characteristics**
+## Three Deployment Modes
 
-- **Embedded Raft consensus**: Metadata replicated across brokers via openraft — no ETCD, no ZooKeeper, no external dependencies
-- **Horizontal scaling**: Add brokers in seconds with zero-downtime expansion
-- **Intelligent load balancing**: Automatic topic placement and rebalancing across brokers
-- **Broker resilience**: Automatic leader election, failover, and topic reconciliation on restart
-- **Security**: TLS/mTLS, multi-method authentication, and fine-grained RBAC authorization
+Danube runs as a single binary in three modes. Choose the one that fits your use case:
 
-### 🌩️ **Write-Ahead Log + Durable Storage**
+### 🖥️ Standalone
 
-- **Flexible storage modes**: `local`, `shared_fs`, and `object_store`
-- **Cloud-ready durable history**: AWS S3, Google Cloud Storage, Azure Blob, or shared filesystems depending on mode
-- **Hot path optimization**: Messages served from in-memory WAL cache and local WAL files
-- **Tiered historical replay**: Durable segments for older offsets with seamless handoff to the WAL tail
-- **Metadata-driven recovery and topic moves**: Continuous offsets across restarts and broker transfers
+A single self-contained broker. Zero config, zero dependencies. Ideal for development, CI, and single-server deployments.
 
-### 🎯 **Intelligent Load Management**
+```bash
+danube-broker --mode standalone --data-dir ./danube-data
+```
 
-- **Automated rebalancing**: Detects cluster imbalances and redistributes topics automatically
-- **Smart topic assignment**: Places new topics on least-loaded brokers using configurable strategies
-- **Resource monitoring**: Tracks CPU, memory, throughput, and backlog per broker in real-time
-- **Configurable policies**: Conservative, balanced, or aggressive rebalancing based on workload
-- **Graceful topic migration**: Moves topics between brokers
+### 🌐 Cluster
 
-## Core Capabilities
+Multiple brokers forming a Raft consensus group with automated topic distribution, leader election, and load-based rebalancing. The recommended mode for production.
 
-### 📨 **Message Delivery**
+```bash
+danube-broker --config-file danube_broker.yml \
+  --broker-addr 0.0.0.0:6650 --raft-addr 0.0.0.0:7650 \
+  --data-dir ./data/raft --seed-nodes "node1:7650,node2:7650,node3:7650"
+```
 
-- **[Topics](https://danube-docs.dev-state.com/concepts/topics/)**: Partitioned and non-partitioned with automatic load balancing
-- **[Reliable Dispatch](https://danube-docs.dev-state.com/concepts/dispatch_strategy/)**: At-least-once delivery with configurable failure policies (NACK, retry backoff, dead-letter queues)
-- **Non-Reliable Dispatch**: High-throughput, low-latency for real-time scenarios
+Deploy with [Docker Compose](docker/README.md) or [Kubernetes + Helm](https://danube-docs.dev-state.com/getting_started/Danube_kubernetes/).
 
-### 🔄 **Subscription Models**
+### 🏭 Edge
 
-- **[Exclusive](https://danube-docs.dev-state.com/concepts/subscriptions/)**: Single consumer per subscription
-- **Shared**: Load-balanced message distribution across consumers
-- **Failover**: Automatic consumer failover with ordered delivery
-- **Key-Shared**: Key-based message routing, all messages with the same routing key are delivered to the same consumer, guaranteeing per-key ordering while distributing load across consumers
+A lightweight MQTT gateway that ingests data from IoT devices at the edge and replicates it to the central cluster. Devices publish via standard MQTT; the edge broker validates payloads against schemas, buffers into a local WAL, and continuously replicates to the cloud.
 
-#### Key-Shared Subscriptions
+```bash
+danube-broker --mode edge --data-dir ./edge-data --edge-config edge.yaml
+```
 
-Key-Shared subscriptions add **key-affinity routing** on top of multi-consumer load balancing. Each routing key is assigned to exactly one consumer via consistent hashing, ensuring:
+```
+MQTT devices ──► Edge broker ──► Local WAL ──► Cluster
+                  (MQTT v3.1/v5)   (survives     (gRPC
+                                    outages)     replication)
+```
 
-- **Per-key ordering**: All messages with the same key are processed by the same consumer, in order
-- **Automatic load distribution**: Different keys are spread across consumers — no manual partitioning
-- **Consumer elasticity**: When consumers join or leave, only the affected keys are redistributed
-- **Key filtering** gives consumers explicit control over which keys they handle.
+Edge mode is designed for factory floors, remote sites, and any environment where constrained devices speak MQTT and need resilient data delivery to a central platform.
 
-### 📋 **Schema Registry**
+📖 **[Broker Modes documentation](https://danube-docs.dev-state.com/getting_started/Broker_modes/)**
 
-- **Centralized schema management**: Single source of truth for message schemas across all topics
-- **Schema versioning**: Automatic version tracking with compatibility enforcement
-- **Multiple formats**: Bytes, String, Number, JSON Schema, Avro, Protobuf
-- **Validation & governance**: Prevent invalid messages and ensure data quality
+---
 
-### 🔒 **Security**
+## Key Features
 
-- **Authentication**: API-key service accounts, JWT bearer tokens, and mTLS broker-internal identity. Auth mode configurable (`none`, `tls`)
-- **RBAC authorization**: Fine-grained permissions (`Produce`, `Consume`, `Lookup`, `ManageTopic`, etc.) with hierarchical scope resolution (topic → namespace → cluster). Default-deny when auth is enabled
-- **Security management**: Role and binding CRUD via gRPC and `danube-admin security` CLI
+📨 **Messaging** : Topics (partitioned / non-partitioned), reliable (at-least-once) and non-reliable dispatch, dead-letter queues
 
-### 🤖 **AI-Powered Administration**
+🔄 **Subscriptions** : Exclusive, Shared, Failover, and Key-Shared (per-key ordering via consistent hashing)
 
-Danube features **the AI-native messaging platform administration** through the Model Context Protocol (MCP):
+💾 **Storage** : Local WAL, shared filesystem, or S3/GCS/Azure object store with tiered replay
 
-- **Natural language cluster management**: Manage your cluster by talking to AI assistants (Claude, Cursor, Windsurf)
-- **40+ intelligent tools**: Full cluster operations accessible via AI - topics, schemas, brokers, diagnostics, metrics
-- **Automated troubleshooting**: AI-guided workflows for consumer lag analysis, health checks, and performance optimization
-- **Multiple interfaces**: CLI commands, Web UI, or AI conversation - your choice
+📋 **Schema Registry** : JSON Schema, Avro, Protobuf with versioning and compatibility enforcement
 
-**Example**: Ask Claude *"What's the cluster balance?"* or *"Create a partitioned topic for analytics"* and watch it happen.
+🔒 **Security** : TLS/mTLS, JWT, API-key auth, RBAC with default-deny
 
-## Danube Clients
+🏗️ **Cluster** : Embedded Raft consensus, automated rebalancing, zero-downtime scaling
 
-### [Official Clients](https://danube-docs.dev-state.com/client_libraries/clients/)
+🏭 **Edge** : MQTT v3.1.1/v5.0 ingestion, schema validation at the edge, WAL-buffered replication
 
-- **[Rust Client](https://crates.io/crates/danube-client)** - learn more Rust [examples](danube-client/examples/)
-- **[Go Client](https://pkg.go.dev/github.com/danrusei/danube-go)** - learn more Go [examples](https://github.com/danube-messaging/danube-go/tree/main/examples)
-- **[Java Client](https://central.sonatype.com/namespace/com.danube-messaging)** - learn more Java [examples](https://github.com/danube-messaging/danube-java/tree/main/examples)
-- **[Python Client](https://pypi.org/project/danube-client/)** - learn more Python [examples](https://github.com/danube-messaging/danube-py/tree/main/examples)
+🤖 **AI Admin** : [MCP integration](https://danube-docs.dev-state.com/danube_admin/ai_admin_assistant/) : manage your cluster with natural language via Claude, Cursor, Windsurf
 
-### Community Contributions
+📖 **Learn more** : [Topics](https://danube-docs.dev-state.com/concepts/topics/) · [Subscriptions](https://danube-docs.dev-state.com/concepts/subscriptions/) · [Persistence](https://danube-docs.dev-state.com/concepts/persistence/) · [Security](https://danube-docs.dev-state.com/concepts/security/) · [Architecture](https://danube-docs.dev-state.com/architecture/architecture/)
 
-Contributions in **NodeJs**, **C / C++ / C#**, **Ruby**, and other languages are welcome! Join our growing ecosystem.
+---
 
-## Development & Contribution
+## Client Libraries
 
-**Get involved** - Danube is actively developed with new features added regularly.
+- **Rust** : [danube-client](https://crates.io/crates/danube-client) · [examples](danube-client/examples/)
+- **Go** : [danube-go](https://pkg.go.dev/github.com/danrusei/danube-go) · [examples](https://github.com/danube-messaging/danube-go/tree/main/examples)
+- **Java** : [danube-java](https://central.sonatype.com/namespace/com.danube-messaging) · [examples](https://github.com/danube-messaging/danube-java/tree/main/examples)
+- **Python** : [danube-client](https://pypi.org/project/danube-client/) · [examples](https://github.com/danube-messaging/danube-py/tree/main/examples)
 
-**[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** | **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** | **[📖 Development Guide](https://danube-docs.dev-state.com/development/dev_environment/)**
+Contributions for other languages (Node.js, C#, Ruby) are welcome!
 
-### Project Structure
+## Tools
 
-- **[danube-broker](danube-broker/)** - Core messaging platform
-- **[danube-raft](danube-raft/)** - Raft consensus implementation for metadata replication
-- **[danube-persistent-storage](danube-persistent-storage/)** - WAL and durable storage engine for reliable topics
-- **[danube-client](danube-client/)** - Async Rust client library  
-- **[danube-cli](danube-cli/)** - Command-line producer/consumer tools
-- **[danube-admin](danube-admin/)** - Unified admin tool (CLI + AI/MCP + Web UI)
+- **[danube-cli](https://danube-docs.dev-state.com/danube_cli/getting_started/)** : Command-line producer and consumer
+- **[danube-admin](https://danube-docs.dev-state.com/danube_admin/getting_started/)** : Cluster administration (CLI, AI/MCP, Web UI)
+
+## Project Structure
+
+- **[danube-broker](danube-broker/)** : Core messaging broker
+- **[danube-edge](danube-edge/)** : Edge MQTT gateway and replicator
+- **[danube-schema](danube-schema/)** : Schema registry (JSON Schema, Avro, Protobuf)
+- **[danube-raft](danube-raft/)** : Embedded Raft consensus
+- **[danube-persistent-storage](danube-persistent-storage/)** : WAL and durable storage engine
+- **[danube-client](danube-client/)** : Async Rust client library
+- **[danube-cli](danube-cli/)** : Command-line producer/consumer
+- **[danube-admin](danube-admin/)** : Unified admin tool
+
+## Contributing
+
+**Get involved** : Danube is actively developed with new features added regularly.
+
+**[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** · **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** · **[📖 Development Guide](https://danube-docs.dev-state.com/contributing/dev_environment/)**
