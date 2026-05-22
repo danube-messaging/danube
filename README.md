@@ -1,9 +1,11 @@
 
 <p align="center">
-  <img src="Danube_no_background_sm.png" alt="Danube Logo" width="400">
+  <img src="Danube_logo.png" alt="Danube Logo" width="400">
 </p>
 
-**A lightweight, cloud-native messaging platform built in Rust**
+<p align="center">
+  <b>Reliable pub/sub and streaming platform built in Rust. One binary.</b>
+</p>
 
 [![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-messaging.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
