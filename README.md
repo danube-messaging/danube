@@ -1,4 +1,7 @@
-# 🌊 Danube Messaging
+
+<p align="center">
+  <img src="Danube_no_background_sm.png" alt="Danube Logo" width="400">
+</p>
 
 **A lightweight, cloud-native messaging platform built in Rust**
 
