@@ -260,7 +260,7 @@ This release introduces the **Schema Registry** with full compatibility checking
 
 * **Schema Registry with JSON Schema Compatibility** (#166) - Implemented backward, forward, and full compatibility checking for JSON Schema in `danube-broker/src/schema/json/`. Complements existing Avro support. by @danrusei in 81ddac7
 
-* **Complete Schema Registry Implementation** (#165) - Added centralized schema management with versioning, compatibility enforcement (Backward/Forward/Full/None modes), and support for JSON Schema, Avro, and Protobuf. See [Schema Registry Architecture](https://danube-docs.dev-state.com/architecture/schema_registry_architecture/) for details. by @danrusei in 6c6571a
+* **Complete Schema Registry Implementation** (#165) - Added centralized schema management with versioning, compatibility enforcement (Backward/Forward/Full/None modes), and support for JSON Schema, Avro, and Protobuf. See [Schema Registry Architecture](https://danube-messaging.com/architecture/schema-registry/) for details. by @danrusei in 6c6571a
 
 ### 🔧 Reliability & Performance
 

@@ -2,7 +2,7 @@
 
 An async Rust client library for interacting with Danube Messaging platform.
 
-🌊 [Danube Messaging](https://github.com/danube-messaging/danube) is an open-source **distributed** Messaging Broker platform written in Rust. Consult [the documentation](https://danube-docs.dev-state.com/) for supported concepts and the platform architecture.
+🌊 [Danube Messaging](https://github.com/danube-messaging/danube) is an open-source **distributed** Messaging Broker platform written in Rust. Consult [the documentation](https://danube-messaging.com/) for supported concepts and the platform architecture.
 
 ## Features
 
@@ -162,12 +162,12 @@ payments_consumer.subscribe().await?;
 
 For detailed guides and examples on advanced capabilities:
 
-- **[Producer Advanced Features](https://danube-docs.dev-state.com/client_libraries/producer-advanced/)** - Partitions, reliable dispatch, and schema integration
-- **[Consumer Advanced Features](https://danube-docs.dev-state.com/client_libraries/consumer-advanced/)** - Partitioned consumption, failover patterns, and batch processing
-- **[Schema Registry Integration](https://danube-docs.dev-state.com/client_libraries/schema-registry/)** - Type-safe messaging with schema validation and evolution
+- **[Producer Advanced Features](https://danube-messaging.com/client-libraries/producer/)** - Partitions, reliable dispatch, and schema integration
+- **[Consumer Advanced Features](https://danube-messaging.com/client-libraries/consumer/)** - Partitioned consumption, failover patterns, and batch processing
+- **[Schema Registry Integration](https://danube-messaging.com/client-libraries/schema-registry/)** - Type-safe messaging with schema validation and evolution
 
 Browse the [examples directory](https://github.com/danube-messaging/danube/tree/main/danube-client/examples) for complete working code.
 
 ## Contribution
 
-Check [the documentation](https://danube-docs.dev-state.com/) on how to setup a Danube Broker.
+Check [the documentation](https://danube-messaging.com/) on how to setup a Danube Broker.

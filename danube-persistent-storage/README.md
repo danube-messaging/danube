@@ -132,13 +132,11 @@ The most important exported configuration types are:
 ## Documentation
 
 - **Persistence & Storage**
-  - <https://danube-docs.dev-state.com/concepts/persistence/>
-- **Persistence Architecture**
-  - <https://danube-docs.dev-state.com/architecture/persistence/>
+  - <https://danube-messaging.com/concepts/persistence/>
 - **Reliable Topic Moves**
-  - <https://danube-docs.dev-state.com/architecture/reliable_topic_move/>
+  - <https://danube-messaging.com/architecture/reliable-topic-move/>
 - **Broker Configuration Reference**
-  - <https://danube-docs.dev-state.com/reference/broker_configuration/>
+  - <https://danube-messaging.com/reference/broker-configuration/>
 
 Use the documentation for configuration examples, architecture details, and implementation behavior. This README is intentionally kept at the “what it does and when to use it” level.
 

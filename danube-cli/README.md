@@ -283,7 +283,7 @@ danube-cli produce \
 
 You can explore more advanced features:
 
-1. 📤 **[Producer Guide](https://danube-docs.dev-state.com/danube_clis/danube_cli/getting-started/)** - CLI getting started
-2. 📤 **[Producer Guide](https://danube-docs.dev-state.com/danube_clis/danube_cli/producer/)** - Message production
-3. 📥 **[Consumer Guide](https://danube-docs.dev-state.com/danube_clis/danube_cli/consumer/)** - Message consumption
-4. 📋 **[Schema Registry](https://danube-docs.dev-state.com/danube_clis/danube_cli/schema_registry/)** - Schema management
+1. 📤 **[Danube CLI Guide](https://danube-messaging.com/tools/danube-cli/)** - CLI overview and commands
+2. 📤 **[Producer Guide](https://danube-messaging.com/client-libraries/producer/)** - Message production
+3. 📥 **[Consumer Guide](https://danube-messaging.com/client-libraries/consumer/)** - Message consumption
+4. 📋 **[Schema Registry](https://danube-messaging.com/client-libraries/schema-registry/)** - Schema management

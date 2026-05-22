@@ -2,23 +2,30 @@
 
 **A lightweight, cloud-native messaging platform built in Rust**
 
-[![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-docs.dev-state.com/)
+[![Documentation](https://img.shields.io/badge/📑-Documentation-blue)](https://danube-messaging.com/)
 [![Docker](https://img.shields.io/badge/🐳-Docker%20Ready-2496ED)](https://github.com/danube-messaging/danube/tree/main/docker)
 [![Rust](https://img.shields.io/badge/🦀-Rust-000000)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/📜-Apache%202.0-green)](LICENSE)
 
 Danube is an open-source messaging platform built in Rust for teams that need reliable pub/sub and streaming without the operational overhead. Built on [Tokio](https://tokio.rs/) and [openraft](https://github.com/databendlabs/openraft), metadata is replicated through embedded Raft consensus, so there are no external dependencies to deploy or manage. Run it as a single-node **standalone** broker, scale to a multi-node **cluster**, or deploy at the **edge** to ingest MQTT device data into the cloud, all from the same binary.
 
-📖 **Full documentation at [danube-docs.dev-state.com](https://danube-docs.dev-state.com/)**
+📖 **Full documentation at [danube-messaging.com](https://danube-messaging.com/)**
 
 ---
 
-## Try It in 30 Seconds
+## Try It in minutes
 
-Download the latest `danube-broker` binary from the [releases page](https://github.com/danube-messaging/danube/releases) and start a broker:
+Download the latest binary from the [releases page](https://github.com/danube-messaging/danube/releases) or pull the container image:
 
 ```bash
+# Binary
 danube-broker --mode standalone --data-dir ./danube-data
+
+# Or Docker
+docker run -p 6650:6650 -p 50051:50051 \
+  ghcr.io/danube-messaging/danube-broker:latest \
+  --mode standalone --data-dir /data \
+  --broker-addr 0.0.0.0:6650 --admin-addr 0.0.0.0:50051
 ```
 
 That's it. Broker on `127.0.0.1:6650`, admin on `127.0.0.1:50051`, no config file needed.
@@ -59,7 +66,7 @@ danube-broker --config-file danube_broker.yml \
   --data-dir ./data/raft --seed-nodes "node1:7650,node2:7650,node3:7650"
 ```
 
-Deploy with [Docker Compose](docker/README.md) or [Kubernetes + Helm](https://danube-docs.dev-state.com/getting_started/Danube_kubernetes/).
+Deploy with [Docker Compose](docker/README.md) or [Kubernetes + Helm](https://danube-messaging.com/getting-started/kubernetes/).
 
 ### 🏭 Edge
 
@@ -77,7 +84,7 @@ MQTT devices ──► Edge broker ──► Local WAL ──► Cluster
 
 Edge mode is designed for factory floors, remote sites, and any environment where constrained devices speak MQTT and need resilient data delivery to a central platform.
 
-📖 **[Broker Modes documentation](https://danube-docs.dev-state.com/getting_started/Broker_modes/)**
+📖 **[Broker Modes documentation](https://danube-messaging.com/getting-started/broker-modes/)**
 
 ---
 
@@ -97,25 +104,25 @@ Edge mode is designed for factory floors, remote sites, and any environment wher
 
 🏭 **Edge** : MQTT v3.1.1/v5.0 ingestion, schema validation at the edge, WAL-buffered replication
 
-🤖 **AI Admin** : [MCP integration](https://danube-docs.dev-state.com/danube_admin/ai_admin_assistant/) : manage your cluster with natural language via Claude, Cursor, Windsurf
+🔌 **[Danube Connect](https://danube-messaging.com/integrations/danube-connect/)** : Out-of-process connector ecosystem for databases, analytics, and IoT (MQTT, Delta Lake, Qdrant, SurrealDB, and more)
 
-📖 **Learn more** : [Topics](https://danube-docs.dev-state.com/concepts/topics/) · [Subscriptions](https://danube-docs.dev-state.com/concepts/subscriptions/) · [Persistence](https://danube-docs.dev-state.com/concepts/persistence/) · [Security](https://danube-docs.dev-state.com/concepts/security/) · [Architecture](https://danube-docs.dev-state.com/architecture/architecture/)
+🤖 **AI Admin** : [MCP integration](https://danube-messaging.com/admin/mcp/) for managing your cluster with natural language via Claude, Cursor, or Windsurf
+
+📖 **Learn more** : [Topics](https://danube-messaging.com/concepts/topics/) · [Subscriptions](https://danube-messaging.com/concepts/subscriptions/) · [Persistence](https://danube-messaging.com/concepts/persistence/) · [Security](https://danube-messaging.com/security/overview/) · [Architecture](https://danube-messaging.com/architecture/overview/)
 
 ---
 
 ## Client Libraries
 
 - **Rust** : [danube-client](https://crates.io/crates/danube-client) · [examples](danube-client/examples/)
-- **Go** : [danube-go](https://pkg.go.dev/github.com/danrusei/danube-go) · [examples](https://github.com/danube-messaging/danube-go/tree/main/examples)
+- **Go** : [danube-go](https://pkg.go.dev/github.com/danube-messaging/danube-go) · [examples](https://github.com/danube-messaging/danube-go/tree/main/examples)
 - **Java** : [danube-java](https://central.sonatype.com/namespace/com.danube-messaging) · [examples](https://github.com/danube-messaging/danube-java/tree/main/examples)
 - **Python** : [danube-client](https://pypi.org/project/danube-client/) · [examples](https://github.com/danube-messaging/danube-py/tree/main/examples)
 
-Contributions for other languages (Node.js, C#, Ruby) are welcome!
-
 ## Tools
 
-- **[danube-cli](https://danube-docs.dev-state.com/danube_cli/getting_started/)** : Command-line producer and consumer
-- **[danube-admin](https://danube-docs.dev-state.com/danube_admin/getting_started/)** : Cluster administration (CLI, AI/MCP, Web UI)
+- **[danube-cli](https://danube-messaging.com/tools/danube-cli/)** : Command-line producer and consumer
+- **[danube-admin](https://danube-messaging.com/admin/overview/)** : Cluster administration (CLI, AI/MCP, Web UI)
 
 ## Project Structure
 
@@ -130,6 +137,6 @@ Contributions for other languages (Node.js, C#, Ruby) are welcome!
 
 ## Contributing
 
-**Get involved** : Danube is actively developed with new features added regularly.
+Danube is actively developed with new features added regularly. See the [contribution guide](https://danube-messaging.com/contributing/) for how to set up a local development environment, run tests, and submit pull requests.
 
-**[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** · **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** · **[📖 Development Guide](https://danube-docs.dev-state.com/contributing/dev_environment/)**
+**[🐛 Report Issues](https://github.com/danube-messaging/danube/issues)** · **[💡 Request Features](https://github.com/danube-messaging/danube/issues/new)** · **[📖 Development Guide](https://danube-messaging.com/contributing/)**

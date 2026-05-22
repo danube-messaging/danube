@@ -288,4 +288,4 @@ danube-admin topics create --help            # Specific command help
 
 ---
 
-**Need more help?** Check out the [Danube Documentation](https://danube-docs.dev-state.com/) or [open an issue](https://github.com/danube-messaging/danube/issues).
+**Need more help?** Check out the [Danube Documentation](https://danube-messaging.com/) or [open an issue](https://github.com/danube-messaging/danube/issues).
