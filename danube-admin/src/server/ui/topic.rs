@@ -6,7 +6,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::metrics::queries::{
     fetch_latency_percentiles, fetch_message_size, fetch_producer_quality, fetch_reliable_metrics,
@@ -14,7 +13,6 @@ use crate::metrics::queries::{
 };
 use crate::server::app::{AppState, CacheEntry};
 use serde::Serialize;
-use serde_json;
 
 #[derive(Clone, Serialize)]
 pub struct TopicPage {
@@ -27,18 +25,11 @@ pub struct TopicPage {
 #[derive(Debug, Serialize, Clone)]
 pub struct Topic {
     pub name: String,
-
-    // TODO: Remove once UI is updated to use schema registry fields
-    // Old UI expects type_schema (0=none, 1=schema) and encoded schema_data
-    pub type_schema: i32,    // DEPRECATED: 0 = no schema, 1 = has schema
-    pub schema_data: String, // DEPRECATED: base64-encoded JSON with schema info
-
-    // TODO: Add once UI is updated:
-    // pub schema_subject: Option<String>,
-    // pub schema_id: Option<i32>,
-    // pub schema_version: Option<i32>,
-    // pub schema_type: Option<String>,
-    // pub compatibility_mode: Option<String>,
+    pub schema_subject: Option<String>,
+    pub schema_id: Option<u64>,
+    pub schema_version: Option<u32>,
+    pub schema_type: Option<String>,
+    pub compatibility_mode: Option<String>,
     pub subscriptions: Vec<String>,
 }
 
@@ -139,34 +130,13 @@ pub async fn topic_page(
         });
     errors.append(&mut q_errors);
 
-    // TODO: Remove this adaptation block once UI is updated
-    // Map new schema registry fields to old format for backward compatibility
-    // Web UI will be updated later to display schema registry information
-    let (type_schema, schema_data) = if let Some(subject) = desc.schema_subject {
-        // Topic has a schema from registry - encode info as JSON for potential debugging
-        let schema_info = serde_json::json!({
-            "schema_subject": subject,
-            "schema_id": desc.schema_id,
-            "schema_version": desc.schema_version,
-            "schema_type": desc.schema_type,
-            "compatibility_mode": desc.compatibility_mode,
-        });
-        (1, STANDARD.encode(schema_info.to_string().as_bytes()))
-    } else {
-        // No schema attached
-        (0, String::new())
-    };
-
     let topic_dto = Topic {
         name: desc.name,
-        type_schema, // TODO: Remove once UI updated
-        schema_data, // TODO: Remove once UI updated
-        // TODO: Add once UI updated:
-        // schema_subject: desc.schema_subject,
-        // schema_id: desc.schema_id,
-        // schema_version: desc.schema_version,
-        // schema_type: desc.schema_type,
-        // compatibility_mode: desc.compatibility_mode,
+        schema_subject: desc.schema_subject,
+        schema_id: desc.schema_id,
+        schema_version: desc.schema_version,
+        schema_type: desc.schema_type,
+        compatibility_mode: desc.compatibility_mode,
         subscriptions: subs.subscriptions,
     };
     let dto = TopicPage {

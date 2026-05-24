@@ -8,3 +8,5 @@ pub mod topic;
 pub mod topic_actions;
 pub mod topic_series;
 pub mod topics;
+pub mod schemas;
+
