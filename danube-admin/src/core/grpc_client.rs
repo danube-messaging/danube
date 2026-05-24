@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use danube_core::admin_proto as admin;
 use danube_core::proto::danube_schema;
 use std::time::Duration;
-use tonic::{metadata::MetadataValue, Request, Status};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+use tonic::{metadata::MetadataValue, Request, Status};
 
 use super::config::GrpcClientConfig;
 
@@ -395,6 +395,19 @@ impl AdminGrpcClient {
     }
 
     // ===== SCHEMA REGISTRY METHODS =====
+
+    pub async fn list_subjects(
+        &self,
+        req: danube_schema::ListSubjectsRequest,
+    ) -> Result<danube_schema::ListSubjectsResponse> {
+        let mut client =
+            danube_schema::schema_registry_client::SchemaRegistryClient::with_interceptor(
+                self.channel.clone(),
+                self.auth_interceptor(),
+            );
+        let fut = async move { client.list_subjects(req).await };
+        self.execute_with_timeout(fut).await
+    }
 
     pub async fn register_schema(
         &self,

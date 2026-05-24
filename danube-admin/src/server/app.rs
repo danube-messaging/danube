@@ -22,6 +22,7 @@ use super::ui::{
     topic_actions::topic_actions,
     topic_series::topic_series,
     topics::{cluster_topics, TopicsResponse},
+    schemas::{list_schemas, schema_detail, schema_actions, SchemasListResponse, SchemaDetailPageResponse},
 };
 use super::ServerArgs;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
@@ -42,6 +43,8 @@ pub struct AppState {
     pub topic_page_cache: Mutex<HashMap<String, CacheEntry<TopicPage>>>,
     pub topics_cache: Mutex<Option<CacheEntry<TopicsResponse>>>,
     pub namespaces_cache: Mutex<Option<CacheEntry<NamespacesResponse>>>,
+    pub schemas_cache: Mutex<Option<CacheEntry<SchemasListResponse>>>,
+    pub schema_detail_cache: Mutex<HashMap<String, CacheEntry<SchemaDetailPageResponse>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -86,6 +89,8 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
         topic_page_cache: Mutex::new(HashMap::new()),
         topics_cache: Mutex::new(None),
         namespaces_cache: Mutex::new(None),
+        schemas_cache: Mutex::new(None),
+        schema_detail_cache: Mutex::new(HashMap::new()),
     }))
 }
 
@@ -137,6 +142,9 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/topics/{topic}", get(topic_page))
         .route("/ui/v1/topics/{topic}/series", get(topic_series))
         .route("/ui/v1/topics/actions", post(topic_actions))
+        .route("/ui/v1/schemas", get(list_schemas))
+        .route("/ui/v1/schemas/{subject}", get(schema_detail))
+        .route("/ui/v1/schemas/actions", post(schema_actions))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

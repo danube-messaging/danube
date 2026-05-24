@@ -13,6 +13,7 @@ use danube_core::proto::danube_schema::{
     ListVersionsRequest, ListVersionsResponse, RegisterSchemaRequest, RegisterSchemaResponse,
     SchemaVersionInfo, SetCompatibilityModeRequest, SetCompatibilityModeResponse,
     UpdateTopicValidationPolicyRequest, UpdateTopicValidationPolicyResponse,
+    ListSubjectsRequest, ListSubjectsResponse, SubjectSummary,
 };
 use danube_schema::{SchemaRegistry, SchemaResources, ValidationPolicy};
 use std::sync::Arc;
@@ -606,4 +607,56 @@ impl SchemaRegistryTrait for SchemaRegistryService {
             schema_id,
         }))
     }
+
+    async fn list_subjects(
+        &self,
+        request: Request<ListSubjectsRequest>,
+    ) -> Result<Response<ListSubjectsResponse>, Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Cluster,
+            Permission::ManageSchema,
+            &self.security,
+        )
+        .await?;
+
+        info!("listing schema subjects");
+
+        let subjects = self
+            .registry
+            .list_subjects()
+            .await
+            .map_err(|e| {
+                error!(error = %e, "failed to list subjects");
+                Status::internal(format!("Failed to list subjects: {}", e))
+            })?;
+
+        let mut subject_summaries = Vec::new();
+        for subject in subjects {
+            if let Ok(metadata) = self.registry.get_metadata(&subject).await {
+                let latest_version_info = metadata.get_latest_version();
+                let schema_type = latest_version_info
+                    .map(|v| v.schema_def.schema_type().to_string())
+                    .unwrap_or_else(|| "bytes".to_string());
+                let tags = latest_version_info
+                    .map(|v| v.tags.clone())
+                    .unwrap_or_default();
+
+                subject_summaries.push(SubjectSummary {
+                    subject,
+                    schema_type,
+                    latest_version: metadata.latest_version,
+                    compatibility_mode: metadata.compatibility_mode.to_string(),
+                    schema_id: metadata.id,
+                    tags,
+                });
+            }
+        }
+
+        Ok(Response::new(ListSubjectsResponse {
+            subjects: subject_summaries,
+        }))
+    }
 }
+

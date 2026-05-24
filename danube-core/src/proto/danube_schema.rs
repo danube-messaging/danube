@@ -225,6 +225,31 @@ pub struct GetTopicSchemaConfigResponse {
     #[prost(uint64, tag = "4")]
     pub schema_id: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSubjectsRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubjectSummary {
+    #[prost(string, tag = "1")]
+    pub subject: ::prost::alloc::string::String,
+    /// "avro", "json_schema", "protobuf", "bytes", "string", "number"
+    #[prost(string, tag = "2")]
+    pub schema_type: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub latest_version: u32,
+    /// "NONE", "BACKWARD", "FORWARD", "FULL"
+    #[prost(string, tag = "4")]
+    pub compatibility_mode: ::prost::alloc::string::String,
+    /// Latest schema ID
+    #[prost(uint64, tag = "5")]
+    pub schema_id: u64,
+    #[prost(string, repeated, tag = "6")]
+    pub tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSubjectsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub subjects: ::prost::alloc::vec::Vec<SubjectSummary>,
+}
 /// Generated client implementations.
 pub mod schema_registry_client {
     #![allow(
@@ -599,6 +624,31 @@ pub mod schema_registry_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// List all registered schema subjects
+        pub async fn list_subjects(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSubjectsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSubjectsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_schema.SchemaRegistry/ListSubjects",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_schema.SchemaRegistry", "ListSubjects"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -693,6 +743,14 @@ pub mod schema_registry_server {
             request: tonic::Request<super::GetTopicSchemaConfigRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetTopicSchemaConfigResponse>,
+            tonic::Status,
+        >;
+        /// List all registered schema subjects
+        async fn list_subjects(
+            &self,
+            request: tonic::Request<super::ListSubjectsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSubjectsResponse>,
             tonic::Status,
         >;
     }
@@ -1234,6 +1292,51 @@ pub mod schema_registry_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetTopicSchemaConfigSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_schema.SchemaRegistry/ListSubjects" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSubjectsSvc<T: SchemaRegistry>(pub Arc<T>);
+                    impl<
+                        T: SchemaRegistry,
+                    > tonic::server::UnaryService<super::ListSubjectsRequest>
+                    for ListSubjectsSvc<T> {
+                        type Response = super::ListSubjectsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSubjectsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SchemaRegistry>::list_subjects(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSubjectsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

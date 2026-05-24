@@ -36,6 +36,9 @@ service SchemaRegistry {
     
     // Get current schema configuration for a topic
     rpc GetTopicSchemaConfig(GetTopicSchemaConfigRequest) returns (GetTopicSchemaConfigResponse);
+
+    // List all registered schema subjects
+    rpc ListSubjects(ListSubjectsRequest) returns (ListSubjectsResponse);
 }
 
 // Request to register a new schema
@@ -178,3 +181,19 @@ message GetTopicSchemaConfigResponse {
     bool enable_payload_validation = 3;  // Whether payload validation is enabled
     uint64 schema_id = 4;                // Cached schema_id for the subject
 }
+
+message ListSubjectsRequest {}
+
+message SubjectSummary {
+    string subject = 1;
+    string schema_type = 2;          // "avro", "json_schema", "protobuf", "bytes", "string", "number"
+    uint32 latest_version = 3;
+    string compatibility_mode = 4;   // "NONE", "BACKWARD", "FORWARD", "FULL"
+    uint64 schema_id = 5;            // Latest schema ID
+    repeated string tags = 6;
+}
+
+message ListSubjectsResponse {
+    repeated SubjectSummary subjects = 1;
+}
+
