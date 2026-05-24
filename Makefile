@@ -142,6 +142,7 @@ admin:
 	@echo "Building Danube admin server..."
 	@RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-admin --bin danube-admin
 	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 ./target/release/danube-admin serve \
+	    --mode ui \
 	    --listen-addr 0.0.0.0:8080 \
 	    --broker-endpoint 0.0.0.0:$(BASE_ADMIN_PORT) \
 	    > temp/admin_server_8080.log 2>&1 & \
