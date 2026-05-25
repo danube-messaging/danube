@@ -10,5 +10,6 @@ pub mod topic_series;
 pub mod topics;
 pub mod schemas;
 pub mod raft;
+pub mod security;
 
 

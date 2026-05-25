@@ -24,6 +24,7 @@ use super::ui::{
     topics::{cluster_topics, TopicsResponse},
     schemas::{list_schemas, schema_detail, schema_actions, SchemasListResponse, SchemaDetailPageResponse},
     raft::{raft_status, raft_actions},
+    security,
 };
 use super::ServerArgs;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
@@ -150,6 +151,10 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/schemas", get(list_schemas))
         .route("/ui/v1/schemas/{subject}", get(schema_detail))
         .route("/ui/v1/schemas/actions", post(schema_actions))
+        .route("/ui/v1/security/roles", get(security::list_roles))
+        .route("/ui/v1/security/bindings", get(security::list_bindings))
+        .route("/ui/v1/security/roles/actions", post(security::role_actions))
+        .route("/ui/v1/security/bindings/actions", post(security::binding_actions))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
