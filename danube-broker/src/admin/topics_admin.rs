@@ -395,11 +395,27 @@ impl TopicAdmin for DanubeAdminImpl {
             .topic
             .get_subscription_failure_policy(&req.subscription, &req.topic)
             .await
-            .map_err(|err| Status::internal(err.to_string()))?
-            .ok_or_else(|| Status::not_found("subscription failure policy not found"))?;
+            .unwrap_or(None);
+
+        let sub_options_val = self
+            .resources
+            .topic
+            .get_subscription_options(&req.subscription, &req.topic)
+            .await
+            .unwrap_or(None);
+
+        let subscription_type = if let Some(options_val) = sub_options_val {
+            options_val
+                .get("subscription_type")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32
+        } else {
+            0
+        };
 
         Ok(Response::new(GetSubscriptionFailurePolicyResponse {
-            failure_policy: Some(broker_failure_policy_to_admin(failure_policy)),
+            failure_policy: failure_policy.map(broker_failure_policy_to_admin),
+            subscription_type,
         }))
     }
 

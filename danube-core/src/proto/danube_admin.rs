@@ -210,6 +210,8 @@ pub struct GetSubscriptionFailurePolicyRequest {
 pub struct GetSubscriptionFailurePolicyResponse {
     #[prost(message, optional, tag = "1")]
     pub failure_policy: ::core::option::Option<SubscriptionFailurePolicy>,
+    #[prost(int32, tag = "2")]
+    pub subscription_type: i32,
 }
 /// Response Messages
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -306,6 +306,23 @@ impl TopicResources {
         }
     }
 
+    pub(crate) async fn get_subscription_options(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<Value>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+        ]);
+        self.store
+            .get(&path, MetaOptions::None)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
     pub(crate) async fn ensure_subscription_failure_policy(
         &self,
         subscription_name: &str,

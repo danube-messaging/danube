@@ -30,7 +30,25 @@ pub struct Topic {
     pub schema_version: Option<u32>,
     pub schema_type: Option<String>,
     pub compatibility_mode: Option<String>,
-    pub subscriptions: Vec<String>,
+    pub subscriptions: Vec<SubscriptionDetail>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionDetail {
+    pub name: String,
+    pub subscription_type: String,
+    pub failure_policy: Option<SubscriptionFailurePolicy>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionFailurePolicy {
+    pub max_redelivery_count: u32,
+    pub ack_timeout_ms: u64,
+    pub base_redelivery_delay_ms: u64,
+    pub max_redelivery_delay_ms: u64,
+    pub backoff_strategy: String, // "fixed" | "exponential"
+    pub dead_letter_topic: Option<String>,
+    pub poison_policy: String, // "dead_letter" | "block" | "drop"
 }
 
 #[derive(Clone, Serialize)]
@@ -130,6 +148,59 @@ pub async fn topic_page(
         });
     errors.append(&mut q_errors);
 
+    let mut subscriptions = Vec::new();
+    let mut seen_subs = std::collections::HashSet::new();
+    for sub_name in subs.subscriptions {
+        if sub_name == "cursor" || sub_name == "failure_policy" {
+            continue;
+        }
+        if !seen_subs.insert(sub_name.clone()) {
+            continue;
+        }
+        let req = danube_core::admin_proto::GetSubscriptionFailurePolicyRequest {
+            topic: topic.clone(),
+            subscription: sub_name.clone(),
+        };
+        let (failure_policy, sub_type) = match state.client.get_subscription_failure_policy(req).await {
+            Ok(res) => {
+                let fp = res.failure_policy.map(|fp| {
+                    let backoff_strategy = match fp.backoff_strategy {
+                        1 => "exponential".to_string(),
+                        _ => "fixed".to_string(),
+                    };
+                    let poison_policy = match fp.poison_policy {
+                        0 => "dead_letter".to_string(),
+                        1 => "block".to_string(),
+                        2 => "drop".to_string(),
+                        _ => "unknown".to_string(),
+                    };
+                    SubscriptionFailurePolicy {
+                        max_redelivery_count: fp.max_redelivery_count,
+                        ack_timeout_ms: fp.ack_timeout_ms,
+                        base_redelivery_delay_ms: fp.base_redelivery_delay_ms,
+                        max_redelivery_delay_ms: fp.max_redelivery_delay_ms,
+                        backoff_strategy,
+                        dead_letter_topic: fp.dead_letter_topic,
+                        poison_policy,
+                    }
+                });
+                let st = match res.subscription_type {
+                    1 => "Shared".to_string(),
+                    2 => "Failover".to_string(),
+                    3 => "KeyShared".to_string(),
+                    _ => "Exclusive".to_string(),
+                };
+                (fp, st)
+            }
+            Err(_) => (None, "Exclusive".to_string()),
+        };
+        subscriptions.push(SubscriptionDetail {
+            name: sub_name,
+            subscription_type: sub_type,
+            failure_policy,
+        });
+    }
+
     let topic_dto = Topic {
         name: desc.name,
         schema_subject: desc.schema_subject,
@@ -137,7 +208,7 @@ pub async fn topic_page(
         schema_version: desc.schema_version,
         schema_type: desc.schema_type,
         compatibility_mode: desc.compatibility_mode,
-        subscriptions: subs.subscriptions,
+        subscriptions,
     };
     let dto = TopicPage {
         timestamp: chrono::Utc::now().to_rfc3339(),
