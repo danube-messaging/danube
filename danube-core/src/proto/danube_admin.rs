@@ -3749,6 +3749,32 @@ pub mod security_admin_client {
                 .insert(GrpcMethod::new("danube_admin.SecurityAdmin", "ListBindings"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn list_all_bindings(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBindingsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.SecurityAdmin/ListAllBindings",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.SecurityAdmin", "ListAllBindings"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn delete_binding(
             &mut self,
             request: impl tonic::IntoRequest<super::DeleteBindingRequest>,
@@ -3832,6 +3858,13 @@ pub mod security_admin_server {
         async fn list_bindings(
             &self,
             request: tonic::Request<super::ListBindingsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBindingsResponse>,
+            tonic::Status,
+        >;
+        async fn list_all_bindings(
+            &self,
+            request: tonic::Request<super::Empty>,
         ) -> std::result::Result<
             tonic::Response<super::ListBindingsResponse>,
             tonic::Status,
@@ -4218,6 +4251,50 @@ pub mod security_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListBindingsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.SecurityAdmin/ListAllBindings" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListAllBindingsSvc<T: SecurityAdmin>(pub Arc<T>);
+                    impl<T: SecurityAdmin> tonic::server::UnaryService<super::Empty>
+                    for ListAllBindingsSvc<T> {
+                        type Response = super::ListBindingsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecurityAdmin>::list_all_bindings(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListAllBindingsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

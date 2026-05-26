@@ -340,6 +340,32 @@ impl SecurityAdmin for DanubeAdminImpl {
     }
 
     #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn list_all_bindings(
+        &self,
+        request: Request<Empty>,
+    ) -> Result<Response<ListBindingsResponse>, Status> {
+        let security_context = get_security_context(&request)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Cluster,
+            Permission::ManageCluster,
+            &self.resources.security,
+        )
+        .await?;
+
+        let bindings = self
+            .resources
+            .security
+            .list_all_bindings()
+            .await
+            .map_err(|e| Status::internal(format!("failed to list all bindings: {e}")))?;
+
+        Ok(Response::new(ListBindingsResponse {
+            bindings: bindings.iter().map(binding_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
     async fn delete_binding(
         &self,
         request: Request<DeleteBindingRequest>,

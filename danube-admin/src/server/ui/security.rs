@@ -3,7 +3,6 @@ use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::server::app::AppState;
-use crate::server::ui::shared::fetch_brokers;
 
 #[derive(Serialize)]
 pub struct RoleDto {
@@ -68,85 +67,23 @@ pub async fn list_roles(State(state): State<Arc<AppState>>) -> impl IntoResponse
 }
 
 pub async fn list_bindings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let client = &state.client;
-
-    // 1. Cluster bindings
-    let cluster_req = danube_core::admin_proto::ListBindingsRequest {
-        scope: "cluster".to_string(),
-        resource_name: "".to_string(),
-    };
-    let cluster_bindings_fut = client.list_bindings(cluster_req);
-
-    // 2. Namespace bindings: list all namespaces first
-    let ns_bindings_fut = async {
-        let mut list = Vec::new();
-        if let Ok(ns_res) = client.list_namespaces().await {
-            for ns in ns_res.namespaces {
-                let req = danube_core::admin_proto::ListBindingsRequest {
-                    scope: "namespace".to_string(),
-                    resource_name: ns.clone(),
-                };
-                if let Ok(res) = client.list_bindings(req).await {
-                    list.extend(res.bindings);
-                }
-            }
+    match state.client.list_all_bindings().await {
+        Ok(res) => {
+            let bindings = res.bindings.into_iter().map(|b| BindingDto {
+                id: b.id,
+                principal_type: b.principal_type,
+                principal_name: b.principal_name,
+                role_names: b.role_names,
+                scope: b.scope,
+                resource_name: b.resource_name,
+            }).collect();
+            Json(BindingsResponse { bindings }).into_response()
         }
-        list
-    };
-
-    // 3. Topic bindings: list topics from all brokers
-    let topic_bindings_fut = async {
-        let mut list = Vec::new();
-        if let Ok(brokers_res) = fetch_brokers(&state).await {
-            let mut unique_topics = std::collections::HashSet::new();
-            for b in brokers_res.brokers {
-                let req = danube_core::admin_proto::BrokerRequest {
-                    broker_id: b.broker_id,
-                };
-                if let Ok(topics_res) = client.list_broker_topics(req).await {
-                    for topic in topics_res.topics {
-                        unique_topics.insert(topic.name);
-                    }
-                }
-            }
-
-            for topic_name in unique_topics {
-                let req = danube_core::admin_proto::ListBindingsRequest {
-                    scope: "topic".to_string(),
-                    resource_name: topic_name,
-                };
-                if let Ok(res) = client.list_bindings(req).await {
-                    list.extend(res.bindings);
-                }
-            }
+        Err(e) => {
+            let (code, body) = crate::server::http::map_error(e);
+            (code, body).into_response()
         }
-        list
-    };
-
-    let (cluster_res, ns_res, topic_res) = tokio::join!(
-        cluster_bindings_fut,
-        ns_bindings_fut,
-        topic_bindings_fut
-    );
-
-    let mut all_bindings = Vec::new();
-
-    if let Ok(res) = cluster_res {
-        all_bindings.extend(res.bindings);
     }
-    all_bindings.extend(ns_res);
-    all_bindings.extend(topic_res);
-
-    let bindings = all_bindings.into_iter().map(|b| BindingDto {
-        id: b.id,
-        principal_type: b.principal_type,
-        principal_name: b.principal_name,
-        role_names: b.role_names,
-        scope: b.scope,
-        resource_name: b.resource_name,
-    }).collect();
-
-    Json(BindingsResponse { bindings }).into_response()
 }
 
 pub async fn role_actions(

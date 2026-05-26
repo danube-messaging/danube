@@ -86,6 +86,7 @@ service SecurityAdmin {
   rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
   rpc GetBinding(GetBindingRequest)       returns (GetBindingResponse);
   rpc ListBindings(ListBindingsRequest)   returns (ListBindingsResponse);
+  rpc ListAllBindings(Empty)              returns (ListBindingsResponse);
   rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
 }
 

@@ -192,6 +192,16 @@ impl SecurityResources {
         Ok(cache.bindings.get(&key).cloned().unwrap_or_default())
     }
 
+    /// List all bindings across all scopes and resources.
+    pub(crate) async fn list_all_bindings(&self) -> Result<Vec<Binding>> {
+        let cache = self.cache.read().await;
+        let mut all = Vec::new();
+        for bindings in cache.bindings.values() {
+            all.extend(bindings.iter().cloned());
+        }
+        Ok(all)
+    }
+
     // ── Writes (update store first, then cache) ────────────────────
 
     pub(crate) async fn put_role(&self, role: &Role) -> Result<()> {

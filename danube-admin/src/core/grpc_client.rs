@@ -624,6 +624,15 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn list_all_bindings(&self) -> Result<admin::ListBindingsResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.list_all_bindings(admin::Empty {}).await };
+        self.execute_with_timeout(fut).await
+    }
+
     pub async fn delete_binding(
         &self,
         req: admin::DeleteBindingRequest,
