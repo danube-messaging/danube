@@ -9,6 +9,7 @@ use super::config::GrpcClientConfig;
 
 /// Unified gRPC client for Danube admin operations
 /// Consolidates logic from danube-admin-cli and danube-admin-gateway
+#[derive(Clone)]
 pub struct AdminGrpcClient {
     channel: Channel,
     timeout: Duration,
@@ -82,6 +83,10 @@ impl AdminGrpcClient {
             timeout: Duration::from_millis(config.request_timeout_ms),
             token,
         })
+    }
+
+    pub fn token(&self) -> Option<String> {
+        self.token.clone()
     }
 
     fn auth_interceptor(

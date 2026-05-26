@@ -15,7 +15,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use super::ui::{
     broker::{broker_page, BrokerPage},
-    cluster::{cluster_page, ClusterPage},
+    cluster::{cluster_page, cluster_balance, cluster_rebalance, ClusterPage},
     cluster_actions::cluster_actions,
     namespaces::{list_namespaces_with_policies, NamespacesResponse},
     topic::{topic_page, TopicPage},
@@ -23,6 +23,8 @@ use super::ui::{
     topic_series::topic_series,
     topics::{cluster_topics, TopicsResponse},
     schemas::{list_schemas, schema_detail, schema_actions, SchemasListResponse, SchemaDetailPageResponse},
+    raft::{raft_status, raft_actions},
+    security,
 };
 use super::ServerArgs;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
@@ -136,6 +138,10 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/health", get(health))
         .route("/ui/v1/cluster", get(cluster_page))
         .route("/ui/v1/cluster/actions", post(cluster_actions))
+        .route("/ui/v1/cluster/balance", get(cluster_balance))
+        .route("/ui/v1/cluster/rebalance", post(cluster_rebalance))
+        .route("/ui/v1/cluster/raft", get(raft_status))
+        .route("/ui/v1/cluster/raft/actions", post(raft_actions))
         .route("/ui/v1/topics", get(cluster_topics))
         .route("/ui/v1/namespaces", get(list_namespaces_with_policies))
         .route("/ui/v1/brokers/{broker_id}", get(broker_page))
@@ -145,6 +151,10 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/schemas", get(list_schemas))
         .route("/ui/v1/schemas/{subject}", get(schema_detail))
         .route("/ui/v1/schemas/actions", post(schema_actions))
+        .route("/ui/v1/security/roles", get(security::list_roles))
+        .route("/ui/v1/security/bindings", get(security::list_bindings))
+        .route("/ui/v1/security/roles/actions", post(security::role_actions))
+        .route("/ui/v1/security/bindings/actions", post(security::binding_actions))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

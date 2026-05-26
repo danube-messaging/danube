@@ -238,7 +238,8 @@ message GetSubscriptionFailurePolicyRequest {
 }
 
 message GetSubscriptionFailurePolicyResponse {
-  SubscriptionFailurePolicy failure_policy = 1;
+  optional SubscriptionFailurePolicy failure_policy = 1;
+  int32 subscription_type = 2;
 }
 
 // Response Messages
