@@ -5,80 +5,47 @@
 
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    PromptMessageRole,
 };
 
 /// Get all troubleshooting prompt definitions
 pub fn prompts() -> Vec<Prompt> {
     vec![
-        Prompt {
-            name: "diagnose_consumer_lag".to_string(),
-            title: Some("Diagnose Consumer Lag".to_string()),
-            description: Some(
-                "Step-by-step guide to diagnose why consumers are lagging behind producers"
-                    .to_string(),
-            ),
-            arguments: Some(vec![
-                PromptArgument {
-                    name: "topic".to_string(),
-                    title: None,
-                    description: Some("Topic name to diagnose".to_string()),
-                    required: Some(true),
-                },
-                PromptArgument {
-                    name: "subscription".to_string(),
-                    title: None,
-                    description: Some("Subscription name (optional)".to_string()),
-                    required: Some(false),
-                },
+        Prompt::new(
+            "diagnose_consumer_lag",
+            Some("Step-by-step guide to diagnose why consumers are lagging behind producers"),
+            Some(vec![
+                PromptArgument::new("topic")
+                    .with_description("Topic name to diagnose")
+                    .with_required(true),
+                PromptArgument::new("subscription")
+                    .with_description("Subscription name (optional)")
+                    .with_required(false),
             ]),
-            icons: None,
-            meta: None,
-        },
-        Prompt {
-            name: "diagnose_broker_issues".to_string(),
-            title: Some("Diagnose Broker Issues".to_string()),
-            description: Some(
-                "Investigate broker health, load distribution, and potential problems".to_string(),
-            ),
-            arguments: Some(vec![PromptArgument {
-                name: "broker_id".to_string(),
-                title: None,
-                description: Some(
-                    "Broker ID to investigate (optional, diagnoses all if omitted)".to_string(),
-                ),
-                required: Some(false),
-            }]),
-            icons: None,
-            meta: None,
-        },
-        Prompt {
-            name: "analyze_topic_performance".to_string(),
-            title: Some("Analyze Topic Performance".to_string()),
-            description: Some(
-                "Deep dive into topic metrics including throughput, latency, and errors"
-                    .to_string(),
-            ),
-            arguments: Some(vec![PromptArgument {
-                name: "topic".to_string(),
-                title: None,
-                description: Some("Topic name to analyze".to_string()),
-                required: Some(true),
-            }]),
-            icons: None,
-            meta: None,
-        },
-        Prompt {
-            name: "cluster_health_check".to_string(),
-            title: Some("Cluster Health Check".to_string()),
-            description: Some(
-                "Comprehensive cluster health assessment with actionable recommendations"
-                    .to_string(),
-            ),
-            arguments: None,
-            icons: None,
-            meta: None,
-        },
+        )
+        .with_title("Diagnose Consumer Lag"),
+        Prompt::new(
+            "diagnose_broker_issues",
+            Some("Investigate broker health, load distribution, and potential problems"),
+            Some(vec![PromptArgument::new("broker_id")
+                .with_description("Broker ID to investigate (optional, diagnoses all if omitted)")
+                .with_required(false)]),
+        )
+        .with_title("Diagnose Broker Issues"),
+        Prompt::new(
+            "analyze_topic_performance",
+            Some("Deep dive into topic metrics including throughput, latency, and errors"),
+            Some(vec![PromptArgument::new("topic")
+                .with_description("Topic name to analyze")
+                .with_required(true)]),
+        )
+        .with_title("Analyze Topic Performance"),
+        Prompt::new(
+            "cluster_health_check",
+            Some("Comprehensive cluster health assessment with actionable recommendations"),
+            None::<Vec<PromptArgument>>,
+        )
+        .with_title("Cluster Health Check"),
     ]
 }
 
@@ -96,15 +63,11 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("subscription"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some(format!("Diagnose consumer lag for topic {}", topic)),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_lag_diagnosis_prompt(topic, subscription),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_lag_diagnosis_prompt(topic, subscription),
+            )])
+            .with_description(format!("Diagnose consumer lag for topic {}", topic)))
         }
 
         "diagnose_broker_issues" => {
@@ -112,15 +75,11 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("broker_id"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some("Diagnose broker health and issues".to_string()),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_broker_diagnosis_prompt(broker_id),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_broker_diagnosis_prompt(broker_id),
+            )])
+            .with_description("Diagnose broker health and issues"))
         }
 
         "analyze_topic_performance" => {
@@ -129,26 +88,18 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<TOPIC_NAME>");
 
-            Some(GetPromptResult {
-                description: Some(format!("Analyze performance for topic {}", topic)),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_topic_analysis_prompt(topic),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_topic_analysis_prompt(topic),
+            )])
+            .with_description(format!("Analyze performance for topic {}", topic)))
         }
 
-        "cluster_health_check" => Some(GetPromptResult {
-            description: Some("Comprehensive cluster health check".to_string()),
-            messages: vec![PromptMessage {
-                role: PromptMessageRole::User,
-                content: PromptMessageContent::Text {
-                    text: build_cluster_health_prompt(),
-                },
-            }],
-        }),
+        "cluster_health_check" => Some(GetPromptResult::new(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            build_cluster_health_prompt(),
+        )])
+        .with_description("Comprehensive cluster health check")),
 
         _ => None,
     }

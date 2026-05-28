@@ -4,37 +4,24 @@
 
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    PromptMessageRole,
 };
 
 /// Get topic operational prompt definitions
 pub fn prompts() -> Vec<Prompt> {
-    vec![Prompt {
-        name: "setup_new_topic".to_string(),
-        title: Some("Setup New Topic".to_string()),
-        description: Some(
-            "Guided workflow to create a new topic with best-practice configuration".to_string(),
-        ),
-        arguments: Some(vec![
-            PromptArgument {
-                name: "namespace".to_string(),
-                title: None,
-                description: Some("Namespace where the topic will be created".to_string()),
-                required: Some(true),
-            },
-            PromptArgument {
-                name: "use_case".to_string(),
-                title: None,
-                description: Some(
-                    "Use case for optimization: high-throughput, low-latency, or persistent (optional)"
-                        .to_string(),
-                ),
-                required: Some(false),
-            },
+    vec![Prompt::new(
+        "setup_new_topic",
+        Some("Guided workflow to create a new topic with best-practice configuration"),
+        Some(vec![
+            PromptArgument::new("namespace")
+                .with_description("Namespace where the topic will be created")
+                .with_required(true),
+            PromptArgument::new("use_case")
+                .with_description("Use case for optimization: high-throughput, low-latency, or persistent (optional)")
+                .with_required(false),
         ]),
-        icons: None,
-        meta: None,
-    }]
+    )
+    .with_title("Setup New Topic")]
 }
 
 /// Try to get a topic operational prompt by name
@@ -51,15 +38,11 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("use_case"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some(format!("Setup new topic in namespace {}", namespace)),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_setup_topic_prompt(namespace, use_case),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_setup_topic_prompt(namespace, use_case),
+            )])
+            .with_description(format!("Setup new topic in namespace {}", namespace)))
         }
         _ => None,
     }

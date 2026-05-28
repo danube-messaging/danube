@@ -4,39 +4,24 @@
 
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    PromptMessageRole,
 };
 
 /// Get cluster operational prompt definitions
 pub fn prompts() -> Vec<Prompt> {
-    vec![Prompt {
-        name: "prepare_cluster_rebalance".to_string(),
-        title: Some("Prepare Cluster Rebalance".to_string()),
-        description: Some(
-            "Safe workflow for rebalancing cluster load with dry-run validation".to_string(),
-        ),
-        arguments: Some(vec![
-            PromptArgument {
-                name: "max_moves".to_string(),
-                title: None,
-                description: Some(
-                    "Maximum number of topic moves to execute (optional)".to_string(),
-                ),
-                required: Some(false),
-            },
-            PromptArgument {
-                name: "target_broker".to_string(),
-                title: None,
-                description: Some(
-                    "Specific broker to rebalance (optional, rebalances all if omitted)"
-                        .to_string(),
-                ),
-                required: Some(false),
-            },
+    vec![Prompt::new(
+        "prepare_cluster_rebalance",
+        Some("Safe workflow for rebalancing cluster load with dry-run validation"),
+        Some(vec![
+            PromptArgument::new("max_moves")
+                .with_description("Maximum number of topic moves to execute (optional)")
+                .with_required(false),
+            PromptArgument::new("target_broker")
+                .with_description("Specific broker to rebalance (optional, rebalances all if omitted)")
+                .with_required(false),
         ]),
-        icons: None,
-        meta: None,
-    }]
+    )
+    .with_title("Prepare Cluster Rebalance")]
 }
 
 /// Try to get a cluster operational prompt by name
@@ -52,15 +37,11 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("target_broker"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some("Prepare and execute cluster rebalance".to_string()),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_rebalance_prompt(max_moves, target_broker),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_rebalance_prompt(max_moves, target_broker),
+            )])
+            .with_description("Prepare and execute cluster rebalance"))
         }
         _ => None,
     }

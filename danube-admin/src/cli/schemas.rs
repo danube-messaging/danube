@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::proto::danube_schema::{
     CheckCompatibilityRequest, DeleteSchemaVersionRequest, GetLatestSchemaRequest,
-    GetSchemaRequest, ListVersionsRequest, RegisterSchemaRequest, SetCompatibilityModeRequest,
+    GetSchemaRequest, ListSubjectsRequest, ListVersionsRequest, RegisterSchemaRequest,
+    SetCompatibilityModeRequest,
 };
 use std::fs;
 
@@ -198,6 +199,20 @@ Env:
 
         #[arg(long, help = "Confirm deletion")]
         confirm: bool,
+    },
+
+    #[command(
+        about = "List all registered schema subjects",
+        after_help = "Examples:
+  danube-admin schemas list-subjects
+  danube-admin schemas list-subjects --output json
+
+Env:
+  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+    )]
+    ListSubjects {
+        #[arg(long, value_parser = ["json"], help = "Output format")]
+        output: Option<String>,
     },
 }
 
@@ -462,6 +477,49 @@ pub async fn handle(schemas: Schemas, endpoint: &str) -> Result<()> {
                 println!("❌ Failed to delete schema version");
                 if !result.message.is_empty() {
                     println!("Error: {}", result.message);
+                }
+            }
+        }
+
+        SchemasCommands::ListSubjects { output } => {
+            let request = ListSubjectsRequest {};
+            let result = client.list_subjects(request).await?;
+
+            if matches!(output.as_deref(), Some("json")) {
+                let subjects: Vec<serde_json::Value> = result
+                    .subjects
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "subject": s.subject,
+                            "schema_type": s.schema_type,
+                            "latest_version": s.latest_version,
+                            "schema_id": s.schema_id,
+                            "compatibility_mode": s.compatibility_mode,
+                            "tags": s.tags,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&subjects)?);
+            } else {
+                if result.subjects.is_empty() {
+                    println!("No schema subjects found.");
+                } else {
+                    println!(
+                        "Found {} schema subject(s):\n",
+                        result.subjects.len()
+                    );
+                    for s in &result.subjects {
+                        println!("Subject: {}", s.subject);
+                        println!("  Type: {}", s.schema_type);
+                        println!("  Latest Version: {}", s.latest_version);
+                        println!("  Schema ID: {}", s.schema_id);
+                        println!("  Compatibility: {}", s.compatibility_mode);
+                        if !s.tags.is_empty() {
+                            println!("  Tags: {}", s.tags.join(", "));
+                        }
+                        println!();
+                    }
                 }
             }
         }

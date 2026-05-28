@@ -8,4 +8,5 @@ pub mod diagnostics;
 pub mod logs;
 pub mod metrics;
 pub mod schemas;
+pub mod security;
 pub mod topics;

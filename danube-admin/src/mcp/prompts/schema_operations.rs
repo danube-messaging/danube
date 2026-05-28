@@ -4,38 +4,24 @@
 
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    PromptMessageRole,
 };
 
 /// Get schema operational prompt definitions
 pub fn prompts() -> Vec<Prompt> {
-    vec![Prompt {
-        name: "manage_schema_evolution".to_string(),
-        title: Some("Manage Schema Evolution".to_string()),
-        description: Some(
-            "Guided workflow for safely evolving schemas with compatibility validation"
-                .to_string(),
-        ),
-        arguments: Some(vec![
-            PromptArgument {
-                name: "subject".to_string(),
-                title: None,
-                description: Some("Schema subject name to evolve".to_string()),
-                required: Some(true),
-            },
-            PromptArgument {
-                name: "schema_type".to_string(),
-                title: None,
-                description: Some(
-                    "Schema type: json_schema, avro, protobuf, string, number, or bytes (optional)"
-                        .to_string(),
-                ),
-                required: Some(false),
-            },
+    vec![Prompt::new(
+        "manage_schema_evolution",
+        Some("Guided workflow for safely evolving schemas with compatibility validation"),
+        Some(vec![
+            PromptArgument::new("subject")
+                .with_description("Schema subject name to evolve")
+                .with_required(true),
+            PromptArgument::new("schema_type")
+                .with_description("Schema type: json_schema, avro, protobuf, string, number, or bytes (optional)")
+                .with_required(false),
         ]),
-        icons: None,
-        meta: None,
-    }]
+    )
+    .with_title("Manage Schema Evolution")]
 }
 
 /// Try to get a schema operational prompt by name
@@ -52,15 +38,11 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("schema_type"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some(format!("Manage schema evolution for {}", subject)),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_schema_evolution_prompt(subject, schema_type),
-                    },
-                }],
-            })
+            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                build_schema_evolution_prompt(subject, schema_type),
+            )])
+            .with_description(format!("Manage schema evolution for {}", subject)))
         }
         _ => None,
     }
