@@ -157,9 +157,10 @@ services:
   danube-admin:
     container_name: "danube-admin"
     image: ghcr.io/danube-messaging/danube-admin:latest
+    restart: on-failure
     depends_on:
       broker1:
-        condition: service_started
+        condition: service_healthy
       prometheus:
         condition: service_started
     networks:
