@@ -66,9 +66,11 @@ impl RedbLogStore {
             match table.get(PURGED_KEY) {
                 Ok(Some(val)) => {
                     let bytes = val.value();
-                    Some(
-                        bincode::deserialize::<LogId<NodeId>>(bytes)
-                            .map_err(|e| to_storage_err(e, "deserialize last_purged"))?,
+                    Some({
+                        let (v, _) = bincode::serde::decode_from_slice::<LogId<NodeId>, _>(bytes, bincode::config::standard())
+                            .map_err(|e| to_storage_err(e, "deserialize last_purged"))?;
+                        v
+                    },
                     )
                 }
                 _ => None,
@@ -95,7 +97,7 @@ impl RedbLogStore {
         match table.get(key) {
             Ok(Some(val)) => {
                 let bytes = val.value();
-                let v = bincode::deserialize(bytes)
+                let (v, _) = bincode::serde::decode_from_slice(bytes, bincode::config::standard())
                     .map_err(|e| to_storage_err(e, "deserialize meta"))?;
                 Ok(Some(v))
             }
@@ -109,7 +111,7 @@ impl RedbLogStore {
         key: &str,
         value: &T,
     ) -> Result<(), StorageError<NodeId>> {
-        let bytes = bincode::serialize(value).map_err(|e| to_storage_err(e, "serialize meta"))?;
+        let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(|e| to_storage_err(e, "serialize meta"))?;
         let write_txn = self
             .db
             .begin_write()
@@ -295,7 +297,7 @@ impl RaftLogStorage<TypeConfig> for RedbLogStore {
             }
 
             // Persist last_purged in meta table
-            let meta_bytes = bincode::serialize(&log_id)
+            let meta_bytes = bincode::serde::encode_to_vec(&log_id, bincode::config::standard())
                 .map_err(|e| to_storage_err(e, "serialize last_purged"))?;
             let mut meta = write_txn
                 .open_table(META_TABLE)

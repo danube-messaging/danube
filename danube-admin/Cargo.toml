@@ -22,14 +22,14 @@ prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-jsonwebtoken = "9.3.1"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rustls = { workspace = true }
 base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["clock", "serde"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 
 # CLI dependencies
 clap = { workspace = true, features = ["derive", "env"] }
@@ -40,13 +40,13 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # MCP support
-rmcp = { version = "1.7.0", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
 schemars = { version = "1.0" }
 serde_yaml = "0.9"
 
 [dev-dependencies]
-assert_cmd = "2.0"
-predicates = "3.1"
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
 
