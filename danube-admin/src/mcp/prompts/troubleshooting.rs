@@ -1,49 +1,20 @@
 //! Troubleshooting prompts for Danube
 //!
-//! Contains prompt definitions and message builders for common
-//! troubleshooting workflows.
+//! Contains the cluster health check prompt — a comprehensive,
+//! multi-step assessment workflow encoding Raft, load-balancing,
+//! and security domain knowledge.
 
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageRole,
+    GetPromptRequestParams, GetPromptResult, Prompt, PromptMessage, PromptMessageRole,
 };
 
 /// Get all troubleshooting prompt definitions
 pub fn prompts() -> Vec<Prompt> {
     vec![
         Prompt::new(
-            "diagnose_consumer_lag",
-            Some("Step-by-step guide to diagnose why consumers are lagging behind producers"),
-            Some(vec![
-                PromptArgument::new("topic")
-                    .with_description("Topic name to diagnose")
-                    .with_required(true),
-                PromptArgument::new("subscription")
-                    .with_description("Subscription name (optional)")
-                    .with_required(false),
-            ]),
-        )
-        .with_title("Diagnose Consumer Lag"),
-        Prompt::new(
-            "diagnose_broker_issues",
-            Some("Investigate broker health, load distribution, and potential problems"),
-            Some(vec![PromptArgument::new("broker_id")
-                .with_description("Broker ID to investigate (optional, diagnoses all if omitted)")
-                .with_required(false)]),
-        )
-        .with_title("Diagnose Broker Issues"),
-        Prompt::new(
-            "analyze_topic_performance",
-            Some("Deep dive into topic metrics including throughput, latency, and errors"),
-            Some(vec![PromptArgument::new("topic")
-                .with_description("Topic name to analyze")
-                .with_required(true)]),
-        )
-        .with_title("Analyze Topic Performance"),
-        Prompt::new(
             "cluster_health_check",
-            Some("Comprehensive cluster health assessment with actionable recommendations"),
-            None::<Vec<PromptArgument>>,
+            Some("Comprehensive cluster health assessment covering Raft consensus, load balance, broker status, and security configuration"),
+            None::<Vec<rmcp::model::PromptArgument>>,
         )
         .with_title("Cluster Health Check"),
     ]
@@ -51,272 +22,83 @@ pub fn prompts() -> Vec<Prompt> {
 
 /// Try to get a troubleshooting prompt by name
 pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
-    let args = params.arguments.as_ref();
-
     match params.name.as_str() {
-        "diagnose_consumer_lag" => {
-            let topic = args
-                .and_then(|a| a.get("topic"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("<TOPIC_NAME>");
-            let subscription = args
-                .and_then(|a| a.get("subscription"))
-                .and_then(|v| v.as_str());
-
-            Some(GetPromptResult::new(vec![PromptMessage::new_text(
+        "cluster_health_check" => Some(
+            GetPromptResult::new(vec![PromptMessage::new_text(
                 PromptMessageRole::User,
-                build_lag_diagnosis_prompt(topic, subscription),
+                build_cluster_health_prompt(),
             )])
-            .with_description(format!("Diagnose consumer lag for topic {}", topic)))
-        }
-
-        "diagnose_broker_issues" => {
-            let broker_id = args
-                .and_then(|a| a.get("broker_id"))
-                .and_then(|v| v.as_str());
-
-            Some(GetPromptResult::new(vec![PromptMessage::new_text(
-                PromptMessageRole::User,
-                build_broker_diagnosis_prompt(broker_id),
-            )])
-            .with_description("Diagnose broker health and issues"))
-        }
-
-        "analyze_topic_performance" => {
-            let topic = args
-                .and_then(|a| a.get("topic"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("<TOPIC_NAME>");
-
-            Some(GetPromptResult::new(vec![PromptMessage::new_text(
-                PromptMessageRole::User,
-                build_topic_analysis_prompt(topic),
-            )])
-            .with_description(format!("Analyze performance for topic {}", topic)))
-        }
-
-        "cluster_health_check" => Some(GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            build_cluster_health_prompt(),
-        )])
-        .with_description("Comprehensive cluster health check")),
-
+            .with_description("Comprehensive cluster health check"),
+        ),
         _ => None,
     }
-}
-
-fn build_lag_diagnosis_prompt(topic: &str, subscription: Option<&str>) -> String {
-    let sub_filter = subscription
-        .map(|s| format!(", subscription=\"{}\"", s))
-        .unwrap_or_default();
-
-    format!(
-        r#"I need help diagnosing consumer lag for topic "{}".
-
-Please follow these steps:
-
-## Step 1: Check Current Lag
-Use the `diagnose_consumer_lag` tool with topic="{}" {} to get the current lag status.
-
-## Step 2: Analyze Topic Metrics
-Use `get_topic_metrics` with topic="{}" to understand:
-- Current publish rate vs dispatch rate
-- Number of active consumers
-- Any producer errors
-
-## Step 3: Check Broker Health
-If lag is high, check if the broker hosting this topic is overloaded:
-- Use `list_brokers` to find which broker owns the topic
-- Use `get_broker_metrics` to check broker load
-
-## Step 4: Custom Queries (if needed)
-Use `query_prometheus` with these queries:
-- Lag trend: `danube_subscription_lag{{topic="{}"{}}}`
-- Publish vs dispatch rate comparison:
-  - `rate(danube_topic_messages_in_total{{topic="{}"}}[5m])`
-  - `rate(danube_topic_messages_out_total{{topic="{}"}}[5m])`
-
-## Step 5: Recommendations
-Based on findings, suggest:
-- Add more consumers if dispatch rate < publish rate
-- Check consumer application logs for errors
-- Consider topic partitioning for parallelism
-- Verify network connectivity between consumers and brokers"#,
-        topic,
-        topic,
-        subscription
-            .map(|s| format!("and subscription=\"{}\"", s))
-            .unwrap_or_default(),
-        topic,
-        topic,
-        sub_filter,
-        topic,
-        topic
-    )
-}
-
-fn build_broker_diagnosis_prompt(broker_id: Option<&str>) -> String {
-    match broker_id {
-        Some(id) => format!(
-            r#"I need help diagnosing issues with broker "{}".
-
-Please follow these steps:
-
-## Step 1: Check Broker Status
-Use `list_brokers` to verify the broker is online and check its role (leader/follower).
-
-## Step 2: Get Broker Metrics
-Use `get_broker_metrics` with broker_id="{}" to check:
-- Topics owned (is it overloaded?)
-- RPC count (traffic level)
-- Active producers/consumers
-- Bytes in/out
-
-## Step 3: Compare with Other Brokers
-Use `get_cluster_balance` to see if load is evenly distributed.
-Check the imbalance coefficient - values > 0.3 indicate poor distribution.
-
-## Step 4: Check Broker Logs
-Use `get_broker_logs` with broker_id="{}" to look for:
-- Error messages
-- Connection issues
-- Resource warnings
-
-## Step 5: Recommendations
-Based on findings:
-- If overloaded: trigger rebalance with `trigger_rebalance`
-- If errors in logs: address specific issues
-- If network issues: check connectivity"#,
-            id, id, id
-        ),
-        None => r#"I need help diagnosing the health of all brokers in the cluster.
-
-Please follow these steps:
-
-## Step 1: List All Brokers
-Use `list_brokers` to get the complete broker list with status and roles.
-
-## Step 2: Check Cluster Balance
-Use `get_cluster_balance` to assess load distribution:
-- Coefficient of variation (CV) indicates balance quality
-- CV < 0.1 = excellent, CV > 0.3 = needs rebalancing
-
-## Step 3: Get Cluster Metrics
-Use `get_cluster_metrics` to understand overall health:
-- Total topics, producers, consumers
-- Message rates across cluster
-- Any anomalies in throughput
-
-## Step 4: Identify Problem Brokers
-For any brokers with issues, use `get_broker_metrics` to deep dive.
-
-## Step 5: Recommendations
-Use `get_recommendations` to get AI-generated suggestions for:
-- Rebalancing needs
-- Capacity planning
-- Configuration optimizations"#
-            .to_string(),
-    }
-}
-
-fn build_topic_analysis_prompt(topic: &str) -> String {
-    format!(
-        r#"I need a comprehensive performance analysis for topic "{}".
-
-Please follow these steps:
-
-## Step 1: Get Topic Metrics
-Use `get_topic_metrics` with topic="{}" to gather:
-- Message counts (in/out)
-- Byte throughput
-- Active producers/consumers
-- Publish and dispatch rates
-- Latency percentiles (p50, p95, p99)
-- Subscription lag
-
-## Step 2: Describe Topic Configuration
-Use `describe_topic` with name="{}" to understand:
-- Delivery strategy (reliable vs non-reliable)
-- Partition count
-- Schema association
-
-## Step 3: Historical Trend Analysis
-Use `query_prometheus` for trend queries:
-```promql
-# Publish rate over last hour
-rate(danube_topic_messages_in_total{{topic="{}"}}[1h])
-
-# Latency trend
-histogram_quantile(0.99, rate(danube_producer_send_latency_bucket{{topic="{}"}}[5m]))
-
-# Error rate
-rate(danube_producer_send_errors_total{{topic="{}"}}[5m])
-```
-
-## Step 4: Performance Assessment
-Evaluate:
-- Is latency acceptable? (p99 < 100ms is typically good)
-- Is throughput meeting expectations?
-- Are there any errors?
-- Is consumer lag growing?
-
-## Step 5: Recommendations
-Suggest optimizations:
-- Batching configuration for higher throughput
-- Consumer scaling for lag issues
-- Schema optimization for message size"#,
-        topic, topic, topic, topic, topic, topic
-    )
 }
 
 fn build_cluster_health_prompt() -> String {
     r#"I need a comprehensive health check of the Danube cluster.
 
-Please follow these steps:
+Please follow these steps in order — each step depends on the previous:
 
-## Step 1: Raft Consensus Health
+## Step 1: Raft Consensus Health (Critical)
 Use `cluster_status` to verify:
-- A leader is elected (leader_id != 0)
-- All expected brokers are voters (voter count matches expected cluster size)
-- No unexpected learners (learners should be empty unless scaling in progress)
-- Term is stable (not rapidly incrementing, which indicates election storms)
+- **Leader elected**: `leader_id` must not be 0
+- **Voter count**: all expected brokers should be voters
+- **Quorum safety**: check fault tolerance (3 voters = can lose 1, 5 voters = can lose 2)
+- **Learner set**: should be empty unless a scale-up is in progress
+- **Term stability**: a rapidly incrementing term indicates election storms (split-brain risk)
 
-**ALERT if no leader or voter count is wrong.**
+**ALERT if no leader, voter count is wrong, or learners are unexpected.**
 
-## Step 2: Cluster Overview
-Use `get_cluster_metrics` to get:
-- Total brokers, topics, producers, consumers
-- Cluster-wide message rates
-- Balance coefficient
-
-## Step 3: Broker Health
+## Step 2: Broker Health
 Use `list_brokers` and check:
-- All brokers are online and active
-- No brokers in drained or error state
+- All brokers are online and in "active" status
+- No brokers stuck in "drained" state unexpectedly
+- Leader/follower roles are assigned correctly
 
-## Step 4: Load Distribution
-Use `get_cluster_balance` to verify:
-- Topics are evenly distributed
-- No single broker is overloaded
-- CV (coefficient of variation) < 0.2 is healthy
+**ALERT if any broker is missing or in an unexpected state.**
 
-## Step 5: Check for Issues
-Use `health_check` tool for automated diagnostics:
-- Connectivity issues
+## Step 3: Load Distribution
+Use `get_cluster_balance` to assess topic distribution:
+- **CV < 20%**: well balanced — no action needed
+- **CV 20-30%**: acceptable — monitor
+- **CV 30-40%**: imbalanced — consider `prepare_cluster_rebalance` prompt
+- **CV > 40%**: severely imbalanced — rebalance recommended
+
+Check per-broker load for overloaded/underloaded outliers.
+
+## Step 4: Cluster-Wide Metrics
+Use `get_cluster_metrics` for the overall picture:
+- Total topics, producers, consumers
+- Cluster-wide message rates
+- Any anomalies in throughput
+
+## Step 5: Automated Diagnostics
+Use `health_check` for automated issue detection:
+- Connectivity problems
 - Resource constraints
-- Configuration problems
+- Configuration issues
 
-## Step 6: Get Recommendations
-Use `get_recommendations` for:
-- Actionable improvements
-- Capacity planning advice
-- Best practice suggestions
+## Step 6: Security Configuration (if applicable)
+Use `list_roles` and `list_bindings` (scope="cluster") to verify:
+- Roles are defined (at minimum: producer, consumer, admin roles)
+- Bindings exist connecting service accounts to roles
+- No overly broad cluster-scoped bindings that should be namespace-scoped
 
-## Step 7: Summary Report
-Provide a summary with:
-- Overall health status (healthy/warning/critical)
-- Raft consensus: leader, term, voter count
-- Key metrics snapshot
-- Top 3 action items if any issues found"#
+Skip this step if the cluster runs in `auth.mode: none`.
+
+## Step 7: Actionable Recommendations
+Use `get_recommendations` for AI-generated suggestions on:
+- Rebalancing needs
+- Capacity planning
+- Configuration optimizations
+
+## Step 8: Summary Report
+Provide a structured summary:
+- **Overall health**: HEALTHY / WARNING / CRITICAL
+- **Raft consensus**: leader ID, term, voter count, quorum tolerance
+- **Broker status**: active/total, any issues
+- **Load balance**: CV percentage and interpretation
+- **Security**: roles and bindings configured (yes/no)
+- **Top 3 action items** (if any issues found)"#
         .to_string()
 }
