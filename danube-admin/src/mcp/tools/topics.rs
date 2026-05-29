@@ -10,25 +10,42 @@ pub struct ListTopicsParams {
     /// Namespace to list topics from.
     /// Use list_namespaces to discover available namespaces.
     /// The "default" namespace is always present.
+    /// Provide either namespace or broker, not both.
     /// Example: "default", "production", "team-analytics"
-    pub namespace: String,
+    pub namespace: Option<String>,
+
+    /// Broker ID to list topics for.
+    /// Use list_brokers to discover available broker IDs.
+    /// Provide either broker or namespace, not both.
+    /// Example: "broker-1"
+    pub broker: Option<String>,
 }
 
 pub async fn list_topics(client: &Arc<AdminGrpcClient>, params: ListTopicsParams) -> String {
-    let req = danube_core::admin_proto::NamespaceRequest {
-        name: params.namespace.clone(),
+    let (result, label) = if let Some(broker_id) = &params.broker {
+        let req = danube_core::admin_proto::BrokerRequest {
+            broker_id: broker_id.clone(),
+        };
+        (client.list_broker_topics(req).await, format!("broker '{}'", broker_id))
+    } else if let Some(namespace) = &params.namespace {
+        let req = danube_core::admin_proto::NamespaceRequest {
+            name: namespace.clone(),
+        };
+        (client.list_namespace_topics(req).await, format!("namespace '{}'", namespace))
+    } else {
+        return "Error: provide either 'namespace' or 'broker' parameter.".to_string();
     };
 
-    match client.list_namespace_topics(req).await {
+    match result {
         Ok(response) => {
             if response.topics.is_empty() {
-                return format!("No topics found in namespace '{}'.", params.namespace);
+                return format!("No topics found in {}.", label);
             }
 
             let mut output = format!(
-                "Found {} topic(s) in namespace '{}':\n\n",
+                "Found {} topic(s) in {}:\n\n",
                 response.topics.len(),
-                params.namespace
+                label
             );
 
             for topic_info in &response.topics {
@@ -468,5 +485,172 @@ pub async fn get_topic_schema_config(
             }
         }
         Err(e) => format!("Error getting schema config: {}", e),
+    }
+}
+
+// ── Subscription Failure Policy ────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SetFailurePolicyParams {
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
+    pub topic: String,
+
+    /// Subscription name to configure the failure policy for.
+    /// Use list_subscriptions to discover existing subscriptions.
+    /// Example: "my-consumer-group"
+    pub subscription: String,
+
+    /// Maximum number of redelivery attempts before applying the poison policy.
+    /// Example: 3, 5, 10
+    pub max_redelivery_count: u32,
+
+    /// Acknowledgment timeout in milliseconds.
+    /// If a message is not acked within this time, it will be redelivered.
+    /// Example: 30000 (30 seconds)
+    pub ack_timeout_ms: u64,
+
+    /// Base delay between redelivery attempts in milliseconds.
+    /// Example: 1000 (1 second)
+    pub base_redelivery_delay_ms: u64,
+
+    /// Maximum delay between redelivery attempts in milliseconds.
+    /// Example: 60000 (60 seconds)
+    pub max_redelivery_delay_ms: u64,
+
+    /// Backoff strategy for redelivery delays.
+    /// Options: "fixed" (constant delay) or "exponential" (doubling delay).
+    /// Default: "fixed"
+    #[serde(default = "default_backoff_strategy")]
+    pub backoff_strategy: String,
+
+    /// Policy for handling poison (unprocessable) messages after max redeliveries.
+    /// Options: "dead_letter" (move to DLQ), "block" (stop delivery), "drop" (discard).
+    /// Example: "dead_letter"
+    pub poison_policy: String,
+
+    /// Dead letter topic name for poison messages (required when poison_policy is "dead_letter").
+    /// Example: "/default/user-events-dlq"
+    pub dead_letter_topic: Option<String>,
+}
+
+fn default_backoff_strategy() -> String {
+    "fixed".to_string()
+}
+
+fn parse_backoff_strategy(input: &str) -> i32 {
+    match input.to_ascii_lowercase().as_str() {
+        "exponential" => danube_core::admin_proto::SubscriptionBackoffStrategy::Exponential as i32,
+        _ => danube_core::admin_proto::SubscriptionBackoffStrategy::Fixed as i32,
+    }
+}
+
+fn parse_poison_policy(input: &str) -> i32 {
+    match input.to_ascii_lowercase().as_str() {
+        "block" => danube_core::admin_proto::SubscriptionPoisonPolicy::Block as i32,
+        "drop" => danube_core::admin_proto::SubscriptionPoisonPolicy::Drop as i32,
+        _ => danube_core::admin_proto::SubscriptionPoisonPolicy::DeadLetter as i32,
+    }
+}
+
+fn backoff_strategy_label(strategy: i32) -> &'static str {
+    match danube_core::admin_proto::SubscriptionBackoffStrategy::try_from(strategy).ok() {
+        Some(danube_core::admin_proto::SubscriptionBackoffStrategy::Exponential) => "exponential",
+        _ => "fixed",
+    }
+}
+
+fn poison_policy_label(policy: i32) -> &'static str {
+    match danube_core::admin_proto::SubscriptionPoisonPolicy::try_from(policy).ok() {
+        Some(danube_core::admin_proto::SubscriptionPoisonPolicy::Drop) => "drop",
+        Some(danube_core::admin_proto::SubscriptionPoisonPolicy::Block) => "block",
+        _ => "dead_letter",
+    }
+}
+
+pub async fn set_subscription_failure_policy(
+    client: &Arc<AdminGrpcClient>,
+    params: SetFailurePolicyParams,
+) -> String {
+    let req = danube_core::admin_proto::SetSubscriptionFailurePolicyRequest {
+        topic: params.topic.clone(),
+        subscription: params.subscription.clone(),
+        failure_policy: Some(danube_core::admin_proto::SubscriptionFailurePolicy {
+            max_redelivery_count: params.max_redelivery_count,
+            ack_timeout_ms: params.ack_timeout_ms,
+            base_redelivery_delay_ms: params.base_redelivery_delay_ms,
+            max_redelivery_delay_ms: params.max_redelivery_delay_ms,
+            backoff_strategy: parse_backoff_strategy(&params.backoff_strategy),
+            dead_letter_topic: params.dead_letter_topic,
+            poison_policy: parse_poison_policy(&params.poison_policy),
+        }),
+    };
+
+    match client.set_subscription_failure_policy(req).await {
+        Ok(response) => {
+            if response.success {
+                format!(
+                    "✓ Failure policy updated for topic '{}' subscription '{}'",
+                    params.topic, params.subscription
+                )
+            } else {
+                format!(
+                    "✗ Failed to update failure policy for topic '{}' subscription '{}'",
+                    params.topic, params.subscription
+                )
+            }
+        }
+        Err(e) => format!("Error setting failure policy: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GetFailurePolicyParams {
+    /// Full topic name including namespace.
+    /// Format: "/namespace/topic-name"
+    /// Example: "/default/user-events"
+    pub topic: String,
+
+    /// Subscription name to retrieve the failure policy for.
+    /// Use list_subscriptions to discover existing subscriptions.
+    /// Example: "my-consumer-group"
+    pub subscription: String,
+}
+
+pub async fn get_subscription_failure_policy(
+    client: &Arc<AdminGrpcClient>,
+    params: GetFailurePolicyParams,
+) -> String {
+    let req = danube_core::admin_proto::GetSubscriptionFailurePolicyRequest {
+        topic: params.topic.clone(),
+        subscription: params.subscription.clone(),
+    };
+
+    match client.get_subscription_failure_policy(req).await {
+        Ok(response) => {
+            if let Some(policy) = response.failure_policy {
+                let mut output = format!(
+                    "Failure Policy for topic '{}' subscription '{}':\n\n",
+                    params.topic, params.subscription
+                );
+                output.push_str(&format!("  Max Redelivery Count: {}\n", policy.max_redelivery_count));
+                output.push_str(&format!("  Ack Timeout: {} ms\n", policy.ack_timeout_ms));
+                output.push_str(&format!("  Base Redelivery Delay: {} ms\n", policy.base_redelivery_delay_ms));
+                output.push_str(&format!("  Max Redelivery Delay: {} ms\n", policy.max_redelivery_delay_ms));
+                output.push_str(&format!("  Backoff Strategy: {}\n", backoff_strategy_label(policy.backoff_strategy)));
+                output.push_str(&format!("  Poison Policy: {}\n", poison_policy_label(policy.poison_policy)));
+                if let Some(dlt) = &policy.dead_letter_topic {
+                    output.push_str(&format!("  Dead Letter Topic: {}\n", dlt));
+                }
+                output
+            } else {
+                format!(
+                    "No failure policy found for topic '{}' subscription '{}'",
+                    params.topic, params.subscription
+                )
+            }
+        }
+        Err(e) => format!("Error getting failure policy: {}", e),
     }
 }

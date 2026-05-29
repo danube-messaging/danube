@@ -1,41 +1,29 @@
 //! Schema operational workflow prompts
 //!
-//! Contains prompts for schema evolution and management.
+//! Contains the schema evolution prompt — a guided workflow for safely
+//! evolving schemas with compatibility validation. Encodes the critical
+//! distinction between subject-level compatibility and topic-level enforcement.
 
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    PromptMessageRole,
 };
 
 /// Get schema operational prompt definitions
 pub fn prompts() -> Vec<Prompt> {
-    vec![Prompt {
-        name: "manage_schema_evolution".to_string(),
-        title: Some("Manage Schema Evolution".to_string()),
-        description: Some(
-            "Guided workflow for safely evolving schemas with compatibility validation"
-                .to_string(),
-        ),
-        arguments: Some(vec![
-            PromptArgument {
-                name: "subject".to_string(),
-                title: None,
-                description: Some("Schema subject name to evolve".to_string()),
-                required: Some(true),
-            },
-            PromptArgument {
-                name: "schema_type".to_string(),
-                title: None,
-                description: Some(
-                    "Schema type: json_schema, avro, protobuf, string, number, or bytes (optional)"
-                        .to_string(),
-                ),
-                required: Some(false),
-            },
+    vec![Prompt::new(
+        "manage_schema_evolution",
+        Some("Guided workflow for safely evolving schemas with compatibility validation and subject/topic policy awareness"),
+        Some(vec![
+            PromptArgument::new("subject")
+                .with_description("Schema subject name to evolve")
+                .with_required(true),
+            PromptArgument::new("schema_type")
+                .with_description("Schema type: json_schema, avro, protobuf, string, or bytes (optional)")
+                .with_required(false),
         ]),
-        icons: None,
-        meta: None,
-    }]
+    )
+    .with_title("Manage Schema Evolution")]
 }
 
 /// Try to get a schema operational prompt by name
@@ -52,15 +40,13 @@ pub fn get_prompt(params: &GetPromptRequestParams) -> Option<GetPromptResult> {
                 .and_then(|a| a.get("schema_type"))
                 .and_then(|v| v.as_str());
 
-            Some(GetPromptResult {
-                description: Some(format!("Manage schema evolution for {}", subject)),
-                messages: vec![PromptMessage {
-                    role: PromptMessageRole::User,
-                    content: PromptMessageContent::Text {
-                        text: build_schema_evolution_prompt(subject, schema_type),
-                    },
-                }],
-            })
+            Some(
+                GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    build_schema_evolution_prompt(subject, schema_type),
+                )])
+                .with_description(format!("Manage schema evolution for {}", subject)),
+            )
         }
         _ => None,
     }
@@ -71,84 +57,80 @@ fn build_schema_evolution_prompt(subject: &str, schema_type: Option<&str>) -> St
         .map(|t| format!(" (type: {})", t))
         .unwrap_or_default();
 
+    let st = schema_type.unwrap_or("json_schema");
+
     format!(
-        r#"I need to evolve the schema for subject "{}"{}.
+        r#"I need to evolve the schema for subject "{subject}"{schema_type_guidance}.
 
 Please guide me through this workflow:
 
-## Step 1: Review Current Schema
-Use `get_schema` with subject="{}" to see the current schema definition and version.
+## Important: Subject vs Topic Policies
 
-## Step 2: List Existing Versions
-Use `list_schema_versions` with subject="{}" to see the evolution history.
+Before starting, understand two separate policy layers:
 
-## Step 3: Check Compatibility Mode
-Use `get_subject_compatibility` with subject="{}" to understand:
-- BACKWARD: New schema can read old data (consumers upgrade first, add optional fields)
-- FORWARD: Old schema can read new data (producers upgrade first, remove optional fields)
-- FULL: Both BACKWARD and FORWARD (safest for critical schemas)
-- NONE: No compatibility checks (development/testing only)
+- **Compatibility mode** is set at the **subject** level. It governs schema evolution — what changes are allowed between versions. Applies to ALL topics using this subject.
+- **Validation policy** is set at the **topic** level (NONE / WARN / ENFORCE). It controls whether the broker validates incoming messages. Different topics can use the same subject with different enforcement levels.
 
-Note: Compatibility mode is set at **subject level** (applies to all versions).
-Only administrators can change it with `set_subject_compatibility`.
+## Step 1: Discover Existing Schemas
+Use `list_subjects` to see all registered subjects and quickly check if "{subject}" already exists.
 
-## Step 4: Check Compatibility
-Use `check_compatibility` to validate your new schema:
-- subject: {}
+## Step 2: Review Current Schema
+Use `get_schema` with subject="{subject}" to see the current schema definition, version, and type.
+
+## Step 3: Check Version History
+Use `list_schema_versions` with subject="{subject}" to see the full evolution history.
+
+## Step 4: Check Compatibility Mode
+Use `get_schema_compatibility_mode` with subject="{subject}" to see the current mode:
+
+| Mode | Rule | Safe Changes |
+|------|------|-------------|
+| BACKWARD | New schema can read old data | Add optional fields, widen types |
+| FORWARD | Old schema can read new data | Remove optional fields, narrow types |
+| FULL | Both directions must hold | Only additive changes with defaults |
+| NONE | No checks | Any change (development only) |
+
+## Step 5: Check Compatibility BEFORE Registering
+Use `check_schema_compatibility` to validate your new schema:
+- subject: {subject}
 - schema_definition: <new schema definition>
-- schema_type: {}
+- schema_type: {st}
 
-This validates:
-1. **Syntax**: Schema is well-formed (JSON/Avro/Protobuf)
-2. **Compatibility**: New schema follows the subject's compatibility rules
+This validates both syntax and compatibility rules. Returns `is_compatible: true/false` with detailed error messages if incompatible.
 
-Returns `is_compatible: true/false` with detailed error messages if incompatible.
+**Do NOT skip this step** — it prevents rejected registrations.
 
-## Step 5: Register New Version
-If compatibility check passes:
-Use `create_schema` with:
-- subject: {}
+## Step 6: Register New Version
+If the compatibility check passes, use `register_schema` with:
+- subject: {subject}
 - schema_definition: <new schema definition>
-- schema_type: {}
-- description: <optional change description>
+- schema_type: {st}
+- description: <what changed and why>
 
-The broker automatically checks compatibility again during registration.
+Note: The registry uses fingerprint deduplication — if you register a schema identical to an existing version, it returns the existing ID without creating a duplicate.
 
-## Step 6: Verify Evolution
-Use `get_schema` with subject="{}" to confirm:
-- New version registered successfully
+## Step 7: Verify Evolution
+Use `get_schema` with subject="{subject}" to confirm:
 - Version number incremented
 - Schema definition stored correctly
-- Compatibility mode unchanged
+- Schema ID assigned
 
-## Important Notes
+## If Compatibility Check Fails
 
-**Subject-Level vs Topic-Level:**
-- **Compatibility mode**: Subject-level (applies to all topics using this subject)
-- **Validation policy**: Topic-level (NONE/WARN/ENFORCE, set by admin per topic)
+1. **Adjust the schema** to be compatible (preferred):
+   - BACKWARD: add fields with defaults, make required fields optional
+   - FORWARD: remove optional fields only
+   - FULL: only additive changes with defaults
+2. **Change compatibility mode** (admin-only, risky):
+   - Use `set_schema_compatibility_mode` — but coordinate with ALL teams using this subject first
+3. **Create a new subject** (for breaking changes):
+   - Register under a new name (e.g., "{subject}-v2")
+   - Update topic schema bindings with `configure_topic_schema`
 
-**If Compatibility Check Fails:**
-1. **Adjust schema** to be compatible (preferred):
-   - BACKWARD: Add fields with defaults, make required fields optional
-   - FORWARD: Remove optional fields only
-   - FULL: Only additive changes with defaults
-2. **Change compatibility mode** (admin-only, risky - coordinate with all teams)
-3. **Create new subject** (e.g., "user-events-v2-value" for migration)
-
-**Safety:**
-- **Always check compatibility before registering** to avoid rejected schemas
-- **Rollback**: Use `delete_schema_version` if absolutely needed (breaks consumers using that version)
-- **Testing**: Test schema changes in dev/staging topics first
-- **Documentation**: Add description field to explain what changed in each version"#,
-        subject,
-        schema_type_guidance,
-        subject,
-        subject,
-        subject,
-        subject,
-        schema_type.unwrap_or("json_schema"),
-        subject,
-        subject,
-        schema_type.unwrap_or("json_schema")
+## Safety Reminders
+- **Always check compatibility before registering** — saves time and prevents surprises
+- **Rollback**: use `delete_schema_version` if needed (may break consumers on that version)
+- **Test first**: evolve schemas in dev/staging before production
+- **Document**: use the description field to explain what changed in each version"#,
     )
 }

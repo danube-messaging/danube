@@ -32,14 +32,14 @@ pub fn resource() -> Resource {
 /// Read the metrics catalog content
 pub fn read(uri: &str) -> Option<ReadResourceResult> {
     if uri == METRICS_CATALOG_URI {
-        Some(ReadResourceResult {
-            contents: vec![ResourceContents::TextResourceContents {
+        Some(ReadResourceResult::new(vec![
+            ResourceContents::TextResourceContents {
                 uri: METRICS_CATALOG_URI.to_string(),
                 mime_type: Some("text/plain".to_string()),
                 text: get_metrics_catalog(),
                 meta: None,
-            }],
-        })
+            },
+        ]))
     } else {
         None
     }

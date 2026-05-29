@@ -264,13 +264,13 @@ impl DanubeMcpServer {
 
     // ===== TOPIC MANAGEMENT TOOLS =====
 
-    /// List all topics in a specific namespace.
+    /// List all topics in a specific namespace or for a specific broker.
     ///
     /// Returns topic names, assigned broker IDs, and delivery strategy (reliable/non_reliable).
     /// Topics may show as "unassigned" if not yet assigned to a broker.
     ///
-    /// Use list_namespaces first to discover available namespaces. Use this before describe_topic
-    /// to find specific topic names.
+    /// Provide either namespace or broker parameter (not both).
+    /// Use list_namespaces to discover available namespaces, or list_brokers for broker IDs.
     #[tool]
     async fn list_topics(
         &self,
@@ -540,6 +540,216 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    /// List all registered schema subjects.
+    ///
+    /// Returns a summary of every schema subject: name, type (json_schema/avro/protobuf),
+    /// latest version number, schema ID, compatibility mode, and tags.
+    ///
+    /// Use this for a quick overview of all schemas in the registry before drilling into
+    /// specific subjects with get_schema or list_schema_versions.
+    #[tool]
+    async fn list_subjects(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::schemas::list_subjects(&self.client).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Get a schema by its numeric ID and optional version.
+    ///
+    /// Unlike get_schema (which uses the subject name), this retrieves by the global
+    /// numeric schema ID. Returns schema definition, type, version, and metadata.
+    ///
+    /// Use list_subjects or list_schema_versions to discover schema IDs.
+    /// If version is omitted, returns the latest version.
+    #[tool]
+    async fn get_schema_by_id(
+        &self,
+        Parameters(params): Parameters<tools::schemas::GetSchemaByIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::schemas::get_schema_by_id(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ===== SUBSCRIPTION FAILURE POLICY TOOLS =====
+
+    /// Set the failure policy for a topic subscription.
+    ///
+    /// Side effects: Configures how the broker handles failed message deliveries for a
+    /// specific subscription. Controls redelivery attempts, backoff delays, and what
+    /// happens to poison (unprocessable) messages.
+    ///
+    /// Use list_subscriptions first to discover subscription names. The dead_letter_topic
+    /// must exist if using the "dead_letter" poison policy.
+    #[tool]
+    async fn set_subscription_failure_policy(
+        &self,
+        Parameters(params): Parameters<tools::topics::SetFailurePolicyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::set_subscription_failure_policy(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Get the current failure policy for a topic subscription.
+    ///
+    /// Returns the configured redelivery count, ack timeout, backoff strategy, delays,
+    /// poison policy, and dead letter topic (if any).
+    ///
+    /// Use this to inspect subscription failure handling before modifying it with
+    /// set_subscription_failure_policy.
+    #[tool]
+    async fn get_subscription_failure_policy(
+        &self,
+        Parameters(params): Parameters<tools::topics::GetFailurePolicyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::get_subscription_failure_policy(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ===== SECURITY MANAGEMENT TOOLS =====
+
+    /// Create a new authorization role with specified permissions.
+    ///
+    /// Side effects: Creates a role in the cluster's security metadata.
+    /// Roles define a set of permissions that can be granted to principals via bindings.
+    ///
+    /// Valid permissions: Lookup, Produce, Consume, Replicate, ManageNamespace,
+    /// ManageTopic, ManageSchema, ManageBroker, ManageCluster.
+    /// Use list_roles to verify the role was created.
+    #[tool]
+    async fn create_role(
+        &self,
+        Parameters(params): Parameters<tools::security::CreateRoleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::create_role(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Get details of an authorization role.
+    ///
+    /// Returns the role name, permissions list, and whether it is a system role.
+    /// System roles cannot be deleted.
+    ///
+    /// Use list_roles to discover available role names.
+    #[tool]
+    async fn get_role(
+        &self,
+        Parameters(params): Parameters<tools::security::GetRoleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::get_role(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// List all authorization roles in the cluster.
+    ///
+    /// Returns all roles with their permissions and system flags.
+    /// Use this before creating bindings to discover available roles.
+    #[tool]
+    async fn list_roles(&self) -> Result<CallToolResult, McpError> {
+        let output = tools::security::list_roles(&self.client).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Delete an authorization role.
+    ///
+    /// WARNING: This will remove the role from all bindings that reference it.
+    /// Side effects: Permanently removes the role definition from cluster metadata.
+    ///
+    /// System roles cannot be deleted. Use get_role to check if it's a system role.
+    #[tool]
+    async fn delete_role(
+        &self,
+        Parameters(params): Parameters<tools::security::DeleteRoleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::delete_role(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Create an authorization binding granting roles to a principal.
+    ///
+    /// Side effects: Creates a binding that grants the specified roles to a principal
+    /// (user or service account) at the specified scope (cluster/namespace/topic).
+    ///
+    /// Roles must exist first (use create_role). Scopes: "cluster" (global),
+    /// "namespace" (namespace-level), "topic" (topic-level).
+    #[tool]
+    async fn create_binding(
+        &self,
+        Parameters(params): Parameters<tools::security::CreateBindingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::create_binding(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Get details of an authorization binding.
+    ///
+    /// Returns the binding ID, principal, roles, scope, and resource.
+    ///
+    /// Use list_bindings to discover binding IDs at a given scope.
+    #[tool]
+    async fn get_binding(
+        &self,
+        Parameters(params): Parameters<tools::security::GetBindingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::get_binding(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// List all authorization bindings at a given scope.
+    ///
+    /// Returns all bindings for the specified scope and optional resource.
+    /// Use this to audit who has access to what in the cluster.
+    #[tool]
+    async fn list_bindings(
+        &self,
+        Parameters(params): Parameters<tools::security::ListBindingsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::list_bindings(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Delete an authorization binding.
+    ///
+    /// WARNING: This revokes the roles granted by the binding. Principals may lose access.
+    /// Side effects: Permanently removes the binding from cluster metadata.
+    #[tool]
+    async fn delete_binding(
+        &self,
+        Parameters(params): Parameters<tools::security::DeleteBindingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::delete_binding(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Create a signed JWT token (offline — no broker connection needed).
+    ///
+    /// Generates a JWT token locally using the provided signing secret.
+    /// The secret_key must match the broker's jwt.secret_key configuration.
+    ///
+    /// Useful for bootstrapping service accounts, testing authentication,
+    /// or scripting token generation. TTL format: number + 'h' (hours) or 'd' (days).
+    #[tool]
+    async fn create_token(
+        &self,
+        Parameters(params): Parameters<tools::security::CreateTokenParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::create_token(params);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Validate a JWT token and display its claims (offline — no broker connection needed).
+    ///
+    /// Decodes and validates the token using the provided signing secret.
+    /// Returns subject, principal type, issuer, expiration, and remaining time.
+    ///
+    /// Use this to debug authentication issues or verify token contents.
+    #[tool]
+    async fn validate_token(
+        &self,
+        Parameters(params): Parameters<tools::security::ValidateTokenParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::security::validate_token(params);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     // ===== DIAGNOSTIC TOOLS =====
 
     /// Analyze consumer lag data for a topic and subscription.
@@ -762,14 +972,13 @@ impl DanubeMcpServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DanubeMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .enable_prompts()
                 .build(),
-            ..Default::default()
-        }
+        )
     }
 
     async fn list_resources(

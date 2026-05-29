@@ -316,3 +316,94 @@ pub async fn delete_schema_version(
         Err(e) => format!("Error deleting schema version: {}", e),
     }
 }
+
+pub async fn list_subjects(client: &Arc<AdminGrpcClient>) -> String {
+    let req = danube_core::proto::danube_schema::ListSubjectsRequest {};
+
+    match client.list_subjects(req).await {
+        Ok(response) => {
+            if response.subjects.is_empty() {
+                return "No schema subjects found.".to_string();
+            }
+
+            let mut output = format!(
+                "Found {} schema subject(s):\n\n",
+                response.subjects.len()
+            );
+
+            for subject in &response.subjects {
+                output.push_str(&format!(
+                    "Subject: {}\n\
+                     Type: {}\n\
+                     Latest Version: {}\n\
+                     Schema ID: {}\n\
+                     Compatibility: {}\n",
+                    subject.subject,
+                    subject.schema_type,
+                    subject.latest_version,
+                    subject.schema_id,
+                    subject.compatibility_mode,
+                ));
+                if !subject.tags.is_empty() {
+                    output.push_str(&format!("  Tags: {}\n", subject.tags.join(", ")));
+                }
+                output.push('\n');
+            }
+
+            output
+        }
+        Err(e) => format!("Error listing subjects: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GetSchemaByIdParams {
+    /// Global schema ID (numeric).
+    /// Use list_subjects or list_schema_versions to discover schema IDs.
+    /// Example: 1, 42
+    pub schema_id: u64,
+
+    /// Optional specific version to retrieve.
+    /// If omitted, returns the latest version for this schema ID.
+    /// Example: 1, 3
+    pub version: Option<u32>,
+}
+
+pub async fn get_schema_by_id(
+    client: &Arc<AdminGrpcClient>,
+    params: GetSchemaByIdParams,
+) -> String {
+    let req = danube_core::proto::danube_schema::GetSchemaRequest {
+        schema_id: params.schema_id,
+        version: params.version,
+    };
+
+    match client.get_schema(req).await {
+        Ok(response) => {
+            let schema_def = String::from_utf8_lossy(&response.schema_definition);
+
+            format!(
+                "Schema Subject: {}\n\
+                 Schema ID: {}\n\
+                 Version: {}\n\
+                 Type: {}\n\
+                 Compatibility: {}\n\
+                 Created: {} (by {})\n\
+                 Fingerprint: {}\n\n\
+                 Definition:\n{}",
+                response.subject,
+                response.schema_id,
+                response.version,
+                response.schema_type,
+                response.compatibility_mode,
+                chrono::DateTime::from_timestamp(response.created_at as i64, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                response.created_by,
+                response.fingerprint,
+                schema_def
+            )
+        }
+        Err(e) => format!("Error getting schema: {}", e),
+    }
+}
