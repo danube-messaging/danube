@@ -1,3 +1,27 @@
+<!-- v0.14.1 START -->
+## v0.14.1 - 2026-05-30
+
+**Danube Admin, the Unified Cluster Management Tool**
+
+This release focuses on `danube-admin`, expanding it into a full-featured administration tool. The Admin UI server now serves a web dashboard for cluster, topic, schema, and RBAC management. The MCP server grew from 32 to 58 tools with new security, diagnostics, and metrics capabilities. Several gRPC proto changes support the new admin features.
+
+### 🖥️ Admin UI
+
+* **Dedicated UI server mode**: `danube-admin serve --mode ui` serves the Admin UI dashboard over HTTP. by @danrusei in a926382
+* **Cluster & RBAC pages** (#225): Refactored cluster overview page and new RBAC administration page for managing roles and bindings. by @danrusei in c0a0f0e
+* **Schema registry details** (#224): Admin UI now displays schema subjects, versions, and compatibility settings. by @danrusei in 0529eb3
+* **Security bindings**: Retrieve and display all security bindings in the admin UI. by @danrusei in bc4e283
+
+### 🤖 MCP Server
+
+* **58 tools** (#226): Added security (RBAC roles, bindings, JWT tokens), diagnostics (health checks, consumer lag, recommendations), metrics (Prometheus queries), and log access tools. by @danrusei in 8708687
+
+### 📦 Maintenance
+
+* **Dependency upgrades** (#227): Updated workspace dependencies. by @danrusei in ff6cf2a
+* **Documentation**: Updated links and added edge mode to README. by @danrusei in 2b05bf4, b88a6de
+<!-- v0.14.1 END -->
+
 <!-- v0.14.0 START -->
 ## v0.14.0 - 2026-05-14
 
