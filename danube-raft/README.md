@@ -2,7 +2,7 @@
 
 Embedded Raft consensus layer for the Danube messaging cluster. Replaces etcd as the metadata store using [openraft](https://github.com/databendlabs/openraft) for consensus and [redb](https://github.com/cberner/redb) for durable on-disk log storage.
 
-Every broker runs a Raft node in-process — there is no external dependency.
+Every broker runs a Raft node in-process, so there is no external dependency.
 
 ## Architecture
 
@@ -45,7 +45,7 @@ Every broker runs a Raft node in-process — there is no external dependency.
 
 ## Read Path
 
-Reads go directly to the local in-memory `BTreeMap` via `SharedStateMachineData` — zero network hops, zero disk I/O.
+Reads go directly to the local in-memory `BTreeMap` via `SharedStateMachineData`, with zero network hops and zero disk I/O.
 
 ## Raft Log vs. State Machine
 
@@ -86,10 +86,3 @@ Each broker persists its `node_id` in `{data_dir}/node_id` on first boot. The bo
 | **Restart** | `node_id` file exists | `Restart` | Waits for leader election then resumes; membership is already persisted |
 
 The `has_leader` flag is served by the `GetNodeInfo` gRPC RPC so that fresh nodes can distinguish between "cluster doesn't exist yet" and "cluster is already running". This eliminates the need for shell wrappers or init-containers in Kubernetes, the broker detects the right action automatically.
-
-## Serialization
-
-- **Raft RPCs** (network): JSON (`serde_json`) — required because `RaftCommand` contains `serde_json::Value` which is incompatible with bincode's `deserialize_any`
-- **Raft log entries** (redb): JSON (`serde_json`)
-- **Raft metadata** (vote, purge state): bincode (simple fixed-size types)
-- **Snapshots**: JSON (`serde_json`)
