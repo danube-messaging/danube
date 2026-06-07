@@ -238,11 +238,21 @@ pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u
     info!("initializing metrics exporter");
 
     if let Some(addr) = prom_addr {
-        PrometheusBuilder::new()
+        match PrometheusBuilder::new()
             .with_http_listener(addr)
             .add_global_label("broker", broker_id.to_string())
             .install()
-            .expect("failed to install Prometheus recorder");
+        {
+            Ok(()) => info!("Prometheus exporter listening on {}", addr),
+            Err(e) => {
+                tracing::warn!(
+                    %addr,
+                    error = %e,
+                    "failed to start Prometheus exporter (port in use?), \
+                     broker continues without metrics scraping"
+                );
+            }
+        }
     }
 
     for name in COUNTERS {

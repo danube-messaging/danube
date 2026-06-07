@@ -129,7 +129,7 @@ impl TopicManager {
         let dispatch_strategy = dispatch_strategy.unwrap();
 
         // Build per-topic storage via the factory
-        let wal_storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
+        let storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
             Some(self.storage_factory.for_topic(topic_name).await?)
         } else {
             None
@@ -138,7 +138,7 @@ impl TopicManager {
         let mut new_topic = Topic::new(
             topic_name,
             dispatch_strategy.clone(),
-            wal_storage,
+            storage,
             self.resources.topic.clone(),
             self.resources.schema.clone(),
             self.metrics_collector.clone(),

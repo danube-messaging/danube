@@ -16,7 +16,8 @@ use std::fmt;
 
 use anyhow::Result;
 use danube_core::message::StreamMessage;
-use danube_persistent_storage::{StorageFactory, WalStorage};
+use danube_core::storage::PersistentStorage;
+use danube_persistent_storage::StorageFactory;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -85,7 +86,7 @@ impl Default for MqttIngesterConfig {
 /// Per-topic in-memory buffer.
 struct TopicBuffer {
     messages: Vec<StreamMessage>,
-    wal: WalStorage,
+    storage: Arc<dyn PersistentStorage>,
     last_flush: Instant,
 }
 
@@ -125,16 +126,16 @@ impl MqttIngester {
     /// an empty buffer. Called at edge bootstrap for each topic in the
     /// MQTT config's `topic_mappings`.
     pub async fn provision_topic(&self, topic_name: &str) -> Result<()> {
-        let wal = self
+        let storage = self
             .storage_factory
             .for_topic(topic_name)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to get WAL for topic '{}': {}", topic_name, e))?;
+            .map_err(|e| anyhow::anyhow!("failed to get storage for topic '{}': {}", topic_name, e))?;
 
         let mut buffers = self.buffers.lock().await;
         buffers.entry(topic_name.to_string()).or_insert(TopicBuffer {
             messages: Vec::with_capacity(self.config.batch_size),
-            wal,
+            storage,
             last_flush: Instant::now(),
         });
 
@@ -297,7 +298,7 @@ impl MqttIngester {
         let flush_start = Instant::now();
         let messages: Vec<StreamMessage> = buffer.messages.drain(..).collect();
 
-        match buffer.wal.append_batch(topic_name, &messages).await {
+        match buffer.storage.append_batch(topic_name, &messages).await {
             Ok((first, last)) => {
                 let elapsed_ms = flush_start.elapsed().as_secs_f64() * 1000.0;
                 debug!(

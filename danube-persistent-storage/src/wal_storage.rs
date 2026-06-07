@@ -185,6 +185,27 @@ impl PersistentStorage for WalStorage {
         res
     }
 
+    /// Optimized batch append: single atomic offset bump, single channel send,
+    /// single cache lock, pre-encoded frames.
+    async fn append_batch(
+        &self,
+        topic_name: &str,
+        messages: &[StreamMessage],
+    ) -> Result<(u64, u64), PersistentStorageError> {
+        self.wal
+            .set_topic_for_metrics(topic_name.to_string())
+            .await;
+        let total_bytes: u64 = messages.iter().map(|m| m.payload.len() as u64).sum();
+        let count = messages.len() as u64;
+        let result = self.wal.append_batch(messages).await;
+        if result.is_ok() {
+            counter!(WAL_APPEND_TOTAL.name, "topic" => topic_name.to_string()).increment(count);
+            counter!(WAL_APPEND_BYTES_TOTAL.name, "topic" => topic_name.to_string())
+                .increment(total_bytes);
+        }
+        result
+    }
+
     /// Create a reader for either WAL-only or durable-history-plus-hot playback.
     ///
     /// Reader selection policy
@@ -261,5 +282,9 @@ impl PersistentStorage for WalStorage {
 
     async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
         self.wal.flush().await
+    }
+
+    fn current_offset(&self) -> u64 {
+        self.wal.current_offset()
     }
 }

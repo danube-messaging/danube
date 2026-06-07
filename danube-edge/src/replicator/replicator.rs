@@ -91,14 +91,14 @@ impl EdgeReplicator {
             return;
         }
 
-        // Get WAL storage for this topic
-        let wal_storage = match self.storage_factory.for_topic(topic_name).await {
+        // Get storage for this topic
+        let storage = match self.storage_factory.for_topic(topic_name).await {
             Ok(ws) => ws,
             Err(e) => {
                 warn!(
                     topic = %topic_name,
                     error = %e,
-                    "failed to get WAL storage for topic replication"
+                    "failed to get storage for topic replication"
                 );
                 return;
             }
@@ -111,7 +111,7 @@ impl EdgeReplicator {
         let batch_timeout = self.config.batch_timeout;
 
         let handle = tokio::spawn(async move {
-            TopicReplicator::run(topic, wal_storage, client, checkpoint, batch_size, batch_timeout)
+            TopicReplicator::run(topic, storage, client, checkpoint, batch_size, batch_timeout)
                 .await;
         });
 

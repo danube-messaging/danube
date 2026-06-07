@@ -78,8 +78,11 @@ brokers:
 	@echo "$(NUM_BROKERS) broker(s) started — cluster auto-bootstraps via seed nodes."
 
 cluster-status:
+	@echo "Compiling danube-admin (release)..."
 	@cargo build --release --package danube-admin --bin danube-admin 2>/dev/null
-	@RUST_LOG=warn ./target/release/danube-admin cluster status
+	@echo "Connecting to broker at 127.0.0.1:50051..."
+	@RUST_LOG=warn ./target/release/danube-admin cluster status || \
+		(echo ""; echo "Hint: is the broker running? Start it with 'make brokers'"; exit 1)
 
 brokers-stop:
 	@echo "Stopping all Broker instances (keeping Raft data)..."

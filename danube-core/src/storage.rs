@@ -49,6 +49,31 @@ pub trait PersistentStorage: Send + Sync + std::fmt::Debug + 'static {
         msg: StreamMessage,
     ) -> Result<u64, PersistentStorageError>;
 
+    /// Append a batch of messages atomically and return `(first_offset, last_offset)`.
+    ///
+    /// The default implementation calls `append_message` in a loop. Concrete
+    /// implementations (e.g. `WalStorage`) may override this with an optimized
+    /// single-lock batch path.
+    async fn append_batch(
+        &self,
+        topic_name: &str,
+        messages: &[StreamMessage],
+    ) -> Result<(u64, u64), PersistentStorageError> {
+        if messages.is_empty() {
+            return Err(PersistentStorageError::Other("empty batch".to_string()));
+        }
+        let mut first = 0u64;
+        let mut last = 0u64;
+        for (i, msg) in messages.iter().enumerate() {
+            let offset = self.append_message(topic_name, msg.clone()).await?;
+            if i == 0 {
+                first = offset;
+            }
+            last = offset;
+        }
+        Ok((first, last))
+    }
+
     /// Create a streaming reader starting from the provided position.
     async fn create_reader(
         &self,
@@ -65,4 +90,7 @@ pub trait PersistentStorage: Send + Sync + std::fmt::Debug + 'static {
 
     /// Optionally force a flush of buffered data.
     async fn flush(&self, topic_name: &str) -> Result<(), PersistentStorageError>;
+
+    /// Return the next offset that will be assigned to the next appended message.
+    fn current_offset(&self) -> u64;
 }
