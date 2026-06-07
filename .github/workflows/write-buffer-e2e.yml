@@ -70,7 +70,7 @@ jobs:
           RUST_BACKTRACE: 1
         run: |
           echo "=== Running write buffer integration tests ==="
-          cargo test --release -p danube-persistent-storage --test write_buffer_valkey -- --ignored --nocapture
+          cargo test --release -p danube-persistent-storage --test write_buffer_valkey -- --ignored --test-threads=1 --nocapture
 
       # =====================================================================
       # Phase 2: Broker E2E — produce messages with write buffer enabled
