@@ -35,6 +35,7 @@ use crate::{
     service_configuration::{LoadConfiguration, ServiceConfiguration},
     storage_configuration::{
         LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode,
+        WriteBufferNode,
     },
 };
 
@@ -42,6 +43,7 @@ use anyhow::{Context, Result};
 use danube_edge::edge_service::EdgeService;
 use danube_edge::replicator::replicator::EdgeReplicator;
 use danube_persistent_storage::wal::WalConfig;
+use danube_persistent_storage::valkey::config::{WriteBufferConfig, WaitTimeoutPolicy};
 use danube_persistent_storage::{
     ObjectStoreBackend, ObjectStoreConfig, RetentionConfig, StorageFactory, StorageFactoryConfig,
 };
@@ -448,12 +450,13 @@ fn build_storage_factory_config(
     storage: &StorageConfig,
     metadata_data_dir: &str,
 ) -> StorageFactoryConfig {
-    match storage {
+    let base = match storage {
         StorageConfig::Local {
             local_wal_root,
             metadata_prefix,
             local_retention,
             wal,
+            ..
         } => StorageFactoryConfig::local(
             build_wal_config(Some(local_wal_root.clone()), wal),
             metadata_prefix
@@ -468,6 +471,7 @@ fn build_storage_factory_config(
             legacy_root,
             local_retention,
             wal,
+            ..
         } => StorageFactoryConfig::shared_fs(
             build_wal_config(
                 Some(resolve_local_wal_root(
@@ -490,6 +494,7 @@ fn build_storage_factory_config(
             legacy_object_store,
             local_retention,
             wal,
+            ..
         } => StorageFactoryConfig::object_store(
             build_wal_config(
                 Some(resolve_local_wal_root(
@@ -505,6 +510,19 @@ fn build_storage_factory_config(
             resolve_object_store_config(durable.as_ref(), legacy_object_store.as_ref()),
             build_local_retention_config(local_retention.as_ref(), wal),
         ),
+    };
+
+    // Apply write_buffer config if present
+    let write_buffer_node = match storage {
+        StorageConfig::Local { write_buffer, .. } => write_buffer.as_ref(),
+        StorageConfig::SharedFs { write_buffer, .. } => write_buffer.as_ref(),
+        StorageConfig::ObjectStore { write_buffer, .. } => write_buffer.as_ref(),
+    };
+
+    if let Some(wb) = write_buffer_node {
+        base.with_write_buffer(build_write_buffer_config(wb))
+    } else {
+        base
     }
 }
 
@@ -651,5 +669,19 @@ fn object_store_node_to_config(cfg: &ObjectStoreNode) -> ObjectStoreConfig {
             }
             ObjectStoreConfig::new(ObjectStoreBackend::Azblob, root.clone()).with_options(options)
         }
+    }
+}
+
+fn build_write_buffer_config(node: &WriteBufferNode) -> WriteBufferConfig {
+    WriteBufferConfig {
+        endpoints: node.endpoints.clone(),
+        wait_replicas: node.wait_replicas.unwrap_or(1),
+        wait_timeout_ms: node.wait_timeout_ms.unwrap_or(100),
+        on_wait_timeout: node
+            .on_wait_timeout
+            .as_deref()
+            .map(WaitTimeoutPolicy::from_str_lossy)
+            .unwrap_or_default(),
+        max_cached_closed_segments: node.max_cached_closed_segments.unwrap_or(5),
     }
 }

@@ -1,4 +1,5 @@
 use crate::opendal::{BackendConfig, ObjectStoreBackend};
+use crate::valkey::config::WriteBufferConfig;
 use crate::wal::WalConfig;
 use std::collections::HashMap;
 
@@ -103,6 +104,7 @@ pub struct StorageFactoryConfig {
     pub(crate) metadata_root: String,
     pub(crate) retention: Option<RetentionConfig>,
     pub(crate) segment_export_interval_seconds: Option<u64>,
+    pub(crate) write_buffer: Option<WriteBufferConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +126,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             retention,
             segment_export_interval_seconds: None,
+            write_buffer: None,
         }
     }
 
@@ -139,6 +142,7 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             retention,
             segment_export_interval_seconds: None,
+            write_buffer: None,
         }
     }
 
@@ -154,11 +158,17 @@ impl StorageFactoryConfig {
             metadata_root: metadata_root.into(),
             retention,
             segment_export_interval_seconds: None,
+            write_buffer: None,
         }
     }
 
     pub fn with_segment_export_interval_seconds(mut self, interval_seconds: u64) -> Self {
         self.segment_export_interval_seconds = Some(interval_seconds);
+        self
+    }
+
+    pub fn with_write_buffer(mut self, config: WriteBufferConfig) -> Self {
+        self.write_buffer = Some(config);
         self
     }
 

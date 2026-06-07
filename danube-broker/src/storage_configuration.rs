@@ -13,6 +13,8 @@ pub(crate) enum StorageConfig {
         local_retention: Option<LocalRetentionNode>,
         #[serde(default)]
         wal: WalNode,
+        #[serde(default)]
+        write_buffer: Option<WriteBufferNode>,
     },
     SharedFs {
         #[serde(default, alias = "cache_root")]
@@ -27,6 +29,8 @@ pub(crate) enum StorageConfig {
         local_retention: Option<LocalRetentionNode>,
         #[serde(default)]
         wal: WalNode,
+        #[serde(default)]
+        write_buffer: Option<WriteBufferNode>,
     },
     ObjectStore {
         #[serde(default, alias = "cache_root")]
@@ -41,13 +45,14 @@ pub(crate) enum StorageConfig {
         local_retention: Option<LocalRetentionNode>,
         #[serde(default)]
         wal: WalNode,
+        #[serde(default)]
+        write_buffer: Option<WriteBufferNode>,
     },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::StorageConfig;
-    use std::path::Path;
+    use super::*;
 
     #[test]
     fn builds_single_node_local_storage_config() {
@@ -59,6 +64,7 @@ mod tests {
                 metadata_prefix,
                 local_retention,
                 wal,
+                write_buffer,
             } => {
                 assert_eq!(
                     local_wal_root,
@@ -72,8 +78,83 @@ mod tests {
                 let rotation = wal.rotation.expect("rotation");
                 assert_eq!(rotation.max_bytes, Some(536870912));
                 assert_eq!(rotation.max_hours, None);
+                assert!(write_buffer.is_none());
             }
             _ => panic!("single-node storage must be local"),
+        }
+    }
+
+    #[test]
+    fn write_buffer_node_deserializes_full_config() {
+        let yaml = r#"
+            backend: valkey
+            endpoints:
+              - "redis://127.0.0.1:6379"
+              - "redis://127.0.0.1:6380"
+            wait_replicas: 2
+            wait_timeout_ms: 200
+            on_wait_timeout: ack
+            max_cached_closed_segments: 10
+        "#;
+        let node: WriteBufferNode = serde_yaml::from_str(yaml).expect("deserialize");
+        assert_eq!(node.backend, "valkey");
+        assert_eq!(node.endpoints.len(), 2);
+        assert_eq!(node.endpoints[0], "redis://127.0.0.1:6379");
+        assert_eq!(node.wait_replicas, Some(2));
+        assert_eq!(node.wait_timeout_ms, Some(200));
+        assert_eq!(node.on_wait_timeout.as_deref(), Some("ack"));
+        assert_eq!(node.max_cached_closed_segments, Some(10));
+    }
+
+    #[test]
+    fn write_buffer_node_deserializes_minimal_config() {
+        let yaml = r#"
+            backend: valkey
+            endpoints:
+              - "redis://127.0.0.1:6379"
+        "#;
+        let node: WriteBufferNode = serde_yaml::from_str(yaml).expect("deserialize");
+        assert_eq!(node.backend, "valkey");
+        assert_eq!(node.endpoints, vec!["redis://127.0.0.1:6379"]);
+        assert!(node.wait_replicas.is_none());
+        assert!(node.wait_timeout_ms.is_none());
+        assert!(node.on_wait_timeout.is_none());
+        assert!(node.max_cached_closed_segments.is_none());
+    }
+
+    #[test]
+    fn storage_config_local_with_write_buffer() {
+        let yaml = r#"
+            mode: local
+            local_wal_root: "./data/wal"
+            write_buffer:
+              backend: valkey
+              endpoints:
+                - "redis://127.0.0.1:6379"
+        "#;
+        let config: StorageConfig = serde_yaml::from_str(yaml).expect("deserialize");
+        match config {
+            StorageConfig::Local { write_buffer, .. } => {
+                let wb = write_buffer.expect("write_buffer should be present");
+                assert_eq!(wb.backend, "valkey");
+                assert_eq!(wb.endpoints, vec!["redis://127.0.0.1:6379"]);
+            }
+            other => panic!("expected Local variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn storage_config_local_without_write_buffer() {
+        let yaml = r#"
+            mode: local
+            local_wal_root: "./data/wal"
+        "#;
+        let config: StorageConfig = serde_yaml::from_str(yaml).expect("deserialize");
+        match config {
+            StorageConfig::Local { write_buffer, .. } => {
+                assert!(write_buffer.is_none(), "write_buffer should be None");
+            }
+            other => panic!("expected Local variant, got {:?}", other),
         }
     }
 }
@@ -95,6 +176,7 @@ impl StorageConfig {
                 }),
                 ..Default::default()
             },
+            write_buffer: None,
         }
     }
 }
@@ -177,7 +259,11 @@ impl WalNode {
             .as_ref()
             .and_then(|advanced| advanced.rotation.as_ref())
             .and_then(|rotation| rotation.max_hours)
-            .or_else(|| self.rotation.as_ref().and_then(|rotation| rotation.max_hours))
+            .or_else(|| {
+                self.rotation
+                    .as_ref()
+                    .and_then(|rotation| rotation.max_hours)
+            })
     }
 
     pub(crate) fn legacy_local_retention(&self) -> Option<&LocalRetentionNode> {
@@ -215,4 +301,37 @@ pub(crate) enum ObjectStoreNode {
         account_name: Option<String>,
         account_key: Option<String>,
     },
+}
+
+/// Configuration for the external write buffer (Valkey/Redis).
+///
+/// ```yaml
+/// write_buffer:
+///   backend: valkey
+///   endpoints:
+///     - "redis://127.0.0.1:6379"
+///   wait_replicas: 1
+///   wait_timeout_ms: 100
+///   on_wait_timeout: fail
+///   max_cached_closed_segments: 5
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct WriteBufferNode {
+    /// Backend type (currently only "valkey" is supported).
+    #[allow(dead_code)]
+    pub(crate) backend: String,
+    /// Valkey/Redis endpoint URLs.
+    pub(crate) endpoints: Vec<String>,
+    /// Number of replicas that must confirm via WAIT (default: 1).
+    #[serde(default)]
+    pub(crate) wait_replicas: Option<u32>,
+    /// Timeout in ms for the WAIT command (default: 100).
+    #[serde(default)]
+    pub(crate) wait_timeout_ms: Option<u64>,
+    /// What to do on WAIT timeout: "ack" or "fail" (default: "fail").
+    #[serde(default)]
+    pub(crate) on_wait_timeout: Option<String>,
+    /// Max closed segments to keep in Valkey cache (default: 5).
+    #[serde(default)]
+    pub(crate) max_cached_closed_segments: Option<u32>,
 }

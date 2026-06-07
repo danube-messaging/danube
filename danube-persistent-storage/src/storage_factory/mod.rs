@@ -9,6 +9,8 @@ pub use config::{
 
 use crate::durable_store::DurableStore;
 use crate::metadata::{MobilityState, SegmentCatalog};
+use crate::valkey::config::WriteBufferConfig;
+use crate::valkey::ValkeyClient;
 use crate::wal::Wal;
 use crate::wal::deleter::DeleterConfig;
 use dashmap::DashMap;
@@ -32,6 +34,9 @@ pub struct StorageFactory {
     deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     deleter_tokens: Arc<DashMap<String, CancellationToken>>,
     metadata_root: String,
+    write_buffer: Option<WriteBufferConfig>,
+    /// Shared Valkey client, lazily initialized on first topic with write_buffer.
+    valkey_client: Arc<tokio::sync::OnceCell<Arc<ValkeyClient>>>,
 }
 
 #[derive(Debug, Clone)]

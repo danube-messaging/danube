@@ -1,0 +1,65 @@
+cluster_name: "MY_CLUSTER"
+
+broker:
+  host: "0.0.0.0"
+  ports:
+    client: 6650
+    admin: 50051
+    raft: 7650
+    prometheus: 9040
+
+meta_store:
+  data_dir: "./danube-data/raft"
+
+bootstrap_namespaces:
+  - "default"
+
+auto_create_topics: true
+
+auth:
+  mode: none
+
+load_manager:
+  assignment_strategy: "fair"
+  load_report_interval_seconds: 5
+  rebalancing:
+    enabled: false
+    aggressiveness: "balanced"
+    check_interval_seconds: 300
+    max_moves_per_hour: 10
+    cooldown_seconds: 60
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 300
+    blacklist_topics: []
+
+# Storage Configuration (local mode with Valkey write buffer for testing)
+storage:
+  mode: local
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
+  wal:
+    rotation:
+      max_bytes: 536870912
+
+  # Valkey write buffer — double-writes to Valkey for cross-node durability
+  write_buffer:
+    backend: valkey
+    endpoints:
+      - "redis://127.0.0.1:6379"
+    wait_replicas: 0         # standalone Valkey has no replicas
+    wait_timeout_ms: 100
+    on_wait_timeout: fail
+    max_cached_closed_segments: 5
+
+policies:
+  max_producers_per_topic: 0
+  max_subscriptions_per_topic: 0
+  max_consumers_per_topic: 0
+  max_consumers_per_subscription: 0
+  max_publish_rate: 0
+  max_subscription_dispatch_rate: 0
+  max_message_size: 10485760
