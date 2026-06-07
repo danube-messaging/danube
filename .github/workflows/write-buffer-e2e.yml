@@ -36,7 +36,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler redis-tools
 
       - name: Create certificate files
         run: |
@@ -48,8 +48,8 @@ jobs:
       - name: Verify Valkey is reachable
         run: |
           for attempt in $(seq 1 10); do
-            if redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
-              echo "Valkey is ready."
+            if nc -zv 127.0.0.1 6379 2>/dev/null; then
+              echo "Valkey is ready on port 6379."
               break
             elif [ $attempt -eq 10 ]; then
               echo "ERROR: Valkey failed to start."
