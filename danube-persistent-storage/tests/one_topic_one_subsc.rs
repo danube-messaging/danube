@@ -4,7 +4,7 @@ use common::{
     count_cloud_objects, create_test_factory, get_latest_object_descriptor, make_test_message,
     wait_for_condition,
 };
-use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_core::storage::StartPosition;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
