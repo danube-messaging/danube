@@ -610,6 +610,7 @@ mod tests {
     use crate::resources::TopicResources;
     use danube_core::message::MessageID;
     use danube_core::metadata::MemoryStore;
+    use danube_core::storage::PersistentStorage;
     use danube_persistent_storage::wal::{Wal, WalConfig};
     use danube_persistent_storage::WalStorage;
     use tokio::time::{sleep, Duration};
@@ -645,7 +646,7 @@ mod tests {
         let wal = Wal::with_config(WalConfig::default())
             .await
             .expect("init wal");
-        let wal_storage = WalStorage::from_wal(wal);
+        let wal_storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
         let ts = TopicStore::new("/ns/topic-a".to_string(), wal_storage);
         let mut engine = SubscriptionEngine::new_with_progress(
             "sub-a".to_string(),

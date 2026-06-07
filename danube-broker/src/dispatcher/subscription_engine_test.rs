@@ -9,6 +9,7 @@ use std::sync::Arc;
 use super::SubscriptionEngine;
 use crate::topic::TopicStore;
 use danube_core::message::{MessageID, StreamMessage};
+use danube_core::storage::PersistentStorage;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 
@@ -17,7 +18,7 @@ async fn create_test_store(topic_name: &str) -> Arc<TopicStore> {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("WAL creation failed");
-    let storage = WalStorage::from_wal(wal);
+    let storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
     Arc::new(TopicStore::new(topic_name.to_string(), storage))
 }
 

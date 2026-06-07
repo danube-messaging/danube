@@ -4,7 +4,6 @@ use danube_core::{
     message::StreamMessage,
     storage::{PersistentStorage, StartPosition, TopicStream},
 };
-use danube_persistent_storage::WalStorage;
 use danube_schema::{SchemaResources, TopicSchemaContext};
 use metrics::{counter, gauge, histogram};
 use std::collections::{hash_map::Entry, HashMap};
@@ -82,13 +81,13 @@ impl Topic {
     pub(crate) fn new(
         topic_name: &str,
         dispatch_strategy: ConfigDispatchStrategy,
-        wal_storage: Option<WalStorage>,
+        storage: Option<Arc<dyn PersistentStorage>>,
         resources_topic: TopicResources,
         resources_schema: SchemaResources,
         metrics_collector: Arc<MetricsCollector>,
         replicator: Arc<Replicator>,
     ) -> Self {
-        let topic_store = wal_storage.map(|ws| TopicStore::new(topic_name.to_string(), ws));
+        let topic_store = storage.map(|s| TopicStore::new(topic_name.to_string(), s));
         let dispatch_strategy = match dispatch_strategy {
             ConfigDispatchStrategy::NonReliable => DispatchStrategy::NonReliable,
             ConfigDispatchStrategy::Reliable => DispatchStrategy::Reliable,
@@ -781,16 +780,18 @@ impl Topic {
     }
 }
 
-// TopicStore is a thin facade over PersistentStorage (WalStorage) scoped to a single topic.
+// TopicStore is a thin facade over PersistentStorage scoped to a single topic.
 // It provides a simple API for appending messages and creating readers starting at a given position.
+// The underlying storage can be any implementation of PersistentStorage (e.g. WalStorage,
+// or a ReplicatedStorage decorator wrapping WalStorage + Valkey).
 #[derive(Debug, Clone)]
 pub(crate) struct TopicStore {
     topic_name: String,
-    storage: WalStorage,
+    storage: Arc<dyn PersistentStorage>,
 }
 
 impl TopicStore {
-    pub(crate) fn new(topic_name: String, storage: WalStorage) -> Self {
+    pub(crate) fn new(topic_name: String, storage: Arc<dyn PersistentStorage>) -> Self {
         Self {
             topic_name,
             storage,

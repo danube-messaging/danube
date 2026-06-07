@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use danube_core::message::{MessageID, StreamMessage};
+use danube_core::storage::PersistentStorage;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;
 use tokio::sync::{mpsc, Mutex};
@@ -82,7 +83,7 @@ async fn reliable_single_ack_gating() {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("create wal");
-    let wal_storage = WalStorage::from_wal(wal);
+    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
 
     let topic = "/default/exclusive_reliable";
     let ts = TopicStore::new(topic.to_string(), wal_storage);

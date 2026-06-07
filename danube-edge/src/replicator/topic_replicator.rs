@@ -16,7 +16,6 @@ use std::time::Duration;
 use danube_client::RetryManager;
 use danube_core::message::StreamMessage;
 use danube_core::storage::{PersistentStorage, StartPosition};
-use danube_persistent_storage::WalStorage;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
@@ -44,7 +43,7 @@ impl TopicReplicator {
     /// 6. On persistent failure, resets reader to checkpoint and retries
     pub async fn run(
         topic_name: String,
-        wal_storage: WalStorage,
+        storage: Arc<dyn PersistentStorage>,
         cloud_client: Arc<EdgeCloudClient>,
         checkpoint: Arc<CheckpointStore>,
         batch_size: usize,
@@ -77,7 +76,7 @@ impl TopicReplicator {
             );
 
             // Create WAL reader — always from checkpoint, ensuring no gaps
-            let mut reader = match wal_storage.create_reader(&topic_name, start_pos).await {
+            let mut reader = match storage.create_reader(&topic_name, start_pos).await {
                 Ok(r) => r,
                 Err(e) => {
                     error!(

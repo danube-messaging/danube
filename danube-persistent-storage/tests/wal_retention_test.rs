@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use danube_core::metadata::{MemoryStore, MetadataStore};
-use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_core::storage::StartPosition;
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::deleter::{Deleter, DeleterConfig};
 use danube_persistent_storage::{

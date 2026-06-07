@@ -1,10 +1,5 @@
-//! Edge replication storage — WAL ingestion and dedup tracking.
-//!
-//! Uses the broker's `StorageFactory` for WAL access and `MetadataStorage`
-//! for dedup markers. Topic metadata management (create/delete) is handled
-//! by `TopicCluster` — the same code path used for Standalone/Cluster modes.
-
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
@@ -12,7 +7,8 @@ use tracing::debug;
 
 use danube_core::message::StreamMessage;
 use danube_core::metadata::{MetaOptions, MetadataStore};
-use danube_persistent_storage::{StorageFactory, WalStorage};
+use danube_core::storage::PersistentStorage;
+use danube_persistent_storage::StorageFactory;
 
 use crate::metadata_storage::MetadataStorage;
 
@@ -21,13 +17,13 @@ const EDGE_REPLICATED_PREFIX: &str = "/edge/replicated";
 
 /// Broker-side storage for edge replication.
 ///
-/// Caches per-topic `WalStorage` handles to avoid repeated `StorageFactory`
+/// Caches per-topic storage handles to avoid repeated `StorageFactory`
 /// lookups on every batch (same pattern as the normal producer's `TopicStore`).
 pub(crate) struct EdgeReplicationStorage {
     storage_factory: StorageFactory,
     meta_store: MetadataStorage,
-    /// Cached WAL handles per topic. Resolved once, reused for all batches.
-    wal_cache: Mutex<HashMap<String, WalStorage>>,
+    /// Cached storage handles per topic. Resolved once, reused for all batches.
+    storage_cache: Mutex<HashMap<String, Arc<dyn PersistentStorage>>>,
 }
 
 impl EdgeReplicationStorage {
@@ -35,28 +31,28 @@ impl EdgeReplicationStorage {
         Self {
             storage_factory,
             meta_store,
-            wal_cache: Mutex::new(HashMap::new()),
+            storage_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Get or create a cached WAL handle for a topic.
-    async fn get_wal(&self, topic_name: &str) -> Result<WalStorage> {
+    /// Get or create a cached storage handle for a topic.
+    async fn get_storage(&self, topic_name: &str) -> Result<Arc<dyn PersistentStorage>> {
         {
-            let cache = self.wal_cache.lock().await;
-            if let Some(wal) = cache.get(topic_name) {
-                return Ok(wal.clone());
+            let cache = self.storage_cache.lock().await;
+            if let Some(storage) = cache.get(topic_name) {
+                return Ok(storage.clone());
             }
         }
 
-        let wal_storage = self
+        let storage = self
             .storage_factory
             .for_topic(topic_name)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to get WAL storage: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to get storage: {}", e))?;
 
-        let mut cache = self.wal_cache.lock().await;
-        cache.insert(topic_name.to_string(), wal_storage.clone());
-        Ok(wal_storage)
+        let mut cache = self.storage_cache.lock().await;
+        cache.insert(topic_name.to_string(), storage.clone());
+        Ok(storage)
     }
 
     /// Write a batch of messages directly to the topic's WAL.
@@ -86,10 +82,10 @@ impl EdgeReplicationStorage {
         }
 
         // --- Write batch to WAL (cached handle) ---
-        let wal_storage = self.get_wal(topic_name).await?;
+        let storage = self.get_storage(topic_name).await?;
         let count = messages.len();
 
-        let (_first, last) = wal_storage
+        let (_first, last) = storage
             .append_batch(topic_name, &messages)
             .await
             .map_err(|e| anyhow::anyhow!("batch append failed: {}", e))?;
@@ -125,9 +121,9 @@ impl EdgeReplicationStorage {
     /// Remove cached WAL handle and dedup marker for a deleted topic.
     #[allow(dead_code)]
     pub(crate) async fn delete_replicated_marker(&self, topic_name: &str) {
-        // Remove cached WAL handle
+        // Remove cached storage handle
         {
-            let mut cache = self.wal_cache.lock().await;
+            let mut cache = self.storage_cache.lock().await;
             cache.remove(topic_name);
         }
 

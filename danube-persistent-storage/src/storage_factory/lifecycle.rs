@@ -5,7 +5,7 @@ use crate::opendal::OpendalDurableStore;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
 use danube_core::metadata::MetadataStore;
-use danube_core::storage::PersistentStorageError;
+use danube_core::storage::{PersistentStorage, PersistentStorageError};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -79,7 +79,7 @@ impl StorageFactory {
     ///   history for the already-sealed prefix and use the hot WAL only for new local progress.
     /// - Export/deleter tasks are started once per topic and reused across repeated `for_topic()`
     ///   calls in the same process.
-    pub async fn for_topic(&self, topic_name: &str) -> Result<WalStorage, PersistentStorageError> {
+    pub async fn for_topic(&self, topic_name: &str) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
         let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed) =
             self.get_or_create_wal(&topic_path).await?;
@@ -191,13 +191,13 @@ impl StorageFactory {
             storage = storage.with_hot_cutover();
         }
         if let Some(store) = durable_store {
-            Ok(storage.with_durable_history(
+            Ok(Arc::new(storage.with_durable_history(
                 store,
                 self.segment_catalog.metadata().clone(),
                 topic_path,
-            ))
+            )))
         } else {
-            Ok(storage)
+            Ok(Arc::new(storage))
         }
     }
 

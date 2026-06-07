@@ -1,6 +1,6 @@
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::metadata::{MemoryStore, MetadataStore};
-use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_core::storage::StartPosition;
 use danube_persistent_storage::checkpoint::{CheckpointStore, WalCheckpoint};
 use danube_persistent_storage::wal::WalConfig;
 use danube_persistent_storage::{SegmentDescriptor, StorageFactory, StorageFactoryConfig, StorageMetadata};
