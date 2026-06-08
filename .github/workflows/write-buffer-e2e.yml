@@ -104,28 +104,20 @@ jobs:
             sleep 3
           done
 
-      - name: "Phase 2: Create topic and produce messages"
-        env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
-          DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
+      - name: "Phase 2: Produce messages with write buffer"
         run: |
-          ADMIN_BIN=./target/release/danube-admin
           CLI_BIN=./target/release/danube-cli
 
-          # Create topic
-          $ADMIN_BIN topics create /default/wb-crash-test
-          echo "✓ Topic created"
-          sleep 2
-
           # Produce 10 messages through the broker (goes through BufferedStorage → WAL + Valkey)
-          # --reliable is required to use Reliable dispatch (which creates storage)
+          # --reliable creates the topic with Reliable dispatch (auto_create_topics: true)
+          # which enables storage (WalStorage + BufferedStorage with Valkey double-write)
           $CLI_BIN produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "crash-recovery-test-message" \
             -c 10 \
             --reliable
-          echo "✓ Produced 10 messages"
+          echo "✓ Produced 10 messages (reliable dispatch)"
           sleep 2
 
       - name: "Phase 2: Verify double-write to Valkey"
