@@ -104,45 +104,44 @@ jobs:
             sleep 3
           done
 
-      - name: "Phase 2: Create topic and produce messages"
-        env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
-          RUST_BACKTRACE: 1
+      - name: "Phase 2: Produce messages with write buffer"
         run: |
-          ADMIN_BIN=./target/release/danube-admin
+          CLI_BIN=./target/release/danube-cli
 
-          # Create a reliable topic
-          $ADMIN_BIN topics create /default/wb-crash-test
-          echo "✓ Topic created"
+          # Produce 10 messages through the broker (goes through BufferedStorage → WAL + Valkey)
+          # --reliable creates the topic with Reliable dispatch (auto_create_topics: true)
+          # which enables storage (WalStorage + BufferedStorage with Valkey double-write)
+          $CLI_BIN produce \
+            -s http://127.0.0.1:6650 \
+            -t /default/wb-crash-test \
+            -m "crash-recovery-test-message" \
+            -c 10 \
+            --reliable
+          echo "✓ Produced 10 messages (reliable dispatch)"
           sleep 2
-
-          # Produce 10 test messages using a small Rust test binary
-          # We use cargo test with a specific test that produces messages
-          cargo test --release -p danube-persistent-storage --test write_buffer_valkey -- --ignored produce_for_e2e --nocapture 2>&1 || true
-
-          # Alternative: verify Valkey has data by directly querying
-          echo ""
-          echo "=== Checking Valkey for buffered data ==="
-          ACTIVE_KEYS=$(redis-cli -h 127.0.0.1 -p 6379 KEYS "/topics/*/active_segment" 2>/dev/null || echo "")
-          echo "Active segment keys in Valkey: $ACTIVE_KEYS"
-
-          TOTAL_KEYS=$(redis-cli -h 127.0.0.1 -p 6379 DBSIZE 2>/dev/null || echo "0")
-          echo "Total Valkey keys: $TOTAL_KEYS"
 
       - name: "Phase 2: Verify double-write to Valkey"
         run: |
           echo "=== Verifying Valkey has buffered messages ==="
 
-          # Check broker logs for write buffer activity
-          if grep -q "valkey" temp/broker.log 2>/dev/null; then
-            echo "✓ Broker log mentions Valkey activity"
+          # Check that Valkey has the active_segment hash with entries
+          ENTRY_COUNT=$(redis-cli -h 127.0.0.1 -p 6379 HLEN "/topics/default/wb-crash-test/active_segment" 2>/dev/null || echo "0")
+          echo "Valkey active_segment entry count: $ENTRY_COUNT"
+
+          if [ "$ENTRY_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "✓ Valkey has $ENTRY_COUNT buffered messages"
+          else
+            echo "✗ FAIL: Valkey has no buffered messages — double-write may not be working"
+            echo ""
+            echo "=== Broker log (write buffer lines) ==="
+            grep -i "valkey\|write.buffer\|BufferedStorage" temp/broker.log | tail -20 || true
+            echo ""
+            echo "=== All Valkey keys ==="
+            redis-cli -h 127.0.0.1 -p 6379 KEYS "*" 2>/dev/null || true
+            exit 1
           fi
 
-          # Check Valkey key count
-          KEY_COUNT=$(redis-cli -h 127.0.0.1 -p 6379 DBSIZE | grep -oP '\d+' || echo "0")
-          echo "Valkey key count: $KEY_COUNT"
-
-          echo "✓ Phase 2 complete: broker with write buffer started and verified"
+          echo "✓ Phase 2 complete: broker with write buffer produced and verified"
 
       # =====================================================================
       # Phase 3: Crash simulation — kill broker, delete WAL, restart
@@ -195,33 +194,63 @@ jobs:
             sleep 3
           done
 
+          # Produce 1 message to trigger lazy topic initialization → recovery
+          # Topics are initialized on-demand when first accessed, not at broker
+          # startup. This produce triggers for_topic() → get_or_create_wal() →
+          # resolve_recovery_start() → ValkeyWriteBuffer replay.
+          echo "Triggering topic recovery by producing a message..."
+          sleep 3
+          ./target/release/danube-cli produce \
+            -s http://127.0.0.1:6650 \
+            -t /default/wb-crash-test \
+            -m "post-crash-trigger" \
+            -c 1 \
+            --reliable
+          echo "✓ Topic accessed — recovery should have triggered"
+          sleep 2
+
       - name: "Phase 3: Verify crash recovery from Valkey"
         run: |
           echo "=== Verifying crash recovery ==="
+          PASS=true
 
-          # Check broker logs for Valkey recovery source
-          if grep -q "valkey recovery: found buffered messages" temp/broker.log; then
-            echo "✓ PASS: Broker recovered offset from Valkey write buffer"
-            grep "valkey recovery" temp/broker.log
-          else
-            echo "--- Checking for recovery source ---"
-            grep -i "recovery" temp/broker.log | tail -20 || true
-          fi
-
-          # Check that broker resolved initial offset from Valkey
+          # 1. Check recovery source was ValkeyWriteBuffer
           if grep -q "ValkeyWriteBuffer" temp/broker.log; then
-            echo "✓ PASS: Recovery source was ValkeyWriteBuffer"
+            echo "✓ Recovery source: ValkeyWriteBuffer"
           else
-            echo "--- Recovery source lines ---"
-            grep "startup recovery resolved" temp/broker.log || true
+            echo "✗ FAIL: Recovery source was NOT ValkeyWriteBuffer"
+            PASS=false
+          fi
+
+          # 2. Check that messages were downloaded from Valkey
+          if grep -q "valkey recovery: downloaded active_segment for WAL replay" temp/broker.log; then
+            echo "✓ Messages downloaded from Valkey"
+            grep "downloaded active_segment" temp/broker.log
+          else
+            echo "✗ FAIL: No active_segment download log found"
+            PASS=false
+          fi
+
+          # 3. Check that messages were replayed into WAL
+          if grep -q "valkey recovery: replayed buffered messages into WAL" temp/broker.log; then
+            echo "✓ Messages replayed into WAL"
+            grep "replayed buffered messages" temp/broker.log
+          else
+            echo "✗ FAIL: No WAL replay log found"
+            PASS=false
           fi
 
           echo ""
-          echo "=== Broker log (recovery section) ==="
-          grep -A2 "startup recovery" temp/broker.log || true
+          echo "=== Recovery-related broker log lines ==="
+          grep -i "recovery\|replay\|ValkeyWriteBuffer" temp/broker.log | tail -20 || true
 
           echo ""
-          echo "✓ Phase 3 complete: crash recovery verification done"
+          if [ "$PASS" = true ]; then
+            echo "✓ Phase 3 complete: crash recovery with WAL replay verified"
+          else
+            echo "✗ Phase 3 FAILED: see log lines above"
+            exit 1
+          fi
 
       # =====================================================================
       # Final summary
@@ -236,14 +265,18 @@ jobs:
           echo "  - StorageFactory → BufferedStorage → Valkey"
           echo "  - Batch append, read delegation, offset continuity"
           echo "  - ValkeyClient CRUD operations"
+          echo "  - Crash recovery: WAL replay from Valkey"
           echo ""
           echo "Phase 2: Broker with write buffer        — PASSED"
           echo "  - Broker started with write_buffer config"
-          echo "  - Messages double-written to WAL + Valkey"
+          echo "  - Messages produced via CLI → double-written to WAL + Valkey"
+          echo "  - Valkey active_segment verified with HLEN"
           echo ""
           echo "Phase 3: Crash recovery from Valkey      — PASSED"
-          echo "  - Broker killed, WAL deleted"
-          echo "  - Broker restarted, recovered from Valkey"
+          echo "  - Broker killed (SIGKILL), WAL deleted"
+          echo "  - Broker restarted, topic accessed"
+          echo "  - Recovery: downloaded active_segment from Valkey"
+          echo "  - Recovery: replayed buffered messages into fresh WAL"
 
       - name: Print broker logs on failure
         if: failure()
