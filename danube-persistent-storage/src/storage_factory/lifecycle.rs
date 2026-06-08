@@ -1,7 +1,9 @@
 use super::{normalize_topic_path, CommitInfo, SealInfo, StorageFactory, StorageFactoryConfig};
+use crate::buffered_storage::BufferedStorage;
 use crate::durable_store::DurableStore;
 use crate::metadata::{StorageMetadata, StorageStateSealed};
 use crate::opendal::OpendalDurableStore;
+use crate::valkey::ValkeyClient;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
 use danube_core::metadata::MetadataStore;
@@ -31,6 +33,8 @@ impl StorageFactory {
             deleters: Arc::new(dashmap::DashMap::new()),
             deleter_tokens: Arc::new(dashmap::DashMap::new()),
             metadata_root: config.metadata_root,
+            write_buffer: config.write_buffer,
+            valkey_client: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -191,14 +195,51 @@ impl StorageFactory {
             storage = storage.with_hot_cutover();
         }
         if let Some(store) = durable_store {
-            Ok(Arc::new(storage.with_durable_history(
+            storage = storage.with_durable_history(
                 store,
                 self.segment_catalog.metadata().clone(),
+                topic_path.clone(),
+            );
+        }
+
+        // Optionally wrap in BufferedStorage for Valkey write buffer
+        if let Some(ref wb_config) = self.write_buffer {
+            let valkey_client = self.get_or_connect_valkey(wb_config).await?;
+            info!(
+                topic = %topic_path,
+                endpoints = ?wb_config.endpoints,
+                "Valkey write buffer enabled for topic"
+            );
+            Ok(Arc::new(BufferedStorage::new(
+                storage,
+                valkey_client,
+                wb_config.clone(),
                 topic_path,
             )))
         } else {
             Ok(Arc::new(storage))
         }
+    }
+
+    /// Get or lazily connect the shared Valkey client.
+    pub(super) async fn get_or_connect_valkey(
+        &self,
+        config: &crate::valkey::config::WriteBufferConfig,
+    ) -> Result<Arc<ValkeyClient>, PersistentStorageError> {
+        self.valkey_client
+            .get_or_try_init(|| async {
+                ValkeyClient::connect(config)
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| {
+                        PersistentStorageError::Other(format!(
+                            "failed to connect to Valkey write buffer: {}",
+                            e
+                        ))
+                    })
+            })
+            .await
+            .cloned()
     }
 
     pub async fn shutdown(&self) {

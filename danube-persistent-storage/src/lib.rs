@@ -19,6 +19,11 @@ pub use wal_storage::WalStorage;
 mod opendal;
 pub use opendal::{ObjectStoreBackend, OpendalDurableStore};
 
+pub mod valkey;
+
+mod buffered_storage;
+pub use buffered_storage::BufferedStorage;
+
 mod frames;
 
 pub use metadata::{SegmentDescriptor, StorageMetadata};

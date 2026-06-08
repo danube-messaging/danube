@@ -13,6 +13,7 @@ enum RecoveryStartSource {
     LocalWalContinuity,
     SealedMobilityState,
     DurableSegmentCatalog,
+    ValkeyWriteBuffer,
     EmptyTopic,
     MobilityStateReadFailed,
 }
@@ -169,12 +170,18 @@ impl StorageFactory {
 
     /// Resolve the initial WAL offset for topic startup or ownership handoff.
     ///
-    /// Decision order
-    /// - **Sealed mobility state**: resume from the last sealed committed offset + 1.
-    /// - **Durable segment catalog**: in modes that require a separate durable backend and lack
-    ///   local WAL continuity, resume from the durable segment end offset + 1.
-    /// - **Local WAL continuity**: let the WAL recover from its existing local files/checkpoint.
-    /// - **Empty topic**: start from an empty WAL when no durable or local continuity exists.
+    /// Decision order (first match wins)
+    /// 1. **Sealed mobility state**: resume from the last sealed committed offset + 1.
+    ///    This covers explicit ownership transfers (e.g., topic moved between brokers).
+    /// 2. **Local WAL continuity**: if local WAL files still exist on disk, let the WAL
+    ///    self-recover from its own checkpoint. This is the normal broker restart path.
+    /// 3. **Valkey write buffer**: local WAL is lost but `write_buffer` is configured —
+    ///    query the Valkey `active_segment` hash for the highest buffered offset + 1.
+    ///    This catches messages written since the last segment export, providing tighter
+    ///    RPO than falling back to the durable catalog alone.
+    /// 4. **Durable segment catalog**: local WAL is lost, no Valkey data — fall back to
+    ///    the latest exported durable segment's end offset + 1.
+    /// 5. **Empty topic**: nothing anywhere — start from an empty WAL.
     ///
     /// The returned `resumed_from_sealed` flag tells higher layers whether readers should treat
     /// durable history as authoritative for the already-committed prefix.
@@ -193,6 +200,14 @@ impl StorageFactory {
             Ok(_) => {
                 let can_recover_from_durable_catalog = self.mode.requires_separate_durable_backend();
                 if can_recover_from_durable_catalog && !local_wal_state_available {
+                    // Try Valkey write buffer first (has un-exported messages)
+                    if let Some(valkey_offset) = self.recover_max_offset_from_valkey(topic_path).await {
+                        return RecoveryStartDecision {
+                            initial_offset: Some(valkey_offset.saturating_add(1)),
+                            resumed_from_sealed: true,
+                            source: RecoveryStartSource::ValkeyWriteBuffer,
+                        };
+                    }
                     match catalog_current_segment {
                         Some(segment) => RecoveryStartDecision {
                             initial_offset: Some(segment.end_offset.saturating_add(1)),
@@ -204,6 +219,20 @@ impl StorageFactory {
                             resumed_from_sealed: false,
                             source: RecoveryStartSource::EmptyTopic,
                         },
+                    }
+                } else if !local_wal_state_available {
+                    // Non-durable mode but no local WAL — check Valkey write buffer
+                    if let Some(valkey_offset) = self.recover_max_offset_from_valkey(topic_path).await {
+                        return RecoveryStartDecision {
+                            initial_offset: Some(valkey_offset.saturating_add(1)),
+                            resumed_from_sealed: false,
+                            source: RecoveryStartSource::ValkeyWriteBuffer,
+                        };
+                    }
+                    RecoveryStartDecision {
+                        initial_offset: None,
+                        resumed_from_sealed: false,
+                        source: RecoveryStartSource::LocalWalContinuity,
                     }
                 } else {
                     RecoveryStartDecision {
@@ -225,6 +254,59 @@ impl StorageFactory {
                     resumed_from_sealed: false,
                     source: RecoveryStartSource::MobilityStateReadFailed,
                 }
+            }
+        }
+    }
+
+    /// Check Valkey for the highest offset in the active_segment hash.
+    ///
+    /// Returns `Some(max_offset)` if Valkey has buffered data for this topic,
+    /// `None` if write_buffer is not configured, not connected, or the key is empty.
+    async fn recover_max_offset_from_valkey(&self, topic_path: &str) -> Option<u64> {
+        let wb_config = self.write_buffer.as_ref()?;
+        let client = match self.get_or_connect_valkey(wb_config).await {
+            Ok(client) => client,
+            Err(e) => {
+                warn!(
+                    target = "storage_factory",
+                    topic = %topic_path,
+                    error = %e,
+                    "valkey recovery: failed to connect"
+                );
+                return None;
+            }
+        };
+
+        let active_key = format!("/topics/{}/active_segment", topic_path);
+        match client.hgetall(&active_key).await {
+            Ok(entries) if !entries.is_empty() => {
+                let max_offset = entries
+                    .iter()
+                    .filter_map(|(field, _)| field.parse::<u64>().ok())
+                    .max();
+                if let Some(offset) = max_offset {
+                    info!(
+                        target = "storage_factory",
+                        topic = %topic_path,
+                        max_offset = offset,
+                        entries = entries.len(),
+                        "valkey recovery: found buffered messages in active_segment"
+                    );
+                }
+                max_offset
+            }
+            Ok(_) => {
+                // Empty active_segment — no buffered data
+                None
+            }
+            Err(e) => {
+                warn!(
+                    target = "storage_factory",
+                    topic = %topic_path,
+                    error = %e,
+                    "valkey recovery: HGETALL failed"
+                );
+                None
             }
         }
     }
