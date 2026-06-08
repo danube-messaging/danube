@@ -1,14 +1,16 @@
 use super::StorageFactory;
+use crate::buffered_storage::BufferedStorage;
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crate::durable_store::DurableStore;
 use crate::metadata::SegmentDescriptor;
 use crate::wal::Wal;
+use danube_core::message::StreamMessage;
 use danube_core::storage::PersistentStorageError;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum RecoveryStartSource {
     LocalWalContinuity,
     SealedMobilityState,
@@ -18,11 +20,13 @@ enum RecoveryStartSource {
     MobilityStateReadFailed,
 }
 
-#[derive(Debug)]
 struct RecoveryStartDecision {
     initial_offset: Option<u64>,
     resumed_from_sealed: bool,
     source: RecoveryStartSource,
+    /// Messages to replay into the WAL after creation.
+    /// Only populated when `source == ValkeyWriteBuffer`.
+    valkey_replay_messages: Vec<StreamMessage>,
 }
 
 impl StorageFactory {
@@ -119,16 +123,47 @@ impl StorageFactory {
         let recovery = self
             .resolve_recovery_start(topic_path, local_wal_state_available, catalog_current_segment)
             .await;
+        let replay_count = recovery.valkey_replay_messages.len();
         info!(
             target = "storage_factory",
             topic = %topic_path,
             source = ?recovery.source,
             initial_offset = ?recovery.initial_offset,
             resumed_from_sealed = recovery.resumed_from_sealed,
+            valkey_replay_count = replay_count,
             "startup recovery resolved initial WAL offset"
         );
 
         let wal = Wal::with_config_with_store(cfg, ckpt_store.clone(), recovery.initial_offset).await?;
+
+        // Replay Valkey-buffered messages into the fresh WAL so that:
+        // - consumers can read them
+        // - segment exporter will export them to durable storage
+        // - subscription cursors have no gaps
+        if matches!(recovery.source, RecoveryStartSource::ValkeyWriteBuffer) {
+            match wal.append_batch(&recovery.valkey_replay_messages).await {
+                Ok((first, last)) => {
+                    info!(
+                        target = "storage_factory",
+                        topic = %topic_path,
+                        first_offset = first,
+                        last_offset = last,
+                        count = replay_count,
+                        "valkey recovery: replayed buffered messages into WAL"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        target = "storage_factory",
+                        topic = %topic_path,
+                        error = %e,
+                        "valkey recovery: failed to replay messages into WAL — messages may be lost"
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
         self.topics.insert(topic_path.to_string(), wal.clone());
         Ok((wal, root_path, ckpt_store, recovery.resumed_from_sealed))
     }
@@ -170,77 +205,36 @@ impl StorageFactory {
 
     /// Resolve the initial WAL offset for topic startup or ownership handoff.
     ///
-    /// Decision order (first match wins)
-    /// 1. **Sealed mobility state**: resume from the last sealed committed offset + 1.
-    ///    This covers explicit ownership transfers (e.g., topic moved between brokers).
-    /// 2. **Local WAL continuity**: if local WAL files still exist on disk, let the WAL
-    ///    self-recover from its own checkpoint. This is the normal broker restart path.
-    /// 3. **Valkey write buffer**: local WAL is lost but `write_buffer` is configured —
-    ///    query the Valkey `active_segment` hash for the highest buffered offset + 1.
-    ///    This catches messages written since the last segment export, providing tighter
-    ///    RPO than falling back to the durable catalog alone.
-    /// 4. **Durable segment catalog**: local WAL is lost, no Valkey data — fall back to
-    ///    the latest exported durable segment's end offset + 1.
-    /// 5. **Empty topic**: nothing anywhere — start from an empty WAL.
+    /// Decision order (first match wins):
     ///
-    /// The returned `resumed_from_sealed` flag tells higher layers whether readers should treat
-    /// durable history as authoritative for the already-committed prefix.
+    /// | # | Source                   | Condition                                     | Replay? |
+    /// |---|--------------------------|-----------------------------------------------|---------|
+    /// | 1 | Sealed mobility state    | Topic was explicitly transferred               | No      |
+    /// | 2 | Local WAL continuity     | WAL files still on disk (normal restart)       | No      |
+    /// | 3 | Valkey write buffer      | WAL lost, Valkey has buffered messages          | **Yes** |
+    /// | 4 | Durable segment catalog  | WAL + Valkey lost, exported segments exist      | No      |
+    /// | 5 | Empty topic              | Nothing anywhere                               | No      |
+    ///
+    /// Steps 3–5 only run when `!local_wal_state_available`.
+    /// Step 4 only applies when the storage mode uses a separate durable backend.
+    ///
+    /// The returned `resumed_from_sealed` flag tells higher layers whether readers
+    /// should treat durable history as authoritative for the already-committed prefix.
     async fn resolve_recovery_start(
         &self,
         topic_path: &str,
         local_wal_state_available: bool,
         catalog_current_segment: Option<SegmentDescriptor>,
     ) -> RecoveryStartDecision {
+        // ── Step 1: Sealed mobility state (explicit topic handoff) ──────────
         match self.mobility_state.load(topic_path).await {
-            Ok(Some(sealed_state)) if sealed_state.sealed => RecoveryStartDecision {
-                initial_offset: Some(sealed_state.last_committed_offset.saturating_add(1)),
-                resumed_from_sealed: true,
-                source: RecoveryStartSource::SealedMobilityState,
-            },
-            Ok(_) => {
-                let can_recover_from_durable_catalog = self.mode.requires_separate_durable_backend();
-                if can_recover_from_durable_catalog && !local_wal_state_available {
-                    // Try Valkey write buffer first (has un-exported messages)
-                    if let Some(valkey_offset) = self.recover_max_offset_from_valkey(topic_path).await {
-                        return RecoveryStartDecision {
-                            initial_offset: Some(valkey_offset.saturating_add(1)),
-                            resumed_from_sealed: true,
-                            source: RecoveryStartSource::ValkeyWriteBuffer,
-                        };
-                    }
-                    match catalog_current_segment {
-                        Some(segment) => RecoveryStartDecision {
-                            initial_offset: Some(segment.end_offset.saturating_add(1)),
-                            resumed_from_sealed: true,
-                            source: RecoveryStartSource::DurableSegmentCatalog,
-                        },
-                        None => RecoveryStartDecision {
-                            initial_offset: None,
-                            resumed_from_sealed: false,
-                            source: RecoveryStartSource::EmptyTopic,
-                        },
-                    }
-                } else if !local_wal_state_available {
-                    // Non-durable mode but no local WAL — check Valkey write buffer
-                    if let Some(valkey_offset) = self.recover_max_offset_from_valkey(topic_path).await {
-                        return RecoveryStartDecision {
-                            initial_offset: Some(valkey_offset.saturating_add(1)),
-                            resumed_from_sealed: false,
-                            source: RecoveryStartSource::ValkeyWriteBuffer,
-                        };
-                    }
-                    RecoveryStartDecision {
-                        initial_offset: None,
-                        resumed_from_sealed: false,
-                        source: RecoveryStartSource::LocalWalContinuity,
-                    }
-                } else {
-                    RecoveryStartDecision {
-                        initial_offset: None,
-                        resumed_from_sealed: false,
-                        source: RecoveryStartSource::LocalWalContinuity,
-                    }
-                }
+            Ok(Some(sealed_state)) if sealed_state.sealed => {
+                return RecoveryStartDecision {
+                    initial_offset: Some(sealed_state.last_committed_offset.saturating_add(1)),
+                    resumed_from_sealed: true,
+                    source: RecoveryStartSource::SealedMobilityState,
+                    valkey_replay_messages: Vec::new(),
+                };
             }
             Err(e) => {
                 warn!(
@@ -249,20 +243,81 @@ impl StorageFactory {
                     error = %e,
                     "failed to read mobility state"
                 );
-                RecoveryStartDecision {
+                return RecoveryStartDecision {
                     initial_offset: None,
                     resumed_from_sealed: false,
                     source: RecoveryStartSource::MobilityStateReadFailed,
-                }
+                    valkey_replay_messages: Vec::new(),
+                };
             }
+            Ok(_) => { /* not sealed — continue to next steps */ }
+        }
+
+        // ── Step 2: Local WAL continuity (normal broker restart) ────────────
+        // If local WAL files are still on disk, let the WAL self-recover from
+        // its own checkpoint. No offset override needed, no Valkey download.
+        if local_wal_state_available {
+            return RecoveryStartDecision {
+                initial_offset: None,
+                resumed_from_sealed: false,
+                source: RecoveryStartSource::LocalWalContinuity,
+                valkey_replay_messages: Vec::new(),
+            };
+        }
+
+        // ── From here: local WAL is LOST ────────────────────────────────────
+
+        // ── Step 3: Valkey write buffer (crash recovery with full replay) ───
+        // Download all messages from Valkey's active_segment hash and replay
+        // them into the fresh WAL so consumers, segment exporter, and
+        // subscription cursors all work normally.
+        if let Some((min_offset, messages)) =
+            self.download_valkey_active_segment(topic_path).await
+        {
+            let has_durable_backend = self.mode.requires_separate_durable_backend();
+            return RecoveryStartDecision {
+                initial_offset: Some(min_offset),
+                resumed_from_sealed: has_durable_backend,
+                source: RecoveryStartSource::ValkeyWriteBuffer,
+                valkey_replay_messages: messages,
+            };
+        }
+
+        // ── Step 4: Durable segment catalog (WAL + Valkey both lost) ────────
+        // Only applicable when the storage mode has a separate durable backend
+        // (shared_fs, object_store). Resume from the end of the last exported
+        // segment.
+        if self.mode.requires_separate_durable_backend() {
+            if let Some(segment) = catalog_current_segment {
+                return RecoveryStartDecision {
+                    initial_offset: Some(segment.end_offset.saturating_add(1)),
+                    resumed_from_sealed: true,
+                    source: RecoveryStartSource::DurableSegmentCatalog,
+                    valkey_replay_messages: Vec::new(),
+                };
+            }
+        }
+
+        // ── Step 5: Empty topic (fresh start) ───────────────────────────────
+        RecoveryStartDecision {
+            initial_offset: None,
+            resumed_from_sealed: false,
+            source: RecoveryStartSource::EmptyTopic,
+            valkey_replay_messages: Vec::new(),
         }
     }
 
-    /// Check Valkey for the highest offset in the active_segment hash.
+    /// Download all messages from Valkey's active_segment hash for a topic.
     ///
-    /// Returns `Some(max_offset)` if Valkey has buffered data for this topic,
+    /// Returns `Some((min_offset, sorted_messages))` if Valkey has buffered data,
     /// `None` if write_buffer is not configured, not connected, or the key is empty.
-    async fn recover_max_offset_from_valkey(&self, topic_path: &str) -> Option<u64> {
+    ///
+    /// The messages are sorted by offset ascending so they can be replayed into
+    /// the WAL in the correct order via `append_batch()`.
+    async fn download_valkey_active_segment(
+        &self,
+        topic_path: &str,
+    ) -> Option<(u64, Vec<StreamMessage>)> {
         let wb_config = self.write_buffer.as_ref()?;
         let client = match self.get_or_connect_valkey(wb_config).await {
             Ok(client) => client,
@@ -280,20 +335,65 @@ impl StorageFactory {
         let active_key = format!("/topics/{}/active_segment", topic_path);
         match client.hgetall(&active_key).await {
             Ok(entries) if !entries.is_empty() => {
-                let max_offset = entries
-                    .iter()
-                    .filter_map(|(field, _)| field.parse::<u64>().ok())
-                    .max();
-                if let Some(offset) = max_offset {
-                    info!(
+                // Parse offset→bytes entries and sort by offset
+                let mut offset_messages: Vec<(u64, Vec<u8>)> = entries
+                    .into_iter()
+                    .filter_map(|(field, value)| {
+                        let offset = field.parse::<u64>().ok()?;
+                        Some((offset, value))
+                    })
+                    .collect();
+                offset_messages.sort_by_key(|(offset, _)| *offset);
+
+                if offset_messages.is_empty() {
+                    return None;
+                }
+
+                let min_offset = offset_messages[0].0;
+                let max_offset = offset_messages.last().unwrap().0;
+                let total = offset_messages.len();
+
+                // Deserialize each message from bincode
+                let mut messages = Vec::with_capacity(total);
+                let mut deserialize_errors = 0usize;
+                for (offset, bytes) in &offset_messages {
+                    match BufferedStorage::deserialize_message(bytes) {
+                        Ok(msg) => messages.push(msg),
+                        Err(e) => {
+                            deserialize_errors += 1;
+                            warn!(
+                                target = "storage_factory",
+                                topic = %topic_path,
+                                offset = offset,
+                                error = %e,
+                                "valkey recovery: failed to deserialize message — skipping"
+                            );
+                        }
+                    }
+                }
+
+                if messages.is_empty() {
+                    error!(
                         target = "storage_factory",
                         topic = %topic_path,
-                        max_offset = offset,
-                        entries = entries.len(),
-                        "valkey recovery: found buffered messages in active_segment"
+                        total_entries = total,
+                        deserialize_errors = deserialize_errors,
+                        "valkey recovery: all messages failed to deserialize"
                     );
+                    return None;
                 }
-                max_offset
+
+                info!(
+                    target = "storage_factory",
+                    topic = %topic_path,
+                    min_offset = min_offset,
+                    max_offset = max_offset,
+                    message_count = messages.len(),
+                    deserialize_errors = deserialize_errors,
+                    "valkey recovery: downloaded active_segment for WAL replay"
+                );
+
+                Some((min_offset, messages))
             }
             Ok(_) => {
                 // Empty active_segment — no buffered data

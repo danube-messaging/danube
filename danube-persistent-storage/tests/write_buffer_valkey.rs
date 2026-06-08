@@ -1,7 +1,7 @@
 /// Integration tests for the Valkey write buffer feature.
 ///
 /// These tests require a running Valkey/Redis instance at `redis://127.0.0.1:6379`.
-/// They are gated with `#[ignore]` so they don't run in the default test suite.
+/// They are gated with `#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]` so they don't run in the default test suite.
 ///
 /// To run locally:
 /// ```bash
@@ -92,7 +92,7 @@ async fn flush_valkey() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn write_buffer_append_and_verify_valkey() {
     flush_valkey().await;
     let (factory, _store) = create_write_buffer_factory().await;
@@ -134,7 +134,7 @@ async fn write_buffer_append_and_verify_valkey() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn write_buffer_batch_append() {
     flush_valkey().await;
     let (factory, _store) = create_write_buffer_factory().await;
@@ -165,7 +165,7 @@ async fn write_buffer_batch_append() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn write_buffer_read_delegates_to_wal() {
     flush_valkey().await;
     let (factory, _store) = create_write_buffer_factory().await;
@@ -209,7 +209,7 @@ async fn write_buffer_read_delegates_to_wal() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn write_buffer_offset_continuity() {
     flush_valkey().await;
     let (factory, _store) = create_write_buffer_factory().await;
@@ -252,7 +252,7 @@ async fn write_buffer_offset_continuity() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn factory_without_write_buffer_skips_valkey() {
     flush_valkey().await;
     let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
@@ -306,7 +306,7 @@ async fn factory_without_write_buffer_skips_valkey() {
 // ============================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
 async fn valkey_client_crud_operations() {
     flush_valkey().await;
     let client = connect_valkey().await;
@@ -348,4 +348,140 @@ async fn valkey_client_crud_operations() {
 
     // Cleanup
     client.del("test-list").await.expect("cleanup");
+}
+
+// ============================================================
+// Test: Crash recovery — WAL destroyed, messages replayed from Valkey
+// ============================================================
+
+#[tokio::test]
+#[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
+async fn write_buffer_crash_recovery_replay() {
+    flush_valkey().await;
+
+    let message_count = 5u64;
+    let topic = "/default/wb-crash-recovery";
+
+    // Use a unique temp directory so we can delete it to simulate crash.
+    let wal_dir = {
+        let mut d = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        d.push(format!("danube-recovery-test-{}", nanos));
+        d
+    };
+
+    // Phase 1: Write messages via BufferedStorage (double-write: WAL + Valkey)
+    {
+        let memory_store = Arc::new(MemoryStore::new().await.expect("create memory store"));
+        let store_arc: Arc<dyn MetadataStore> = memory_store.clone();
+
+        let wal_cfg = WalConfig {
+            dir: Some(wal_dir.clone()),
+            flush_interval_ms: Some(5_000),
+            ..Default::default()
+        };
+        let wb_config = WriteBufferConfig {
+            endpoints: vec![VALKEY_ENDPOINT.to_string()],
+            wait_replicas: 0,
+            wait_timeout_ms: 100,
+            ..Default::default()
+        };
+
+        let factory = StorageFactory::new(
+            StorageFactoryConfig::local(wal_cfg, "/danube", None).with_write_buffer(wb_config),
+            store_arc,
+        );
+
+        let storage = factory.for_topic(topic).await.expect("create storage");
+
+        for i in 0..message_count {
+            let offset = storage
+                .append_message(
+                    topic,
+                    make_test_message(i, 1, topic, i, &format!("recovery-{}", i)),
+                )
+                .await
+                .expect("append");
+            assert_eq!(offset, i);
+        }
+
+        // Verify Valkey has the data
+        let valkey = connect_valkey().await;
+        let active_key = "/topics/default/wb-crash-recovery/active_segment";
+        let entries = valkey.hgetall(active_key).await.expect("hgetall");
+        assert_eq!(
+            entries.len(),
+            message_count as usize,
+            "Valkey should have all {} messages before crash",
+            message_count
+        );
+    }
+    // Factory/storage dropped — simulates broker shutdown
+
+    // Phase 2: Delete WAL directory to simulate disk loss / crash
+    assert!(wal_dir.exists(), "WAL dir should exist before deletion");
+    std::fs::remove_dir_all(&wal_dir).expect("delete WAL dir");
+    assert!(!wal_dir.exists(), "WAL dir should be gone after deletion");
+
+    // Phase 3: Create a NEW factory with same config — recovery should replay from Valkey
+    let memory_store2 = Arc::new(MemoryStore::new().await.expect("create memory store 2"));
+    let store_arc2: Arc<dyn MetadataStore> = memory_store2.clone();
+
+    let wal_cfg2 = WalConfig {
+        dir: Some(wal_dir.clone()),
+        flush_interval_ms: Some(5_000),
+        ..Default::default()
+    };
+    let wb_config2 = WriteBufferConfig {
+        endpoints: vec![VALKEY_ENDPOINT.to_string()],
+        wait_replicas: 0,
+        wait_timeout_ms: 100,
+        ..Default::default()
+    };
+
+    let factory2 = StorageFactory::new(
+        StorageFactoryConfig::local(wal_cfg2, "/danube", None).with_write_buffer(wb_config2),
+        store_arc2,
+    );
+
+    // This should trigger ValkeyWriteBuffer recovery + WAL replay
+    let storage2 = factory2.for_topic(topic).await.expect("recovery for_topic");
+
+    // Phase 4: Verify WAL offset is correct (messages were replayed)
+    assert_eq!(
+        storage2.current_offset(),
+        message_count,
+        "WAL should be at offset {} after replay",
+        message_count
+    );
+
+    // Phase 5: Read all messages from the recovered WAL and verify payloads
+    let mut reader = storage2
+        .create_reader(topic, StartPosition::Offset(0))
+        .await
+        .expect("create reader on recovered WAL");
+
+    for expected_offset in 0..message_count {
+        let msg = reader
+            .next()
+            .await
+            .expect("reader item")
+            .expect("reader result");
+        assert_eq!(
+            msg.msg_id.topic_offset, expected_offset,
+            "message offset mismatch"
+        );
+        assert_eq!(
+            msg.payload.as_ref(),
+            format!("recovery-{}", expected_offset).as_bytes(),
+            "message payload mismatch at offset {}",
+            expected_offset
+        );
+    }
+
+    // Cleanup WAL dir
+    let _ = std::fs::remove_dir_all(&wal_dir);
 }

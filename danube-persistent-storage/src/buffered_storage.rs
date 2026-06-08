@@ -68,6 +68,19 @@ impl BufferedStorage {
         })
     }
 
+    /// Deserialize a `StreamMessage` from bincode bytes.
+    ///
+    /// Used during crash recovery to replay Valkey-buffered messages back into
+    /// the WAL.
+    pub(crate) fn deserialize_message(bytes: &[u8]) -> Result<StreamMessage, PersistentStorageError> {
+        let config = bincode::config::standard();
+        let (msg, _): (StreamMessage, _) =
+            bincode::serde::decode_from_slice(bytes, config).map_err(|e| {
+                PersistentStorageError::Other(format!("bincode deserialize failed: {}", e))
+            })?;
+        Ok(msg)
+    }
+
     /// Handle the result of a WAIT command according to the configured policy.
     fn handle_wait_result(
         &self,
@@ -259,6 +272,20 @@ mod tests {
         let bytes1 = BufferedStorage::serialize_message(&msg1).expect("serialize 1");
         let bytes2 = BufferedStorage::serialize_message(&msg2).expect("serialize 2");
         assert_ne!(bytes1, bytes2, "different messages should serialize differently");
+    }
+
+    #[test]
+    fn serialize_deserialize_round_trip() {
+        let original = make_test_message(42);
+        let bytes = BufferedStorage::serialize_message(&original).expect("serialize");
+        let recovered = BufferedStorage::deserialize_message(&bytes).expect("deserialize");
+        assert_eq!(recovered.request_id, original.request_id);
+        assert_eq!(recovered.msg_id.topic_offset, original.msg_id.topic_offset);
+        assert_eq!(recovered.msg_id.topic_name, original.msg_id.topic_name);
+        assert_eq!(recovered.msg_id.producer_id, original.msg_id.producer_id);
+        assert_eq!(recovered.payload.as_ref(), original.payload.as_ref());
+        assert_eq!(recovered.producer_name, original.producer_name);
+        assert_eq!(recovered.publish_time, original.publish_time);
     }
 
     // --- handle_wait_result tests ---
