@@ -118,11 +118,13 @@ jobs:
           sleep 2
 
           # Produce 10 messages through the broker (goes through BufferedStorage → WAL + Valkey)
+          # --reliable is required to use Reliable dispatch (which creates storage)
           $CLI_BIN produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "crash-recovery-test-message" \
-            -c 10
+            -c 10 \
+            --reliable
           echo "✓ Produced 10 messages"
           sleep 2
 
@@ -210,7 +212,8 @@ jobs:
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "post-crash-trigger" \
-            -c 1
+            -c 1 \
+            --reliable
           echo "✓ Topic accessed — recovery should have triggered"
           sleep 2
 
