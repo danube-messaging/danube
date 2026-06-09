@@ -223,7 +223,7 @@ jobs:
           fi
 
           # 2. Check that messages were downloaded from Valkey
-          if grep -q "valkey recovery: downloaded active_segment for WAL replay" temp/broker.log; then
+          if grep -q "downloaded active_segment for WAL replay" temp/broker.log; then
             echo "✓ Messages downloaded from Valkey"
             grep "downloaded active_segment" temp/broker.log
           else
