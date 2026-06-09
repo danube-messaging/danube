@@ -69,9 +69,11 @@ pub async fn cleanup_exported_offsets(
 /// and evict the oldest cached segments if the count exceeds the configured
 /// limit.
 ///
-/// This is called after a WAL segment has been exported to durable storage.
-/// The promotion enables warm-cache reads from Valkey for recently-closed
-/// segments.
+/// **Important**: This is ONLY called when `max_cached_closed_segments > 0`
+/// (warm caching is enabled). When warm caching is disabled (the default),
+/// `cleanup_exported_offsets` already removed the exported fields and the
+/// remaining un-exported fields in `active_segment` must stay there for
+/// crash recovery.
 ///
 /// This is best-effort: Valkey errors are logged but don't fail the export.
 pub async fn promote_segment(
@@ -80,6 +82,20 @@ pub async fn promote_segment(
     topic_path: &str,
     segment_id: &str,
 ) {
+    // When warm caching is disabled, skip promotion entirely.
+    // The active_segment hash may still contain un-exported offsets from the
+    // next WAL file — RENAME would move them out of active_segment, breaking
+    // crash recovery which only looks at active_segment.
+    if config.max_cached_closed_segments == 0 {
+        debug!(
+            target = "valkey_lifecycle",
+            topic = %topic_path,
+            segment = %segment_id,
+            "skipping segment promotion (max_cached_closed_segments=0)"
+        );
+        return;
+    }
+
     let active_key = format!("/topics/{}/active_segment", topic_path);
     let segment_key = format!("/topics/{}/segments/{}", topic_path, segment_id);
     let cached_list_key = format!("/topics/{}/cached_segments", topic_path);
