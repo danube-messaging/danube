@@ -1,5 +1,4 @@
 use super::StorageFactory;
-use crate::buffered_storage::BufferedStorage;
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crate::durable_store::DurableStore;
 use crate::metadata::SegmentDescriptor;
@@ -309,11 +308,9 @@ impl StorageFactory {
 
     /// Download all messages from Valkey's active_segment hash for a topic.
     ///
-    /// Returns `Some((min_offset, sorted_messages))` if Valkey has buffered data,
-    /// `None` if write_buffer is not configured, not connected, or the key is empty.
-    ///
-    /// The messages are sorted by offset ascending so they can be replayed into
-    /// the WAL in the correct order via `append_batch()`.
+    /// Delegates to [`crate::valkey::recovery::download_active_segment`] after
+    /// resolving the Valkey client connection. Returns `None` when write_buffer
+    /// is not configured, the client cannot connect, or the key is empty.
     async fn download_valkey_active_segment(
         &self,
         topic_path: &str,
@@ -332,82 +329,6 @@ impl StorageFactory {
             }
         };
 
-        let active_key = format!("/topics/{}/active_segment", topic_path);
-        match client.hgetall(&active_key).await {
-            Ok(entries) if !entries.is_empty() => {
-                // Parse offset→bytes entries and sort by offset
-                let mut offset_messages: Vec<(u64, Vec<u8>)> = entries
-                    .into_iter()
-                    .filter_map(|(field, value)| {
-                        let offset = field.parse::<u64>().ok()?;
-                        Some((offset, value))
-                    })
-                    .collect();
-                offset_messages.sort_by_key(|(offset, _)| *offset);
-
-                if offset_messages.is_empty() {
-                    return None;
-                }
-
-                let min_offset = offset_messages[0].0;
-                let max_offset = offset_messages.last().unwrap().0;
-                let total = offset_messages.len();
-
-                // Deserialize each message from bincode
-                let mut messages = Vec::with_capacity(total);
-                let mut deserialize_errors = 0usize;
-                for (offset, bytes) in &offset_messages {
-                    match BufferedStorage::deserialize_message(bytes) {
-                        Ok(msg) => messages.push(msg),
-                        Err(e) => {
-                            deserialize_errors += 1;
-                            warn!(
-                                target = "storage_factory",
-                                topic = %topic_path,
-                                offset = offset,
-                                error = %e,
-                                "valkey recovery: failed to deserialize message — skipping"
-                            );
-                        }
-                    }
-                }
-
-                if messages.is_empty() {
-                    error!(
-                        target = "storage_factory",
-                        topic = %topic_path,
-                        total_entries = total,
-                        deserialize_errors = deserialize_errors,
-                        "valkey recovery: all messages failed to deserialize"
-                    );
-                    return None;
-                }
-
-                info!(
-                    target = "storage_factory",
-                    topic = %topic_path,
-                    min_offset = min_offset,
-                    max_offset = max_offset,
-                    message_count = messages.len(),
-                    deserialize_errors = deserialize_errors,
-                    "valkey recovery: downloaded active_segment for WAL replay"
-                );
-
-                Some((min_offset, messages))
-            }
-            Ok(_) => {
-                // Empty active_segment — no buffered data
-                None
-            }
-            Err(e) => {
-                warn!(
-                    target = "storage_factory",
-                    topic = %topic_path,
-                    error = %e,
-                    "valkey recovery: HGETALL failed"
-                );
-                None
-            }
-        }
+        crate::valkey::recovery::download_active_segment(&client, topic_path).await
     }
 }

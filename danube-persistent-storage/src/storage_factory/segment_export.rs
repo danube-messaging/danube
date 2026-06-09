@@ -122,89 +122,49 @@ impl StorageFactory {
                 .await?;
             self.publish_durable_segment(topic_path, &desc).await?;
 
-            // Promote Valkey active_segment → named closed segment
-            self.promote_valkey_segment(topic_path, &desc.segment_id)
+            // Clean up exported offsets from Valkey active_segment and
+            // promote the segment for warm caching.
+            self.valkey_post_export_cleanup(topic_path, start_offset, end_offset, &desc.segment_id)
                 .await;
         }
 
         Ok(())
     }
 
-    /// Promote the Valkey active_segment hash to a named closed segment key
-    /// and evict the oldest cached segment if we exceed the configured limit.
+    /// Post-export Valkey housekeeping: clean up exported offsets and
+    /// optionally promote the segment for warm caching.
     ///
-    /// This is best-effort: Valkey errors are logged but don't fail the export.
-    async fn promote_valkey_segment(&self, topic_path: &str, segment_id: &str) {
+    /// Best-effort: Valkey errors are logged but don't fail the export.
+    async fn valkey_post_export_cleanup(
+        &self,
+        topic_path: &str,
+        start_offset: u64,
+        end_offset: u64,
+        segment_id: &str,
+    ) {
         let (client, config) = match (&self.write_buffer, self.valkey_client.get()) {
             (Some(cfg), Some(client)) => (client.clone(), cfg),
             _ => return, // no write buffer configured or not connected
         };
 
-        let active_key = format!("/topics/{}/active_segment", topic_path);
-        let segment_key = format!("/topics/{}/segments/{}", topic_path, segment_id);
-        let cached_list_key = format!("/topics/{}/cached_segments", topic_path);
+        // Remove exported offsets from active_segment — keeps only un-exported
+        // messages that arrived after the WAL rotation.
+        crate::valkey::segment_lifecycle::cleanup_exported_offsets(
+            &client,
+            topic_path,
+            start_offset,
+            end_offset,
+        )
+        .await;
 
-        // RENAME active_segment → segments/{id}
-        if let Err(e) = client.rename(&active_key, &segment_key).await {
-            // RENAME fails if active_key doesn't exist (e.g., no writes since last rotation)
-            tracing::debug!(
-                topic = %topic_path,
-                segment = %segment_id,
-                error = %e,
-                "valkey RENAME active_segment skipped (likely empty)"
-            );
-            return;
-        }
-
-        // Track in the cached segments list
-        if let Err(e) = client.rpush(&cached_list_key, segment_id).await {
-            tracing::warn!(
-                topic = %topic_path,
-                segment = %segment_id,
-                error = %e,
-                "valkey RPUSH cached_segments failed"
-            );
-        }
-
-        // Evict oldest cached segments if over the limit
-        let max_cached = config.max_cached_closed_segments as u64;
-        match client.llen(&cached_list_key).await {
-            Ok(len) if len > max_cached => {
-                let to_evict = len - max_cached;
-                for _ in 0..to_evict {
-                    match client.lpop(&cached_list_key).await {
-                        Ok(Some(old_segment_id)) => {
-                            let old_key =
-                                format!("/topics/{}/segments/{}", topic_path, old_segment_id);
-                            if let Err(e) = client.del(&old_key).await {
-                                tracing::warn!(
-                                    topic = %topic_path,
-                                    segment = %old_segment_id,
-                                    error = %e,
-                                    "valkey DEL evicted segment failed"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    topic = %topic_path,
-                                    segment = %old_segment_id,
-                                    "evicted cached segment from valkey"
-                                );
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            tracing::warn!(
-                                topic = %topic_path,
-                                error = %e,
-                                "valkey LPOP cached_segments failed during eviction"
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-            _ => {} // under limit or error — skip
-        }
+        // Promote active_segment → named segment for warm caching
+        crate::valkey::segment_lifecycle::promote_segment(
+            &client,
+            config,
+            topic_path,
+            segment_id,
+        )
+        .await;
     }
 
     pub(super) async fn clear_topic_wal_state(
