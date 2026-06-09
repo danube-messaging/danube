@@ -44,6 +44,18 @@ pub(crate) enum LogCommand {
     Shutdown(oneshot::Sender<Result<(), String>>),
 }
 
+/// Notification emitted when the WAL writer rotates the active file.
+///
+/// Consumers (e.g. Valkey cleanup) can subscribe to these events to learn
+/// which offset range just moved from "active" to "sealed on disk".
+#[derive(Debug, Clone)]
+pub struct RotationEvent {
+    /// First offset in the rotated (now sealed) file.
+    pub start_offset: u64,
+    /// Last offset in the rotated (now sealed) file.
+    pub end_offset: u64,
+}
+
 /// Init parameters for the writer task captured at WAL startup.
 ///
 /// These are copied into `WriterState` and remain constant for the lifetime of the writer task.
@@ -55,6 +67,8 @@ pub(crate) struct WriterInit {
     pub rotate_max_bytes: Option<u64>,
     pub rotate_max_seconds: Option<u64>,
     pub ckpt_store: Option<Arc<CheckpointStore>>,
+    /// Optional channel to notify external systems when the active WAL file rotates.
+    pub rotation_tx: Option<mpsc::UnboundedSender<RotationEvent>>,
 }
 
 /// Writer-owned state (no locking). Lives entirely inside the writer task.
@@ -83,6 +97,8 @@ struct WriterState {
     current_file_first_offset: Option<u64>,
     // Optional topic name for metrics labeling
     topic_name: Option<String>,
+    // Optional channel to notify external systems on WAL file rotation
+    rotation_tx: Option<mpsc::UnboundedSender<RotationEvent>>,
 }
 
 impl WriterState {
@@ -234,6 +250,10 @@ impl WriterState {
     /// offset known to belong to that file. That metadata is later used for replay ordering,
     /// retention eligibility, and checkpoint reconstruction.
     async fn rotate_file(&mut self) -> Result<(), PersistentStorageError> {
+        // Capture the offset range of the file being rotated BEFORE resetting
+        let rotated_start = self.current_file_first_offset;
+        let rotated_end = self.last_offset_written;
+
         // Record the previous file into rotation history before switching
         if let Some(prev_path) = self.wal_path.clone() {
             if let Some(first_off) = self.current_file_first_offset {
@@ -270,6 +290,17 @@ impl WriterState {
                 debug!(target = "wal", seq = self.file_seq, file = %p.display(), "rotated wal file");
             }
         }
+
+        // Notify external systems (e.g. Valkey cleanup) about the rotation
+        if let (Some(start), Some(end)) = (rotated_start, rotated_end) {
+            if let Some(tx) = &self.rotation_tx {
+                let _ = tx.send(RotationEvent {
+                    start_offset: start,
+                    end_offset: end,
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -365,6 +396,7 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         last_offset_written: None,
         current_file_first_offset: None,
         topic_name: None,
+        rotation_tx: init.rotation_tx,
     };
 
     debug!(target = "wal", has_file = has_file, flush_ms = init.flush_interval_ms, max_batch = init.flush_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");

@@ -55,11 +55,12 @@ impl StorageFactory {
             Option<PathBuf>,
             Option<Arc<CheckpointStore>>,
             bool,
+            Option<tokio::sync::mpsc::UnboundedReceiver<crate::wal::RotationEvent>>,
         ),
         PersistentStorageError,
     > {
         if let Some(existing) = self.topics.get(topic_path) {
-            return Ok((existing.clone(), None, None, false));
+            return Ok((existing.clone(), None, None, false, None));
         }
 
         let mut cfg = self.base_cfg.clone();
@@ -133,7 +134,16 @@ impl StorageFactory {
             "startup recovery resolved initial WAL offset"
         );
 
-        let wal = Wal::with_config_with_store(cfg, ckpt_store.clone(), recovery.initial_offset).await?;
+        let (wal, rotation_rx) =
+            Wal::with_config_with_store(cfg, ckpt_store.clone(), recovery.initial_offset).await?;
+
+        // Only pass the rotation receiver to lifecycle when write_buffer is
+        // configured — otherwise there's nobody listening so we just drop it.
+        let rotation_rx = if self.write_buffer.is_some() {
+            Some(rotation_rx)
+        } else {
+            None
+        };
 
         // Replay Valkey-buffered messages into the fresh WAL so that:
         // - consumers can read them
@@ -164,7 +174,7 @@ impl StorageFactory {
         }
 
         self.topics.insert(topic_path.to_string(), wal.clone());
-        Ok((wal, root_path, ckpt_store, recovery.resumed_from_sealed))
+        Ok((wal, root_path, ckpt_store, recovery.resumed_from_sealed, rotation_rx))
     }
 
     pub(super) fn topic_wal_dir(&self, topic_path: &str) -> Option<PathBuf> {

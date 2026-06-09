@@ -20,6 +20,8 @@ mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
+pub use writer::RotationEvent;
+
 use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
 
 /// Write-Ahead Log (WAL) with:
@@ -153,6 +155,7 @@ impl Default for Wal {
             rotate_max_bytes: wal.inner.rotate_max_bytes,
             rotate_max_seconds: wal.inner.rotate_max_seconds,
             ckpt_store: None,
+            rotation_tx: None,
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
@@ -175,12 +178,15 @@ impl Wal {
     /// - If `initial_offset` is provided, starts offset counter from that value (used for topic moves).
     ///
     /// Returns
-    /// - `Ok(Wal)` ready for `append()` and `tail_reader()`; I/O happens in the background task.
+    /// - `Ok((Wal, rotation_rx))` — the WAL ready for `append()` / `tail_reader()`,
+    ///   plus an unbounded receiver of [`RotationEvent`]s. Each event fires when the
+    ///   WAL writer rotates the active file, carrying the offset range of the sealed
+    ///   file. Callers that don't need rotation events can simply drop the receiver.
     pub async fn with_config_with_store(
         cfg: WalConfig,
         ckpt_store: Option<Arc<CheckpointStore>>,
         initial_offset: Option<u64>,
-    ) -> Result<Self, PersistentStorageError> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<RotationEvent>), PersistentStorageError> {
         let (tx, _rx) = broadcast::channel(256);
         let (cmd_tx, cmd_rx) = mpsc::channel(4096);
         // Build optional file and wal_path without moving the Option twice
@@ -268,6 +274,8 @@ impl Wal {
             );
         }
 
+        let (rotation_tx, rotation_rx) = mpsc::unbounded_channel();
+
         let wal = Self {
             inner: Arc::new(WalInner {
                 next_offset: AtomicU64::new(start_offset),
@@ -292,16 +300,18 @@ impl Wal {
             rotate_max_bytes,
             rotate_max_seconds,
             ckpt_store,
+            rotation_tx: Some(rotation_tx),
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
         });
-        Ok(wal)
+        Ok((wal, rotation_rx))
     }
 
     /// Backward-compatible helper that constructs a WAL without passing a CheckpointStore.
     pub async fn with_config(cfg: WalConfig) -> Result<Self, PersistentStorageError> {
-        Self::with_config_with_store(cfg, None, None).await
+        let (wal, _rotation_rx) = Self::with_config_with_store(cfg, None, None).await?;
+        Ok(wal)
     }
 
     /// Append a message and return the assigned offset.

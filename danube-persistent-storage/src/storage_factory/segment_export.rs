@@ -121,50 +121,9 @@ impl StorageFactory {
                 )
                 .await?;
             self.publish_durable_segment(topic_path, &desc).await?;
-
-            // Clean up exported offsets from Valkey active_segment and
-            // promote the segment for warm caching.
-            self.valkey_post_export_cleanup(topic_path, start_offset, end_offset, &desc.segment_id)
-                .await;
         }
 
         Ok(())
-    }
-
-    /// Post-export Valkey housekeeping: clean up exported offsets and
-    /// optionally promote the segment for warm caching.
-    ///
-    /// Best-effort: Valkey errors are logged but don't fail the export.
-    async fn valkey_post_export_cleanup(
-        &self,
-        topic_path: &str,
-        start_offset: u64,
-        end_offset: u64,
-        segment_id: &str,
-    ) {
-        let (client, config) = match (&self.write_buffer, self.valkey_client.get()) {
-            (Some(cfg), Some(client)) => (client.clone(), cfg),
-            _ => return, // no write buffer configured or not connected
-        };
-
-        // Remove exported offsets from active_segment — keeps only un-exported
-        // messages that arrived after the WAL rotation.
-        crate::valkey::segment_lifecycle::cleanup_exported_offsets(
-            &client,
-            topic_path,
-            start_offset,
-            end_offset,
-        )
-        .await;
-
-        // Promote active_segment → named segment for warm caching
-        crate::valkey::segment_lifecycle::promote_segment(
-            &client,
-            config,
-            topic_path,
-            segment_id,
-        )
-        .await;
     }
 
     pub(super) async fn clear_topic_wal_state(

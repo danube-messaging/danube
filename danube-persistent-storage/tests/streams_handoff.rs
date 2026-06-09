@@ -82,7 +82,7 @@ async fn local_cache_only_handoff() {
     let wal_ckpt = wal_dir.join("wal.ckpt");
     let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
     let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
+    let (wal, _rotation_rx) = Wal::with_config_with_store(cfg, Some(store.clone()), None)
         .await
         .expect("wal init");
 
@@ -153,7 +153,7 @@ async fn local_files_cache_live_handoff() {
     let wal_ckpt = wal_dir.join("wal.ckpt");
     let store = std::sync::Arc::new(CheckpointStore::new(wal_ckpt));
     let _ = store.load_from_disk().await;
-    let wal = Wal::with_config_with_store(cfg, Some(store.clone()), None)
+    let (wal, _rotation_rx) = Wal::with_config_with_store(cfg, Some(store.clone()), None)
         .await
         .expect("wal init");
 
