@@ -85,7 +85,7 @@ impl StorageFactory {
     ///   calls in the same process.
     pub async fn for_topic(&self, topic_name: &str) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed) =
+        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed, rotation_rx) =
             self.get_or_create_wal(&topic_path).await?;
         let durable_store = self.durable_store_for_topic()?;
 
@@ -205,6 +205,16 @@ impl StorageFactory {
         // Optionally wrap in BufferedStorage for Valkey write buffer
         if let Some(ref wb_config) = self.write_buffer {
             let valkey_client = self.get_or_connect_valkey(wb_config).await?;
+
+            // Spawn the rotation listener: WAL rotation → HDEL exported offsets
+            if let Some(rx) = rotation_rx {
+                crate::valkey::rotation_listener::spawn_rotation_listener(
+                    valkey_client.clone(),
+                    topic_path.clone(),
+                    rx,
+                );
+            }
+
             info!(
                 topic = %topic_path,
                 endpoints = ?wb_config.endpoints,

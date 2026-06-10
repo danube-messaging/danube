@@ -59,6 +59,7 @@ mod tests {
             rotate_max_bytes: Some(2048),
             rotate_max_seconds: Some(10),
             ckpt_store: None,
+            rotation_tx: None,
         };
 
         assert_eq!(writer_init.wal_path, Some(wal_path));
@@ -158,6 +159,7 @@ mod tests {
             rotate_max_bytes: None,
             rotate_max_seconds: None,
             ckpt_store: None,
+            rotation_tx: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
@@ -231,6 +233,7 @@ mod tests {
             rotate_max_bytes: None,
             rotate_max_seconds: None,
             ckpt_store: None,
+            rotation_tx: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
