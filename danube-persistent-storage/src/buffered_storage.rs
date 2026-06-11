@@ -55,9 +55,9 @@ impl BufferedStorage {
         }
     }
 
-    /// The Valkey hash key for the currently active (unsealed) segment.
-    fn active_segment_key(&self) -> String {
-        format!("{}/active_segment", self.topic_key_prefix)
+    /// The Valkey stream key for this topic.
+    fn stream_key(&self) -> String {
+        format!("{}/stream", self.topic_key_prefix)
     }
 
     /// Serialize a `StreamMessage` to bytes using bincode.
@@ -128,23 +128,24 @@ impl PersistentStorage for BufferedStorage {
         // 1. Local WAL append (fast, local disk)
         let offset = self.inner.append_message(topic_name, msg.clone()).await?;
 
-        // 2. Serialize and write to Valkey
+        // 2. Serialize and write to Valkey Stream
         let bytes = Self::serialize_message(&msg)?;
-        let key = self.active_segment_key();
-        let field = offset.to_string();
+        let key = self.stream_key();
+        let id = format!("{}-1", offset);
 
         let wait_result = self
             .valkey
-            .hset_and_wait(
+            .xadd_and_wait(
                 &key,
-                &field,
+                &id,
+                "payload",
                 &bytes,
                 self.config.wait_replicas,
                 self.config.wait_timeout_ms,
             )
             .await
             .map_err(|e| {
-                PersistentStorageError::Other(format!("write buffer HSET+WAIT failed: {}", e))
+                PersistentStorageError::Other(format!("write buffer XADD+WAIT failed: {}", e))
             })?;
 
         // 3. Apply timeout policy
@@ -166,28 +167,28 @@ impl PersistentStorage for BufferedStorage {
         // 1. Local WAL batch append
         let (first, last) = self.inner.append_batch(topic_name, messages).await?;
 
-        // 2. Serialize all messages and pipeline HSET to Valkey
-        let mut fields = Vec::with_capacity(messages.len());
+        // 2. Serialize all messages and pipeline XADD to Valkey
+        let mut entries = Vec::with_capacity(messages.len());
         let mut offset = first;
         for msg in messages {
             let bytes = Self::serialize_message(msg)?;
-            fields.push((offset.to_string(), bytes));
+            entries.push((format!("{}-1", offset), "payload".to_string(), bytes));
             offset += 1;
         }
 
-        let key = self.active_segment_key();
+        let key = self.stream_key();
         let wait_result = self
             .valkey
-            .hset_batch_and_wait(
+            .xadd_batch_and_wait(
                 &key,
-                &fields,
+                &entries,
                 self.config.wait_replicas,
                 self.config.wait_timeout_ms,
             )
             .await
             .map_err(|e| {
                 PersistentStorageError::Other(format!(
-                    "write buffer batch HSET+WAIT failed: {}",
+                    "write buffer batch XADD+WAIT failed: {}",
                     e
                 ))
             })?;

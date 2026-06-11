@@ -11,6 +11,5 @@ mod client;
 pub mod config;
 pub mod recovery;
 pub mod rotation_listener;
-pub mod segment_lifecycle;
 
 pub use client::{ValkeyClient, WaitResult};

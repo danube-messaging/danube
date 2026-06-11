@@ -124,9 +124,9 @@ jobs:
         run: |
           echo "=== Verifying Valkey has buffered messages ==="
 
-          # Check that Valkey has the active_segment hash with entries
-          ENTRY_COUNT=$(redis-cli -h 127.0.0.1 -p 6379 HLEN "/topics/default/wb-crash-test/active_segment" 2>/dev/null || echo "0")
-          echo "Valkey active_segment entry count: $ENTRY_COUNT"
+          # Check that Valkey has the stream with entries
+          ENTRY_COUNT=$(redis-cli -h 127.0.0.1 -p 6379 XLEN "/topics/default/wb-crash-test/stream" 2>/dev/null || echo "0")
+          echo "Valkey stream entry count: $ENTRY_COUNT"
 
           if [ "$ENTRY_COUNT" -gt 0 ] 2>/dev/null; then
             echo "✓ Valkey has $ENTRY_COUNT buffered messages"
@@ -223,11 +223,11 @@ jobs:
           fi
 
           # 2. Check that messages were downloaded from Valkey
-          if grep -q "downloaded active_segment for WAL replay" temp/broker.log; then
+          if grep -q "downloaded stream for WAL replay" temp/broker.log; then
             echo "✓ Messages downloaded from Valkey"
-            grep "downloaded active_segment" temp/broker.log
+            grep "downloaded stream" temp/broker.log
           else
-            echo "✗ FAIL: No active_segment download log found"
+            echo "✗ FAIL: No stream download log found"
             PASS=false
           fi
 
@@ -270,12 +270,12 @@ jobs:
           echo "Phase 2: Broker with write buffer        — PASSED"
           echo "  - Broker started with write_buffer config"
           echo "  - Messages produced via CLI → double-written to WAL + Valkey"
-          echo "  - Valkey active_segment verified with HLEN"
+          echo "  - Valkey stream verified with XLEN"
           echo ""
           echo "Phase 3: Crash recovery from Valkey      — PASSED"
           echo "  - Broker killed (SIGKILL), WAL deleted"
           echo "  - Broker restarted, topic accessed"
-          echo "  - Recovery: downloaded active_segment from Valkey"
+          echo "  - Recovery: downloaded stream from Valkey"
           echo "  - Recovery: replayed buffered messages into fresh WAL"
 
       - name: Print broker logs on failure
