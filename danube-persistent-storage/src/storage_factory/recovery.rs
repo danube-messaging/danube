@@ -277,11 +277,17 @@ impl StorageFactory {
         // ── From here: local WAL is LOST ────────────────────────────────────
 
         // ── Step 3: Valkey write buffer (crash recovery with full replay) ───
-        // Download all messages from Valkey's active_segment hash and replay
+        // Download un-exported messages from Valkey's stream and replay
         // them into the fresh WAL so consumers, segment exporter, and
         // subscription cursors all work normally.
+        let valkey_start_offset = if self.mode.requires_separate_durable_backend() {
+            catalog_current_segment.as_ref().map(|s| s.end_offset.saturating_add(1)).unwrap_or(0)
+        } else {
+            0
+        };
+
         if let Some((min_offset, messages)) =
-            self.download_valkey_active_segment(topic_path).await
+            self.download_valkey_unexported_stream(topic_path, valkey_start_offset).await
         {
             let has_durable_backend = self.mode.requires_separate_durable_backend();
             return RecoveryStartDecision {
@@ -316,14 +322,15 @@ impl StorageFactory {
         }
     }
 
-    /// Download all messages from Valkey's active_segment hash for a topic.
+    /// Download un-exported messages from Valkey's stream for a topic.
     ///
-    /// Delegates to [`crate::valkey::recovery::download_active_segment`] after
+    /// Delegates to [`crate::valkey::recovery::download_unexported_stream`] after
     /// resolving the Valkey client connection. Returns `None` when write_buffer
-    /// is not configured, the client cannot connect, or the key is empty.
-    async fn download_valkey_active_segment(
+    /// is not configured, the client cannot connect, or the stream is empty.
+    async fn download_valkey_unexported_stream(
         &self,
         topic_path: &str,
+        start_offset: u64,
     ) -> Option<(u64, Vec<StreamMessage>)> {
         let wb_config = self.write_buffer.as_ref()?;
         let client = match self.get_or_connect_valkey(wb_config).await {
@@ -339,6 +346,6 @@ impl StorageFactory {
             }
         };
 
-        crate::valkey::recovery::download_active_segment(&client, topic_path).await
+        crate::valkey::recovery::download_unexported_stream(&client, topic_path, start_offset).await
     }
 }

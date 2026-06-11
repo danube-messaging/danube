@@ -178,25 +178,8 @@ impl StorageFactory {
             None => return,
         };
 
-        let active_key = format!("/topics/{}/active_segment", topic_path);
-        let cached_list_key = format!("/topics/{}/cached_segments", topic_path);
-
-        // Delete the active segment hash
-        let _ = client.del(&active_key).await;
-
-        // Pop and delete all cached segment hashes
-        loop {
-            match client.lpop(&cached_list_key).await {
-                Ok(Some(segment_id)) => {
-                    let seg_key = format!("/topics/{}/segments/{}", topic_path, segment_id);
-                    let _ = client.del(&seg_key).await;
-                }
-                _ => break,
-            }
-        }
-
-        // Delete the cached segments list itself
-        let _ = client.del(&cached_list_key).await;
+        let stream_key = format!("/topics/{}/stream", topic_path);
+        let _ = client.del(&stream_key).await;
     }
 
     pub(super) async fn stop_topic_background_tasks(&self, topic_path: &str) {

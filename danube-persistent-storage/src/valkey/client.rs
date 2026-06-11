@@ -6,7 +6,7 @@ use super::config::WriteBufferConfig;
 use redis::aio::MultiplexedConnection;
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
-use redis::{AsyncCommands, Client, RedisError};
+use redis::{Client, RedisError};
 use std::fmt;
 use tracing::{debug, warn};
 
@@ -67,41 +67,6 @@ impl ValkeyClient {
         }
     }
 
-    /// HSET: write a single field into a hash.
-    pub async fn hset(
-        &self,
-        key: &str,
-        field: &str,
-        value: &[u8],
-    ) -> Result<(), RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                conn.hset(key, field, value).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                conn.hset(key, field, value).await
-            }
-        }
-    }
-
-    /// HSET followed by WAIT: write a field and then wait for replica confirmation.
-    ///
-    /// Returns `WaitResult` indicating how many replicas confirmed and whether
-    /// the timeout was reached.
-    pub async fn hset_and_wait(
-        &self,
-        key: &str,
-        field: &str,
-        value: &[u8],
-        wait_replicas: u32,
-        wait_timeout_ms: u64,
-    ) -> Result<WaitResult, RedisError> {
-        self.hset(key, field, value).await?;
-        self.wait(wait_replicas, wait_timeout_ms).await
-    }
-
     /// WAIT: block until the specified number of replicas confirm the last write.
     async fn wait(
         &self,
@@ -141,20 +106,70 @@ impl ValkeyClient {
         })
     }
 
-    /// Pipeline multiple HSET commands followed by a single WAIT.
-    ///
-    /// More efficient than individual hset_and_wait calls for batch writes.
-    pub async fn hset_batch_and_wait(
+    /// XADD: Append a message to a stream.
+    pub async fn xadd(
         &self,
         key: &str,
-        fields: &[(String, Vec<u8>)],
+        id: &str,
+        field: &str,
+        value: &[u8],
+    ) -> Result<(), RedisError> {
+        match &self.inner {
+            ConnectionKind::Standalone(conn) => {
+                let mut conn = conn.clone();
+                redis::cmd("XADD")
+                    .arg(key)
+                    .arg(id)
+                    .arg(field)
+                    .arg(value)
+                    .query_async(&mut conn)
+                    .await
+            }
+            ConnectionKind::Cluster(conn) => {
+                let mut conn = conn.clone();
+                redis::cmd("XADD")
+                    .arg(key)
+                    .arg(id)
+                    .arg(field)
+                    .arg(value)
+                    .query_async(&mut conn)
+                    .await
+            }
+        }
+    }
+
+    /// XADD followed by WAIT: write to stream and wait for replica confirmation.
+    pub async fn xadd_and_wait(
+        &self,
+        key: &str,
+        id: &str,
+        field: &str,
+        value: &[u8],
         wait_replicas: u32,
         wait_timeout_ms: u64,
     ) -> Result<WaitResult, RedisError> {
-        // Build and execute pipeline of HSETs
+        self.xadd(key, id, field, value).await?;
+        self.wait(wait_replicas, wait_timeout_ms).await
+    }
+
+    /// Pipeline multiple XADD commands followed by a single WAIT.
+    ///
+    /// More efficient than individual xadd_and_wait calls for batch writes.
+    pub async fn xadd_batch_and_wait(
+        &self,
+        key: &str,
+        entries: &[(String, String, Vec<u8>)], // (id, field, value)
+        wait_replicas: u32,
+        wait_timeout_ms: u64,
+    ) -> Result<WaitResult, RedisError> {
         let mut pipe = redis::pipe();
-        for (field, value) in fields {
-            pipe.hset(key, field.as_str(), value.as_slice()).ignore();
+        for (id, field, value) in entries {
+            pipe.cmd("XADD")
+                .arg(key)
+                .arg(id.as_str())
+                .arg(field.as_str())
+                .arg(value.as_slice())
+                .ignore();
         }
 
         match &self.inner {
@@ -171,132 +186,86 @@ impl ValkeyClient {
         self.wait(wait_replicas, wait_timeout_ms).await
     }
 
-    /// HGETALL: read all fields from a hash. Returns (field, value) pairs.
-    pub async fn hgetall(&self, key: &str) -> Result<Vec<(String, Vec<u8>)>, RedisError> {
-        match &self.inner {
+    /// XRANGE: read messages from a stream between start and end IDs.
+    /// Returns a list of (StreamID, Vec<(Field, Value)>)
+    /// We only care about retrieving the binary payload values.
+    pub async fn xrange(
+        &self,
+        key: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, RedisError> {
+        // Return type for XRANGE is: Vec<(String, Vec<(String, Vec<u8>)>)>
+        let result: Vec<(String, Vec<(String, Vec<u8>)>)> = match &self.inner {
             ConnectionKind::Standalone(conn) => {
                 let mut conn = conn.clone();
-                conn.hgetall(key).await
+                redis::cmd("XRANGE")
+                    .arg(key)
+                    .arg(start)
+                    .arg(end)
+                    .query_async(&mut conn)
+                    .await?
             }
             ConnectionKind::Cluster(conn) => {
                 let mut conn = conn.clone();
-                conn.hgetall(key).await
+                redis::cmd("XRANGE")
+                    .arg(key)
+                    .arg(start)
+                    .arg(end)
+                    .query_async(&mut conn)
+                    .await?
+            }
+        };
+
+        // Flatten the nested field-value pairs (assuming we only set 1 field per stream entry)
+        let mut flattened = Vec::with_capacity(result.len());
+        for (stream_id, mut fields) in result {
+            if let Some((_, value)) = fields.pop() {
+                flattened.push((stream_id, value));
             }
         }
+        Ok(flattened)
     }
 
-    /// HDEL: delete one or more fields from a hash.
-    ///
-    /// Returns the number of fields that were removed.
-    pub async fn hdel_multi(&self, key: &str, fields: &[String]) -> Result<u64, RedisError> {
-        if fields.is_empty() {
-            return Ok(0);
-        }
-        let mut cmd = redis::cmd("HDEL");
-        cmd.arg(key);
-        for f in fields {
-            cmd.arg(f.as_str());
-        }
+    /// XTRIM MINID: drop all entries from a stream with IDs lower than the specified MINID.
+    /// Used to purge safely exported segments while preserving the warm cache.
+    pub async fn xtrim_minid(
+        &self,
+        key: &str,
+        min_id: &str,
+    ) -> Result<u64, RedisError> {
         match &self.inner {
             ConnectionKind::Standalone(conn) => {
                 let mut conn = conn.clone();
-                cmd.query_async(&mut conn).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                cmd.query_async(&mut conn).await
-            }
-        }
-    }
-
-    /// RENAME: atomically rename a key (used for segment promotion).
-    pub async fn rename(&self, old_key: &str, new_key: &str) -> Result<(), RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                redis::cmd("RENAME")
-                    .arg(old_key)
-                    .arg(new_key)
+                redis::cmd("XTRIM")
+                    .arg(key)
+                    .arg("MINID")
+                    .arg(min_id)
                     .query_async(&mut conn)
                     .await
             }
             ConnectionKind::Cluster(conn) => {
                 let mut conn = conn.clone();
-                redis::cmd("RENAME")
-                    .arg(old_key)
-                    .arg(new_key)
+                redis::cmd("XTRIM")
+                    .arg(key)
+                    .arg("MINID")
+                    .arg(min_id)
                     .query_async(&mut conn)
                     .await
             }
         }
     }
 
-    /// RPUSH: append a value to a list (used for cached segment tracking).
-    pub async fn rpush(&self, key: &str, value: &str) -> Result<(), RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                conn.rpush(key, value).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                conn.rpush(key, value).await
-            }
-        }
-    }
-
-    /// LPOP: pop the oldest value from a list (used for segment eviction).
-    pub async fn lpop(&self, key: &str) -> Result<Option<String>, RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                conn.lpop(key, None).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                conn.lpop(key, None).await
-            }
-        }
-    }
-
-    /// LLEN: return the length of a list.
-    pub async fn llen(&self, key: &str) -> Result<u64, RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                conn.llen(key).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                conn.llen(key).await
-            }
-        }
-    }
-
-    /// DEL: delete a key entirely (used for segment eviction).
+    /// DEL: delete a key entirely.
     pub async fn del(&self, key: &str) -> Result<(), RedisError> {
         match &self.inner {
             ConnectionKind::Standalone(conn) => {
                 let mut conn = conn.clone();
-                conn.del(key).await
+                redis::cmd("DEL").arg(key).query_async(&mut conn).await
             }
             ConnectionKind::Cluster(conn) => {
                 let mut conn = conn.clone();
-                conn.del(key).await
-            }
-        }
-    }
-
-    /// EXISTS: check if a key exists.
-    pub async fn exists(&self, key: &str) -> Result<bool, RedisError> {
-        match &self.inner {
-            ConnectionKind::Standalone(conn) => {
-                let mut conn = conn.clone();
-                conn.exists(key).await
-            }
-            ConnectionKind::Cluster(conn) => {
-                let mut conn = conn.clone();
-                conn.exists(key).await
+                redis::cmd("DEL").arg(key).query_async(&mut conn).await
             }
         }
     }

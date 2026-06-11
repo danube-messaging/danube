@@ -114,19 +114,19 @@ async fn write_buffer_append_and_verify_valkey() {
     }
 
     // Verify Valkey has the data
-    let active_key = "/topics/default/wb-append-test/active_segment";
-    let entries = valkey.hgetall(active_key).await.expect("hgetall");
+    let stream_key = "/topics/default/wb-append-test/stream";
+    let entries = valkey.xrange(stream_key, "-", "+").await.expect("xrange");
     assert_eq!(
         entries.len(),
         3,
-        "expected 3 entries in Valkey active_segment, got {}",
+        "expected 3 entries in Valkey stream, got {}",
         entries.len()
     );
 
-    // Verify the fields are the string offsets "0", "1", "2"
-    let mut fields: Vec<String> = entries.into_iter().map(|(f, _)| f).collect();
+    // Verify the fields are the string offsets "0-1", "1-1", "2-1"
+    let mut fields: Vec<String> = entries.into_iter().map(|(id, _)| id).collect();
     fields.sort();
-    assert_eq!(fields, vec!["0", "1", "2"]);
+    assert_eq!(fields, vec!["0-1", "1-1", "2-1"]);
 }
 
 // ============================================================
@@ -155,8 +155,8 @@ async fn write_buffer_batch_append() {
     assert_eq!(last, 4);
 
     // Verify Valkey
-    let active_key = "/topics/default/wb-batch-test/active_segment";
-    let entries = valkey.hgetall(active_key).await.expect("hgetall");
+    let stream_key = "/topics/default/wb-batch-test/stream";
+    let entries = valkey.xrange(stream_key, "-", "+").await.expect("xrange");
     assert_eq!(entries.len(), 5, "expected 5 entries in batch");
 }
 
@@ -234,13 +234,13 @@ async fn write_buffer_offset_continuity() {
     assert_eq!(storage.current_offset(), 10);
 
     // Verify Valkey has all 10 entries with correct offsets
-    let active_key = "/topics/default/wb-continuity-test/active_segment";
-    let entries = valkey.hgetall(active_key).await.expect("hgetall");
+    let stream_key = "/topics/default/wb-continuity-test/stream";
+    let entries = valkey.xrange(stream_key, "-", "+").await.expect("xrange");
     assert_eq!(entries.len(), 10);
 
     let mut offsets: Vec<u64> = entries
         .iter()
-        .filter_map(|(f, _)| f.parse::<u64>().ok())
+        .filter_map(|(f, _)| f.split('-').next().unwrap().parse::<u64>().ok())
         .collect();
     offsets.sort();
     let expected: Vec<u64> = (0..10).collect();
@@ -293,8 +293,8 @@ async fn factory_without_write_buffer_skips_valkey() {
 
     // Verify Valkey has NO data for this topic
     let valkey = connect_valkey().await;
-    let active_key = "/topics/default/no-wb-test/active_segment";
-    let entries = valkey.hgetall(active_key).await.expect("hgetall");
+    let stream_key = "/topics/default/no-wb-test/stream";
+    let entries = valkey.xrange(stream_key, "-", "+").await.expect("xrange");
     assert!(
         entries.is_empty(),
         "no entries should be in Valkey when write_buffer is disabled"
@@ -307,47 +307,30 @@ async fn factory_without_write_buffer_skips_valkey() {
 
 #[tokio::test]
 #[ignore = "requires running Valkey (docker run -p 6379:6379 valkey/valkey:latest)"]
-async fn valkey_client_crud_operations() {
+async fn valkey_client_stream_operations() {
     flush_valkey().await;
     let client = connect_valkey().await;
 
-    // HSET + HGETALL
+    // XADD + XRANGE
     client
-        .hset("test-hash", "field1", b"value1")
+        .xadd("test-stream", "0-1", "payload", b"value1")
         .await
-        .expect("hset");
+        .expect("xadd");
     client
-        .hset("test-hash", "field2", b"value2")
+        .xadd("test-stream", "1-1", "payload", b"value2")
         .await
-        .expect("hset");
+        .expect("xadd");
 
-    let entries = client.hgetall("test-hash").await.expect("hgetall");
+    let entries = client.xrange("test-stream", "-", "+").await.expect("xrange");
     assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].0, "0-1");
+    assert_eq!(entries[1].0, "1-1");
 
-    // EXISTS
-    assert!(client.exists("test-hash").await.expect("exists"));
-    assert!(!client.exists("nonexistent").await.expect("exists"));
-
-    // DEL
-    client.del("test-hash").await.expect("del");
-    assert!(!client.exists("test-hash").await.expect("exists after del"));
-
-    // RPUSH + LLEN + LPOP
-    client.rpush("test-list", "a").await.expect("rpush");
-    client.rpush("test-list", "b").await.expect("rpush");
-    client.rpush("test-list", "c").await.expect("rpush");
-
-    let len = client.llen("test-list").await.expect("llen");
-    assert_eq!(len, 3);
-
-    let popped = client.lpop("test-list").await.expect("lpop");
-    assert_eq!(popped, Some("a".to_string()));
-
-    let len = client.llen("test-list").await.expect("llen after pop");
-    assert_eq!(len, 2);
-
-    // Cleanup
-    client.del("test-list").await.expect("cleanup");
+    // XTRIM MINID
+    client.xtrim_minid("test-stream", "1-1").await.expect("xtrim");
+    let entries_after = client.xrange("test-stream", "-", "+").await.expect("xrange");
+    assert_eq!(entries_after.len(), 1);
+    assert_eq!(entries_after[0].0, "1-1");
 }
 
 // ============================================================
@@ -410,8 +393,8 @@ async fn write_buffer_crash_recovery_replay() {
 
         // Verify Valkey has the data
         let valkey = connect_valkey().await;
-        let active_key = "/topics/default/wb-crash-recovery/active_segment";
-        let entries = valkey.hgetall(active_key).await.expect("hgetall");
+        let stream_key = "/topics/default/wb-crash-recovery/stream";
+        let entries = valkey.xrange(stream_key, "-", "+").await.expect("xrange");
         assert_eq!(
             entries.len(),
             message_count as usize,

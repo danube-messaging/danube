@@ -206,12 +206,14 @@ impl StorageFactory {
         if let Some(ref wb_config) = self.write_buffer {
             let valkey_client = self.get_or_connect_valkey(wb_config).await?;
 
-            // Spawn the rotation listener: WAL rotation → HDEL exported offsets
+            // Spawn the rotation listener: WAL rotation → XTRIM old segments
             if let Some(rx) = rotation_rx {
                 crate::valkey::rotation_listener::spawn_rotation_listener(
                     valkey_client.clone(),
                     topic_path.clone(),
+                    wb_config.clone(),
                     rx,
+                    self.segment_catalog.metadata().clone(),
                 );
             }
 
