@@ -4,7 +4,7 @@
 /// stream so they can be replayed into a fresh WAL after a broker crash
 /// or disk loss.
 use super::client::ValkeyClient;
-use crate::buffered_storage::BufferedStorage;
+use crate::tiered_storage::TieredStorage;
 use danube_core::message::StreamMessage;
 use tracing::{error, info, warn};
 
@@ -52,7 +52,7 @@ pub async fn download_unexported_stream(
                 }
                 max_parsed_offset = offset;
 
-                match BufferedStorage::deserialize_message(&bytes) {
+                match TieredStorage::deserialize_message(&bytes) {
                     Ok(msg) => messages.push(msg),
                     Err(e) => {
                         deserialize_errors += 1;
