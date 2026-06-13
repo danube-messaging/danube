@@ -1,4 +1,4 @@
-name: Write Buffer E2E
+name: Tiered Storage E2E
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  write_buffer_e2e:
+  tiered_storage_e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -63,7 +63,7 @@ jobs:
         run: cargo build --workspace --release
 
       # =====================================================================
-      # Phase 1: Integration tests (StorageFactory → BufferedStorage → Valkey)
+      # Phase 1: Integration tests (StorageFactory → TieredStorage → Valkey)
       # =====================================================================
       - name: "Phase 1: Run write buffer integration tests"
         env:
@@ -71,6 +71,13 @@ jobs:
         run: |
           echo "=== Running write buffer integration tests ==="
           cargo test --release -p danube-persistent-storage --test write_buffer_valkey -- --ignored --test-threads=1 --nocapture
+
+      - name: "Phase 1b: Run warm tier read tests"
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          echo "=== Running warm tier read path tests ==="
+          cargo test --release -p danube-persistent-storage --test warm_tier_read -- --ignored --test-threads=1 --nocapture
 
       # =====================================================================
       # Phase 2: Broker E2E — produce messages with write buffer enabled
@@ -108,9 +115,9 @@ jobs:
         run: |
           CLI_BIN=./target/release/danube-cli
 
-          # Produce 10 messages through the broker (goes through BufferedStorage → WAL + Valkey)
+          # Produce 10 messages through the broker (goes through TieredStorage → WAL + Valkey)
           # --reliable creates the topic with Reliable dispatch (auto_create_topics: true)
-          # which enables storage (WalStorage + BufferedStorage with Valkey double-write)
+          # which enables storage (TieredStorage with hot WAL + warm Valkey double-write)
           $CLI_BIN produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
@@ -134,7 +141,7 @@ jobs:
             echo "✗ FAIL: Valkey has no buffered messages — double-write may not be working"
             echo ""
             echo "=== Broker log (write buffer lines) ==="
-            grep -i "valkey\|write.buffer\|BufferedStorage" temp/broker.log | tail -20 || true
+            grep -i "valkey\|write.buffer\|TieredStorage" temp/broker.log | tail -20 || true
             echo ""
             echo "=== All Valkey keys ==="
             redis-cli -h 127.0.0.1 -p 6379 KEYS "*" 2>/dev/null || true
@@ -253,19 +260,56 @@ jobs:
           fi
 
       # =====================================================================
+      # Phase 4: Post-recovery consume — verify messages are readable E2E
+      # =====================================================================
+      - name: "Phase 4: Consume recovered messages"
+        run: |
+          CLI_BIN=./target/release/danube-cli
+          echo "=== Verifying recovered messages are consumable ==="
+
+          # Consume with a timeout — the consumer streams forever, so we
+          # capture output for a few seconds and count the delivered lines.
+          timeout 10s $CLI_BIN consume \
+            -s http://127.0.0.1:6650 \
+            -t /default/wb-crash-test \
+            -n recovery-verifier \
+            -m recovery-verify-sub \
+            --sub-type exclusive \
+            > temp/consume_output.txt 2>&1 || true
+
+          echo "--- Consumer output ---"
+          cat temp/consume_output.txt
+          echo ""
+
+          # Count received messages (each message prints "Received" line)
+          MSG_COUNT=$(grep -c "Received" temp/consume_output.txt || echo "0")
+          echo "Messages consumed after recovery: $MSG_COUNT"
+
+          if [ "$MSG_COUNT" -ge 1 ]; then
+            echo "✓ Phase 4 complete: recovered messages are readable ($MSG_COUNT consumed)"
+          else
+            echo "✗ FAIL: No messages consumed after recovery"
+            echo ""
+            echo "=== Broker log (last 30 lines) ==="
+            tail -30 temp/broker.log || true
+            exit 1
+          fi
+
+      # =====================================================================
       # Final summary
       # =====================================================================
       - name: "Final: All phases passed"
         run: |
           echo "========================================="
-          echo "  Write Buffer E2E — ALL TESTS PASSED"
+          echo "  Tiered Storage E2E — ALL TESTS PASSED"
           echo "========================================="
           echo ""
           echo "Phase 1: Integration tests              — PASSED"
-          echo "  - StorageFactory → BufferedStorage → Valkey"
+          echo "  - StorageFactory → TieredStorage → Valkey"
           echo "  - Batch append, read delegation, offset continuity"
           echo "  - ValkeyClient CRUD operations"
           echo "  - Crash recovery: WAL replay from Valkey"
+          echo "  - Warm tier read: data served from Valkey after local WAL retention"
           echo ""
           echo "Phase 2: Broker with write buffer        — PASSED"
           echo "  - Broker started with write_buffer config"
@@ -277,6 +321,10 @@ jobs:
           echo "  - Broker restarted, topic accessed"
           echo "  - Recovery: downloaded stream from Valkey"
           echo "  - Recovery: replayed buffered messages into fresh WAL"
+          echo ""
+          echo "Phase 4: Post-recovery consume           — PASSED"
+          echo "  - Consumer connected to recovered topic"
+          echo "  - Messages readable end-to-end after crash recovery"
 
       - name: Print broker logs on failure
         if: failure()
@@ -288,9 +336,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: write-buffer-e2e-logs
+          name: tiered-storage-e2e-logs
           path: |
             temp/broker.log
+            temp/consume_output.txt
 
       - name: Stop brokers
         if: always()
