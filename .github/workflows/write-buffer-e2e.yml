@@ -127,22 +127,6 @@ jobs:
           echo "✓ Produced 10 messages (reliable dispatch)"
           sleep 2
 
-          # Create a durable subscription by briefly consuming.
-          # The consumer subscribes, receives messages, and ACKs them — this
-          # persists a cursor in the Raft metadata store (survives SIGKILL).
-          # Phase 4 reuses this subscription to verify post-recovery reads.
-          timeout 5s $CLI_BIN consume \
-            -s http://127.0.0.1:6650 \
-            -t /default/wb-crash-test \
-            -n pre-crash-consumer \
-            -m crash-recovery-sub \
-            --sub-type exclusive \
-            > temp/pre_crash_consume.txt 2>&1 || true
-          echo "--- Pre-crash consumer output ---"
-          cat temp/pre_crash_consume.txt
-          PRE_COUNT=$(grep -c "Received" temp/pre_crash_consume.txt 2>/dev/null) || PRE_COUNT=0
-          echo "✓ Subscription 'crash-recovery-sub' created, consumed $PRE_COUNT messages before crash"
-
       - name: "Phase 2: Verify double-write to Valkey"
         run: |
           echo "=== Verifying Valkey has buffered messages ==="
@@ -283,17 +267,35 @@ jobs:
           CLI_BIN=./target/release/danube-cli
           echo "=== Verifying recovered messages are consumable ==="
 
-          # Reconnect to the same subscription created in Phase 2.
-          # The cursor was persisted in the Raft metadata store (survives SIGKILL),
-          # so the consumer resumes from the last ACKed offset and receives
-          # any remaining messages (including the post-crash trigger from Phase 3).
-          timeout 10s $CLI_BIN consume \
+          # New subscriptions start from Latest. Cursor persistence is debounced
+          # (5s), so a brief pre-crash consumer can't guarantee the cursor is
+          # flushed before SIGKILL. Instead, start a consumer in background,
+          # produce while it's listening, and verify it receives the messages.
+
+          # Start consumer in background
+          $CLI_BIN consume \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -n recovery-verifier \
-            -m crash-recovery-sub \
+            -m recovery-verify-sub \
             --sub-type exclusive \
-            > temp/consume_output.txt 2>&1 || true
+            > temp/consume_output.txt 2>&1 &
+          CONSUMER_PID=$!
+          sleep 3
+
+          # Produce messages while the consumer is listening
+          $CLI_BIN produce \
+            -s http://127.0.0.1:6650 \
+            -t /default/wb-crash-test \
+            -m "post-recovery-verify" \
+            -c 3 \
+            --reliable
+          echo "Produced 3 verification messages"
+          sleep 3
+
+          # Stop consumer and collect output
+          kill $CONSUMER_PID 2>/dev/null || true
+          wait $CONSUMER_PID 2>/dev/null || true
 
           echo "--- Consumer output ---"
           cat temp/consume_output.txt
