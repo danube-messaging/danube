@@ -127,6 +127,22 @@ jobs:
           echo "✓ Produced 10 messages (reliable dispatch)"
           sleep 2
 
+          # Create a durable subscription by briefly consuming.
+          # The consumer subscribes, receives messages, and ACKs them — this
+          # persists a cursor in the Raft metadata store (survives SIGKILL).
+          # Phase 4 reuses this subscription to verify post-recovery reads.
+          timeout 5s $CLI_BIN consume \
+            -s http://127.0.0.1:6650 \
+            -t /default/wb-crash-test \
+            -n pre-crash-consumer \
+            -m crash-recovery-sub \
+            --sub-type exclusive \
+            > temp/pre_crash_consume.txt 2>&1 || true
+          echo "--- Pre-crash consumer output ---"
+          cat temp/pre_crash_consume.txt
+          PRE_COUNT=$(grep -c "Received" temp/pre_crash_consume.txt 2>/dev/null) || PRE_COUNT=0
+          echo "✓ Subscription 'crash-recovery-sub' created, consumed $PRE_COUNT messages before crash"
+
       - name: "Phase 2: Verify double-write to Valkey"
         run: |
           echo "=== Verifying Valkey has buffered messages ==="
@@ -267,13 +283,15 @@ jobs:
           CLI_BIN=./target/release/danube-cli
           echo "=== Verifying recovered messages are consumable ==="
 
-          # Consume with a timeout — the consumer streams forever, so we
-          # capture output for a few seconds and count the delivered lines.
+          # Reconnect to the same subscription created in Phase 2.
+          # The cursor was persisted in the Raft metadata store (survives SIGKILL),
+          # so the consumer resumes from the last ACKed offset and receives
+          # any remaining messages (including the post-crash trigger from Phase 3).
           timeout 10s $CLI_BIN consume \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -n recovery-verifier \
-            -m recovery-verify-sub \
+            -m crash-recovery-sub \
             --sub-type exclusive \
             > temp/consume_output.txt 2>&1 || true
 
@@ -281,8 +299,8 @@ jobs:
           cat temp/consume_output.txt
           echo ""
 
-          # Count received messages (each message prints "Received" line)
-          MSG_COUNT=$(grep -c "Received" temp/consume_output.txt || echo "0")
+          # Count received messages
+          MSG_COUNT=$(grep -c "Received" temp/consume_output.txt 2>/dev/null) || MSG_COUNT=0
           echo "Messages consumed after recovery: $MSG_COUNT"
 
           if [ "$MSG_COUNT" -ge 1 ]; then
