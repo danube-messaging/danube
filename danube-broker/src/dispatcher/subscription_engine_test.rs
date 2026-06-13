@@ -11,14 +11,19 @@ use crate::topic::TopicStore;
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::storage::PersistentStorage;
 use danube_persistent_storage::wal::{Wal, WalConfig};
-use danube_persistent_storage::WalStorage;
+use danube_persistent_storage::{WalStorage, TieredStorage};
 
 /// Helper to create a test TopicStore backed by an in-memory WAL
 async fn create_test_store(topic_name: &str) -> Arc<TopicStore> {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("WAL creation failed");
-    let storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
+    let storage: Arc<dyn PersistentStorage> = Arc::new(TieredStorage::new(
+        WalStorage::from_wal(wal),
+        None,
+        None,
+        topic_name.to_string(),
+    ));
     Arc::new(TopicStore::new(topic_name.to_string(), storage))
 }
 

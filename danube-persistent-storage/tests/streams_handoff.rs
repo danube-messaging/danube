@@ -5,7 +5,7 @@ use futures::{StreamExt, TryStreamExt};
 use tokio::time::timeout;
 
 use danube_core::message::{MessageID, StreamMessage};
-use danube_core::storage::{PersistentStorage, StartPosition};
+use danube_core::storage::StartPosition;
 use danube_persistent_storage::checkpoint::CheckpointStore;
 use danube_persistent_storage::wal::{Wal, WalConfig};
 use danube_persistent_storage::WalStorage;

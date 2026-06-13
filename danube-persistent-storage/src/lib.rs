@@ -21,8 +21,8 @@ pub use opendal::{ObjectStoreBackend, OpendalDurableStore};
 
 pub mod valkey;
 
-mod buffered_storage;
-pub use buffered_storage::BufferedStorage;
+pub(crate) mod tiered_storage;
+pub use tiered_storage::TieredStorage;
 
 mod frames;
 

@@ -227,6 +227,44 @@ impl ValkeyClient {
         Ok(flattened)
     }
 
+    /// XRANGE with COUNT 1: get the first (oldest) entry in a stream.
+    /// Returns `Some(offset)` parsed from the stream ID `<offset>-1`, or `None` if the stream is empty.
+    pub async fn xrange_first(&self, key: &str) -> Result<Option<u64>, RedisError> {
+        let result: Vec<(String, Vec<(String, Vec<u8>)>)> = match &self.inner {
+            ConnectionKind::Standalone(conn) => {
+                let mut conn = conn.clone();
+                redis::cmd("XRANGE")
+                    .arg(key)
+                    .arg("-")
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(1)
+                    .query_async(&mut conn)
+                    .await?
+            }
+            ConnectionKind::Cluster(conn) => {
+                let mut conn = conn.clone();
+                redis::cmd("XRANGE")
+                    .arg(key)
+                    .arg("-")
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(1)
+                    .query_async(&mut conn)
+                    .await?
+            }
+        };
+
+        if let Some((stream_id, _)) = result.first() {
+            if let Some(offset_str) = stream_id.split('-').next() {
+                if let Ok(offset) = offset_str.parse::<u64>() {
+                    return Ok(Some(offset));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// XTRIM MINID: drop all entries from a stream with IDs lower than the specified MINID.
     /// Used to purge safely exported segments while preserving the warm cache.
     pub async fn xtrim_minid(

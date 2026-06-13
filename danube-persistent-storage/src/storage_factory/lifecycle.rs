@@ -1,5 +1,7 @@
 use super::{normalize_topic_path, CommitInfo, SealInfo, StorageFactory, StorageFactoryConfig};
-use crate::buffered_storage::BufferedStorage;
+use crate::durable_history_reader::DurableHistoryReader;
+use crate::tiered_storage::TieredStorage;
+use crate::valkey::stream_reader::ValkeyStreamReader;
 use crate::durable_store::DurableStore;
 use crate::metadata::{StorageMetadata, StorageStateSealed};
 use crate::opendal::OpendalDurableStore;
@@ -190,20 +192,22 @@ impl StorageFactory {
             }
         }
 
-        let mut storage = WalStorage::from_wal(topic_wal);
-        if resumed_from_sealed {
-            storage = storage.with_hot_cutover();
-        }
-        if let Some(store) = durable_store {
-            storage = storage.with_durable_history(
+        // --- Construct the 3 independent tiers ---
+
+        // Hot Tier: local WAL (always present)
+        let hot = WalStorage::from_wal(topic_wal);
+
+        // Cold Tier: S3/Cloud durable history (optional)
+        let cold = durable_store.map(|store| {
+            DurableHistoryReader::new(
                 store,
                 self.segment_catalog.metadata().clone(),
                 topic_path.clone(),
-            );
-        }
+            )
+        });
 
-        // Optionally wrap in BufferedStorage for Valkey write buffer
-        if let Some(ref wb_config) = self.write_buffer {
+        // Warm Tier: Valkey stream reader + client (optional)
+        let warm = if let Some(ref wb_config) = self.write_buffer {
             let valkey_client = self.get_or_connect_valkey(wb_config).await?;
 
             // Spawn the rotation listener: WAL rotation → XTRIM old segments
@@ -222,15 +226,20 @@ impl StorageFactory {
                 endpoints = ?wb_config.endpoints,
                 "Valkey write buffer enabled for topic"
             );
-            Ok(Arc::new(BufferedStorage::new(
-                storage,
-                valkey_client,
-                wb_config.clone(),
-                topic_path,
-            )))
+
+            let reader = ValkeyStreamReader::new(valkey_client.clone(), &topic_path);
+            Some((reader, valkey_client, wb_config.clone()))
         } else {
-            Ok(Arc::new(storage))
+            None
+        };
+
+        // --- Construct the single orchestrator ---
+        let mut tiered = TieredStorage::new(hot, warm, cold, topic_path.clone());
+        if resumed_from_sealed {
+            tiered = tiered.with_hot_cutover();
         }
+
+        Ok(Arc::new(tiered))
     }
 
     /// Get or lazily connect the shared Valkey client.
