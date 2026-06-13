@@ -4,7 +4,7 @@ use std::time::Duration;
 use danube_core::message::{MessageID, StreamMessage};
 use danube_core::storage::{PersistentStorage, StartPosition};
 use danube_persistent_storage::wal::{Wal, WalConfig};
-use danube_persistent_storage::WalStorage;
+use danube_persistent_storage::{WalStorage, TieredStorage};
 use futures::StreamExt;
 use tokio::time::timeout;
 
@@ -95,7 +95,12 @@ async fn mk_reliable_topic(name: &str) -> Topic {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("create wal");
-    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
+    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(TieredStorage::new(
+        WalStorage::from_wal(wal),
+        None,
+        None,
+        name.to_string(),
+    ));
 
     Topic::new(
         name,
@@ -367,7 +372,12 @@ async fn topic_store_wal_store_and_read_from_offset() {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("create wal");
-    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
+    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(TieredStorage::new(
+        WalStorage::from_wal(wal),
+        None,
+        None,
+        "/default/topic_store_offset".to_string(),
+    ));
 
     let topic = "/default/topic_store_offset";
     let ts = TopicStore::new(topic.to_string(), wal_storage);
@@ -403,7 +413,12 @@ async fn topic_store_wal_latest_tailing() {
     let wal = Wal::with_config(WalConfig::default())
         .await
         .expect("create wal");
-    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(WalStorage::from_wal(wal));
+    let wal_storage: Arc<dyn PersistentStorage> = Arc::new(TieredStorage::new(
+        WalStorage::from_wal(wal),
+        None,
+        None,
+        "/default/topic_store_latest".to_string(),
+    ));
 
     let topic = "/default/topic_store_latest";
     let ts = TopicStore::new(topic.to_string(), wal_storage);
