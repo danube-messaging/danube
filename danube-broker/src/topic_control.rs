@@ -42,6 +42,8 @@ pub(crate) struct TopicManager {
     pub(crate) metrics_collector: Arc<MetricsCollector>,
     /// Shared broker-level Replicator
     pub(crate) replicator: Arc<Replicator>,
+    /// Cluster-wide default for max_unacked_messages (from dispatch config)
+    pub(crate) default_max_unacked_messages: usize,
 }
 
 impl TopicManager {
@@ -55,6 +57,7 @@ impl TopicManager {
         consumers: ConsumerRegistry,
         metrics_collector: Arc<MetricsCollector>,
         replicator: Arc<Replicator>,
+        default_max_unacked_messages: usize,
     ) -> Self {
         Self {
             broker_id,
@@ -65,6 +68,7 @@ impl TopicManager {
             consumers,
             metrics_collector,
             replicator,
+            default_max_unacked_messages,
         }
     }
 
@@ -143,6 +147,7 @@ impl TopicManager {
             self.resources.schema.clone(),
             self.metrics_collector.clone(),
             self.replicator.clone(),
+            self.default_max_unacked_messages,
         );
 
         // get policies from store

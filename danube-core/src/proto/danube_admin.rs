@@ -213,6 +213,32 @@ pub struct GetSubscriptionFailurePolicyResponse {
     #[prost(int32, tag = "2")]
     pub subscription_type: i32,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionDispatchConfig {
+    #[prost(uint32, tag = "1")]
+    pub max_unacked_messages: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetSubscriptionDispatchConfigRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub dispatch_config: ::core::option::Option<SubscriptionDispatchConfig>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubscriptionDispatchConfigRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubscriptionDispatchConfigResponse {
+    #[prost(message, optional, tag = "1")]
+    pub dispatch_config: ::core::option::Option<SubscriptionDispatchConfig>,
+}
 /// Response Messages
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BrokerListResponse {
@@ -2787,6 +2813,64 @@ pub mod topic_admin_client {
                 .insert(GrpcMethod::new("danube_admin.TopicAdmin", "DescribeTopic"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn set_subscription_dispatch_config(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SetSubscriptionDispatchConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SubscriptionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/SetSubscriptionDispatchConfig",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_admin.TopicAdmin",
+                        "SetSubscriptionDispatchConfig",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_subscription_dispatch_config(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSubscriptionDispatchConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubscriptionDispatchConfigResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/GetSubscriptionDispatchConfig",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_admin.TopicAdmin",
+                        "GetSubscriptionDispatchConfig",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2866,6 +2950,20 @@ pub mod topic_admin_server {
             request: tonic::Request<super::DescribeTopicRequest>,
         ) -> std::result::Result<
             tonic::Response<super::DescribeTopicResponse>,
+            tonic::Status,
+        >;
+        async fn set_subscription_dispatch_config(
+            &self,
+            request: tonic::Request<super::SetSubscriptionDispatchConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SubscriptionResponse>,
+            tonic::Status,
+        >;
+        async fn get_subscription_dispatch_config(
+            &self,
+            request: tonic::Request<super::GetSubscriptionDispatchConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubscriptionDispatchConfigResponse>,
             tonic::Status,
         >;
     }
@@ -3433,6 +3531,110 @@ pub mod topic_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DescribeTopicSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/SetSubscriptionDispatchConfig" => {
+                    #[allow(non_camel_case_types)]
+                    struct SetSubscriptionDispatchConfigSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<
+                        super::SetSubscriptionDispatchConfigRequest,
+                    > for SetSubscriptionDispatchConfigSvc<T> {
+                        type Response = super::SubscriptionResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::SetSubscriptionDispatchConfigRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::set_subscription_dispatch_config(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SetSubscriptionDispatchConfigSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/GetSubscriptionDispatchConfig" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSubscriptionDispatchConfigSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<
+                        super::GetSubscriptionDispatchConfigRequest,
+                    > for GetSubscriptionDispatchConfigSvc<T> {
+                        type Response = super::GetSubscriptionDispatchConfigResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetSubscriptionDispatchConfigRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::get_subscription_dispatch_config(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSubscriptionDispatchConfigSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

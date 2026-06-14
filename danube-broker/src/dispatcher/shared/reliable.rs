@@ -137,7 +137,7 @@ async fn run_reliable_loop(
     let rr_index = Arc::new(AtomicUsize::new(0));
     let rr_task = rr_index.clone();
     let mut state = SharedConsumerState::new(rr_task);
-    let max_unacked = engine.failure_policy().max_unacked_messages;
+    let max_unacked = engine.max_unacked_messages;
     let mut window = DispatchWindow::new(max_unacked);
 
     // Initialize stream

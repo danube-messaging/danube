@@ -124,6 +124,10 @@ pub(crate) struct SubscriptionEngine {
     /// Failure policy governing retry limits, backoff, ack timeouts, and poison handling.
     /// The engine is the single authority that applies this policy to message lifecycle events.
     pub(crate) failure_policy: SubscriptionFailurePolicy,
+
+    /// Maximum unacked messages in the dispatch window (pipelining depth).
+    /// Stored separately from failure_policy; set from Subscription.max_unacked_messages.
+    pub(crate) max_unacked_messages: usize,
 }
 
 impl SubscriptionEngine {
@@ -148,6 +152,7 @@ impl SubscriptionEngine {
             sub_progress_flush_interval: Duration::from_secs(5),
             dispatch_rate_limiter: None,
             failure_policy: SubscriptionFailurePolicy::default(),
+            max_unacked_messages: 10,
         }
     }
 
@@ -184,6 +189,7 @@ impl SubscriptionEngine {
         sub_progress_flush_interval: Duration,
         limiter: Option<std::sync::Arc<RateLimiter>>,
         failure_policy: SubscriptionFailurePolicy,
+        max_unacked_messages: usize,
     ) -> Self {
         let mut s = Self::new(subscription_name, topic_store);
         s.topic_name = Some(topic_name);
@@ -191,6 +197,7 @@ impl SubscriptionEngine {
         s.sub_progress_flush_interval = sub_progress_flush_interval;
         s.dispatch_rate_limiter = limiter;
         s.failure_policy = failure_policy;
+        s.max_unacked_messages = max_unacked_messages;
         s
     }
 
@@ -694,6 +701,7 @@ mod tests {
             Duration::from_millis(50),
             None,
             SubscriptionFailurePolicy::default(),
+            10,
         );
 
         // First ack (should mark dirty but not flush immediately)

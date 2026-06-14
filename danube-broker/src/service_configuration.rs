@@ -1,3 +1,4 @@
+use crate::dispatch_config::DispatchConfig;
 use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
 use crate::policies::Policies;
@@ -32,6 +33,9 @@ pub(crate) struct LoadConfiguration {
     /// Load Manager configuration
     #[serde(default)]
     pub(crate) load_manager: Option<LoadManagerConfig>,
+    /// Dispatch configuration (pipelining depth, etc.)
+    #[serde(default)]
+    pub(crate) dispatch: DispatchConfig,
 }
 
 /// configuration settings for the Danube broker service
@@ -69,6 +73,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_tls: bool,
     /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
+    /// Dispatch configuration (cluster-wide defaults for pipelining)
+    pub(crate) dispatch_config: DispatchConfig,
     /// Edge replication configuration (edge mode only)
     #[serde(default)]
     pub(crate) edge_config: Option<EdgeConfig>,
@@ -180,6 +186,7 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: None,
+            dispatch_config: DispatchConfig::default(),
             edge_config: None,
         })
     }
@@ -232,6 +239,7 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: None,
+            dispatch_config: DispatchConfig::default(),
             edge_config: Some(EdgeConfig {
                 config_path,
                 token_override,
@@ -256,6 +264,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             auth,
             admin_tls,
             load_manager,
+            dispatch,
         } = config;
         let BrokerConfig {
             host,
@@ -318,6 +327,7 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             auth,
             admin_tls,
             load_manager,
+            dispatch_config: dispatch,
             edge_config: None,
         })
     }

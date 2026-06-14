@@ -83,6 +83,7 @@ impl BrokerService {
         storage_factory: StorageFactory,
         auto_create_topics: bool,
         edge_replicator: Option<Arc<EdgeReplicator>>,
+        default_max_unacked_messages: usize,
     ) -> Self {
         let producers = ProducerRegistry::new();
         let consumers = ConsumerRegistry::new();
@@ -100,6 +101,7 @@ impl BrokerService {
             consumers.clone(),
             metrics_collector.clone(),
             replicator.clone(),
+            default_max_unacked_messages,
         );
 
         let topic_cluster = TopicCluster::new(resources_arc.clone());

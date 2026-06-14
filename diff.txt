@@ -1,0 +1,2596 @@
+commit 0e44364e2f557c752e8b421d08c04768880ee6c4
+Author: Dan Rusei <dan.rusei@gmail.com>
+Date:   Sun Jun 14 12:19:56 2026 +0300
+
+    replace the single-slot PendingDelivery in the Exclusive and Shared reliable dispatchers with a pipelined in-flight window
+
+diff --git a/danube-broker/src/admin/topics_admin.rs b/danube-broker/src/admin/topics_admin.rs
+index 69f6910..be11cbe 100644
+--- a/danube-broker/src/admin/topics_admin.rs
++++ b/danube-broker/src/admin/topics_admin.rs
+@@ -555,6 +555,7 @@ fn admin_failure_policy_to_broker(
+         backoff_strategy,
+         dead_letter_topic: failure_policy.dead_letter_topic,
+         poison_policy,
++        max_unacked_messages: BrokerSubscriptionFailurePolicy::default().max_unacked_messages,
+     })
+ }
+ 
+diff --git a/danube-broker/src/dispatcher.rs b/danube-broker/src/dispatcher.rs
+index 156e3d8..37e5914 100644
+--- a/danube-broker/src/dispatcher.rs
++++ b/danube-broker/src/dispatcher.rs
+@@ -26,6 +26,7 @@ use crate::{
+ // ── Module declarations ─────────────────────────────────────────────────
+ 
+ pub(crate) mod commands;
++pub(crate) mod dispatch_window;
+ pub(crate) mod exclusive;
+ pub(crate) mod key_shared;
+ pub(crate) mod metrics;
+@@ -325,10 +326,16 @@ impl Dispatcher {
+ 
+     /// Clear pending ack state so the next message can be dispatched.
+     /// Used by: reliable only.
+-    pub(crate) async fn reset_pending(&self) -> Result<()> {
++    ///
++    /// `consumer_id` scopes the retry to entries assigned to that consumer
++    /// (relevant for shared subscriptions where other consumers are still healthy).
++    pub(crate) async fn reset_pending(&self, consumer_id: u64) -> Result<()> {
+         match &self.handle {
+             DispatcherHandle::Reliable { control_tx, .. } => control_tx
+-                .send(DispatcherCommand::RetryNow(None))
++                .send(DispatcherCommand::RetryNow {
++                    reason: None,
++                    consumer_id: Some(consumer_id),
++                })
+                 .await
+                 .map_err(|_| anyhow!("Failed to send reset pending command")),
+             _ => Ok(()),
+diff --git a/danube-broker/src/dispatcher/commands.rs b/danube-broker/src/dispatcher/commands.rs
+index 4deb4e2..0a5c0c2 100644
+--- a/danube-broker/src/dispatcher/commands.rs
++++ b/danube-broker/src/dispatcher/commands.rs
+@@ -39,9 +39,15 @@ pub(super) enum DispatcherCommand {
+ 
+     MessageNacked(NackMessage),
+ 
+-    RetryNow(Option<String>),
++    /// Force immediate retry. `consumer_id` scopes retry to entries assigned
++    /// to that consumer (shared dispatcher). Exclusive dispatchers ignore it
++    /// and retry all entries.
++    RetryNow {
++        reason: Option<String>,
++        consumer_id: Option<u64>,
++    },
++
+ 
+-    AckTimedOut,
+ 
+     PollAndDispatch,
+ 
+diff --git a/danube-broker/src/dispatcher/dispatch_window.rs b/danube-broker/src/dispatcher/dispatch_window.rs
+new file mode 100644
+index 0000000..e4b92ca
+--- /dev/null
++++ b/danube-broker/src/dispatcher/dispatch_window.rs
+@@ -0,0 +1,453 @@
++//! Shared dispatch window for pipelined message delivery.
++//!
++//! `DispatchWindow` tracks multiple in-flight messages, handles out-of-order ACKs,
++//! and advances a safe cursor for metadata persistence. Used by the Exclusive and
++//! Shared reliable dispatchers to replace the single-slot `Option<PendingDelivery>`.
++//!
++//! # Safe Cursor Invariant
++//!
++//! The `safe_cursor` is the highest WAL offset where ALL offsets <= this value are
++//! confirmed acked (or skipped). This ensures `SubscriptionEngine` never persists
++//! a cursor that jumps past unacked messages — preventing message loss on restart.
++//!
++//! # Example
++//!
++//! ```text
++//!   Dispatched: [1, 2, 3, 4, 5]
++//!   Acked:      {1, 3, 5}
++//!   safe_cursor: Some(1)   — only 1 is contiguously acked from start
++//!
++//!   Then ack(2):
++//!   Acked:      {1, 2, 3, 5}
++//!   safe_cursor: Some(3)   — 1,2,3 are contiguous
++//! ```
++
++use std::collections::{BTreeMap, BTreeSet};
++
++use tokio::time::Instant;
++
++use super::pending_delivery::PendingDelivery;
++
++/// A pipelined in-flight message tracking window.
++///
++/// Tracks multiple dispatched messages, handles out-of-order ACKs,
++/// and advances a safe cursor for metadata persistence.
++pub(crate) struct DispatchWindow {
++    /// Messages dispatched and awaiting ACK, keyed by WAL offset.
++    in_flight: BTreeMap<u64, PendingDelivery>,
++
++    /// Set of offsets that have been acked (for contiguous cursor tracking).
++    acked_offsets: BTreeSet<u64>,
++
++    /// Highest WAL offset where ALL offsets <= this value are confirmed acked.
++    safe_cursor: Option<u64>,
++
++    /// The first offset we've seen (for contiguous cursor initialization).
++    first_offset: Option<u64>,
++
++    /// Maximum number of in-flight messages (backpressure).
++    max_unacked: usize,
++}
++
++impl DispatchWindow {
++    /// Create a new dispatch window with the given capacity.
++    ///
++    /// `max_unacked` controls the maximum number of messages that can be in-flight
++    /// simultaneously. Setting this to 1 reproduces the old single-slot behavior.
++    pub(crate) fn new(max_unacked: usize) -> Self {
++        Self {
++            in_flight: BTreeMap::new(),
++            acked_offsets: BTreeSet::new(),
++            safe_cursor: None,
++            first_offset: None,
++            max_unacked,
++        }
++    }
++
++    /// Can we poll and send more messages?
++    pub(crate) fn has_capacity(&self) -> bool {
++        self.in_flight.len() < self.max_unacked
++    }
++
++    /// Record a dispatched message.
++    pub(super) fn mark_dispatched(&mut self, offset: u64, delivery: PendingDelivery) {
++        self.in_flight.insert(offset, delivery);
++        if self.first_offset.is_none() {
++            self.first_offset = Some(offset);
++        }
++    }
++
++    /// Process an ACK. Returns the new safe_cursor if it advanced.
++    ///
++    /// Removes the entry from in-flight, records the acked offset, and
++    /// attempts to advance the contiguous safe cursor.
++    pub(crate) fn on_ack(&mut self, offset: u64) -> Option<u64> {
++        if self.in_flight.remove(&offset).is_some() {
++            self.acked_offsets.insert(offset);
++            self.advance_safe_cursor()
++        } else {
++            None
++        }
++    }
++
++    /// Process a skipped message (poison-resolved or filtered).
++    /// Treated like an immediate ack for cursor purposes.
++    pub(crate) fn on_skipped(&mut self, offset: u64) -> Option<u64> {
++        self.in_flight.remove(&offset);
++        if self.first_offset.is_none() {
++            self.first_offset = Some(offset);
++        }
++        self.acked_offsets.insert(offset);
++        self.advance_safe_cursor()
++    }
++
++    /// Get a mutable reference to an in-flight entry by offset.
++    /// Used for NACK handling and retry scheduling.
++    pub(super) fn get_mut(&mut self, offset: u64) -> Option<&mut PendingDelivery> {
++        self.in_flight.get_mut(&offset)
++    }
++
++    /// Get the safe cursor for metadata persistence.
++    pub(crate) fn safe_cursor(&self) -> Option<u64> {
++        self.safe_cursor
++    }
++
++    /// Number of in-flight messages.
++    pub(crate) fn in_flight_count(&self) -> usize {
++        self.in_flight.len()
++    }
++
++    /// Get the highest offset dispatched into the window.
++    /// Returns `None` if the window is empty (and has no acked offsets).
++    pub(crate) fn highest_dispatched_offset(&self) -> Option<u64> {
++        // The highest offset is either the last in-flight key or the safe_cursor
++        // (acked offsets have been removed from in_flight).
++        let last_in_flight = self.in_flight.keys().next_back().copied();
++        match (last_in_flight, self.safe_cursor) {
++            (Some(inf), Some(sc)) => Some(inf.max(sc)),
++            (Some(inf), None) => Some(inf),
++            (None, Some(sc)) => Some(sc),
++            (None, None) => None,
++        }
++    }
++
++    /// Check if the window is empty (no in-flight messages).
++    pub(crate) fn is_empty(&self) -> bool {
++        self.in_flight.is_empty()
++    }
++
++    /// Find the first entry that has timed out on ACK.
++    /// Returns the offset if found.
++    pub(crate) fn find_ack_timed_out(&self, now: Instant) -> Option<u64> {
++        self.in_flight
++            .iter()
++            .find(|(_, d)| d.ack_timed_out(now))
++            .map(|(off, _)| *off)
++    }
++
++    /// Collect all offsets with expired ACK deadlines.
++    pub(crate) fn collect_ack_timed_out(&self, now: Instant) -> Vec<u64> {
++        self.in_flight
++            .iter()
++            .filter(|(_, d)| d.ack_timed_out(now))
++            .map(|(off, _)| *off)
++            .collect()
++    }
++
++    /// Collect all offsets ready for retry.
++    pub(crate) fn collect_retry_ready(&self, now: Instant) -> Vec<u64> {
++        self.in_flight
++            .iter()
++            .filter(|(_, d)| d.is_retry_ready(now))
++            .map(|(off, _)| *off)
++            .collect()
++    }
++
++    /// Find the first entry that is retry-exhausted.
++    pub(crate) fn find_retry_exhausted(&self) -> Option<u64> {
++        self.in_flight
++            .iter()
++            .find(|(_, d)| d.is_retry_exhausted())
++            .map(|(off, _)| *off)
++    }
++
++    /// Collect all retry-exhausted offsets.
++    pub(crate) fn collect_retry_exhausted(&self) -> Vec<u64> {
++        self.in_flight
++            .iter()
++            .filter(|(_, d)| d.is_retry_exhausted())
++            .map(|(off, _)| *off)
++            .collect()
++    }
++
++    /// Count entries in the WaitingToRetry state (for metrics).
++    pub(crate) fn count_waiting_to_retry(&self) -> usize {
++        self.in_flight
++            .values()
++            .filter(|d| d.is_retry_ready(Instant::now()) || d.is_waiting_to_retry())
++            .count()
++    }
++
++    /// Count entries in the RetryExhausted state (for metrics).
++    pub(crate) fn count_retry_exhausted(&self) -> usize {
++        self.in_flight
++            .values()
++            .filter(|d| d.is_retry_exhausted())
++            .count()
++    }
++
++    /// Check if any entry is retry-ready.
++    pub(crate) fn has_any_retry_ready(&self, now: Instant) -> bool {
++        self.in_flight.values().any(|d| d.is_retry_ready(now))
++    }
++
++    /// Force ALL retryable in-flight entries to immediate retry.
++    ///
++    /// Unlike `collect_retry_ready`, this targets entries regardless of their
++    /// current status (AwaitingAck, WaitingToRetry). Used on consumer reconnect
++    /// to ensure unacked messages are redelivered to the new consumer without
++    /// waiting for the ack timeout.
++    ///
++    /// Does NOT force RetryExhausted entries — those have been resolved by
++    /// the poison policy.
++    pub(super) fn force_retry_all(&mut self, reason: Option<String>) {
++        for pending in self.in_flight.values_mut() {
++            if !pending.is_retry_exhausted() {
++                pending.schedule_retry_now(reason.clone());
++            }
++        }
++    }
++
++    /// Force retry of entries assigned to a specific consumer.
++    ///
++    /// Used by the shared dispatcher when a consumer disconnects — only that
++    /// consumer's in-flight entries should be forcefully retried, while entries
++    /// belonging to other healthy consumers remain `AwaitingAck`.
++    pub(super) fn force_retry_for_consumer(&mut self, consumer_id: u64, reason: Option<String>) {
++        for pending in self.in_flight.values_mut() {
++            if pending.target_consumer_id == Some(consumer_id) && !pending.is_retry_exhausted() {
++                pending.schedule_retry_now(reason.clone());
++            }
++        }
++    }
++
++    /// Drain all entries (for disconnect cleanup).
++    /// Returns the list of all PendingDelivery entries.
++    #[allow(dead_code)]
++    pub(super) fn drain(&mut self) -> Vec<PendingDelivery> {
++        let entries: Vec<PendingDelivery> = self
++            .in_flight
++            .values()
++            .cloned()
++            .collect();
++        self.in_flight.clear();
++        entries
++    }
++
++    /// Advance the safe cursor past contiguously-acked offsets.
++    ///
++    /// Example:
++    ///   safe_cursor = Some(5)
++    ///   acked_offsets = {6, 7, 9}  (8 is still in-flight)
++    ///   → safe_cursor advances to 7, returns Some(7)
++    ///   → acked_offsets = {9}
++    fn advance_safe_cursor(&mut self) -> Option<u64> {
++        let start = match self.safe_cursor {
++            Some(c) => c + 1,
++            None => match self.first_offset {
++                Some(f) => f,
++                None => return None,
++            },
++        };
++        let mut cursor = start;
++        let mut advanced = false;
++
++        while self.acked_offsets.remove(&cursor) {
++            self.safe_cursor = Some(cursor);
++            cursor += 1;
++            advanced = true;
++        }
++
++        if advanced {
++            self.safe_cursor
++        } else {
++            None
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use danube_core::message::{MessageID, StreamMessage};
++    use std::collections::HashMap;
++
++    fn make_msg(offset: u64) -> StreamMessage {
++        StreamMessage {
++            request_id: 0,
++            msg_id: MessageID {
++                producer_id: 1,
++                topic_name: "test-topic".to_string(),
++                broker_addr: "localhost:6650".to_string(),
++                topic_offset: offset,
++            },
++            payload: Vec::new().into(),
++            publish_time: 0,
++            producer_name: "test-producer".to_string(),
++            subscription_name: None,
++            attributes: HashMap::new(),
++            schema_id: None,
++            schema_version: None,
++            routing_key: None,
++        }
++    }
++
++    #[test]
++    fn capacity_limits() {
++        let mut window = DispatchWindow::new(2);
++
++        let d1 = PendingDelivery::new(make_msg(1));
++        window.mark_dispatched(1, d1);
++        assert!(window.has_capacity()); // 1 in-flight, limit 2
++
++        let d2 = PendingDelivery::new(make_msg(2));
++        window.mark_dispatched(2, d2);
++        assert!(!window.has_capacity()); // 2 in-flight, limit 2
++
++        // Ack one frees capacity
++        window.on_ack(1);
++        assert!(window.has_capacity());
++    }
++
++    #[test]
++    fn safe_cursor_contiguous_in_order() {
++        let mut window = DispatchWindow::new(100);
++
++        for i in 1..=3 {
++            window.mark_dispatched(i, PendingDelivery::new(make_msg(i)));
++        }
++
++        let cursor = window.on_ack(1);
++        assert_eq!(cursor, Some(1));
++
++        let cursor = window.on_ack(2);
++        assert_eq!(cursor, Some(2));
++
++        let cursor = window.on_ack(3);
++        assert_eq!(cursor, Some(3));
++    }
++
++    #[test]
++    fn safe_cursor_gap() {
++        let mut window = DispatchWindow::new(100);
++
++        for i in 1..=3 {
++            window.mark_dispatched(i, PendingDelivery::new(make_msg(i)));
++        }
++
++        // Ack out of order: 3, then 1
++        let cursor = window.on_ack(3);
++        assert_eq!(cursor, None); // 1 and 2 still in-flight
++
++        let cursor = window.on_ack(1);
++        assert_eq!(cursor, Some(1)); // only 1 is contiguous
++
++        let cursor = window.on_ack(2);
++        assert_eq!(cursor, Some(3)); // now 1,2,3 all acked → jumps to 3
++    }
++
++    #[test]
++    fn on_skipped_advances_cursor() {
++        let mut window = DispatchWindow::new(100);
++
++        let cursor = window.on_skipped(1);
++        assert_eq!(cursor, Some(1));
++
++        let cursor = window.on_skipped(2);
++        assert_eq!(cursor, Some(2));
++
++        // Skip 4 (gap at 3)
++        let cursor = window.on_skipped(4);
++        assert_eq!(cursor, None);
++
++        // Skip 3 (fills gap)
++        let cursor = window.on_skipped(3);
++        assert_eq!(cursor, Some(4));
++    }
++
++    #[test]
++    fn get_mut_returns_entry() {
++        let mut window = DispatchWindow::new(100);
++        window.mark_dispatched(5, PendingDelivery::new(make_msg(5)));
++
++        assert!(window.get_mut(5).is_some());
++        assert!(window.get_mut(999).is_none());
++    }
++
++    #[test]
++    fn in_flight_count_and_empty() {
++        let mut window = DispatchWindow::new(100);
++        assert!(window.is_empty());
++        assert_eq!(window.in_flight_count(), 0);
++
++        window.mark_dispatched(1, PendingDelivery::new(make_msg(1)));
++        assert!(!window.is_empty());
++        assert_eq!(window.in_flight_count(), 1);
++    }
++
++    #[test]
++    fn drain_returns_all_entries() {
++        let mut window = DispatchWindow::new(100);
++        for i in 1..=3 {
++            window.mark_dispatched(i, PendingDelivery::new(make_msg(i)));
++        }
++
++        let drained = window.drain();
++        assert_eq!(drained.len(), 3);
++        assert!(window.is_empty());
++    }
++
++    #[test]
++    fn safe_cursor_persists_across_mixed_operations() {
++        let mut window = DispatchWindow::new(100);
++
++        // Dispatch 1-5
++        for i in 1..=5 {
++            window.mark_dispatched(i, PendingDelivery::new(make_msg(i)));
++        }
++
++        // Ack 1,2 → cursor = 2
++        window.on_ack(1);
++        let cursor = window.on_ack(2);
++        assert_eq!(cursor, Some(2));
++
++        // Skip 3 (poison) → cursor = 3
++        let cursor = window.on_skipped(3);
++        assert_eq!(cursor, Some(3));
++
++        // Ack 5 (gap at 4) → no advance
++        let cursor = window.on_ack(5);
++        assert_eq!(cursor, None);
++
++        // Ack 4 → cursor = 5
++        let cursor = window.on_ack(4);
++        assert_eq!(cursor, Some(5));
++
++        assert_eq!(window.safe_cursor(), Some(5));
++    }
++
++    #[test]
++    fn single_slot_behavior_with_max_unacked_1() {
++        let mut window = DispatchWindow::new(1);
++
++        window.mark_dispatched(1, PendingDelivery::new(make_msg(1)));
++        assert!(!window.has_capacity());
++
++        let cursor = window.on_ack(1);
++        assert_eq!(cursor, Some(1));
++        assert!(window.has_capacity());
++
++        window.mark_dispatched(2, PendingDelivery::new(make_msg(2)));
++        assert!(!window.has_capacity());
++    }
++}
+diff --git a/danube-broker/src/dispatcher/exclusive/reliable.rs b/danube-broker/src/dispatcher/exclusive/reliable.rs
+index 79c8322..9ab9583 100644
+--- a/danube-broker/src/dispatcher/exclusive/reliable.rs
++++ b/danube-broker/src/dispatcher/exclusive/reliable.rs
+@@ -2,15 +2,15 @@
+ //!
+ //! # Overview
+ //!
+-//! Provides **at-least-once delivery** to a single active consumer with strict ack-gating.
++//! Provides **at-least-once delivery** to a single active consumer with pipelined dispatch.
+ //! Used for Exclusive and Failover subscription types where delivery guarantees are critical.
+ //!
+ //! # Key Components
+ //!
+ //! - **`SubscriptionEngine`** — Owns the stream cursor, failure policy, and message lifecycle
+ //!   decisions (NACK handling, ack timeout, poison skip). See `subscription_engine.rs`.
+-//! - **`PendingDelivery`** — Per-message state machine tracking delivery attempt count,
+-//!   ack deadline, retry timing, and terminal status. See `pending_delivery.rs`.
++//! - **`DispatchWindow`** — Pipelined in-flight message window with contiguous cursor tracking.
++//!   Replaces the old single-slot `Option<PendingDelivery>`. See `dispatch_window.rs`.
+ //! - **`ExclusiveConsumerState`** — Manages consumer list and tracks which one is active.
+ //! - **`poison_handler`** — Handles retry-exhausted messages (DLQ routing, Drop, Block).
+ //!
+@@ -19,9 +19,8 @@
+ //! The dispatch loop maintains two mutable variables:
+ //!
+ //! - `state: ExclusiveConsumerState` — Consumer list + active consumer tracking
+-//! - `pending_delivery: Option<PendingDelivery>` — The single in-flight message slot.
+-//!   `Some(...)` means a message is being tracked (may be awaiting ack, waiting to retry,
+-//!   or retry-exhausted). `None` means the slot is free and a new message can be polled.
++//! - `window: DispatchWindow` — Pipelined in-flight message window. Tracks multiple messages
++//!   simultaneously, handles out-of-order ACKs, and advances a safe cursor for persistence.
+ //!
+ //! # Message Flow (`handle_poll_and_dispatch`)
+ //!
+@@ -30,21 +29,20 @@
+ //! │ 1. Active consumer available and healthy?                      │
+ //! │    └─ No → return (wait for consumer)                          │
+ //! │                                                                │
+-//! │ 2. Pending slot empty? → Poll next message from engine         │
+-//! │    └─ Got message → wrap in PendingDelivery, put in slot       │
++//! │ 2. Handle any retry-exhausted entries (poison gate per entry)  │
++//! │    ├─ DeadLetter: publish to DLQ via replicator, skip          │
++//! │    ├─ Drop: skip message, advance cursor                       │
++//! │    └─ Block: halt dispatch for that entry                      │
+ //! │                                                                │
+-//! │ 3. Poison gate: is pending message retry-exhausted?            │
+-//! │    └─ Yes → handle_retry_exhausted_pending (see poison_handler)│
+-//! │       ├─ DeadLetter: publish to DLQ via replicator, skip       │
+-//! │       ├─ Drop: skip message, advance cursor                    │
+-//! │       └─ Block: halt dispatch until operator intervenes        │
++//! │ 3. Handle any entries ready for retry (resend to consumer)     │
+ //! │                                                                │
+-//! │ 4. Retry timing: is pending ready to send?                     │
+-//! │    └─ No → return (backoff delay not elapsed)                  │
++//! │ 4. While window.has_capacity():                                │
++//! │    a. Poll next message from engine                            │
++//! │    b. If None → break (no more messages)                       │
++//! │    c. Send to consumer                                         │
++//! │    d. Mark dispatched in window                                │
+ //! │                                                                │
+-//! │ 5. Send message to active consumer                             │
+-//! │    ├─ Success → mark AwaitingAck, start ack deadline timer     │
+-//! │    └─ Failure → schedule_retry_now (will retry on next tick)   │
++//! │ 5. Persist safe_cursor to SubscriptionEngine                   │
+ //! └─────────────────────────────────────────────────────────────────┘
+ //! ```
+ //!
+@@ -52,21 +50,12 @@
+ //!
+ //! All events flow through `handle_command`, which dispatches to:
+ //!
+-//! - **`MessageAcked`** → `handle_ack`: If ack matches the pending message and it is
+-//!   awaiting ack, advance the engine cursor (`on_acked`) and clear the pending slot.
+-//!   Then immediately attempt the next dispatch.
++//! - **`MessageAcked`** → `handle_ack`: window.on_ack(offset) → if safe_cursor advanced
++//!   → engine.advance_cursor_to(). Then try to fill the window.
+ //!
+-//! - **`MessageNacked`** → `handle_nack`: Consumer explicitly rejected the message.
+-//!   Engine applies failure policy via `on_nacked` — either schedules a retry with
+-//!   backoff delay, or marks the message as retry-exhausted. Then triggers dispatch
+-//!   (which will hit the poison gate if exhausted).
++//! - **`MessageNacked`** → `handle_nack`: window.get_mut(offset) → engine.on_nacked(entry).
+ //!
+-//! - **`AckTimedOut`** → `handle_ack_timed_out`: Ack deadline expired without consumer
+-//!   response. Engine applies failure policy via `on_ack_timed_out` — same retry/exhaust
+-//!   logic as NACK. Detected by the heartbeat watchdog.
+-//!
+-//! - **`RetryNow`** → `handle_retry_now`: Force an immediate retry (e.g., after consumer
+-//!   reconnect). Clears backoff delay but does not revive retry-exhausted messages.
++//! - **`RetryNow`** → Force immediate retry of retry-eligible entries.
+ //!
+ //! - **`PollAndDispatch`** → Direct dispatch attempt (triggered by topic publish
+ //!   or reconnect via `Dispatcher::wake_dispatch()`).
+@@ -82,22 +71,23 @@
+ //! A 500ms interval background timer that:
+ //!
+ //! 1. Reports subscription lag gauge metrics
+-//! 2. Detects ack timeouts (sends `AckTimedOut` command)
+-//! 3. Detects pending messages ready to retry (backoff elapsed)
+-//! 4. Detects new messages in WAL when no message is pending (lag catch-up)
++//! 2. Detects ack timeouts on all in-flight entries
++//! 3. Detects entries ready to retry (backoff elapsed)
++//! 4. Fills window when capacity available and WAL has lag
+ //!
+ //! # Consumer Failover
+ //!
+ //! When the active consumer disconnects:
+ //!
+ //! 1. `RemoveConsumer` removes it from the consumer list and clears `active_consumer`
+-//! 2. The pending message stays in its slot (preserving delivery state)
++//! 2. In-flight messages stay in the window (preserving delivery state)
+ //! 3. When a new consumer is added, `AddConsumer` triggers dispatch which
+-//!    retries the buffered message to the new active consumer
++//!    retries the buffered messages to the new active consumer
+ //!
+ //! # Persistence
+ //!
+ //! Subscription progress (last acked offset) is persisted via `SubscriptionEngine`:
++//! - Uses `advance_cursor_to(safe_cursor)` — only advances past contiguously acked offsets
+ //! - Debounced flush every 5s (configurable) to avoid metadata write on every ack
+ //! - Force-flushed on `DisconnectAllConsumers` and `FlushProgressNow`
+ //! - Allows broker restart without message loss
+@@ -115,15 +105,17 @@ use crate::broker_metrics::{
+ };
+ use crate::message::{AckMessage, NackMessage};
+ use crate::replicator::Replicator;
++use crate::subscription::SubscriptionPoisonPolicy;
+ 
+ use super::super::commands::DispatcherCommand;
++use super::super::dispatch_window::DispatchWindow;
+ use super::super::exclusive::ExclusiveConsumerState;
+ use super::super::metrics::{
+     record_retry_exhausted_metric, subscription_metric_context, subscription_metric_topic,
+-    update_pending_delivery_metrics, SubscriptionMetricContext,
++    update_window_metrics, SubscriptionMetricContext,
+ };
+ use super::super::pending_delivery::PendingDelivery;
+-use super::super::poison_handler::handle_retry_exhausted_pending;
++use super::super::poison_handler::{resolve_poisoned_delivery, PoisonResolution};
+ use super::super::subscription_engine::SubscriptionEngine;
+ 
+ /// Spawn the reliable exclusive dispatcher background task.
+@@ -145,7 +137,8 @@ async fn run_reliable_loop(
+     ready_tx: watch::Sender<bool>,
+ ) {
+     let mut state = ExclusiveConsumerState::new();
+-    let mut pending_delivery: Option<PendingDelivery> = None;
++    let max_unacked = engine.failure_policy().max_unacked_messages;
++    let mut window = DispatchWindow::new(max_unacked);
+ 
+     // Initialize stream from persisted progress
+     {
+@@ -171,7 +164,7 @@ async fn run_reliable_loop(
+                             &mut state,
+                             &mut engine,
+                             replicator.as_deref(),
+-                            &mut pending_delivery,
++                            &mut window,
+                         ).await;
+                     }
+                     None => break, // Channel closed
+@@ -183,7 +176,7 @@ async fn run_reliable_loop(
+                     &mut state,
+                     &mut engine,
+                     replicator.as_deref(),
+-                    &mut pending_delivery,
++                    &mut window,
+                 ).await;
+             }
+         }
+@@ -195,7 +188,7 @@ async fn handle_command(
+     state: &mut ExclusiveConsumerState,
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     match cmd {
+         DispatcherCommand::AddConsumer(c) => {
+@@ -204,48 +197,65 @@ async fn handle_command(
+                 "consumer added to reliable exclusive dispatcher"
+             );
+             state.add_consumer(c);
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++            // NOTE: Do NOT call handle_poll_and_dispatch here.
++            // poll_next() blocks on the WAL stream when no messages exist,
++            // which prevents subsequent AddConsumer commands from being processed.
++            // Dispatch will be triggered by PollAndDispatch when messages arrive.
+         }
+         DispatcherCommand::AddConsumerKeyShared(c, _filters) => {
+             // KeyShared consumers should not reach exclusive dispatcher;
+             // treat as regular consumer as fallback.
+             trace!(consumer_id = %c.consumer_id, "ignoring key filters in exclusive dispatcher");
+             state.add_consumer(c);
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
+         }
+         DispatcherCommand::RemoveConsumer(id) => {
+             state.remove_consumer(id);
+         }
+         DispatcherCommand::DisconnectAllConsumers => {
++            // Log in-flight window gap for observability.
++            // On topic seal/move, in-flight messages that haven't been acked yet
++            // will NOT be reflected in safe_cursor. The new broker will re-dispatch
++            // them from safe_cursor, which is correct for at-least-once semantics.
++            //
++            // TODO: In the future, consider adding a short drain timeout (e.g. 2s)
++            // to wait for pending acks before flushing. This would reduce unnecessary
++            // redeliveries when the consumer is healthy but slow to ack.
++            if !window.is_empty() {
++                warn!(
++                    in_flight = %window.in_flight_count(),
++                    safe_cursor = ?window.safe_cursor(),
++                    "disconnecting with {} in-flight messages — new broker will re-dispatch from safe_cursor",
++                    window.in_flight_count()
++                );
++            }
+             if let Err(e) = engine.flush_progress_now().await {
+                 warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
+             }
+             state.disconnect_all();
+         }
+         DispatcherCommand::MessageAcked(ack_msg) => {
+-            handle_ack(engine, ack_msg, pending_delivery).await;
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++            handle_ack(engine, ack_msg, window).await;
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+         DispatcherCommand::MessageNacked(nack_msg) => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_nack(engine, &metric_context, nack_msg, pending_delivery);
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
+-        }
+-        DispatcherCommand::RetryNow(reason) => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_retry_now(engine, &metric_context, reason, pending_delivery);
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++            let metric_context = subscription_metric_context(engine, None);
++            handle_nack(engine, &metric_context, nack_msg, window);
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+-        DispatcherCommand::AckTimedOut => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_ack_timed_out(engine, &metric_context, pending_delivery);
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++        DispatcherCommand::RetryNow { reason, .. } => {
++            // Exclusive: always force_retry_all (only one consumer)
++            handle_retry_now(engine, reason, window);
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+         DispatcherCommand::PollAndDispatch => {
+-            // Increment notifier poll counter (fast path)
+             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
+-
+-            handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++            // Only poll if there's actually unread data in the WAL.
++            // poll_next() blocks on stream.next() when caught up, which would
++            // stall the entire dispatcher loop (heartbeat + command processing).
++            let lag = engine.get_lag_info();
++            if lag.has_lag {
++                handle_poll_and_dispatch(state, engine, replicator, window).await;
++            }
+         }
+         DispatcherCommand::FlushProgressNow => {
+             if let Err(e) = engine.flush_progress_now().await {
+@@ -257,29 +267,24 @@ async fn handle_command(
+ 
+ /// Handle a consumer NACK: apply failure policy to decide retry vs exhaust.
+ ///
+-/// If the nacked offset matches the pending message, the engine's failure policy
++/// If the nacked offset matches an in-flight entry, the engine's failure policy
+ /// determines the outcome: schedule a retry (with backoff) or mark retry-exhausted.
+-/// Late NACKs (not matching pending) are ignored.
++/// Late NACKs (not matching any in-flight entry) are ignored.
+ fn handle_nack(
+     engine: &SubscriptionEngine,
+     metric_context: &SubscriptionMetricContext,
+     nack_msg: NackMessage,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     let nacked_offset = nack_msg.msg_id.topic_offset;
+ 
+-    let matches_pending = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.matches_offset(nacked_offset))
+-        .unwrap_or(false);
+-
+-    if matches_pending {
++    if let Some(pending) = window.get_mut(nacked_offset) {
+         trace!(
+             request_id = %nack_msg.request_id,
+             offset = %nacked_offset,
+             delay_ms = ?nack_msg.delay_ms,
+             reason = ?nack_msg.reason,
+-            "nack received for pending message, preserving buffer for retry"
++            "nack received for in-flight message"
+         );
+         counter!(
+             SUBSCRIPTION_NACK_TOTAL.name,
+@@ -287,128 +292,168 @@ fn handle_nack(
+             "subscription" => metric_context.subscription.clone(),
+         )
+         .increment(1);
+-        if let Some(pending) = pending_delivery.as_mut() {
+-            engine.on_nacked(pending, nack_msg.reason, nack_msg.delay_ms);
+-        }
+-        if pending_delivery
+-            .as_ref()
+-            .map(|pending| pending.is_retry_exhausted())
+-            .unwrap_or(false)
+-        {
++        engine.on_nacked(pending, nack_msg.reason, nack_msg.delay_ms);
++        if pending.is_retry_exhausted() {
+             record_retry_exhausted_metric(metric_context, engine.failure_policy());
+         }
+-        update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
++        update_window_metrics(metric_context, engine.failure_policy(), window);
+     } else {
+         trace!(
+             request_id = %nack_msg.request_id,
+             offset = %nacked_offset,
+-            "ignoring late nack (not the pending message)"
++            "ignoring late nack (not in-flight)"
+         );
+     }
+ }
+ 
+-/// Force an immediate retry of the pending message (e.g., after consumer reconnect).
++/// Force an immediate retry of all retryable entries (e.g., after consumer reconnect).
+ ///
+-/// Clears any backoff delay so the message is eligible for dispatch on the next tick.
++/// Clears any backoff delay so messages are eligible for dispatch on the next tick.
+ /// Does NOT revive messages that have already reached RetryExhausted status.
+ fn handle_retry_now(
+-    engine: &SubscriptionEngine,
+-    metric_context: &SubscriptionMetricContext,
++    _engine: &SubscriptionEngine,
+     reason: Option<String>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+-    if let Some(pending) = pending_delivery.as_mut() {
+-        pending.schedule_retry_now(reason);
+-    }
+-    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
++    window.force_retry_all(reason);
+ }
+ 
+-/// Handle ack deadline expiry: apply failure policy to decide retry vs exhaust.
+-///
+-/// Called by the heartbeat watchdog when `pending.ack_timed_out(now)` is true.
+-/// The engine applies the same retry/exhaust logic as NACK via `on_ack_timed_out`.
+-fn handle_ack_timed_out(
++/// Check all in-flight entries for ack timeouts and apply failure policy.
++fn handle_ack_timeouts(
+     engine: &SubscriptionEngine,
+     metric_context: &SubscriptionMetricContext,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+-    let mut retry_exhausted = false;
+-    let mut exhausted_offset = None;
+-    let mut exhausted_attempt = None;
++    let now = Instant::now();
++    let timed_out_offsets = window.collect_ack_timed_out(now);
+ 
+-    if let Some(pending) = pending_delivery.as_mut() {
+-        if pending.is_awaiting_ack() {
+-            trace!(
+-                offset = %pending.message.msg_id.topic_offset,
+-                delivery_attempt = %pending.delivery_attempt,
+-                "ack timeout detected for pending message"
+-            );
+-            counter!(
+-                SUBSCRIPTION_ACK_TIMEOUT_TOTAL.name,
+-                "topic" => metric_context.topic.clone(),
+-                "subscription" => metric_context.subscription.clone(),
+-            )
+-            .increment(1);
+-            engine.on_ack_timed_out(pending);
+-            if pending.is_retry_exhausted() {
+-                retry_exhausted = true;
+-                exhausted_offset = Some(pending.message.msg_id.topic_offset);
+-                exhausted_attempt = Some(pending.delivery_attempt);
++    for offset in timed_out_offsets {
++        if let Some(pending) = window.get_mut(offset) {
++            if pending.is_awaiting_ack() {
++                trace!(
++                    offset = %offset,
++                    delivery_attempt = %pending.delivery_attempt,
++                    "ack timeout detected for in-flight message"
++                );
++                counter!(
++                    SUBSCRIPTION_ACK_TIMEOUT_TOTAL.name,
++                    "topic" => metric_context.topic.clone(),
++                    "subscription" => metric_context.subscription.clone(),
++                )
++                .increment(1);
++                engine.on_ack_timed_out(pending);
++                if pending.is_retry_exhausted() {
++                    record_retry_exhausted_metric(metric_context, engine.failure_policy());
++                    warn!(
++                        offset = %offset,
++                        delivery_attempt = %pending.delivery_attempt,
++                        max_redelivery_count = %engine.failure_policy().max_redelivery_count,
++                        "retry limit exhausted after ack timeout"
++                    );
++                }
+             }
+         }
+     }
+ 
+-    if retry_exhausted {
+-        record_retry_exhausted_metric(metric_context, engine.failure_policy());
+-        warn!(
+-            offset = %exhausted_offset.unwrap_or_default(),
+-            delivery_attempt = %exhausted_attempt.unwrap_or_default(),
+-            max_redelivery_count = %engine.failure_policy().max_redelivery_count,
+-            "retry limit exhausted after ack timeout; leaving message in terminal state"
+-        );
+-    }
+-
+-    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
++    update_window_metrics(metric_context, engine.failure_policy(), window);
+ }
+ 
+-/// Handle a consumer ACK: advance cursor and free the pending slot.
++/// Handle a consumer ACK: advance cursor and free the window slot.
+ ///
+-/// Only processes the ack if it matches the pending message's offset AND the
+-/// message is currently awaiting ack. Late/duplicate acks are ignored.
+-/// On success, clears the pending slot so the next dispatch can poll a new message.
++/// Only processes the ack if the offset is in-flight and awaiting ack.
++/// Late/duplicate acks are ignored. On success, advances the safe cursor
++/// via engine.advance_cursor_to() if it moved forward.
+ async fn handle_ack(
+     engine: &mut SubscriptionEngine,
+     ack_msg: AckMessage,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     let acked_offset = ack_msg.msg_id.topic_offset;
+ 
+-    let should_clear = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.matches_offset(acked_offset) && pending.is_awaiting_ack())
++    // Check if this offset is in our window and awaiting ack
++    let is_awaiting = window
++        .get_mut(acked_offset)
++        .map(|p| p.is_awaiting_ack())
+         .unwrap_or(false);
+ 
+-    if should_clear {
+-        if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
+-            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
+-            return;
++    if is_awaiting {
++        if let Some(new_cursor) = window.on_ack(acked_offset) {
++            if let Err(e) = engine.advance_cursor_to(new_cursor).await {
++                warn!(offset = %new_cursor, error = %e, "advance_cursor_to failed");
++            }
+         }
+         trace!(
+             request_id = %ack_msg.request_id,
+             offset = %acked_offset,
+-            "ack received for pending message, clearing buffer"
++            "ack received, removed from window"
+         );
+-        *pending_delivery = None;
+     } else {
+         trace!(
+             request_id = %ack_msg.request_id,
+             offset = %acked_offset,
+-            "ignoring late ack (not the pending message)"
++            "ignoring late ack (not in-flight or not awaiting)"
+         );
+     }
+ }
+ 
+-/// Core dispatch logic: poll a message from the stream and send it to the active consumer.
++/// Handle in-flight entries that have exhausted their retry budget.
++///
++/// Uses the low-level `resolve_poisoned_delivery` API (same pattern as Key-Shared).
++/// For each resolved entry, removes from window and advances cursor via on_skipped.
++async fn handle_retry_exhausted_entries(
++    engine: &mut SubscriptionEngine,
++    replicator: Option<&Replicator>,
++    window: &mut DispatchWindow,
++) {
++    let exhausted_offsets = window.collect_retry_exhausted();
++    if exhausted_offsets.is_empty() {
++        return;
++    }
++
++    let failure_policy = engine.failure_policy().clone();
++    let subscription_name = engine._subscription_name.clone();
++
++    for offset in exhausted_offsets {
++        // Peek at the entry to resolve the poison policy
++        let resolution = {
++            let Some(pending) = window.get_mut(offset) else {
++                continue;
++            };
++            match resolve_poisoned_delivery(
++                &failure_policy,
++                &subscription_name,
++                replicator,
++                pending,
++            )
++            .await
++            {
++                Ok(res) => res,
++                Err(e) => {
++                    warn!(offset = %offset, error = %e, "poison resolution failed");
++                    continue;
++                }
++            }
++        };
++
++        match resolution {
++            PoisonResolution::Resolved => {
++                if let Some(safe) = window.on_skipped(offset) {
++                    if let Err(e) = engine.advance_cursor_to(safe).await {
++                        warn!(error = %e, "advance_cursor_to failed on poison resolution");
++                    }
++                }
++            }
++            PoisonResolution::Blocked => {
++                trace!(
++                    offset = %offset,
++                    "retry-exhausted message blocked (poison policy: Block)"
++                );
++            }
++        }
++    }
++}
++
++/// Core dispatch logic: poll messages and send to the active consumer while window has capacity.
+ ///
+ /// This is the main work function, called after every event that might unblock dispatch.
+ /// See the module-level "Message Flow" diagram for the full sequence of gates.
+@@ -416,114 +461,136 @@ async fn handle_poll_and_dispatch(
+     state: &mut ExclusiveConsumerState,
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+-    let failure_policy = engine.failure_policy();
+-    let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
++    let failure_policy = engine.failure_policy().clone();
++    let metric_context = subscription_metric_context(engine, None);
+     if let Some(cons) = state.active_consumer_mut() {
+         if !cons.get_status().await {
+-            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++            update_window_metrics(&metric_context, &failure_policy, window);
+             return;
+         }
+ 
+-        // Get message: buffered (resend) or new from stream
+-        if pending_delivery.is_none() {
+-            let next_message = match engine.poll_next().await {
+-                Ok(msg_opt) => msg_opt,
+-                Err(e) => {
+-                    warn!(error = %e, "poll_next error");
+-                    None
+-                }
+-            };
++        // Phase 1: Handle retry-exhausted entries (poison gate)
++        handle_retry_exhausted_entries(engine, replicator, window).await;
+ 
+-            if let Some(msg) = next_message {
+-                *pending_delivery = Some(PendingDelivery::new(msg));
+-            }
+-        }
++        // Phase 2: Re-check for any still-blocked exhausted entries.
++        // If the poison policy is Block, we must NOT dispatch new messages past
++        // the blocked offset — this preserves ordered delivery and matches the
++        // old single-slot behavior where a blocked Option<PendingDelivery> would
++        // naturally prevent any new dispatch.
++        let has_blocked_entry = window.find_retry_exhausted().is_some()
++            && failure_policy.poison_policy == SubscriptionPoisonPolicy::Block;
+ 
+-        match handle_retry_exhausted_pending(engine, replicator, pending_delivery).await {
+-            Ok(true) => return,
+-            Ok(false) => {}
+-            Err(e) => {
+-                warn!(error = %e, "retry-exhausted terminal handling failed");
+-                return;
++        // Phase 3: Handle entries ready for retry (resend)
++        let now = Instant::now();
++        let retry_offsets = window.collect_retry_ready(now);
++        for offset in retry_offsets {
++            if let Some(pending) = window.get_mut(offset) {
++                let is_redelivery = pending.delivery_attempt > 0;
++                let msg = pending.message.clone();
++
++                if let Err(e) = cons.send_message(msg).await {
++                    warn!(
++                        offset = %offset,
++                        error = %e,
++                        "Failed to resend message. Will retry on next heartbeat."
++                    );
++                    // Leave in window for next retry
++                } else {
++                    if is_redelivery {
++                        counter!(
++                            SUBSCRIPTION_REDELIVERY_TOTAL.name,
++                            "topic" => subscription_metric_topic(engine, Some(pending)),
++                            "subscription" => engine._subscription_name.clone(),
++                        )
++                        .increment(1);
++                    }
++                    pending.on_send_attempt(
++                        cons.consumer_id,
++                        Duration::from_millis(failure_policy.ack_timeout_ms),
++                    );
++                }
+             }
+         }
+ 
+-        let failure_policy = engine.failure_policy();
+-        let is_retry_exhausted = pending_delivery
+-            .as_ref()
+-            .map(|pending| pending.is_retry_exhausted())
+-            .unwrap_or(false);
+-
+-        if is_retry_exhausted {
+-            if let Some(pending) = pending_delivery.as_ref() {
+-                warn!(
+-                    offset = %pending.message.msg_id.topic_offset,
+-                    delivery_attempt = %pending.delivery_attempt,
+-                    max_redelivery_count = %failure_policy.max_redelivery_count,
+-                    "pending message is retry-exhausted; dispatch is paused pending terminal handling"
+-                );
+-            }
++        // Phase 4: Fill window with new messages while capacity available.
++        // Only attempt to poll if there's unread data in the WAL;
++        // poll_next() blocks when caught up, which would stall the event loop.
++        //
++        // Skip entirely when a Block-policy entry is stuck — no new messages
++        // should be dispatched past a blocked poison entry.
++        if has_blocked_entry {
++            trace!("Block-policy guard: skipping Phase 4 (blocked entry in window)");
++            update_window_metrics(&metric_context, &failure_policy, window);
+             return;
+         }
+ 
+-        let now = Instant::now();
+-        let should_send = pending_delivery
+-            .as_ref()
+-            .map(|pending| pending.is_retry_ready(now))
+-            .unwrap_or(false);
+-
+-        if !should_send {
+-            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
+-            return;
+-        }
++        // Phase 4: Fill window with new messages while capacity available.
++        // Only attempt to poll if there's unread data in the WAL;
++        // poll_next() blocks when caught up, which would stall the event loop.
++        //
++        // Uses has_unpolled_messages (comparing window's highest dispatched
++        // offset against WAL head) instead of has_lag (which only tracks
++        // acked offsets) to prevent blocking when all WAL messages are
++        // already in-flight in the window.
++        while window.has_capacity()
++            && engine.has_unpolled_messages(window.highest_dispatched_offset())
++        {
++            let next_message = match engine.poll_next().await {
++                Ok(msg_opt) => msg_opt,
++                Err(e) => {
++                    warn!(error = %e, "poll_next error");
++                    break;
++                }
++            };
+ 
+-        if let Some(pending) = pending_delivery.as_mut() {
+-            let offset = pending.message.msg_id.topic_offset;
+-            let is_redelivery = pending.delivery_attempt > 0;
++            let msg = match next_message {
++                Some(msg) => msg,
++                None => break, // caught up with WAL
++            };
+ 
+-            let msg = pending.message.clone();
++            let offset = msg.msg_id.topic_offset;
++            let mut delivery = PendingDelivery::new(msg.clone());
+ 
+-            if let Err(e) = cons.send_message(msg).await {
+-                warn!(
+-                    offset = %offset,
+-                    error = %e,
+-                    "Failed to send message. Will retry on reconnect."
+-                );
+-                pending.schedule_retry_now(Some(format!("send failed: {e}")));
+-            } else {
+-                if is_redelivery {
+-                    counter!(
+-                        SUBSCRIPTION_REDELIVERY_TOTAL.name,
+-                        "topic" => subscription_metric_topic(engine, Some(pending)),
+-                        "subscription" => engine._subscription_name.clone(),
+-                    )
+-                    .increment(1);
++            match cons.send_message(msg).await {
++                Ok(()) => {
++                    delivery.on_send_attempt(
++                        cons.consumer_id,
++                        Duration::from_millis(failure_policy.ack_timeout_ms),
++                    );
++                    window.mark_dispatched(offset, delivery);
++                }
++                Err(e) => {
++                    warn!(
++                        offset = %offset,
++                        error = %e,
++                        "Failed to send new message. Will retry on reconnect."
++                    );
++                    delivery.schedule_retry_now(Some(format!("send failed: {e}")));
++                    window.mark_dispatched(offset, delivery);
++                    break; // Consumer unhealthy, stop filling
+                 }
+-                pending.on_send_attempt(
+-                    cons.consumer_id,
+-                    Duration::from_millis(failure_policy.ack_timeout_ms),
+-                );
+             }
+         }
+-        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++
++        update_window_metrics(&metric_context, &failure_policy, window);
+     } else {
+-        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++        update_window_metrics(&metric_context, &failure_policy, window);
+     }
+ }
+ 
+ /// Heartbeat watchdog: periodic timer that detects ack timeouts, retry readiness, and lag.
+ ///
+ /// Runs every 500ms. Checks (in priority order):
+-/// 1. Ack timeout → sends `AckTimedOut` command
+-/// 2. Pending message ready to retry → triggers dispatch
+-/// 3. No pending message + WAL has unread data → triggers dispatch (lag catch-up)
++/// 1. Ack timeout → handles all timed-out entries
++/// 2. Entries ready to retry → triggers dispatch
++/// 3. Window has capacity + WAL has unread data → triggers dispatch (lag catch-up)
+ async fn handle_heartbeat(
+     state: &mut ExclusiveConsumerState,
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     if !state.has_active_consumer() {
+         return;
+@@ -534,41 +601,31 @@ async fn handle_heartbeat(
+     // Report lag gauge
+     gauge!(
+         SUBSCRIPTION_LAG_MESSAGES.name,
+-        "topic" => subscription_metric_topic(engine, pending_delivery.as_ref()),
++        "topic" => subscription_metric_topic(engine, None),
+         "subscription" => engine._subscription_name.clone()
+     )
+     .set(lag_info.lag_messages as f64);
+ 
+     let now = Instant::now();
+ 
+-    if pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.ack_timed_out(now))
+-        .unwrap_or(false)
+-    {
++    // Phase 1: Check for ack timeouts across all in-flight entries
++    if window.find_ack_timed_out(now).is_some() {
+         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+-        handle_command(
+-            DispatcherCommand::AckTimedOut,
+-            state,
+-            engine,
+-            replicator,
+-            pending_delivery,
+-        )
+-        .await;
++        let metric_context = subscription_metric_context(engine, None);
++        handle_ack_timeouts(engine, &metric_context, window);
++        handle_poll_and_dispatch(state, engine, replicator, window).await;
+         return;
+     }
+ 
+-    let retry_ready = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.is_retry_ready(now))
+-        .unwrap_or(false);
++    // Phase 2: Check for retry-ready entries or lag
++    let retry_ready = window.has_any_retry_ready(now);
+ 
+-    if retry_ready || (pending_delivery.is_none() && lag_info.has_lag) {
++    if retry_ready || (window.has_capacity() && lag_info.has_lag) {
+         trace!(
+             lag_messages = %lag_info.lag_messages,
+-            "heartbeat detected lag"
++            "heartbeat detected lag or retry-ready entries"
+         );
+         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+-        handle_poll_and_dispatch(state, engine, replicator, pending_delivery).await;
++        handle_poll_and_dispatch(state, engine, replicator, window).await;
+     }
+ }
+diff --git a/danube-broker/src/dispatcher/key_shared/reliable.rs b/danube-broker/src/dispatcher/key_shared/reliable.rs
+index 8f8587b..8ffe334 100644
+--- a/danube-broker/src/dispatcher/key_shared/reliable.rs
++++ b/danube-broker/src/dispatcher/key_shared/reliable.rs
+@@ -166,11 +166,7 @@ async fn handle_command(
+             handle_nack(engine, nack_msg, window);
+             // Retry of nack'd messages handled by heartbeat watchdog
+         }
+-        DispatcherCommand::RetryNow(_reason) => {
+-            dispatch_unblocked(state, engine, window).await;
+-        }
+-        DispatcherCommand::AckTimedOut => {
+-            handle_ack_timeouts(engine, window);
++        DispatcherCommand::RetryNow { .. } => {
+             dispatch_unblocked(state, engine, window).await;
+         }
+         DispatcherCommand::PollAndDispatch => {
+diff --git a/danube-broker/src/dispatcher/metrics.rs b/danube-broker/src/dispatcher/metrics.rs
+index 059f340..ee27065 100644
+--- a/danube-broker/src/dispatcher/metrics.rs
++++ b/danube-broker/src/dispatcher/metrics.rs
+@@ -12,7 +12,7 @@ use crate::broker_metrics::{
+ };
+ use crate::subscription::{SubscriptionFailurePolicy, SubscriptionPoisonPolicy};
+ 
+-use super::pending_delivery::{PendingDelivery, PendingDeliveryStatus};
++use super::pending_delivery::PendingDelivery;
+ use super::subscription_engine::SubscriptionEngine;
+ 
+ pub(super) fn poison_policy_label(poison_policy: &SubscriptionPoisonPolicy) -> &'static str {
+@@ -63,34 +63,33 @@ pub(super) fn record_retry_exhausted_metric(
+     .increment(1);
+ }
+ 
+-pub(super) fn update_pending_delivery_metrics(
++/// Update dispatch metrics for a windowed dispatcher.
++///
++/// Reports the count of entries in WaitingToRetry and RetryExhausted+Block states
++/// across the entire dispatch window.
++pub(super) fn update_window_metrics(
+     metric_context: &SubscriptionMetricContext,
+     failure_policy: &SubscriptionFailurePolicy,
+-    pending_delivery: &Option<PendingDelivery>,
++    window: &super::dispatch_window::DispatchWindow,
+ ) {
+-    let pending_redelivery = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.status == PendingDeliveryStatus::WaitingToRetry)
+-        .unwrap_or(false);
+-    let terminal_blocked = pending_delivery
+-        .as_ref()
+-        .map(|pending| {
+-            pending.is_retry_exhausted()
+-                && failure_policy.poison_policy == SubscriptionPoisonPolicy::Block
+-        })
+-        .unwrap_or(false);
++    let pending_redelivery = window.count_waiting_to_retry();
++    let terminal_blocked = if failure_policy.poison_policy == SubscriptionPoisonPolicy::Block {
++        window.count_retry_exhausted()
++    } else {
++        0
++    };
+ 
+     gauge!(
+         SUBSCRIPTION_PENDING_REDELIVERY.name,
+         "topic" => metric_context.topic.clone(),
+         "subscription" => metric_context.subscription.clone(),
+     )
+-    .set(if pending_redelivery { 1.0 } else { 0.0 });
++    .set(pending_redelivery as f64);
+ 
+     gauge!(
+         SUBSCRIPTION_TERMINAL_BLOCKED.name,
+         "topic" => metric_context.topic.clone(),
+         "subscription" => metric_context.subscription.clone(),
+     )
+-    .set(if terminal_blocked { 1.0 } else { 0.0 });
++    .set(terminal_blocked as f64);
+ }
+diff --git a/danube-broker/src/dispatcher/pending_delivery.rs b/danube-broker/src/dispatcher/pending_delivery.rs
+index b9d6ef7..7a46301 100644
+--- a/danube-broker/src/dispatcher/pending_delivery.rs
++++ b/danube-broker/src/dispatcher/pending_delivery.rs
+@@ -48,10 +48,6 @@ impl PendingDelivery {
+         }
+     }
+ 
+-    pub(super) fn matches_offset(&self, topic_offset: u64) -> bool {
+-        self.message.msg_id.topic_offset == topic_offset
+-    }
+-
+     pub(super) fn is_awaiting_ack(&self) -> bool {
+         self.status == PendingDeliveryStatus::AwaitingAck
+     }
+@@ -60,6 +56,10 @@ impl PendingDelivery {
+         self.status == PendingDeliveryStatus::RetryExhausted
+     }
+ 
++    pub(super) fn is_waiting_to_retry(&self) -> bool {
++        self.status == PendingDeliveryStatus::WaitingToRetry
++    }
++
+     pub(super) fn should_stop_retrying(&self, failure_policy: &SubscriptionFailurePolicy) -> bool {
+         self.delivery_attempt > failure_policy.max_redelivery_count
+     }
+diff --git a/danube-broker/src/dispatcher/poison_handler.rs b/danube-broker/src/dispatcher/poison_handler.rs
+index 6cb3b23..746fd58 100644
+--- a/danube-broker/src/dispatcher/poison_handler.rs
++++ b/danube-broker/src/dispatcher/poison_handler.rs
+@@ -4,15 +4,11 @@
+ //! It coordinates between the engine (cursor advancement) and the replicator
+ //! (DLQ publishing) — the one piece that straddles both concerns.
+ //!
+-//! # API Layers
++//! # API
+ //!
+-//! - **`resolve_poisoned_delivery`** — Low-level: applies poison policy (DLQ publish,
++//! - **`resolve_poisoned_delivery`** — Applies poison policy (DLQ publish,
+ //!   Drop, Block decision) without touching cursor or state management. Used by
+-//!   dispatchers that manage cursors independently (e.g., Key-Shared's InFlightWindow).
+-//!
+-//! - **`handle_retry_exhausted_pending`** — High-level: wraps `resolve_poisoned_delivery`
+-//!   with cursor advancement via `engine.skip_poisoned()` and pending slot cleanup.
+-//!   Used by Shared and Exclusive dispatchers with single-slot `Option<PendingDelivery>`.
++//!   all dispatchers that manage cursors via `DispatchWindow` or `InFlightWindow`.
+ 
+ use anyhow::{anyhow, Result};
+ use danube_core::message::{MessageID, StreamMessage};
+@@ -24,11 +20,8 @@ use crate::broker_metrics::SUBSCRIPTION_DLQ_TOTAL;
+ use crate::replicator::Replicator;
+ use crate::subscription::{SubscriptionFailurePolicy, SubscriptionPoisonPolicy};
+ 
+-use super::metrics::{
+-    poison_policy_label, subscription_metric_context, update_pending_delivery_metrics,
+-};
++use super::metrics::poison_policy_label;
+ use super::pending_delivery::PendingDelivery;
+-use super::subscription_engine::SubscriptionEngine;
+ 
+ /// Result of applying the poison policy to a retry-exhausted message.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -161,44 +154,3 @@ pub(super) async fn resolve_poisoned_delivery(
+         SubscriptionPoisonPolicy::Block => Ok(PoisonResolution::Blocked),
+     }
+ }
+-
+-/// Handle a message that has exhausted its retry budget (Shared/Exclusive API).
+-///
+-/// Wraps `resolve_poisoned_delivery` with cursor advancement via `engine.skip_poisoned()`
+-/// and pending slot cleanup. Used by dispatchers with a single `Option<PendingDelivery>` slot.
+-///
+-/// Returns `Ok(true)` if the message was resolved (DLQ-routed or dropped),
+-/// `Ok(false)` if no action was taken (not exhausted, or blocked).
+-pub(super) async fn handle_retry_exhausted_pending(
+-    engine: &mut SubscriptionEngine,
+-    replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
+-) -> Result<bool> {
+-    let failure_policy = engine.failure_policy().clone();
+-    let subscription_name = engine._subscription_name.clone();
+-    let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-    let Some(pending) = pending_delivery.as_ref() else {
+-        update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
+-        return Ok(false);
+-    };
+-
+-    if !pending.is_retry_exhausted() {
+-        update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
+-        return Ok(false);
+-    }
+-
+-    match resolve_poisoned_delivery(&failure_policy, &subscription_name, replicator, pending).await? {
+-        PoisonResolution::Resolved => {
+-            let original_msg_id = pending.message.msg_id.clone();
+-            engine.skip_poisoned(original_msg_id).await?;
+-            *pending_delivery = None;
+-            let failure_policy = engine.failure_policy();
+-            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
+-            Ok(true)
+-        }
+-        PoisonResolution::Blocked => {
+-            update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
+-            Ok(false)
+-        }
+-    }
+-}
+diff --git a/danube-broker/src/dispatcher/shared/reliable.rs b/danube-broker/src/dispatcher/shared/reliable.rs
+index 92e9fde..19697fc 100644
+--- a/danube-broker/src/dispatcher/shared/reliable.rs
++++ b/danube-broker/src/dispatcher/shared/reliable.rs
+@@ -9,8 +9,8 @@
+ //!
+ //! - **`SubscriptionEngine`** — Owns the stream cursor, failure policy, and message lifecycle
+ //!   decisions (NACK handling, ack timeout, poison skip). See `subscription_engine.rs`.
+-//! - **`PendingDelivery`** — Per-message state machine tracking delivery attempt count,
+-//!   ack deadline, retry timing, and terminal status. See `pending_delivery.rs`.
++//! - **`DispatchWindow`** — Pipelined in-flight message window with contiguous cursor tracking.
++//!   Replaces the old single-slot `Option<PendingDelivery>`. See `dispatch_window.rs`.
+ //! - **`SharedConsumerState`** — Manages consumer list with atomic round-robin index.
+ //! - **`poison_handler`** — Handles retry-exhausted messages (DLQ routing, Drop, Block).
+ //!
+@@ -19,9 +19,8 @@
+ //! The dispatch loop maintains two mutable variables:
+ //!
+ //! - `state: SharedConsumerState` — Consumer list + atomic round-robin counter
+-//! - `pending_delivery: Option<PendingDelivery>` — The single in-flight message slot.
+-//!   `Some(...)` means a message is being tracked (may be awaiting ack, waiting to retry,
+-//!   or retry-exhausted). `None` means the slot is free and a new message can be polled.
++//! - `window: DispatchWindow` — Pipelined in-flight message window. Tracks multiple messages
++//!   simultaneously, handles out-of-order ACKs, and advances a safe cursor for persistence.
+ //!
+ //! # Message Flow (`handle_poll_and_dispatch`)
+ //!
+@@ -30,23 +29,20 @@
+ //! │ 1. Any consumers connected?                                    │
+ //! │    └─ No → return (wait for consumers)                         │
+ //! │                                                                │
+-//! │ 2. Pending slot empty? → Poll next message from engine         │
+-//! │    └─ Got message → wrap in PendingDelivery, put in slot       │
++//! │ 2. Handle any retry-exhausted entries (poison gate per entry)  │
++//! │    ├─ DeadLetter: publish to DLQ via replicator, skip          │
++//! │    ├─ Drop: skip message, advance cursor                       │
++//! │    └─ Block: halt dispatch for that entry                      │
+ //! │                                                                │
+-//! │ 3. Poison gate: is pending message retry-exhausted?            │
+-//! │    └─ Yes → handle_retry_exhausted_pending (see poison_handler)│
+-//! │       ├─ DeadLetter: publish to DLQ via replicator, skip       │
+-//! │       ├─ Drop: skip message, advance cursor                    │
+-//! │       └─ Block: halt dispatch until operator intervenes        │
++//! │ 3. Handle any entries ready for retry (resend via round-robin) │
+ //! │                                                                │
+-//! │ 4. Retry timing: is pending ready to send?                     │
+-//! │    └─ No → return (backoff delay not elapsed)                  │
++//! │ 4. While window.has_capacity():                                │
++//! │    a. Poll next message from engine                            │
++//! │    b. If None → break (no more messages)                       │
++//! │    c. Send message via round-robin consumer selection           │
++//! │    d. Mark dispatched in window                                │
+ //! │                                                                │
+-//! │ 5. Send message via round-robin consumer selection:            │
+-//! │    ├─ Try next consumer (atomic rr_index), check health        │
+-//! │    ├─ Unhealthy / send failed → try next consumer (up to N)    │
+-//! │    ├─ Success → mark AwaitingAck, start ack deadline timer     │
+-//! │    └─ All failed → schedule_retry_now for next heartbeat tick  │
++//! │ 5. Persist safe_cursor to SubscriptionEngine                   │
+ //! └─────────────────────────────────────────────────────────────────┘
+ //! ```
+ //!
+@@ -54,18 +50,12 @@
+ //!
+ //! All events flow through `handle_command`, which dispatches to:
+ //!
+-//! - **`MessageAcked`** → `handle_ack`: If ack matches pending and it is awaiting ack,
+-//!   advance cursor (`on_acked`) and clear the slot. Then attempt next dispatch.
++//! - **`MessageAcked`** → `handle_ack`: window.on_ack(offset) → if safe_cursor advanced
++//!   → engine.advance_cursor_to(). Then try to fill the window.
+ //!
+-//! - **`MessageNacked`** → `handle_nack`: Engine applies failure policy via `on_nacked` —
+-//!   schedule retry with backoff, or mark retry-exhausted. Then triggers dispatch
+-//!   (which will hit the poison gate if exhausted).
++//! - **`MessageNacked`** → `handle_nack`: window.get_mut(offset) → engine.on_nacked(entry).
+ //!
+-//! - **`AckTimedOut`** → `handle_ack_timed_out`: Engine applies failure policy via
+-//!   `on_ack_timed_out` — same retry/exhaust logic as NACK. Detected by heartbeat.
+-//!
+-//! - **`RetryNow`** → `handle_retry_now`: Force immediate retry. Clears backoff delay
+-//!   but does not revive retry-exhausted messages.
++//! - **`RetryNow`** → Force immediate retry of retry-eligible entries.
+ //!
+ //! - **`PollAndDispatch`** → Direct dispatch attempt (triggered by topic publish).
+ //!
+@@ -79,21 +69,22 @@
+ //! A 500ms interval background timer that:
+ //!
+ //! 1. Reports subscription lag gauge metrics
+-//! 2. Detects ack timeouts (sends `AckTimedOut` command)
+-//! 3. Detects pending messages ready to retry (backoff elapsed)
+-//! 4. Detects new messages in WAL when no message is pending (lag catch-up)
++//! 2. Detects ack timeouts on all in-flight entries
++//! 3. Detects entries ready to retry (backoff elapsed)
++//! 4. Fills window when capacity available and WAL has lag
+ //!
+ //! # Consumer Failover
+ //!
+-//! When a consumer disconnects while a message is in-flight:
++//! When a consumer disconnects while messages are in-flight:
+ //!
+ //! 1. `RemoveConsumer` removes it from the consumer list
+-//! 2. The pending message stays in its slot (preserving delivery state)
++//! 2. In-flight messages stay in the window (preserving delivery state)
+ //! 3. On next dispatch attempt, round-robin selects a different healthy consumer
+ //!
+ //! # Persistence
+ //!
+ //! Subscription progress (last acked offset) is persisted via `SubscriptionEngine`:
++//! - Uses `advance_cursor_to(safe_cursor)` — only advances past contiguously acked offsets
+ //! - Debounced flush every 5s (configurable) — all consumers share the same cursor
+ //! - Force-flushed on `DisconnectAllConsumers` and `FlushProgressNow`
+ //! - Allows broker restart without message loss
+@@ -112,14 +103,16 @@ use crate::broker_metrics::{
+ };
+ use crate::message::{AckMessage, NackMessage};
+ use crate::replicator::Replicator;
++use crate::subscription::SubscriptionPoisonPolicy;
+ 
+ use super::super::commands::DispatcherCommand;
++use super::super::dispatch_window::DispatchWindow;
+ use super::super::metrics::{
+     record_retry_exhausted_metric, subscription_metric_context, subscription_metric_topic,
+-    update_pending_delivery_metrics, SubscriptionMetricContext,
++    update_window_metrics, SubscriptionMetricContext,
+ };
+ use super::super::pending_delivery::PendingDelivery;
+-use super::super::poison_handler::handle_retry_exhausted_pending;
++use super::super::poison_handler::{resolve_poisoned_delivery, PoisonResolution};
+ use super::super::shared::SharedConsumerState;
+ use super::super::subscription_engine::SubscriptionEngine;
+ 
+@@ -144,7 +137,8 @@ async fn run_reliable_loop(
+     let rr_index = Arc::new(AtomicUsize::new(0));
+     let rr_task = rr_index.clone();
+     let mut state = SharedConsumerState::new(rr_task);
+-    let mut pending_delivery: Option<PendingDelivery> = None;
++    let max_unacked = engine.failure_policy().max_unacked_messages;
++    let mut window = DispatchWindow::new(max_unacked);
+ 
+     // Initialize stream
+     {
+@@ -170,7 +164,7 @@ async fn run_reliable_loop(
+                             &mut state,
+                             &mut engine,
+                             replicator.as_deref(),
+-                            &mut pending_delivery,
++                            &mut window,
+                         ).await;
+                     }
+                     None => break,
+@@ -182,7 +176,7 @@ async fn run_reliable_loop(
+                     &mut state,
+                     &mut engine,
+                     replicator.as_deref(),
+-                    &mut pending_delivery,
++                    &mut window,
+                 ).await;
+             }
+         }
+@@ -194,87 +188,70 @@ async fn handle_command(
+     state: &mut SharedConsumerState,
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     match cmd {
+         DispatcherCommand::AddConsumer(c) => {
+             trace!(consumer_id = %c.consumer_id, "consumer added");
+             state.add_consumer(c);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
++            // NOTE: Do NOT call handle_poll_and_dispatch here.
++            // poll_next() blocks on the WAL stream when no messages exist,
++            // which prevents subsequent AddConsumer commands from being processed.
++            // Dispatch will be triggered by PollAndDispatch when messages arrive.
+         }
+         DispatcherCommand::AddConsumerKeyShared(c, _filters) => {
+             // KeyShared consumers should not reach shared dispatcher;
+             // treat as regular consumer as fallback.
+             trace!(consumer_id = %c.consumer_id, "ignoring key filters in shared dispatcher");
+             state.add_consumer(c);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
+         }
+         DispatcherCommand::RemoveConsumer(id) => {
+             state.remove_consumer(id);
+         }
+         DispatcherCommand::DisconnectAllConsumers => {
++            // Log in-flight window gap for observability.
++            // On topic seal/move, in-flight messages that haven't been acked yet
++            // will NOT be reflected in safe_cursor. The new broker will re-dispatch
++            // them from safe_cursor, which is correct for at-least-once semantics.
++            //
++            // TODO: In the future, consider adding a short drain timeout (e.g. 2s)
++            // to wait for pending acks before flushing. This would reduce unnecessary
++            // redeliveries when the consumer is healthy but slow to ack.
++            if !window.is_empty() {
++                warn!(
++                    in_flight = %window.in_flight_count(),
++                    safe_cursor = ?window.safe_cursor(),
++                    "disconnecting with {} in-flight messages — new broker will re-dispatch from safe_cursor",
++                    window.in_flight_count()
++                );
++            }
+             if let Err(e) = engine.flush_progress_now().await {
+                 warn!(error = %e, "DisconnectAllConsumers: flush failed");
+             }
+             state.disconnect_all();
+         }
+         DispatcherCommand::MessageAcked(ack_msg) => {
+-            handle_ack(engine, ack_msg, pending_delivery).await;
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
++            handle_ack(engine, ack_msg, window).await;
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+         DispatcherCommand::MessageNacked(nack_msg) => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_nack(engine, &metric_context, nack_msg, pending_delivery);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
++            let metric_context = subscription_metric_context(engine, None);
++            handle_nack(engine, &metric_context, nack_msg, window);
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+-        DispatcherCommand::RetryNow(reason) => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_retry_now(engine, &metric_context, reason, pending_delivery);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
+-        }
+-        DispatcherCommand::AckTimedOut => {
+-            let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-            handle_ack_timed_out(engine, &metric_context, pending_delivery);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
++        DispatcherCommand::RetryNow { reason, consumer_id } => {
++            handle_retry_now(engine, reason, consumer_id, window);
++            handle_poll_and_dispatch(state, engine, replicator, window).await;
+         }
+         DispatcherCommand::PollAndDispatch => {
+             counter!(DISPATCHER_NOTIFIER_POLLS_TOTAL.name).increment(1);
+-            handle_poll_and_dispatch(
+-                state,
+-                engine,
+-                replicator,
+-                pending_delivery,
+-            ).await;
++            // Only poll if there's actually unread data in the WAL.
++            // poll_next() blocks on stream.next() when caught up, which would
++            // stall the entire dispatcher loop (heartbeat + command processing).
++            let lag = engine.get_lag_info();
++            if lag.has_lag {
++                handle_poll_and_dispatch(state, engine, replicator, window).await;
++            }
+         }
+         DispatcherCommand::FlushProgressNow => {
+             if let Err(e) = engine.flush_progress_now().await {
+@@ -285,30 +262,21 @@ async fn handle_command(
+ }
+ 
+ /// Handle a consumer NACK: apply failure policy to decide retry vs exhaust.
+-///
+-/// If the nacked offset matches the pending message, the engine's failure policy
+-/// determines the outcome: schedule a retry (with backoff) or mark retry-exhausted.
+-/// Late NACKs (not matching pending) are ignored.
+ fn handle_nack(
+     engine: &SubscriptionEngine,
+     metric_context: &SubscriptionMetricContext,
+     nack_msg: NackMessage,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     let nacked_offset = nack_msg.msg_id.topic_offset;
+ 
+-    let matches_pending = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.matches_offset(nacked_offset))
+-        .unwrap_or(false);
+-
+-    if matches_pending {
++    if let Some(pending) = window.get_mut(nacked_offset) {
+         trace!(
+             request_id = %nack_msg.request_id,
+             offset = %nacked_offset,
+             delay_ms = ?nack_msg.delay_ms,
+             reason = ?nack_msg.reason,
+-            "nack received for pending message, preserving buffer for retry"
++            "nack received for in-flight message"
+         );
+         counter!(
+             SUBSCRIPTION_NACK_TOTAL.name,
+@@ -316,205 +284,265 @@ fn handle_nack(
+             "subscription" => metric_context.subscription.clone(),
+         )
+         .increment(1);
+-        if let Some(pending) = pending_delivery.as_mut() {
+-            engine.on_nacked(pending, nack_msg.reason, nack_msg.delay_ms);
+-        }
+-        if pending_delivery
+-            .as_ref()
+-            .map(|pending| pending.is_retry_exhausted())
+-            .unwrap_or(false)
+-        {
++        engine.on_nacked(pending, nack_msg.reason, nack_msg.delay_ms);
++        if pending.is_retry_exhausted() {
+             record_retry_exhausted_metric(metric_context, engine.failure_policy());
+         }
+-        update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
++        update_window_metrics(metric_context, engine.failure_policy(), window);
+     } else {
+         trace!(
+             request_id = %nack_msg.request_id,
+             offset = %nacked_offset,
+-            "ignoring late nack (not the pending message)"
++            "ignoring late nack (not in-flight)"
+         );
+     }
+ }
+ 
+-/// Force an immediate retry of the pending message (e.g., after consumer reconnect).
++/// Force an immediate retry of retryable entries.
+ ///
+-/// Clears any backoff delay so the message is eligible for dispatch on the next tick.
+-/// Does NOT revive messages that have already reached RetryExhausted status.
++/// When `consumer_id` is provided, only entries assigned to that consumer are
++/// retried (shared-subscription failover). When `None`, all entries are retried.
+ fn handle_retry_now(
+-    engine: &SubscriptionEngine,
+-    metric_context: &SubscriptionMetricContext,
++    _engine: &SubscriptionEngine,
+     reason: Option<String>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    consumer_id: Option<u64>,
++    window: &mut DispatchWindow,
+ ) {
+-    if let Some(pending) = pending_delivery.as_mut() {
+-        pending.schedule_retry_now(reason);
++    match consumer_id {
++        Some(cid) => window.force_retry_for_consumer(cid, reason),
++        None => window.force_retry_all(reason),
+     }
+-    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
+ }
+ 
+-/// Handle ack deadline expiry: apply failure policy to decide retry vs exhaust.
+-///
+-/// Called by the heartbeat watchdog when `pending.ack_timed_out(now)` is true.
+-/// The engine applies the same retry/exhaust logic as NACK via `on_ack_timed_out`.
+-fn handle_ack_timed_out(
++/// Check all in-flight entries for ack timeouts and apply failure policy.
++fn handle_ack_timeouts(
+     engine: &SubscriptionEngine,
+     metric_context: &SubscriptionMetricContext,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+-    let mut retry_exhausted = false;
+-    let mut exhausted_offset = None;
+-    let mut exhausted_attempt = None;
+-
+-    if let Some(pending) = pending_delivery.as_mut() {
+-        if pending.is_awaiting_ack() {
+-            trace!(
+-                offset = %pending.message.msg_id.topic_offset,
+-                delivery_attempt = %pending.delivery_attempt,
+-                "ack timeout detected for pending message"
+-            );
+-            counter!(
+-                SUBSCRIPTION_ACK_TIMEOUT_TOTAL.name,
+-                "topic" => metric_context.topic.clone(),
+-                "subscription" => metric_context.subscription.clone(),
+-            )
+-            .increment(1);
+-            engine.on_ack_timed_out(pending);
+-            if pending.is_retry_exhausted() {
+-                retry_exhausted = true;
+-                exhausted_offset = Some(pending.message.msg_id.topic_offset);
+-                exhausted_attempt = Some(pending.delivery_attempt);
++    let now = Instant::now();
++    let timed_out_offsets = window.collect_ack_timed_out(now);
++
++    for offset in timed_out_offsets {
++        if let Some(pending) = window.get_mut(offset) {
++            if pending.is_awaiting_ack() {
++                trace!(
++                    offset = %offset,
++                    delivery_attempt = %pending.delivery_attempt,
++                    "ack timeout detected for in-flight message"
++                );
++                counter!(
++                    SUBSCRIPTION_ACK_TIMEOUT_TOTAL.name,
++                    "topic" => metric_context.topic.clone(),
++                    "subscription" => metric_context.subscription.clone(),
++                )
++                .increment(1);
++                engine.on_ack_timed_out(pending);
++                if pending.is_retry_exhausted() {
++                    record_retry_exhausted_metric(metric_context, engine.failure_policy());
++                    warn!(
++                        offset = %offset,
++                        delivery_attempt = %pending.delivery_attempt,
++                        max_redelivery_count = %engine.failure_policy().max_redelivery_count,
++                        "retry limit exhausted after ack timeout"
++                    );
++                }
+             }
+         }
+     }
+ 
+-    if retry_exhausted {
+-        record_retry_exhausted_metric(metric_context, engine.failure_policy());
+-        warn!(
+-            offset = %exhausted_offset.unwrap_or_default(),
+-            delivery_attempt = %exhausted_attempt.unwrap_or_default(),
+-            max_redelivery_count = %engine.failure_policy().max_redelivery_count,
+-            "retry limit exhausted after ack timeout; leaving message in terminal state"
+-        );
+-    }
+-
+-    update_pending_delivery_metrics(metric_context, engine.failure_policy(), pending_delivery);
++    update_window_metrics(metric_context, engine.failure_policy(), window);
+ }
+ 
+-/// Handle a consumer ACK: advance cursor and free the pending slot.
+-///
+-/// Only processes the ack if it matches the pending message's offset AND the
+-/// message is currently awaiting ack. Late/duplicate acks are ignored.
+-/// On success, clears the pending slot so the next dispatch can poll a new message.
++/// Handle a consumer ACK: advance cursor and free the window slot.
+ async fn handle_ack(
+     engine: &mut SubscriptionEngine,
+     ack_msg: AckMessage,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     let acked_offset = ack_msg.msg_id.topic_offset;
+ 
+-    let should_clear = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.matches_offset(acked_offset) && pending.is_awaiting_ack())
++    let is_awaiting = window
++        .get_mut(acked_offset)
++        .map(|p| p.is_awaiting_ack())
+         .unwrap_or(false);
+ 
+-    if should_clear {
+-        if let Err(e) = engine.on_acked(ack_msg.msg_id.clone()).await {
+-            warn!(offset = %acked_offset, error = %e, "Ack handling failed");
+-            return;
++    if is_awaiting {
++        if let Some(new_cursor) = window.on_ack(acked_offset) {
++            if let Err(e) = engine.advance_cursor_to(new_cursor).await {
++                warn!(offset = %new_cursor, error = %e, "advance_cursor_to failed");
++            }
+         }
+-        trace!(offset = %acked_offset, "ack received, clearing buffer");
+-        *pending_delivery = None;
++        trace!(offset = %acked_offset, "ack received, removed from window");
+     } else {
+         trace!(offset = %acked_offset, "ignoring late ack");
+     }
+ }
+ 
+-/// Core dispatch logic: poll a message and send it to a consumer via round-robin.
+-///
+-/// This is the main work function, called after every event that might unblock dispatch.
+-/// See the module-level "Message Flow" diagram for the full sequence of gates.
+-/// The key difference from exclusive: step 5 tries all consumers in round-robin
+-/// order before giving up (whereas exclusive sends to a single active consumer).
+-async fn handle_poll_and_dispatch(
+-    state: &mut SharedConsumerState,
++/// Handle in-flight entries that have exhausted their retry budget.
++async fn handle_retry_exhausted_entries(
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+-    let failure_policy = engine.failure_policy();
+-    let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
+-    if state.is_empty() {
+-        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++    let exhausted_offsets = window.collect_retry_exhausted();
++    if exhausted_offsets.is_empty() {
+         return;
+     }
+ 
+-    // Get message
+-    if pending_delivery.is_none() {
+-        let next_message = match engine.poll_next().await {
+-            Ok(msg_opt) => msg_opt,
+-            Err(e) => {
+-                warn!(error = %e, "poll_next error");
+-                None
++    let failure_policy = engine.failure_policy().clone();
++    let subscription_name = engine._subscription_name.clone();
++
++    for offset in exhausted_offsets {
++        let resolution = {
++            let Some(pending) = window.get_mut(offset) else {
++                continue;
++            };
++            match resolve_poisoned_delivery(
++                &failure_policy,
++                &subscription_name,
++                replicator,
++                pending,
++            )
++            .await
++            {
++                Ok(res) => res,
++                Err(e) => {
++                    warn!(offset = %offset, error = %e, "poison resolution failed");
++                    continue;
++                }
+             }
+         };
+ 
+-        if let Some(msg) = next_message {
+-            *pending_delivery = Some(PendingDelivery::new(msg));
++        match resolution {
++            PoisonResolution::Resolved => {
++                if let Some(safe) = window.on_skipped(offset) {
++                    if let Err(e) = engine.advance_cursor_to(safe).await {
++                        warn!(error = %e, "advance_cursor_to failed on poison resolution");
++                    }
++                }
++            }
++            PoisonResolution::Blocked => {
++                trace!(
++                    offset = %offset,
++                    "retry-exhausted message blocked (poison policy: Block)"
++                );
++            }
+         }
+     }
++}
+ 
+-    match handle_retry_exhausted_pending(
+-        engine,
+-        replicator,
+-        pending_delivery,
+-    )
+-    .await
+-    {
+-        Ok(true) => return,
+-        Ok(false) => {}
+-        Err(e) => {
+-            warn!(error = %e, "retry-exhausted terminal handling failed");
+-            return;
+-        }
++/// Core dispatch logic: poll messages and send to consumers via round-robin while window has capacity.
++async fn handle_poll_and_dispatch(
++    state: &mut SharedConsumerState,
++    engine: &mut SubscriptionEngine,
++    replicator: Option<&Replicator>,
++    window: &mut DispatchWindow,
++) {
++    let failure_policy = engine.failure_policy().clone();
++    let metric_context = subscription_metric_context(engine, None);
++    if state.is_empty() {
++        update_window_metrics(&metric_context, &failure_policy, window);
++        return;
+     }
+ 
+-    let failure_policy = engine.failure_policy();
+-    let is_retry_exhausted = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.is_retry_exhausted())
+-        .unwrap_or(false);
++    // Phase 1: Handle retry-exhausted entries
++    handle_retry_exhausted_entries(engine, replicator, window).await;
+ 
+-    if is_retry_exhausted {
+-        if let Some(pending) = pending_delivery.as_ref() {
+-            warn!(
+-                offset = %pending.message.msg_id.topic_offset,
+-                delivery_attempt = %pending.delivery_attempt,
+-                max_redelivery_count = %failure_policy.max_redelivery_count,
+-                "pending message is retry-exhausted; dispatch is paused pending terminal handling"
+-            );
++    // Phase 2: Handle entries ready for retry (resend via round-robin)
++    let now = Instant::now();
++    let retry_offsets = window.collect_retry_ready(now);
++    for offset in retry_offsets {
++        if let Some(pending) = window.get_mut(offset) {
++            let is_redelivery = pending.delivery_attempt > 0;
++            let msg = pending.message.clone();
++            let num_consumers = state.len();
++
++            let mut sent = false;
++            let mut attempts = 0;
++            while attempts < num_consumers {
++                let idx = state.rr_index.fetch_add(1, Ordering::Relaxed) % num_consumers;
++                if let Some(target) = state.get_consumer_mut(idx) {
++                    if !target.get_status().await {
++                        attempts += 1;
++                        continue;
++                    }
++                    match target.send_message(msg.clone()).await {
++                        Ok(()) => {
++                            if is_redelivery {
++                                counter!(
++                                    SUBSCRIPTION_REDELIVERY_TOTAL.name,
++                                    "topic" => subscription_metric_topic(engine, Some(pending)),
++                                    "subscription" => engine._subscription_name.clone(),
++                                )
++                                .increment(1);
++                            }
++                            pending.on_send_attempt(
++                                target.consumer_id,
++                                Duration::from_millis(failure_policy.ack_timeout_ms),
++                            );
++                            sent = true;
++                            break;
++                        }
++                        Err(e) => {
++                            warn!(
++                                offset = %offset,
++                                consumer_id = %target.consumer_id,
++                                error = %e,
++                                "Failed to resend message"
++                            );
++                            attempts += 1;
++                        }
++                    }
++                } else {
++                    attempts += 1;
++                }
++            }
++
++            if !sent {
++                if let Some(pending) = window.get_mut(offset) {
++                    pending.schedule_retry_now(Some("no active shared consumer available".to_string()));
++                }
++            }
+         }
+-        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
+-        return;
+     }
+ 
+-    let now = Instant::now();
+-    let should_send = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.is_retry_ready(now))
+-        .unwrap_or(false);
+-
+-    if !should_send {
+-        update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++    // Phase 2b: Block-policy guard — if any entry is stuck in Block state,
++    // do NOT dispatch new messages past the blocked offset.
++    let has_blocked_entry = window.find_retry_exhausted().is_some()
++        && failure_policy.poison_policy == SubscriptionPoisonPolicy::Block;
++
++    // Phase 3: Fill window with new messages while capacity available.
++    // Only attempt to poll if there's unread data in the WAL;
++    // poll_next() blocks when caught up, which would stall the event loop.
++    //
++    // Skip entirely when a Block-policy entry is stuck.
++    if has_blocked_entry {
++        update_window_metrics(&metric_context, &failure_policy, window);
+         return;
+     }
++    while window.has_capacity()
++        && engine.has_unpolled_messages(window.highest_dispatched_offset())
++    {
++        let next_message = match engine.poll_next().await {
++            Ok(msg_opt) => msg_opt,
++            Err(e) => {
++                warn!(error = %e, "poll_next error");
++                break;
++            }
++        };
+ 
+-    if let Some(pending) = pending_delivery.as_mut() {
+-        let mut attempts = 0;
+-        let offset = pending.message.msg_id.topic_offset;
+-        let is_redelivery = pending.delivery_attempt > 0;
++        let msg = match next_message {
++            Some(msg) => msg,
++            None => break, // caught up with WAL
++        };
+ 
++        let offset = msg.msg_id.topic_offset;
+         let num_consumers = state.len();
+ 
++        let mut sent = false;
++        let mut attempts = 0;
++        let mut target_consumer_id = 0u64;
+         while attempts < num_consumers {
+             let idx = state.rr_index.fetch_add(1, Ordering::Relaxed) % num_consumers;
+             if let Some(target) = state.get_consumer_mut(idx) {
+@@ -522,55 +550,50 @@ async fn handle_poll_and_dispatch(
+                     attempts += 1;
+                     continue;
+                 }
+-
+-                let msg = pending.message.clone();
+-
+-                if let Err(e) = target.send_message(msg).await {
+-                    warn!(
+-                        offset = %offset,
+-                        consumer_id = %target.consumer_id,
+-                        error = %e,
+-                        "Failed to send message to consumer"
+-                    );
+-                    attempts += 1;
+-                    continue;
+-                } else {
+-                    if is_redelivery {
+-                        counter!(
+-                            SUBSCRIPTION_REDELIVERY_TOTAL.name,
+-                            "topic" => subscription_metric_topic(engine, Some(pending)),
+-                            "subscription" => engine._subscription_name.clone(),
+-                        )
+-                        .increment(1);
++                match target.send_message(msg.clone()).await {
++                    Ok(()) => {
++                        target_consumer_id = target.consumer_id;
++                        sent = true;
++                        break;
++                    }
++                    Err(e) => {
++                        warn!(
++                            offset = %offset,
++                            consumer_id = %target.consumer_id,
++                            error = %e,
++                            "Failed to send message to consumer"
++                        );
++                        attempts += 1;
+                     }
+-                    pending.on_send_attempt(
+-                        target.consumer_id,
+-                        Duration::from_millis(failure_policy.ack_timeout_ms),
+-                    );
+-                    break;
+                 }
++            } else {
++                attempts += 1;
+             }
+-            attempts += 1;
+         }
+ 
+-        if !pending.is_awaiting_ack() {
+-            pending.schedule_retry_now(Some("no active shared consumer available".to_string()));
++        let mut delivery = PendingDelivery::new(msg);
++        if sent {
++            delivery.on_send_attempt(
++                target_consumer_id,
++                Duration::from_millis(failure_policy.ack_timeout_ms),
++            );
++            window.mark_dispatched(offset, delivery);
++        } else {
++            delivery.schedule_retry_now(Some("no active shared consumer available".to_string()));
++            window.mark_dispatched(offset, delivery);
++            break; // All consumers unhealthy, stop filling
+         }
+     }
+-    update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
++
++    update_window_metrics(&metric_context, &failure_policy, window);
+ }
+ 
+ /// Heartbeat watchdog: periodic timer that detects ack timeouts, retry readiness, and lag.
+-///
+-/// Runs every 500ms. Checks (in priority order):
+-/// 1. Ack timeout → sends `AckTimedOut` command
+-/// 2. Pending message ready to retry → triggers dispatch
+-/// 3. No pending message + WAL has unread data → triggers dispatch (lag catch-up)
+ async fn handle_heartbeat(
+     state: &mut SharedConsumerState,
+     engine: &mut SubscriptionEngine,
+     replicator: Option<&Replicator>,
+-    pending_delivery: &mut Option<PendingDelivery>,
++    window: &mut DispatchWindow,
+ ) {
+     if state.is_empty() {
+         return;
+@@ -580,43 +603,28 @@ async fn handle_heartbeat(
+ 
+     gauge!(
+         SUBSCRIPTION_LAG_MESSAGES.name,
+-        "topic" => subscription_metric_topic(engine, pending_delivery.as_ref()),
++        "topic" => subscription_metric_topic(engine, None),
+         "subscription" => engine._subscription_name.clone()
+     )
+     .set(lag_info.lag_messages as f64);
+ 
+     let now = Instant::now();
+ 
+-    if pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.ack_timed_out(now))
+-        .unwrap_or(false)
+-    {
++    // Phase 1: Check for ack timeouts
++    if window.find_ack_timed_out(now).is_some() {
+         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+-        handle_command(
+-            DispatcherCommand::AckTimedOut,
+-            state,
+-            engine,
+-            replicator,
+-            pending_delivery,
+-        )
+-        .await;
++        let metric_context = subscription_metric_context(engine, None);
++        handle_ack_timeouts(engine, &metric_context, window);
++        handle_poll_and_dispatch(state, engine, replicator, window).await;
+         return;
+     }
+ 
+-    let retry_ready = pending_delivery
+-        .as_ref()
+-        .map(|pending| pending.is_retry_ready(now))
+-        .unwrap_or(false);
++    // Phase 2: Check for retry-ready entries or lag
++    let retry_ready = window.has_any_retry_ready(now);
+ 
+-    if retry_ready || (pending_delivery.is_none() && lag_info.has_lag) {
+-        trace!(lag_messages = %lag_info.lag_messages, "heartbeat detected lag");
++    if retry_ready || (window.has_capacity() && lag_info.has_lag) {
++        trace!(lag_messages = %lag_info.lag_messages, "heartbeat detected lag or retry-ready");
+         counter!(DISPATCHER_HEARTBEAT_POLLS_TOTAL.name).increment(1);
+-        handle_poll_and_dispatch(
+-            state,
+-            engine,
+-            replicator,
+-            pending_delivery,
+-        ).await;
++        handle_poll_and_dispatch(state, engine, replicator, window).await;
+     }
+ }
+diff --git a/danube-broker/src/dispatcher/subscription_engine.rs b/danube-broker/src/dispatcher/subscription_engine.rs
+index 2b9707e..a7eff6d 100644
+--- a/danube-broker/src/dispatcher/subscription_engine.rs
++++ b/danube-broker/src/dispatcher/subscription_engine.rs
+@@ -324,6 +324,7 @@ impl SubscriptionEngine {
+     /// # Returns
+     ///
+     /// Always returns `Ok(())`. Flush failures are logged but don't error (best-effort).
++    #[allow(dead_code)] // Used by unit tests; production uses advance_cursor_to()
+     pub(crate) async fn on_acked(&mut self, msg_id: MessageID) -> Result<()> {
+         // Track last acked offset
+         self.last_acked = Some(msg_id.topic_offset);
+@@ -486,6 +487,37 @@ impl SubscriptionEngine {
+         }
+     }
+ 
++    /// Check if there are WAL messages that haven't been polled yet.
++    ///
++    /// Unlike `has_lag()`, this accounts for messages that have been polled into
++    /// the dispatch window but not yet acked. Use this in Phase 4 fill loops to
++    /// avoid blocking on `poll_next()` when all available messages are already
++    /// in-flight.
++    ///
++    /// `window_highest` is the highest offset currently dispatched in the window
++    /// (from `DispatchWindow::highest_dispatched_offset()`). If `None`, falls
++    /// back to `has_lag()`.
++    pub(crate) fn has_unpolled_messages(&self, window_highest: Option<u64>) -> bool {
++        let wal_head = self.topic_store.current_offset();
++        if wal_head == 0 {
++            return false;
++        }
++
++        // Use the window's highest offset as the "consumed" cursor, since
++        // polled-but-not-acked messages are already in the window.
++        let consumed = match (window_highest, self.last_acked) {
++            (Some(wh), Some(la)) => wh.max(la),
++            (Some(wh), None) => wh,
++            (None, Some(la)) => la,
++            (None, None) => {
++                // Nothing polled yet, nothing acked — use has_lag fallback
++                return self.stream.is_some() && wal_head > 0;
++            }
++        };
++
++        consumed < wal_head.saturating_sub(1)
++    }
++
+     /// Get detailed lag information for monitoring and metrics.
+     ///
+     /// Returns a `LagInfo` struct containing:
+@@ -564,6 +596,7 @@ impl SubscriptionEngine {
+     /// Advances the cursor past this message without a real consumer ack.
+     /// Semantically distinct from `on_acked` — this is a forced skip, not
+     /// a successful delivery confirmation.
++    #[allow(dead_code)] // Used by handle_retry_exhausted_pending (removed); kept for API symmetry
+     pub(crate) async fn skip_poisoned(&mut self, msg_id: MessageID) -> Result<()> {
+         self.on_acked(msg_id).await
+     }
+diff --git a/danube-broker/src/subscription.rs b/danube-broker/src/subscription.rs
+index 542f085..8ec60dd 100644
+--- a/danube-broker/src/subscription.rs
++++ b/danube-broker/src/subscription.rs
+@@ -48,6 +48,10 @@ pub(crate) struct SubscriptionFailurePolicy {
+     pub(crate) backoff_strategy: SubscriptionBackoffStrategy,
+     pub(crate) dead_letter_topic: Option<String>,
+     pub(crate) poison_policy: SubscriptionPoisonPolicy,
++    /// Maximum number of unacked messages in the dispatch window.
++    /// Controls pipelining depth: higher values increase throughput at the cost of memory.
++    /// Setting to 1 reproduces the old single-slot behavior.
++    pub(crate) max_unacked_messages: usize,
+ }
+ 
+ impl Default for SubscriptionFailurePolicy {
+@@ -60,6 +64,7 @@ impl Default for SubscriptionFailurePolicy {
+             backoff_strategy: SubscriptionBackoffStrategy::Exponential,
+             dead_letter_topic: None,
+             poison_policy: SubscriptionPoisonPolicy::Block,
++            max_unacked_messages: 10,
+         }
+     }
+ }
+diff --git a/danube-broker/src/topic_control.rs b/danube-broker/src/topic_control.rs
+index a6cd8d5..ef35c8f 100644
+--- a/danube-broker/src/topic_control.rs
++++ b/danube-broker/src/topic_control.rs
+@@ -608,7 +608,7 @@ impl TopicManager {
+                 };
+ 
+                 if let Some(dispatcher) = dispatcher {
+-                    if let Err(e) = dispatcher.reset_pending().await {
++                    if let Err(e) = dispatcher.reset_pending(consumer_id).await {
+                         tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
+                     }
+                     if let Err(e) = dispatcher.wake_dispatch().await {
+diff --git a/danube-broker/tests/reliable_dispatch_reconnection.rs b/danube-broker/tests/reliable_dispatch_reconnection.rs
+index 4c9b6fb..85a1013 100644
+--- a/danube-broker/tests/reliable_dispatch_reconnection.rs
++++ b/danube-broker/tests/reliable_dispatch_reconnection.rs
+@@ -230,6 +230,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
+ 
+     if receiver == "c1" {
+         // c1 got the message, DON'T ack it and disconnect c1 (graceful close)
++        drop(s1);
+         c1.close().await;
+         println!(
+             "c1 received '{}' but didn't ack, now disconnected",
+@@ -239,23 +240,23 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
+         // Give broker time to detect disconnect and trigger failover
+         sleep(Duration::from_millis(300)).await;
+ 
+-        // c2 should receive the same message (failover)
+-        let failover_msg = timeout(Duration::from_secs(5), s2.recv())
+-            .await?
+-            .expect("Expected failover message for c2");
+-        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
+-
+-        assert_eq!(
+-            failover_payload, pending_payload,
+-            "CRITICAL: c2 should receive the same message '{}' that c1 didn't ack. \
+-             This validates automatic failover with pending_message buffer.",
+-            pending_payload
+-        );
+-
+-        c2.ack(&failover_msg).await?;
+-        received_by_c2.push(failover_payload);
++        // c2 should eventually receive the failover message.
++        // With windowed dispatch, c2 may already have other messages buffered
++        // in its channel, so the failover message may not be the first one received.
++        // Drain all messages and verify the unacked message is among them.
++        loop {
++            match timeout(Duration::from_secs(5), s2.recv()).await {
++                Ok(Some(msg)) => {
++                    let payload = String::from_utf8(msg.payload.to_vec())?;
++                    received_by_c2.push(payload);
++                    c2.ack(&msg).await?;
++                }
++                _ => break,
++            }
++        }
+     } else {
+         // c2 got the message, DON'T ack it and disconnect c2 (graceful close)
++        drop(s2);
+         c2.close().await;
+         println!(
+             "c2 received '{}' but didn't ack, now disconnected",
+@@ -265,50 +266,31 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
+         // Give broker time to detect disconnect and trigger failover to c1
+         sleep(Duration::from_millis(300)).await;
+ 
+-        // c1 should receive the same message (failover)
+-        let failover_msg = timeout(Duration::from_secs(5), s1.recv())
+-            .await?
+-            .expect("Expected failover message for c1");
+-        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
+-
+-        assert_eq!(
+-            failover_payload, pending_payload,
+-            "CRITICAL: c1 should receive the same message '{}' that c2 didn't ack. \
+-             This validates automatic failover with pending_message buffer.",
+-            pending_payload
+-        );
+-
+-        c1.ack(&failover_msg).await?;
+-        received_by_c1.push(failover_payload);
+-    }
+-
+-    // Phase 4: Continue receiving remaining messages with the surviving consumer only
+-    if receiver == "c1" {
+-        // c2 remains; keep consuming from s2
+-        loop {
+-            match timeout(Duration::from_secs(2), s2.recv()).await {
+-                Ok(Some(msg)) => {
+-                    let payload = String::from_utf8(msg.payload.to_vec())?;
+-                    received_by_c2.push(payload);
+-                    c2.ack(&msg).await?;
+-                }
+-                _ => break, // Timeout or None
+-            }
+-        }
+-    } else {
+-        // c1 remains; keep consuming from s1
++        // c1 should eventually receive the failover message.
++        // With windowed dispatch, c1 may already have other messages buffered
++        // in its channel, so the failover message may not be the first one received.
++        // Drain all messages and verify the unacked message is among them.
+         loop {
+-            match timeout(Duration::from_secs(2), s1.recv()).await {
++            match timeout(Duration::from_secs(5), s1.recv()).await {
+                 Ok(Some(msg)) => {
+                     let payload = String::from_utf8(msg.payload.to_vec())?;
+                     received_by_c1.push(payload);
+                     c1.ack(&msg).await?;
+                 }
+-                _ => break, // Timeout or None
++                _ => break,
+             }
+         }
+     }
+ 
++    // Phase 4: Verify the failover message was eventually delivered
++    let all_received: Vec<String> = received_by_c1.iter().chain(received_by_c2.iter()).cloned().collect();
++    assert!(
++        all_received.contains(&pending_payload),
++        "CRITICAL: The surviving consumer must eventually receive the unacked message '{}'. \
++         This validates automatic failover with dispatch window. Received: {:?}",
++        pending_payload, all_received
++    );
++
+     // Verify all messages were received across both consumers
+     let mut all_received = received_by_c1;
+     all_received.extend(received_by_c2);

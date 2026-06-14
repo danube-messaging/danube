@@ -137,7 +137,7 @@ async fn run_reliable_loop(
     ready_tx: watch::Sender<bool>,
 ) {
     let mut state = ExclusiveConsumerState::new();
-    let max_unacked = engine.failure_policy().max_unacked_messages;
+    let max_unacked = engine.max_unacked_messages;
     let mut window = DispatchWindow::new(max_unacked);
 
     // Initialize stream from persisted progress

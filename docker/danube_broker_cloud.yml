@@ -70,6 +70,9 @@ storage:
         interval_ms: 5000
         max_batch_bytes: 10485760
 
+dispatch:
+  max_unacked_messages: 10
+
 policies:
   max_producers_per_topic: 0
   max_subscriptions_per_topic: 0

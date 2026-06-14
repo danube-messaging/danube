@@ -75,6 +75,8 @@ pub(crate) struct Topic {
     pub(crate) publish_rate_limiter: Option<Arc<RateLimiter>>,
     // metrics collector for LoadReport
     metrics_collector: Arc<MetricsCollector>,
+    // cluster-wide default for max_unacked_messages (from dispatch config)
+    default_max_unacked_messages: usize,
 }
 
 impl Topic {
@@ -86,6 +88,7 @@ impl Topic {
         resources_schema: SchemaResources,
         metrics_collector: Arc<MetricsCollector>,
         replicator: Arc<Replicator>,
+        default_max_unacked_messages: usize,
     ) -> Self {
         let topic_store = storage.map(|s| TopicStore::new(topic_name.to_string(), s));
         let dispatch_strategy = match dispatch_strategy {
@@ -106,6 +109,7 @@ impl Topic {
             state: Mutex::new(TopicState::Active),
             publish_rate_limiter: None,
             metrics_collector,
+            default_max_unacked_messages,
         }
     }
 
@@ -434,6 +438,7 @@ impl Topic {
                 options.clone(),
                 &self.topic_name,
                 failure_policy,
+                self.default_max_unacked_messages,
                 sub_metadata,
             );
             // install per-subscription dispatch limiter if configured

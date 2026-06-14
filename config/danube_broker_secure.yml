@@ -81,6 +81,9 @@ storage:
     rotation:
       max_bytes: 536870912
 
+dispatch:
+  max_unacked_messages: 10
+
 policies:
   max_producers_per_topic: 0
   max_subscriptions_per_topic: 0

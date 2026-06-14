@@ -82,6 +82,7 @@ async fn mk_topic(name: &str) -> Topic {
         schema_resources,
         Arc::new(MetricsCollector::new()),
         mk_replicator(),
+        10,
     )
 }
 
@@ -110,6 +111,7 @@ async fn mk_reliable_topic(name: &str) -> Topic {
         schema_resources,
         Arc::new(MetricsCollector::new()),
         mk_replicator(),
+        10,
     )
 }
 
