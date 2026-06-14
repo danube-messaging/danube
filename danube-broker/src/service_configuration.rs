@@ -327,7 +327,10 @@ impl TryFrom<LoadConfiguration> for ServiceConfiguration {
             auth,
             admin_tls,
             load_manager,
-            dispatch_config: dispatch,
+            dispatch_config: {
+                dispatch.validate().context("invalid dispatch configuration")?;
+                dispatch
+            },
             edge_config: None,
         })
     }
