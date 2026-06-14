@@ -4,15 +4,11 @@
 //! It coordinates between the engine (cursor advancement) and the replicator
 //! (DLQ publishing) — the one piece that straddles both concerns.
 //!
-//! # API Layers
+//! # API
 //!
-//! - **`resolve_poisoned_delivery`** — Low-level: applies poison policy (DLQ publish,
+//! - **`resolve_poisoned_delivery`** — Applies poison policy (DLQ publish,
 //!   Drop, Block decision) without touching cursor or state management. Used by
-//!   dispatchers that manage cursors independently (e.g., Key-Shared's InFlightWindow).
-//!
-//! - **`handle_retry_exhausted_pending`** — High-level: wraps `resolve_poisoned_delivery`
-//!   with cursor advancement via `engine.skip_poisoned()` and pending slot cleanup.
-//!   Used by Shared and Exclusive dispatchers with single-slot `Option<PendingDelivery>`.
+//!   all dispatchers that manage cursors via `DispatchWindow` or `InFlightWindow`.
 
 use anyhow::{anyhow, Result};
 use danube_core::message::{MessageID, StreamMessage};
@@ -24,11 +20,8 @@ use crate::broker_metrics::SUBSCRIPTION_DLQ_TOTAL;
 use crate::replicator::Replicator;
 use crate::subscription::{SubscriptionFailurePolicy, SubscriptionPoisonPolicy};
 
-use super::metrics::{
-    poison_policy_label, subscription_metric_context, update_pending_delivery_metrics,
-};
+use super::metrics::poison_policy_label;
 use super::pending_delivery::PendingDelivery;
-use super::subscription_engine::SubscriptionEngine;
 
 /// Result of applying the poison policy to a retry-exhausted message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,46 +152,5 @@ pub(super) async fn resolve_poisoned_delivery(
             Ok(PoisonResolution::Resolved)
         }
         SubscriptionPoisonPolicy::Block => Ok(PoisonResolution::Blocked),
-    }
-}
-
-/// Handle a message that has exhausted its retry budget (Shared/Exclusive API).
-///
-/// Wraps `resolve_poisoned_delivery` with cursor advancement via `engine.skip_poisoned()`
-/// and pending slot cleanup. Used by dispatchers with a single `Option<PendingDelivery>` slot.
-///
-/// Returns `Ok(true)` if the message was resolved (DLQ-routed or dropped),
-/// `Ok(false)` if no action was taken (not exhausted, or blocked).
-pub(super) async fn handle_retry_exhausted_pending(
-    engine: &mut SubscriptionEngine,
-    replicator: Option<&Replicator>,
-    pending_delivery: &mut Option<PendingDelivery>,
-) -> Result<bool> {
-    let failure_policy = engine.failure_policy().clone();
-    let subscription_name = engine._subscription_name.clone();
-    let metric_context = subscription_metric_context(engine, pending_delivery.as_ref());
-    let Some(pending) = pending_delivery.as_ref() else {
-        update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
-        return Ok(false);
-    };
-
-    if !pending.is_retry_exhausted() {
-        update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
-        return Ok(false);
-    }
-
-    match resolve_poisoned_delivery(&failure_policy, &subscription_name, replicator, pending).await? {
-        PoisonResolution::Resolved => {
-            let original_msg_id = pending.message.msg_id.clone();
-            engine.skip_poisoned(original_msg_id).await?;
-            *pending_delivery = None;
-            let failure_policy = engine.failure_policy();
-            update_pending_delivery_metrics(&metric_context, failure_policy, pending_delivery);
-            Ok(true)
-        }
-        PoisonResolution::Blocked => {
-            update_pending_delivery_metrics(&metric_context, &failure_policy, pending_delivery);
-            Ok(false)
-        }
     }
 }

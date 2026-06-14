@@ -74,6 +74,10 @@ storage:
     rotation:
       max_bytes: 536870912
 
+# Dispatch Configuration
+dispatch:
+  max_unacked_messages: 10
+
 # Broker policies
 policies:
   max_producers_per_topic: 0

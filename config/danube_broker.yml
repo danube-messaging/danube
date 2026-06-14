@@ -218,6 +218,15 @@ storage:
   #   # account_name: "<account-name>"
   #   # account_key: "<account-key>"
 
+# Dispatch Configuration
+# Controls how reliable subscriptions deliver messages to consumers.
+dispatch:
+  # Maximum unacknowledged messages per subscription (pipelining depth).
+  # Higher values increase throughput at the cost of memory and redelivery scope.
+  # Per-subscription override available via admin API (set-dispatch-config).
+  # Default: 10. Range: 1–10000.
+  max_unacked_messages: 10
+
 # Broker policies, that can be overwritten by namespace / topic policies
 policies:
   # Limits the maximum number of producers that can simultaneously publish messages to a specific topic.

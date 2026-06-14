@@ -45,8 +45,6 @@ use super::super::subscription_engine::SubscriptionEngine;
 use super::consumer_state::KeySharedConsumerState;
 use super::in_flight_window::InFlightWindow;
 
-/// Default maximum number of in-flight + blocked messages.
-const DEFAULT_MAX_WINDOW_SIZE: usize = 10_000;
 
 /// Number of consecutive inactive heartbeat ticks before auto-evicting a consumer.
 /// At 500ms heartbeat interval, 6 ticks = 3 seconds grace period.
@@ -71,7 +69,7 @@ async fn run_reliable_loop(
     ready_tx: watch::Sender<bool>,
 ) {
     let mut state = KeySharedConsumerState::new();
-    let mut window = InFlightWindow::new(DEFAULT_MAX_WINDOW_SIZE);
+    let mut window = InFlightWindow::new(engine.max_unacked_messages);
     // Per-consumer consecutive inactive heartbeat tick counter.
     let mut inactive_ticks: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
 
@@ -166,11 +164,7 @@ async fn handle_command(
             handle_nack(engine, nack_msg, window);
             // Retry of nack'd messages handled by heartbeat watchdog
         }
-        DispatcherCommand::RetryNow(_reason) => {
-            dispatch_unblocked(state, engine, window).await;
-        }
-        DispatcherCommand::AckTimedOut => {
-            handle_ack_timeouts(engine, window);
+        DispatcherCommand::RetryNow { .. } => {
             dispatch_unblocked(state, engine, window).await;
         }
         DispatcherCommand::PollAndDispatch => {

@@ -6,10 +6,13 @@ use crate::subscription::{
 };
 use danube_core::admin_proto::{
     topic_admin_server::TopicAdmin, BrokerRequest, DescribeTopicRequest, DescribeTopicResponse,
+    GetSubscriptionDispatchConfigRequest, GetSubscriptionDispatchConfigResponse,
     GetSubscriptionFailurePolicyRequest, GetSubscriptionFailurePolicyResponse, NamespaceRequest,
     NewTopicRequest, PartitionedTopicRequest,
+    SetSubscriptionDispatchConfigRequest,
     SetSubscriptionFailurePolicyRequest,
     SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
+    SubscriptionDispatchConfig as AdminSubscriptionDispatchConfig,
     SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy, SubscriptionListResponse,
     SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest,
     SubscriptionResponse, TopicInfo, TopicInfoListResponse, TopicRequest, TopicResponse,
@@ -523,6 +526,85 @@ impl TopicAdmin for DanubeAdminImpl {
                 req.name, e
             ))),
         }
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn set_subscription_dispatch_config(
+        &self,
+        request: Request<SetSubscriptionDispatchConfigRequest>,
+    ) -> std::result::Result<Response<SubscriptionResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
+
+        let dispatch_config = req
+            .dispatch_config
+            .ok_or_else(|| Status::invalid_argument("dispatch_config is required"))?;
+
+        let max_unacked = dispatch_config.max_unacked_messages as usize;
+        if max_unacked < 1 || max_unacked > 10_000 {
+            return Err(Status::invalid_argument(
+                "max_unacked_messages must be between 1 and 10000",
+            ));
+        }
+
+        self.resources
+            .topic
+            .set_subscription_dispatch_config(&req.subscription, &req.topic, max_unacked)
+            .await
+            .map_err(|e| {
+                Status::internal(format!("Failed to set dispatch config: {}", e))
+            })?;
+
+        trace!(
+            topic = %req.topic,
+            subscription = %req.subscription,
+            max_unacked_messages = max_unacked,
+            "set subscription dispatch config"
+        );
+
+        Ok(Response::new(SubscriptionResponse { success: true }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn get_subscription_dispatch_config(
+        &self,
+        request: Request<GetSubscriptionDispatchConfigRequest>,
+    ) -> std::result::Result<Response<GetSubscriptionDispatchConfigResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        ).await?;
+
+        let max_unacked = self
+            .resources
+            .topic
+            .get_subscription_dispatch_config(&req.subscription, &req.topic)
+            .await
+            .map_err(|e| {
+                Status::internal(format!("Failed to get dispatch config: {}", e))
+            })?;
+
+        let dispatch_config = max_unacked.map(|max| {
+            AdminSubscriptionDispatchConfig {
+                max_unacked_messages: max as u32,
+            }
+        });
+
+        Ok(Response::new(GetSubscriptionDispatchConfigResponse {
+            dispatch_config,
+        }))
     }
 }
 

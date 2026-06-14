@@ -124,6 +124,10 @@ pub(crate) struct SubscriptionEngine {
     /// Failure policy governing retry limits, backoff, ack timeouts, and poison handling.
     /// The engine is the single authority that applies this policy to message lifecycle events.
     pub(crate) failure_policy: SubscriptionFailurePolicy,
+
+    /// Maximum unacked messages in the dispatch window (pipelining depth).
+    /// Stored separately from failure_policy; set from Subscription.max_unacked_messages.
+    pub(crate) max_unacked_messages: usize,
 }
 
 impl SubscriptionEngine {
@@ -148,6 +152,7 @@ impl SubscriptionEngine {
             sub_progress_flush_interval: Duration::from_secs(5),
             dispatch_rate_limiter: None,
             failure_policy: SubscriptionFailurePolicy::default(),
+            max_unacked_messages: 10,
         }
     }
 
@@ -184,6 +189,7 @@ impl SubscriptionEngine {
         sub_progress_flush_interval: Duration,
         limiter: Option<std::sync::Arc<RateLimiter>>,
         failure_policy: SubscriptionFailurePolicy,
+        max_unacked_messages: usize,
     ) -> Self {
         let mut s = Self::new(subscription_name, topic_store);
         s.topic_name = Some(topic_name);
@@ -191,6 +197,7 @@ impl SubscriptionEngine {
         s.sub_progress_flush_interval = sub_progress_flush_interval;
         s.dispatch_rate_limiter = limiter;
         s.failure_policy = failure_policy;
+        s.max_unacked_messages = max_unacked_messages;
         s
     }
 
@@ -324,6 +331,7 @@ impl SubscriptionEngine {
     /// # Returns
     ///
     /// Always returns `Ok(())`. Flush failures are logged but don't error (best-effort).
+    #[allow(dead_code)] // Used by unit tests; production uses advance_cursor_to()
     pub(crate) async fn on_acked(&mut self, msg_id: MessageID) -> Result<()> {
         // Track last acked offset
         self.last_acked = Some(msg_id.topic_offset);
@@ -486,6 +494,37 @@ impl SubscriptionEngine {
         }
     }
 
+    /// Check if there are WAL messages that haven't been polled yet.
+    ///
+    /// Unlike `has_lag()`, this accounts for messages that have been polled into
+    /// the dispatch window but not yet acked. Use this in Phase 4 fill loops to
+    /// avoid blocking on `poll_next()` when all available messages are already
+    /// in-flight.
+    ///
+    /// `window_highest` is the highest offset currently dispatched in the window
+    /// (from `DispatchWindow::highest_dispatched_offset()`). If `None`, falls
+    /// back to `has_lag()`.
+    pub(crate) fn has_unpolled_messages(&self, window_highest: Option<u64>) -> bool {
+        let wal_head = self.topic_store.current_offset();
+        if wal_head == 0 {
+            return false;
+        }
+
+        // Use the window's highest offset as the "consumed" cursor, since
+        // polled-but-not-acked messages are already in the window.
+        let consumed = match (window_highest, self.last_acked) {
+            (Some(wh), Some(la)) => wh.max(la),
+            (Some(wh), None) => wh,
+            (None, Some(la)) => la,
+            (None, None) => {
+                // Nothing polled yet, nothing acked — use has_lag fallback
+                return self.stream.is_some() && wal_head > 0;
+            }
+        };
+
+        consumed < wal_head.saturating_sub(1)
+    }
+
     /// Get detailed lag information for monitoring and metrics.
     ///
     /// Returns a `LagInfo` struct containing:
@@ -564,6 +603,7 @@ impl SubscriptionEngine {
     /// Advances the cursor past this message without a real consumer ack.
     /// Semantically distinct from `on_acked` — this is a forced skip, not
     /// a successful delivery confirmation.
+    #[allow(dead_code)] // Used by handle_retry_exhausted_pending (removed); kept for API symmetry
     pub(crate) async fn skip_poisoned(&mut self, msg_id: MessageID) -> Result<()> {
         self.on_acked(msg_id).await
     }
@@ -661,6 +701,7 @@ mod tests {
             Duration::from_millis(50),
             None,
             SubscriptionFailurePolicy::default(),
+            10,
         );
 
         // First ack (should mark dirty but not flush immediately)

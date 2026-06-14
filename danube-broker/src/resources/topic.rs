@@ -346,6 +346,52 @@ impl TopicResources {
         }
     }
 
+    /// Store per-subscription dispatch config override (max_unacked_messages).
+    pub(crate) async fn set_subscription_dispatch_config(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        max_unacked_messages: usize,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "dispatch_config",
+        ]);
+        let data = serde_json::to_value(
+            serde_json::json!({ "max_unacked_messages": max_unacked_messages }),
+        )?;
+        self.store.put(&path, data, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    /// Get per-subscription dispatch config override.
+    pub(crate) async fn get_subscription_dispatch_config(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<usize>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "dispatch_config",
+        ]);
+        match self.store.get(&path, MetaOptions::None).await? {
+            Some(value) => {
+                let max = value
+                    .get("max_unacked_messages")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+                Ok(max)
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Store schema subject reference for a topic
     pub(crate) async fn add_topic_schema_subject(
         &self,

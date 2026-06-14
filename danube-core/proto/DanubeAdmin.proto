@@ -71,6 +71,8 @@ service TopicAdmin {
   rpc SetSubscriptionFailurePolicy(SetSubscriptionFailurePolicyRequest) returns (SubscriptionResponse);
   rpc GetSubscriptionFailurePolicy(GetSubscriptionFailurePolicyRequest) returns (GetSubscriptionFailurePolicyResponse);
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
+  rpc SetSubscriptionDispatchConfig(SetSubscriptionDispatchConfigRequest) returns (SubscriptionResponse);
+  rpc GetSubscriptionDispatchConfig(GetSubscriptionDispatchConfigRequest) returns (GetSubscriptionDispatchConfigResponse);
 }
 
 // ─── Security / Authorization Admin ──────────────────────────────────────────
@@ -241,6 +243,25 @@ message GetSubscriptionFailurePolicyRequest {
 message GetSubscriptionFailurePolicyResponse {
   optional SubscriptionFailurePolicy failure_policy = 1;
   int32 subscription_type = 2;
+}
+
+message SubscriptionDispatchConfig {
+  uint32 max_unacked_messages = 1;
+}
+
+message SetSubscriptionDispatchConfigRequest {
+  string topic = 1;
+  string subscription = 2;
+  SubscriptionDispatchConfig dispatch_config = 3;
+}
+
+message GetSubscriptionDispatchConfigRequest {
+  string topic = 1;
+  string subscription = 2;
+}
+
+message GetSubscriptionDispatchConfigResponse {
+  optional SubscriptionDispatchConfig dispatch_config = 1;
 }
 
 // Response Messages

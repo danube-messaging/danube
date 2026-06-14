@@ -103,6 +103,9 @@ pub(crate) struct Subscription {
     pub(crate) failure_policy: SubscriptionFailurePolicy,
     // When all consumers became inactive (non-reliable only). None = active.
     pub(crate) idle_since: Option<Instant>,
+    /// Maximum number of unacked messages in the dispatch window (pipelining depth).
+    /// Defaults from broker dispatch config; overridable per-subscription via admin API.
+    pub(crate) max_unacked_messages: usize,
 }
 
 // ConsumerInfo removed - Consumer now contains all necessary state via ConsumerSession
@@ -125,6 +128,7 @@ impl Subscription {
         sub_options: SubscriptionOptions,
         topic_name: &str,
         failure_policy: SubscriptionFailurePolicy,
+        max_unacked_messages: usize,
         _meta_properties: HashMap<String, String>,
     ) -> Self {
         Subscription {
@@ -136,6 +140,7 @@ impl Subscription {
             dispatch_rate_limiter: None,
             failure_policy,
             idle_since: None,
+            max_unacked_messages,
         }
     }
     // setter to install a limiter created by Topic based on policies
@@ -241,6 +246,7 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                             self.failure_policy.clone(),
+                            self.max_unacked_messages,
                         );
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
@@ -263,6 +269,7 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                             self.failure_policy.clone(),
+                            self.max_unacked_messages,
                         );
                         let dispatcher = Dispatcher::reliable_shared(
                             engine,
@@ -285,6 +292,7 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                             self.failure_policy.clone(),
+                            self.max_unacked_messages,
                         );
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
@@ -306,6 +314,7 @@ impl Subscription {
                             sub_progress_flush_interval.unwrap_or(Duration::from_secs(5)),
                             self.dispatch_rate_limiter.clone(),
                             self.failure_policy.clone(),
+                            self.max_unacked_messages,
                         );
                         let dispatcher = Dispatcher::reliable_key_shared(
                             engine,
