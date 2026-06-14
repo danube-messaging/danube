@@ -12,7 +12,7 @@ use crate::broker_metrics::{
 };
 use crate::subscription::{SubscriptionFailurePolicy, SubscriptionPoisonPolicy};
 
-use super::pending_delivery::{PendingDelivery, PendingDeliveryStatus};
+use super::pending_delivery::PendingDelivery;
 use super::subscription_engine::SubscriptionEngine;
 
 pub(super) fn poison_policy_label(poison_policy: &SubscriptionPoisonPolicy) -> &'static str {
@@ -63,34 +63,33 @@ pub(super) fn record_retry_exhausted_metric(
     .increment(1);
 }
 
-pub(super) fn update_pending_delivery_metrics(
+/// Update dispatch metrics for a windowed dispatcher.
+///
+/// Reports the count of entries in WaitingToRetry and RetryExhausted+Block states
+/// across the entire dispatch window.
+pub(super) fn update_window_metrics(
     metric_context: &SubscriptionMetricContext,
     failure_policy: &SubscriptionFailurePolicy,
-    pending_delivery: &Option<PendingDelivery>,
+    window: &super::dispatch_window::DispatchWindow,
 ) {
-    let pending_redelivery = pending_delivery
-        .as_ref()
-        .map(|pending| pending.status == PendingDeliveryStatus::WaitingToRetry)
-        .unwrap_or(false);
-    let terminal_blocked = pending_delivery
-        .as_ref()
-        .map(|pending| {
-            pending.is_retry_exhausted()
-                && failure_policy.poison_policy == SubscriptionPoisonPolicy::Block
-        })
-        .unwrap_or(false);
+    let pending_redelivery = window.count_waiting_to_retry();
+    let terminal_blocked = if failure_policy.poison_policy == SubscriptionPoisonPolicy::Block {
+        window.count_retry_exhausted()
+    } else {
+        0
+    };
 
     gauge!(
         SUBSCRIPTION_PENDING_REDELIVERY.name,
         "topic" => metric_context.topic.clone(),
         "subscription" => metric_context.subscription.clone(),
     )
-    .set(if pending_redelivery { 1.0 } else { 0.0 });
+    .set(pending_redelivery as f64);
 
     gauge!(
         SUBSCRIPTION_TERMINAL_BLOCKED.name,
         "topic" => metric_context.topic.clone(),
         "subscription" => metric_context.subscription.clone(),
     )
-    .set(if terminal_blocked { 1.0 } else { 0.0 });
+    .set(terminal_blocked as f64);
 }

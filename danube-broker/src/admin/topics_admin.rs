@@ -555,6 +555,7 @@ fn admin_failure_policy_to_broker(
         backoff_strategy,
         dead_letter_topic: failure_policy.dead_letter_topic,
         poison_policy,
+        max_unacked_messages: BrokerSubscriptionFailurePolicy::default().max_unacked_messages,
     })
 }
 

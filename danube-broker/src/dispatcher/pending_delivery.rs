@@ -48,16 +48,16 @@ impl PendingDelivery {
         }
     }
 
-    pub(super) fn matches_offset(&self, topic_offset: u64) -> bool {
-        self.message.msg_id.topic_offset == topic_offset
-    }
-
     pub(super) fn is_awaiting_ack(&self) -> bool {
         self.status == PendingDeliveryStatus::AwaitingAck
     }
 
     pub(super) fn is_retry_exhausted(&self) -> bool {
         self.status == PendingDeliveryStatus::RetryExhausted
+    }
+
+    pub(super) fn is_waiting_to_retry(&self) -> bool {
+        self.status == PendingDeliveryStatus::WaitingToRetry
     }
 
     pub(super) fn should_stop_retrying(&self, failure_policy: &SubscriptionFailurePolicy) -> bool {

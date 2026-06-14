@@ -48,6 +48,10 @@ pub(crate) struct SubscriptionFailurePolicy {
     pub(crate) backoff_strategy: SubscriptionBackoffStrategy,
     pub(crate) dead_letter_topic: Option<String>,
     pub(crate) poison_policy: SubscriptionPoisonPolicy,
+    /// Maximum number of unacked messages in the dispatch window.
+    /// Controls pipelining depth: higher values increase throughput at the cost of memory.
+    /// Setting to 1 reproduces the old single-slot behavior.
+    pub(crate) max_unacked_messages: usize,
 }
 
 impl Default for SubscriptionFailurePolicy {
@@ -60,6 +64,7 @@ impl Default for SubscriptionFailurePolicy {
             backoff_strategy: SubscriptionBackoffStrategy::Exponential,
             dead_letter_topic: None,
             poison_policy: SubscriptionPoisonPolicy::Block,
+            max_unacked_messages: 10,
         }
     }
 }

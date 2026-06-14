@@ -39,9 +39,15 @@ pub(super) enum DispatcherCommand {
 
     MessageNacked(NackMessage),
 
-    RetryNow(Option<String>),
+    /// Force immediate retry. `consumer_id` scopes retry to entries assigned
+    /// to that consumer (shared dispatcher). Exclusive dispatchers ignore it
+    /// and retry all entries.
+    RetryNow {
+        reason: Option<String>,
+        consumer_id: Option<u64>,
+    },
 
-    AckTimedOut,
+
 
     PollAndDispatch,
 

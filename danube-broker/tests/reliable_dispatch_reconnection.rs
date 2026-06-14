@@ -230,6 +230,7 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
 
     if receiver == "c1" {
         // c1 got the message, DON'T ack it and disconnect c1 (graceful close)
+        drop(s1);
         c1.close().await;
         println!(
             "c1 received '{}' but didn't ack, now disconnected",
@@ -239,23 +240,23 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         // Give broker time to detect disconnect and trigger failover
         sleep(Duration::from_millis(300)).await;
 
-        // c2 should receive the same message (failover)
-        let failover_msg = timeout(Duration::from_secs(5), s2.recv())
-            .await?
-            .expect("Expected failover message for c2");
-        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
-
-        assert_eq!(
-            failover_payload, pending_payload,
-            "CRITICAL: c2 should receive the same message '{}' that c1 didn't ack. \
-             This validates automatic failover with pending_message buffer.",
-            pending_payload
-        );
-
-        c2.ack(&failover_msg).await?;
-        received_by_c2.push(failover_payload);
+        // c2 should eventually receive the failover message.
+        // With windowed dispatch, c2 may already have other messages buffered
+        // in its channel, so the failover message may not be the first one received.
+        // Drain all messages and verify the unacked message is among them.
+        loop {
+            match timeout(Duration::from_secs(5), s2.recv()).await {
+                Ok(Some(msg)) => {
+                    let payload = String::from_utf8(msg.payload.to_vec())?;
+                    received_by_c2.push(payload);
+                    c2.ack(&msg).await?;
+                }
+                _ => break,
+            }
+        }
     } else {
         // c2 got the message, DON'T ack it and disconnect c2 (graceful close)
+        drop(s2);
         c2.close().await;
         println!(
             "c2 received '{}' but didn't ack, now disconnected",
@@ -265,49 +266,30 @@ async fn reliable_shared_reconnection_failover_to_another_consumer() -> Result<(
         // Give broker time to detect disconnect and trigger failover to c1
         sleep(Duration::from_millis(300)).await;
 
-        // c1 should receive the same message (failover)
-        let failover_msg = timeout(Duration::from_secs(5), s1.recv())
-            .await?
-            .expect("Expected failover message for c1");
-        let failover_payload = String::from_utf8(failover_msg.payload.to_vec())?;
-
-        assert_eq!(
-            failover_payload, pending_payload,
-            "CRITICAL: c1 should receive the same message '{}' that c2 didn't ack. \
-             This validates automatic failover with pending_message buffer.",
-            pending_payload
-        );
-
-        c1.ack(&failover_msg).await?;
-        received_by_c1.push(failover_payload);
-    }
-
-    // Phase 4: Continue receiving remaining messages with the surviving consumer only
-    if receiver == "c1" {
-        // c2 remains; keep consuming from s2
+        // c1 should eventually receive the failover message.
+        // With windowed dispatch, c1 may already have other messages buffered
+        // in its channel, so the failover message may not be the first one received.
+        // Drain all messages and verify the unacked message is among them.
         loop {
-            match timeout(Duration::from_secs(2), s2.recv()).await {
-                Ok(Some(msg)) => {
-                    let payload = String::from_utf8(msg.payload.to_vec())?;
-                    received_by_c2.push(payload);
-                    c2.ack(&msg).await?;
-                }
-                _ => break, // Timeout or None
-            }
-        }
-    } else {
-        // c1 remains; keep consuming from s1
-        loop {
-            match timeout(Duration::from_secs(2), s1.recv()).await {
+            match timeout(Duration::from_secs(5), s1.recv()).await {
                 Ok(Some(msg)) => {
                     let payload = String::from_utf8(msg.payload.to_vec())?;
                     received_by_c1.push(payload);
                     c1.ack(&msg).await?;
                 }
-                _ => break, // Timeout or None
+                _ => break,
             }
         }
     }
+
+    // Phase 4: Verify the failover message was eventually delivered
+    let all_received: Vec<String> = received_by_c1.iter().chain(received_by_c2.iter()).cloned().collect();
+    assert!(
+        all_received.contains(&pending_payload),
+        "CRITICAL: The surviving consumer must eventually receive the unacked message '{}'. \
+         This validates automatic failover with dispatch window. Received: {:?}",
+        pending_payload, all_received
+    );
 
     // Verify all messages were received across both consumers
     let mut all_received = received_by_c1;

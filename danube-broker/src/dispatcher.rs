@@ -26,6 +26,7 @@ use crate::{
 // ── Module declarations ─────────────────────────────────────────────────
 
 pub(crate) mod commands;
+pub(crate) mod dispatch_window;
 pub(crate) mod exclusive;
 pub(crate) mod key_shared;
 pub(crate) mod metrics;
@@ -325,10 +326,16 @@ impl Dispatcher {
 
     /// Clear pending ack state so the next message can be dispatched.
     /// Used by: reliable only.
-    pub(crate) async fn reset_pending(&self) -> Result<()> {
+    ///
+    /// `consumer_id` scopes the retry to entries assigned to that consumer
+    /// (relevant for shared subscriptions where other consumers are still healthy).
+    pub(crate) async fn reset_pending(&self, consumer_id: u64) -> Result<()> {
         match &self.handle {
             DispatcherHandle::Reliable { control_tx, .. } => control_tx
-                .send(DispatcherCommand::RetryNow(None))
+                .send(DispatcherCommand::RetryNow {
+                    reason: None,
+                    consumer_id: Some(consumer_id),
+                })
                 .await
                 .map_err(|_| anyhow!("Failed to send reset pending command")),
             _ => Ok(()),

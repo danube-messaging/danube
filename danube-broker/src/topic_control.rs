@@ -608,7 +608,7 @@ impl TopicManager {
                 };
 
                 if let Some(dispatcher) = dispatcher {
-                    if let Err(e) = dispatcher.reset_pending().await {
+                    if let Err(e) = dispatcher.reset_pending(consumer_id).await {
                         tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
                     }
                     if let Err(e) = dispatcher.wake_dispatch().await {

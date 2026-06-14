@@ -166,11 +166,7 @@ async fn handle_command(
             handle_nack(engine, nack_msg, window);
             // Retry of nack'd messages handled by heartbeat watchdog
         }
-        DispatcherCommand::RetryNow(_reason) => {
-            dispatch_unblocked(state, engine, window).await;
-        }
-        DispatcherCommand::AckTimedOut => {
-            handle_ack_timeouts(engine, window);
+        DispatcherCommand::RetryNow { .. } => {
             dispatch_unblocked(state, engine, window).await;
         }
         DispatcherCommand::PollAndDispatch => {
