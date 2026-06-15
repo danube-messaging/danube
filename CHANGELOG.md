@@ -1,3 +1,25 @@
+<!-- 0.15.0 START -->
+## 0.15.0 - 2026-06-15
+
+**Tiered Storage, Pipelined Dispatch & Configurable Flow Control**
+
+This release delivers enterprise-grade durability and significantly higher throughput for reliable subscriptions. Messages are now protected by a three-tier storage architecture (WAL → Valkey → Cloud), dispatchers pipeline multiple messages in-flight instead of one-at-a-time, and operators can tune flow control per subscription via config or admin API.
+
+### 🔒 Tiered Storage & Crash Recovery
+
+* **Valkey write buffer** (#229, #230, #231, #232) — Messages are double-written to Valkey Redis Streams alongside the local WAL. On broker crash, uncommitted messages are automatically replayed from Valkey, achieving RPO ≈ 0 without making brokers stateful. by @danrusei in 366103a, 76de6a3, 5685b09, 9e27ea2
+
+* **Hot/Warm/Cold tiered reads** (#233, #234) — Consumers seamlessly read across tiers: recent data from the WAL (hot), cached data from Valkey (warm), and historical data from cloud storage (cold). Late-joining consumers and post-crash recovery benefit from warm reads without falling back to expensive cloud fetches. by @danrusei in c83c4f4, c13da87
+
+* **Storage trait decoupling** (#228) — Broker internals now program against a `PersistentStorage` trait instead of concrete `WalStorage`, enabling pluggable storage backends. by @danrusei in acc83a3
+
+### ⚡ Pipelined Dispatch
+
+* **Multi-message in-flight window** (#235) — Reliable Exclusive, Shared, and Key-Shared dispatchers now pipeline multiple messages to consumers without waiting for individual acknowledgments. Out-of-order ACKs are tracked safely; the broker advances progress only past contiguously acknowledged offsets, preserving at-least-once delivery guarantees. by @danrusei in 87351ee
+
+* **Configurable `max_unacked_messages`** — Operators control the pipelining depth (default: 10, range: 1–10,000) via the `dispatch:` config section. Per-subscription overrides are available through the admin API (`set-dispatch-config` / `get-dispatch-config`), allowing fine-tuning for different workloads without restarting the broker.
+<!-- 0.15.0 END -->
+
 <!-- v0.14.1 START -->
 ## v0.14.1 - 2026-05-30
 
