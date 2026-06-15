@@ -1,5 +1,5 @@
-<!-- 0.15.0 START -->
-## 0.15.0 - 2026-06-15
+<!-- v0.15.0 START -->
+## v0.15.0 - 2026-06-15
 
 **Tiered Storage, Pipelined Dispatch & Configurable Flow Control**
 
@@ -18,7 +18,7 @@ This release delivers enterprise-grade durability and significantly higher throu
 * **Multi-message in-flight window** (#235) — Reliable Exclusive, Shared, and Key-Shared dispatchers now pipeline multiple messages to consumers without waiting for individual acknowledgments. Out-of-order ACKs are tracked safely; the broker advances progress only past contiguously acknowledged offsets, preserving at-least-once delivery guarantees. by @danrusei in 87351ee
 
 * **Configurable `max_unacked_messages`** — Operators control the pipelining depth (default: 10, range: 1–10,000) via the `dispatch:` config section. Per-subscription overrides are available through the admin API (`set-dispatch-config` / `get-dispatch-config`), allowing fine-tuning for different workloads without restarting the broker.
-<!-- 0.15.0 END -->
+<!-- v0.15.0 END -->
 
 <!-- v0.14.1 START -->
 ## v0.14.1 - 2026-05-30
