@@ -16,8 +16,8 @@ pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore}
 mod wal_storage;
 pub use wal_storage::WalStorage;
 
-mod opendal;
-pub use opendal::{ObjectStoreBackend, OpendalDurableStore};
+mod object_store_backend;
+pub use object_store_backend::{ObjectStoreBackend, ObjStoreDurable};
 
 pub mod valkey;
 
