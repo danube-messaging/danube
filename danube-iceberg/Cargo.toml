@@ -22,10 +22,10 @@ danube-schema = { path = "../danube-schema" }
 arrow-array = "57"
 arrow-schema = "57"
 arrow-cast = "57"
-parquet = { version = "57", default-features = false, features = ["zstd", "async", "object_store"] }
+parquet = { version = "57", default-features = false, features = ["arrow", "zstd", "async", "object_store"] }
 
-# Storage (parquet 57 depends on object_store 0.13.2)
-object_store = { version = "0.13.2", features = ["aws", "gcp", "azure"] }
+# Storage (parquet 57 depends on object_store 0.12.5)
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
 
 # Runtime
 tokio = { workspace = true }
@@ -42,6 +42,12 @@ chrono = { version = "0.4", features = ["clock"] }
 metrics = { workspace = true }
 anyhow = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+crc32fast = "1"
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

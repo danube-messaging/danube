@@ -1,0 +1,35 @@
+# danube-iceberg configuration
+# Exports sealed Danube segments (.dnb1) to Apache Parquet format
+
+broker:
+  address: "localhost:6650"
+
+storage:
+  backend: "s3"
+  root: "s3://danube-data/production"
+  output_prefix: "iceberg"
+  options:
+    region: "us-east-1"
+    # endpoint: "http://localhost:9000"  # Uncomment for MinIO
+    # access_key: "minioadmin"
+    # secret_key: "minioadmin"
+
+topics:
+  - namespace: "default"
+    topic: "sensor-data"
+    table_name: "sensor_data"
+    # Optional per-topic compaction overrides:
+    # compaction:
+    #   target_parquet_size_mb: 100
+    #   max_flush_interval_seconds: 120
+
+  - namespace: "default"
+    topic: "events"
+    table_name: "events"
+
+compaction:
+  target_parquet_size_mb: 200
+  max_flush_interval_seconds: 300
+
+polling:
+  interval_seconds: 30
