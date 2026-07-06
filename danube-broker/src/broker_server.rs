@@ -3,6 +3,7 @@ mod discovery_handler;
 mod health_check_handler;
 mod producer_handler;
 mod schema_registry_handler;
+mod storage_handler;
 
 pub(crate) use schema_registry_handler::SchemaRegistryService;
 
@@ -13,6 +14,7 @@ use danube_core::proto::{
     consumer_service_server::ConsumerServiceServer,
     danube_schema::schema_registry_server::SchemaRegistryServer, discovery_server::DiscoveryServer,
     health_check_server::HealthCheckServer, producer_service_server::ProducerServiceServer,
+    storage_service_server::StorageServiceServer,
 };
 use danube_core::edge_proto::edge_replicator_service_server::EdgeReplicatorServiceServer;
 
@@ -86,7 +88,7 @@ impl DanubeServerImpl {
         let jwt_cache = crate::security::authn::JwtValidationCache::new();
         let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
-        let mut server_builder = server_builder
+        let server_builder = server_builder
             .add_service(InterceptedService::new(
                 producer_service,
                 interceptor.clone(),
@@ -107,6 +109,13 @@ impl DanubeServerImpl {
                 schema_registry_service,
                 interceptor.clone(),
             ));
+
+        // Storage service for external tooling (danube-iceberg)
+        let storage_service = StorageServiceServer::new(self.clone());
+        let mut server_builder = server_builder.add_service(InterceptedService::new(
+            storage_service,
+            interceptor.clone(),
+        ));
 
         // Edge replicator service (only for Cluster/Standalone — edge brokers are the client)
         if let Some(ref edge_svc) = self.edge_service {

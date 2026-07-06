@@ -11,7 +11,7 @@ mod metadata;
 mod durable_history_reader;
 
 mod durable_store;
-pub use durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore};
+pub use durable_store::{segment_object_path, DurableObjectMetadata, DurableRangeReader, DurableStore};
 
 mod wal_storage;
 pub use wal_storage::WalStorage;
@@ -24,7 +24,7 @@ pub mod valkey;
 pub(crate) mod tiered_storage;
 pub use tiered_storage::TieredStorage;
 
-mod frames;
+pub mod frames;
 
 pub use metadata::{SegmentDescriptor, StorageMetadata};
 

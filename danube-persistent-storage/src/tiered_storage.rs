@@ -118,7 +118,7 @@ impl TieredStorage {
     ///
     /// Used during crash recovery and warm-tier reads to reconstruct messages
     /// from Valkey stream entries.
-    pub(crate) fn deserialize_message(bytes: &[u8]) -> Result<StreamMessage, PersistentStorageError> {
+    pub fn deserialize_message(bytes: &[u8]) -> Result<StreamMessage, PersistentStorageError> {
         let config = bincode::config::standard();
         let (msg, _): (StreamMessage, _) =
             bincode::serde::decode_from_slice(bytes, config).map_err(|e| {

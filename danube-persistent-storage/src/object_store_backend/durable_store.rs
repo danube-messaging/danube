@@ -9,6 +9,7 @@ pub struct ObjStoreDurable {
 }
 
 impl ObjStoreDurable {
+    #[cfg(test)]
     pub(crate) fn new(inner: ObjStore) -> Self {
         Self { inner }
     }

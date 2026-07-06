@@ -218,3 +218,32 @@ message HealthCheckResponse {
     }
     ClientStatus status = 1;
 }
+
+// ============================================================================================
+
+// Service for external tooling (e.g., danube-iceberg) to discover durable storage segments.
+service StorageService {
+    // Returns completed/sealed segment descriptors for a given topic.
+    // Used by danube-iceberg to discover new segments for Parquet conversion.
+    rpc ListSegmentDescriptors(ListSegmentDescriptorsRequest) returns (ListSegmentDescriptorsResponse);
+}
+
+message ListSegmentDescriptorsRequest {
+    // Fully qualified topic name (e.g., "default/sensor-data")
+    string topic = 1;
+    // Only return segments with start_offset > this value (for incremental polling)
+    uint64 after_offset = 2;
+}
+
+message ListSegmentDescriptorsResponse {
+    repeated SegmentDescriptorProto segments = 1;
+}
+
+message SegmentDescriptorProto {
+    string segment_id = 1;
+    uint64 start_offset = 2;
+    uint64 end_offset = 3;
+    uint64 size = 4;
+    string etag = 5;
+    uint64 created_at = 6;
+}
