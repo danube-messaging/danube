@@ -1,27 +1,27 @@
 use crate::durable_store::{DurableObjectMetadata, DurableRangeReader, DurableStore};
-use crate::opendal::{BackendConfig, OpendalStore};
+use crate::object_store_backend::{BackendConfig, ObjStore};
 use async_trait::async_trait;
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]
-pub struct OpendalDurableStore {
-    inner: OpendalStore,
+pub struct ObjStoreDurable {
+    inner: ObjStore,
 }
 
-impl OpendalDurableStore {
-    pub fn new(inner: OpendalStore) -> Self {
+impl ObjStoreDurable {
+    pub(crate) fn new(inner: ObjStore) -> Self {
         Self { inner }
     }
 
     pub(crate) fn from_backend(cfg: BackendConfig) -> Result<Self, PersistentStorageError> {
         Ok(Self {
-            inner: OpendalStore::new(cfg)?,
+            inner: ObjStore::new(cfg)?,
         })
     }
 }
 
 #[async_trait]
-impl DurableStore for OpendalDurableStore {
+impl DurableStore for ObjStoreDurable {
     fn provider(&self) -> &str {
         self.inner.provider()
     }
@@ -32,10 +32,7 @@ impl DurableStore for OpendalDurableStore {
         bytes: &[u8],
     ) -> Result<DurableObjectMetadata, PersistentStorageError> {
         let meta = self.inner.put_object_meta(path, bytes).await?;
-        Ok(DurableObjectMetadata::new(
-            meta.content_length(),
-            meta.etag().map(|etag| etag.to_string()),
-        ))
+        Ok(DurableObjectMetadata::new(meta.content_length, meta.etag))
     }
 
     async fn open_segment_reader(

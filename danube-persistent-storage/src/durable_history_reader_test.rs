@@ -6,8 +6,9 @@ mod tests {
     use crate::durable_history_reader::DurableHistoryReader;
     use crate::frames::append_encoded_frame;
     use crate::metadata::{SegmentDescriptor, StorageMetadata};
-    use crate::opendal::{BackendConfig, OpendalStore};
-    use crate::{DurableStore, OpendalDurableStore};
+    use crate::object_store_backend::BackendConfig;
+    use crate::object_store_backend::ObjStore;
+    use crate::{DurableStore, ObjStoreDurable};
     use danube_core::message::{MessageID, StreamMessage};
     use danube_core::metadata::{MemoryStore, MetadataStore};
     use futures::TryStreamExt;
@@ -93,8 +94,8 @@ mod tests {
     async fn test_durable_history_reader_sparse_index_seek() {
         let topic_path = "ns/topic-cloud";
 
-        let durable_store = Arc::new(OpendalDurableStore::new(
-            OpendalStore::new(BackendConfig::Memory {
+        let durable_store = Arc::new(ObjStoreDurable::new(
+            ObjStore::new(BackendConfig::Memory {
                 root: "mem-cloud".to_string(),
             })
             .expect("cloud store mem"),
@@ -147,9 +148,9 @@ mod tests {
     async fn test_durable_history_reader_range_reads_memory() {
         let topic_path = "ns/topic-cloud";
 
-        // OpendalStore memory
-        let durable_store = Arc::new(OpendalDurableStore::new(
-            OpendalStore::new(BackendConfig::Memory {
+        // ObjStore memory
+        let durable_store = Arc::new(ObjStoreDurable::new(
+            ObjStore::new(BackendConfig::Memory {
                 root: "mem-cloud".to_string(),
             })
             .expect("cloud store mem"),

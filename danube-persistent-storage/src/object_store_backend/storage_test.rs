@@ -1,22 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use crate::opendal::OpendalStore;
-    use crate::opendal::BackendConfig;
+    use crate::object_store_backend::config::BackendConfig;
+    use crate::object_store_backend::store::ObjStore;
     use crate::ObjectStoreBackend;
     use danube_core::storage::PersistentStorageError;
     use std::collections::HashMap;
 
-    fn joined_path(store: &OpendalStore, path: &str) -> String {
-        let p = path.trim_matches('/');
-        if store.root_prefix.is_empty() {
-            p.to_string()
-        } else {
-            format!("{}/{}", store.root_prefix.trim_matches('/'), p)
-        }
-    }
-
     async fn put_object(
-        store: &OpendalStore,
+        store: &ObjStore,
         path: &str,
         bytes: &[u8],
     ) -> Result<(), PersistentStorageError> {
@@ -25,16 +16,10 @@ mod tests {
     }
 
     async fn get_object(
-        store: &OpendalStore,
+        store: &ObjStore,
         path: &str,
     ) -> Result<Vec<u8>, PersistentStorageError> {
-        let key = joined_path(store, path);
-        let data = store
-            .op
-            .read(&key)
-            .await
-            .map_err(|e| PersistentStorageError::Other(format!("opendal get_object {}: {}", key, e)))?;
-        Ok(data.to_vec())
+        store.get_object(path).await
     }
 
     /// Test: Memory backend basic put/get operations
@@ -44,7 +29,7 @@ mod tests {
     /// - Ensure data integrity through put/get cycle
     ///
     /// Flow
-    /// - Create OpendalStore with memory backend
+    /// - Create ObjStore with memory backend
     /// - Put test data at specific path
     /// - Get data back and verify it matches
     ///
@@ -54,7 +39,7 @@ mod tests {
     /// - No data corruption during storage/retrieval
     #[tokio::test]
     async fn test_memory_backend_put_get() {
-        let store = OpendalStore::new(BackendConfig::Memory {
+        let store = ObjStore::new(BackendConfig::Memory {
             root: "test-prefix".to_string(),
         })
         .expect("create memory store");
@@ -70,11 +55,11 @@ mod tests {
     /// Test: Memory backend with path prefix handling
     ///
     /// Purpose
-    /// - Validate that OpendalStore correctly handles path prefixes
+    /// - Validate that ObjStore correctly handles path prefixes
     /// - Ensure nested paths work with memory backend
     ///
     /// Flow
-    /// - Create OpendalStore with specific root prefix
+    /// - Create ObjStore with specific root prefix
     /// - Store object at nested path
     /// - Retrieve object and verify data integrity
     ///
@@ -84,7 +69,7 @@ mod tests {
     /// - Data retrieval works with complex paths
     #[tokio::test]
     async fn test_memory_backend_with_prefix() {
-        let store = OpendalStore::new(BackendConfig::Memory {
+        let store = ObjStore::new(BackendConfig::Memory {
             root: "my-prefix".to_string(),
         })
         .expect("create memory store");
@@ -100,12 +85,12 @@ mod tests {
     /// Test: Filesystem backend object storage
     ///
     /// Purpose
-    /// - Validate OpendalStore filesystem backend functionality
+    /// - Validate ObjStore filesystem backend functionality
     /// - Ensure objects are correctly stored to and read from disk
     ///
     /// Flow
     /// - Create temporary directory for testing
-    /// - Create OpendalStore with filesystem backend
+    /// - Create ObjStore with filesystem backend
     /// - Put/get object and verify data integrity
     ///
     /// Expected
@@ -117,7 +102,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let root_path = tmp.path().to_string_lossy().to_string();
 
-        let store = OpendalStore::new(BackendConfig::Filesystem {
+        let store = ObjStore::new(BackendConfig::Filesystem {
             root: root_path,
         })
         .expect("create fs store");
@@ -138,12 +123,12 @@ mod tests {
     ///
     /// Flow
     /// - Create S3 configuration with MinIO-compatible settings
-    /// - Attempt to create OpendalStore with S3 backend
+    /// - Attempt to create ObjStore with S3 backend
     /// - Verify configuration is accepted
     ///
     /// Expected
     /// - S3 backend configuration is parsed correctly
-    /// - OpendalStore creation succeeds with valid config
+    /// - ObjStore creation succeeds with valid config
     /// - No errors during S3 client initialization
     #[tokio::test]
     async fn test_s3_backend_config() {
@@ -153,7 +138,7 @@ mod tests {
         options.insert("access_key".to_string(), "minioadmin".to_string());
         options.insert("secret_key".to_string(), "minioadmin".to_string());
 
-        let result = OpendalStore::new(BackendConfig::ObjectStore {
+        let result = ObjStore::new(BackendConfig::ObjectStore {
             backend: ObjectStoreBackend::S3,
             root: "s3://test-bucket/prefix".to_string(),
             options,
@@ -170,25 +155,25 @@ mod tests {
     ///
     /// Flow
     /// - Create GCS configuration with local endpoint
-    /// - Attempt to create OpendalStore with GCS backend
+    /// - Attempt to create ObjStore with GCS backend
     /// - Verify configuration is accepted
     ///
     /// Expected
     /// - GCS backend configuration is parsed correctly
-    /// - OpendalStore creation succeeds with GCS config
+    /// - ObjStore creation succeeds with GCS config
     /// - Custom endpoints are handled properly
     #[tokio::test]
     async fn test_gcs_backend_config() {
         let mut options = HashMap::new();
         options.insert("endpoint".to_string(), "http://localhost:4443".to_string());
 
-        let result = OpendalStore::new(BackendConfig::ObjectStore {
+        let result = ObjStore::new(BackendConfig::ObjectStore {
             backend: ObjectStoreBackend::Gcs,
             root: "gcs://test-bucket/prefix".to_string(),
             options,
         });
 
-        assert!(result.is_ok());
+        result.expect("GCS backend config should succeed");
     }
 
     /// Test: split_bucket_prefix() table-driven coverage
@@ -221,7 +206,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let res = crate::opendal::storage_config::split_bucket_prefix(input);
+            let res = crate::object_store_backend::config::split_bucket_prefix(input);
             match expected {
                 Some((eb, ep)) => {
                     let (b, p) = res.expect("expected Ok");
@@ -253,7 +238,7 @@ mod tests {
         ];
 
         for (input, expected_root, expected_prefix) in cases {
-            let res = crate::opendal::storage_config::split_fs_root(input).expect("expected Ok");
+            let res = crate::object_store_backend::config::split_fs_root(input).expect("expected Ok");
             assert_eq!(res.0, expected_root);
             assert_eq!(res.1, expected_prefix);
         }
@@ -274,7 +259,7 @@ mod tests {
     /// - Retrieved data matches original
     #[tokio::test]
     async fn test_path_joining() {
-        let store = OpendalStore::new(BackendConfig::Memory {
+        let store = ObjStore::new(BackendConfig::Memory {
             root: "root-prefix".to_string(),
         })
         .expect("create store");
@@ -308,7 +293,7 @@ mod tests {
     /// - Operation returns an error
     #[tokio::test]
     async fn test_nonexistent_object() {
-        let store = OpendalStore::new(BackendConfig::Memory {
+        let store = ObjStore::new(BackendConfig::Memory {
             root: "test".to_string(),
         })
         .expect("create store");

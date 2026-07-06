@@ -26,7 +26,7 @@ bincode = { version = "2.0.1", features = ["serde"] }
 bytes = "1.11"
 chrono = { version = "0.4", features = ["clock"] }
 crc32fast = "1.4"
-opendal = { version = "0.54", features = ["services-azblob", "services-s3", "services-gcs", "services-fs", "services-memory", "layers-tracing"] }
+object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
 async-stream = "0.3"
 redis = { version = "1.2", features = ["tokio-comp", "cluster-async"] }
 

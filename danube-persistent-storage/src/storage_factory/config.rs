@@ -1,4 +1,4 @@
-use crate::opendal::{BackendConfig, ObjectStoreBackend};
+use crate::object_store_backend::{BackendConfig, ObjectStoreBackend};
 use crate::valkey::config::WriteBufferConfig;
 use crate::wal::WalConfig;
 use std::collections::HashMap;

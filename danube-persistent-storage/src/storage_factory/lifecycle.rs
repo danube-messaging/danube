@@ -4,7 +4,7 @@ use crate::tiered_storage::TieredStorage;
 use crate::valkey::stream_reader::ValkeyStreamReader;
 use crate::durable_store::DurableStore;
 use crate::metadata::{StorageMetadata, StorageStateSealed};
-use crate::opendal::OpendalDurableStore;
+use crate::object_store_backend::ObjStoreDurable;
 use crate::valkey::ValkeyClient;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
@@ -47,7 +47,7 @@ impl StorageFactory {
     fn build_durable_store(config: &StorageFactoryConfig) -> Option<Arc<dyn DurableStore>> {
         config
             .durable_backend()
-            .map(OpendalDurableStore::from_backend)
+            .map(ObjStoreDurable::from_backend)
             .transpose()
             .expect("init durable store")
             .map(|store| Arc::new(store) as Arc<dyn DurableStore>)
