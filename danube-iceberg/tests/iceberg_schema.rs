@@ -3,6 +3,9 @@
 //! Tests the Arrow → Iceberg schema conversion using the `iceberg::arrow`
 //! module's built-in `arrow_schema_to_schema_auto_assign_ids` function.
 //!
+//! Also includes envelope schema tests — the universal fallback schema that
+//! every Danube message can be represented as.
+//!
 //! ## Why this matters
 //!
 //! When creating an Iceberg table, we must convert our Arrow schema (used for
@@ -15,10 +18,11 @@
 //!
 //! These tests use the `iceberg::arrow` module directly (same as the production
 //! code in `src/iceberg_schema.rs`), validating that the crate's conversion
-//! produces the expected Iceberg types for Danube's envelope and inferred schemas.
+//! produces the expected Iceberg types for Danube's envelope and registry schemas.
 
 mod common;
 
+use arrow_array::cast::AsArray;
 use arrow_schema::{DataType as ArrowType, Field, Schema as ArrowSchema};
 use iceberg::arrow::arrow_schema_to_schema_auto_assign_ids;
 use iceberg::spec::{
@@ -66,11 +70,11 @@ fn schema_diff(
 }
 
 // ============================================================================
-// Tests
+// Arrow → Iceberg conversion tests
 // ============================================================================
 
 /// Verifies the type mapping from Arrow to Iceberg for the primitive types
-/// used by Danube's envelope and inferred schemas.
+/// used by Danube's envelope and registry schemas.
 ///
 /// The `iceberg::arrow` module handles the actual mapping — we verify
 /// the results match expectations for our specific types.
@@ -216,4 +220,117 @@ fn arrow_to_iceberg_empty_schema() {
         iceberg_schema.as_struct().fields().is_empty(),
         "empty Arrow schema should produce empty Iceberg schema"
     );
+}
+
+// ============================================================================
+// Envelope schema tests (the universal fallback)
+// ============================================================================
+
+/// Helper: create a DecodedMessage for testing.
+struct DecodedMessage {
+    offset: u64,
+    message: danube_core::message::StreamMessage,
+}
+
+fn make_decoded(offset: u64, payload: &[u8]) -> DecodedMessage {
+    use bytes::Bytes;
+    use std::collections::HashMap;
+
+    DecodedMessage {
+        offset,
+        message: danube_core::message::StreamMessage {
+            request_id: 0,
+            msg_id: danube_core::message::MessageID {
+                producer_id: 1,
+                topic_name: "test".to_string(),
+                broker_addr: "localhost".to_string(),
+                topic_offset: offset,
+            },
+            payload: Bytes::from(payload.to_vec()),
+            publish_time: 1000 + offset,
+            producer_name: format!("producer-{}", offset),
+            subscription_name: None,
+            attributes: HashMap::new(),
+            schema_id: None,
+            schema_version: None,
+            routing_key: None,
+        },
+    }
+}
+
+/// Verifies that the envelope schema produces correct RecordBatches.
+///
+/// The envelope is the universal fallback — every Danube message can be
+/// represented as: offset | publish_time | producer_name | routing_key |
+/// schema_id | schema_version | payload | attributes_json
+#[test]
+fn envelope_batch_roundtrip() {
+    use arrow_array::builder::{BinaryBuilder, Int64Builder, StringBuilder};
+    use arrow_array::RecordBatch;
+    use std::sync::Arc;
+
+    let messages: Vec<DecodedMessage> = (0..5).map(|i| {
+        make_decoded(i, format!("payload-{}", i).as_bytes())
+    }).collect();
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("offset", ArrowType::Int64, false),
+        Field::new("publish_time", ArrowType::Int64, false),
+        Field::new("producer_name", ArrowType::Utf8, false),
+        Field::new("payload", ArrowType::Binary, false),
+    ]));
+
+    let mut offsets = Int64Builder::with_capacity(5);
+    let mut publish_times = Int64Builder::with_capacity(5);
+    let mut producers = StringBuilder::with_capacity(5, 5 * 32);
+    let mut payloads = BinaryBuilder::with_capacity(5, 5 * 64);
+
+    for dm in &messages {
+        offsets.append_value(dm.offset as i64);
+        publish_times.append_value(dm.message.publish_time as i64);
+        producers.append_value(&dm.message.producer_name);
+        payloads.append_value(&dm.message.payload);
+    }
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(offsets.finish()),
+            Arc::new(publish_times.finish()),
+            Arc::new(producers.finish()),
+            Arc::new(payloads.finish()),
+        ],
+    ).unwrap();
+
+    assert_eq!(batch.num_rows(), 5);
+    assert_eq!(batch.num_columns(), 4);
+
+    let read_offsets = batch.column(0).as_primitive::<arrow_array::types::Int64Type>();
+    for i in 0..5 {
+        assert_eq!(read_offsets.value(i), i as i64);
+    }
+
+    let read_producers = batch.column(2).as_string::<i32>();
+    assert_eq!(read_producers.value(0), "producer-0");
+}
+
+/// Verifies that the envelope schema has the expected column types.
+#[test]
+fn envelope_schema_structure() {
+    let schema = ArrowSchema::new(vec![
+        Field::new("offset", ArrowType::Int64, false),
+        Field::new("publish_time", ArrowType::Int64, false),
+        Field::new("producer_name", ArrowType::Utf8, false),
+        Field::new("routing_key", ArrowType::Utf8, true),
+        Field::new("schema_id", ArrowType::Int64, true),
+        Field::new("schema_version", ArrowType::Int64, true),
+        Field::new("payload", ArrowType::Binary, false),
+        Field::new("attributes_json", ArrowType::Utf8, true),
+    ]);
+
+    assert_eq!(schema.fields().len(), 8);
+    assert_eq!(*schema.field(0).data_type(), ArrowType::Int64);
+    assert_eq!(*schema.field(6).data_type(), ArrowType::Binary);
+    assert!(schema.field(3).is_nullable());
+    assert!(!schema.field(0).is_nullable());
 }

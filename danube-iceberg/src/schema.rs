@@ -1,35 +1,33 @@
 //! Schema mapping — converts Danube `StreamMessage` values into Arrow `RecordBatch`.
 //!
-//! Supports three modes:
-//! 1. **Envelope** (fallback): Every message becomes a row with fixed columns
-//!    (offset, publish_time, producer_name, routing_key, payload, attributes).
-//! 2. **Inferred JSON**: Attempts to parse payloads as JSON objects, infers a
-//!    columnar schema from the union of all keys across a sample of messages.
-//! 3. **Explicit**: Uses schema information from the schema registry (JsonSchema/Avro)
-//!    to build a typed Arrow schema.
+//! Two modes, matching the WarpStream / AutoMQ pattern:
+//!
+//! 1. **Registry** — The topic has a registered schema (JSON Schema, Avro, etc.)
+//!    in Danube's Schema Registry. Messages carry `schema_id` / `schema_version`
+//!    which the [`SchemaResolver`](crate::schema_resolver) uses to fetch the
+//!    schema definition and convert it to a typed Arrow schema.
+//!
+//! 2. **Envelope** (fallback) — No schema is registered. Every message becomes
+//!    a row with fixed metadata columns + an opaque binary payload. Analytics
+//!    engines can query metadata but need to parse the payload themselves.
 
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
-};
+use arrow_array::builder::{BinaryBuilder, Int64Builder, StringBuilder};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
-use danube_core::message::StreamMessage;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use tracing::debug;
 
 /// The resolved schema mode for a topic.
 #[derive(Debug, Clone)]
 pub enum SchemaMode {
     /// Fixed envelope schema — message metadata + raw payload.
     Envelope,
-    /// Inferred JSON columnar schema — payload fields promoted to Arrow columns.
-    InferredJson {
-        /// Arrow schema with message metadata + inferred payload columns.
+    /// Schema from registry — payload fields promoted to typed Arrow columns.
+    Registry {
+        /// Arrow schema with metadata columns + registry-defined payload columns.
         schema: Arc<Schema>,
-        /// Ordered list of inferred JSON field names (for column construction).
+        /// Ordered field names from the registry schema (payload columns only).
         field_names: Vec<String>,
-        /// Arrow data types for each inferred field.
+        /// Arrow data types for each registry field.
         field_types: Vec<DataType>,
     },
 }
@@ -37,7 +35,7 @@ pub enum SchemaMode {
 /// Build the fixed envelope Arrow schema.
 ///
 /// Every Danube message can be represented as this schema — it's the
-/// universal fallback when JSON inference fails or isn't applicable.
+/// universal fallback when no schema is registered in the registry.
 pub fn envelope_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("offset", DataType::Int64, false),
@@ -49,121 +47,6 @@ pub fn envelope_schema() -> Arc<Schema> {
         Field::new("payload", DataType::Binary, false),
         Field::new("attributes_json", DataType::Utf8, true),
     ]))
-}
-
-/// Try to infer a JSON columnar schema from a sample of messages.
-///
-/// Returns `SchemaMode::InferredJson` if all messages have valid JSON object
-/// payloads, otherwise falls back to `SchemaMode::Envelope`.
-pub fn infer_schema(messages: &[StreamMessage]) -> SchemaMode {
-    if messages.is_empty() {
-        return SchemaMode::Envelope;
-    }
-
-    // Sample up to 100 messages for schema inference
-    let sample_size = messages.len().min(100);
-    let sample = &messages[..sample_size];
-
-    // Try parsing each payload as JSON object
-    let mut all_keys: BTreeMap<String, DataType> = BTreeMap::new();
-    let mut json_count = 0;
-
-    for msg in sample {
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&msg.payload) {
-            if let serde_json::Value::Object(map) = value {
-                json_count += 1;
-                for (key, val) in &map {
-                    let arrow_type = json_value_to_arrow_type(val);
-                    all_keys
-                        .entry(key.clone())
-                        .and_modify(|existing| {
-                            // Widen type if there's a conflict
-                            *existing = widen_types(existing, &arrow_type);
-                        })
-                        .or_insert(arrow_type);
-                }
-            }
-        }
-    }
-
-    // Require at least 80% of sampled messages to be valid JSON objects
-    if json_count < (sample_size * 80 / 100).max(1) {
-        debug!(
-            json_count,
-            sample_size,
-            "JSON inference failed — falling back to envelope schema"
-        );
-        return SchemaMode::Envelope;
-    }
-
-    if all_keys.is_empty() {
-        return SchemaMode::Envelope;
-    }
-
-    // Build the Arrow schema: metadata columns + inferred payload columns
-    let mut fields = vec![
-        Field::new("offset", DataType::Int64, false),
-        Field::new("publish_time", DataType::Int64, false),
-        Field::new("producer_name", DataType::Utf8, false),
-        Field::new("routing_key", DataType::Utf8, true),
-    ];
-
-    let mut field_names = Vec::new();
-    let mut field_types = Vec::new();
-
-    for (name, dtype) in &all_keys {
-        // All inferred fields are nullable (a message may not have every key)
-        fields.push(Field::new(name, dtype.clone(), true));
-        field_names.push(name.clone());
-        field_types.push(dtype.clone());
-    }
-
-    let schema = Arc::new(Schema::new(fields));
-
-    debug!(
-        inferred_columns = field_names.len(),
-        columns = ?field_names,
-        "JSON schema inference successful"
-    );
-
-    SchemaMode::InferredJson {
-        schema,
-        field_names,
-        field_types,
-    }
-}
-
-/// Map a JSON value to an Arrow DataType.
-fn json_value_to_arrow_type(val: &serde_json::Value) -> DataType {
-    match val {
-        serde_json::Value::Bool(_) => DataType::Boolean,
-        serde_json::Value::Number(n) => {
-            if n.is_i64() {
-                DataType::Int64
-            } else {
-                DataType::Float64
-            }
-        }
-        serde_json::Value::String(_) => DataType::Utf8,
-        // Arrays and nested objects → stringify as JSON text
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => DataType::Utf8,
-        serde_json::Value::Null => DataType::Utf8, // Default null to string
-    }
-}
-
-/// Widen two types to a compatible supertype.
-fn widen_types(a: &DataType, b: &DataType) -> DataType {
-    if a == b {
-        return a.clone();
-    }
-    match (a, b) {
-        // Int64 + Float64 → Float64
-        (DataType::Int64, DataType::Float64) | (DataType::Float64, DataType::Int64) => {
-            DataType::Float64
-        }
-        // Any mismatch → fallback to Utf8 (stringify)
-        _ => DataType::Utf8,
-    }
 }
 
 // ============================================================================
@@ -233,11 +116,13 @@ pub fn messages_to_envelope_batch(
     Ok(batch)
 }
 
-/// Convert messages to a RecordBatch using an inferred JSON schema.
+/// Convert messages to a RecordBatch using a registry-defined schema.
 ///
-/// Message metadata (offset, publish_time, etc.) are always included.
-/// JSON payload fields are extracted and placed into typed columns.
-pub fn messages_to_inferred_batch(
+/// Message metadata (offset, publish_time, producer_name, routing_key) are
+/// always included as the first 4 columns. The remaining columns come from
+/// the registry schema — payload is parsed as JSON and fields are extracted
+/// into typed columns.
+pub fn messages_to_registry_batch(
     messages: &[crate::segment_reader::DecodedMessage],
     field_names: &[String],
     field_types: &[DataType],
@@ -251,7 +136,7 @@ pub fn messages_to_inferred_batch(
     let mut producers = StringBuilder::with_capacity(n, n * 32);
     let mut routing_keys = StringBuilder::with_capacity(n, n * 16);
 
-    // Inferred payload columns — one builder per field
+    // Registry-defined payload columns — one builder per field
     let mut col_builders: Vec<ColumnBuilder> = field_types
         .iter()
         .map(|dt| ColumnBuilder::new(dt, n))
@@ -301,22 +186,26 @@ pub fn messages_to_inferred_batch(
 }
 
 // ============================================================================
-// Dynamic column builder (per inferred JSON field)
+// Dynamic column builder (per registry-defined field)
 // ============================================================================
 
 enum ColumnBuilder {
-    Boolean(BooleanBuilder),
+    Boolean(arrow_array::builder::BooleanBuilder),
     Int64(Int64Builder),
-    Float64(Float64Builder),
+    Float64(arrow_array::builder::Float64Builder),
     Utf8(StringBuilder),
 }
 
 impl ColumnBuilder {
     fn new(dt: &DataType, capacity: usize) -> Self {
         match dt {
-            DataType::Boolean => Self::Boolean(BooleanBuilder::with_capacity(capacity)),
+            DataType::Boolean => {
+                Self::Boolean(arrow_array::builder::BooleanBuilder::with_capacity(capacity))
+            }
             DataType::Int64 => Self::Int64(Int64Builder::with_capacity(capacity)),
-            DataType::Float64 => Self::Float64(Float64Builder::with_capacity(capacity)),
+            DataType::Float64 => {
+                Self::Float64(arrow_array::builder::Float64Builder::with_capacity(capacity))
+            }
             _ => Self::Utf8(StringBuilder::with_capacity(capacity, capacity * 32)),
         }
     }
@@ -326,7 +215,7 @@ impl ColumnBuilder {
             Self::Boolean(b) => match value {
                 Some(serde_json::Value::Bool(v)) => b.append_value(*v),
                 Some(serde_json::Value::Null) | None => b.append_null(),
-                _ => b.append_null(), // Type mismatch → null
+                _ => b.append_null(),
             },
             Self::Int64(b) => match value {
                 Some(serde_json::Value::Number(n)) => {

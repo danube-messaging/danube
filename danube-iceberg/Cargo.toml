@@ -13,10 +13,10 @@ name = "danube-iceberg"
 path = "src/main.rs"
 
 [dependencies]
-# Danube crates (frame decoding + proto types + schema mapping)
+# Danube crates (frame decoding + proto types + schema registry client)
 danube-core = { path = "../danube-core" }
+danube-client = { path = "../danube-client" }
 danube-persistent-storage = { path = "../danube-persistent-storage" }
-danube-schema = { path = "../danube-schema" }
 
 # Arrow/Parquet (aligned with iceberg 0.9.1's arrow 57 release train)
 arrow-array = "57"

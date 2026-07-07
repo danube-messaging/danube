@@ -13,6 +13,7 @@ mod checkpoint;
 mod config;
 mod iceberg_schema;
 mod schema;
+mod schema_resolver;
 mod segment_reader;
 mod storage;
 mod table_manager;
@@ -72,6 +73,14 @@ async fn main() -> anyhow::Result<()> {
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Build Danube client for Schema Registry access
+    let danube_client = danube_client::DanubeClient::builder()
+        .service_url(&format!("http://{}", config.broker.address))
+        .build()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to build Danube client: {}", e))?;
+    info!("connected to Danube Schema Registry");
+
     // Spawn one worker per configured topic
     let mut handles = Vec::new();
 
@@ -87,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
             "spawning topic worker"
         );
 
+        // Each worker gets its own SchemaResolver (with its own cache)
+        let resolver = schema_resolver::SchemaResolver::new(danube_client.clone());
+
         let worker = worker::TopicWorker::new(
             topic_cfg,
             compaction,
@@ -95,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
             config.broker.address.clone(),
             config.polling.interval_seconds,
             iceberg_catalog.clone(),
+            resolver,
         );
 
         let rx = shutdown_rx.clone();

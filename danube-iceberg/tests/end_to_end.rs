@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! StreamMessage → bincode → WAL frame → .dnb1 segment → object store
-//!   → read → decode → infer schema → Arrow RecordBatch → Parquet file
+//!   → read → decode → resolve schema → Arrow RecordBatch → Parquet file
 //!     → read Parquet back → verify every row and column
 //! ```
 //!
@@ -20,24 +20,22 @@
 //!
 //! 1. **Binary → Envelope Parquet** — 20 binary messages through the full
 //!    pipeline, verifying every offset, producer name, and payload byte
-//! 2. **JSON → Inferred Parquet** — 15 JSON messages with typed fields
-//!    (Float64, Int64, Utf8), verifying column types and values
-//! 3. **Multi-segment pipeline** — 3 separate segments merged into one
+//! 2. **Multi-segment pipeline** — 3 separate segments merged into one
 //!    Parquet output, verifying cross-segment offset continuity
-//! 4. **Checkpoint continuity** — process batch 1, save checkpoint, process
+//! 3. **Checkpoint continuity** — process batch 1, save checkpoint, process
 //!    batch 2, verify only new messages are processed
 
 mod common;
 
 use arrow_array::builder::{
-    BinaryBuilder, Float64Builder, Int64Builder, StringBuilder,
+    BinaryBuilder, Int64Builder, StringBuilder,
 };
 use arrow_array::cast::AsArray;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use common::{
-    build_local_storage, build_segment_from_messages, make_json_message, make_test_message,
+    build_local_storage, build_segment_from_messages, make_test_message,
     write_segment_to_storage,
 };
 use danube_persistent_storage::frames::decode_next_frame;
@@ -45,7 +43,6 @@ use futures_util::StreamExt;
 use object_store::{ObjectStore, PutPayload};
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 // ============================================================================
@@ -204,261 +201,6 @@ async fn segment_to_parquet_envelope() {
     assert_eq!(total_rows, 20, "should have all 20 rows in parquet");
 }
 
-// ============================================================================
-// End-to-end: JSON payload → Inferred columnar Parquet
-// ============================================================================
-
-/// Full pipeline test with JSON payloads: 15 messages containing
-/// `{"temperature": <float>, "humidity": <int>, "unit": "celsius"}`.
-///
-/// This validates the JSON-inferred schema path — the key differentiator
-/// between `danube-iceberg` and a simple binary dump. The test verifies:
-/// - Schema inference produces the correct Arrow types:
-///   - `temperature` → Float64
-///   - `humidity` → Int64
-///   - `unit` → Utf8
-/// - Column values in the Parquet file match the original JSON values
-///   with floating-point tolerance (< 0.001)
-/// - The inferred schema includes metadata columns (offset, publish_time)
-///
-/// This is what makes Danube data queryable with SQL: `SELECT temperature
-/// FROM sensor_data WHERE humidity > 70` only works if the schema inference
-/// and RecordBatch conversion are both correct.
-#[tokio::test]
-async fn segment_to_parquet_json_inferred() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let storage = build_local_storage(tmp.path());
-
-    // 1. Build a 15-message segment with JSON payloads
-    let messages: Vec<_> = (0..15u64)
-        .map(|i| {
-            let json = serde_json::json!({
-                "temperature": 20.0 + (i as f64) * 0.5,
-                "humidity": 60 + (i as i64),
-                "unit": "celsius"
-            });
-            make_json_message(i, &json)
-        })
-        .collect();
-    let segment_data = build_segment_from_messages(&messages);
-
-    // 2. Write segment and read back
-    write_segment_to_storage(&storage, "default/sensors", "seg-0000000000", &segment_data).await;
-
-    let path = storage.path("storage/topics/default/sensors/segments/seg-0000000000");
-    let result = storage.store.get(&path).await.expect("get");
-    let data = result.bytes().await.expect("bytes");
-
-    let mut decoded_msgs = Vec::new();
-    let mut cursor = 0;
-    while cursor < data.len() {
-        match decode_next_frame(&data[cursor..]) {
-            Ok(Some(frame)) => {
-                let config = bincode::config::standard();
-                let (msg, _): (danube_core::message::StreamMessage, _) =
-                    bincode::serde::decode_from_slice(frame.payload, config)
-                        .expect("bincode decode");
-                decoded_msgs.push((frame.offset, msg));
-                cursor += frame.frame_len;
-            }
-            Ok(None) => break,
-            Err(e) => panic!("decode error: {:?}", e),
-        }
-    }
-    assert_eq!(decoded_msgs.len(), 15);
-
-    // 3. Infer schema from JSON payloads
-    let mut all_keys: BTreeMap<String, DataType> = BTreeMap::new();
-    for (_, msg) in &decoded_msgs {
-        if let Ok(serde_json::Value::Object(map)) =
-            serde_json::from_slice::<serde_json::Value>(&msg.payload)
-        {
-            for (key, val) in &map {
-                let dt = match val {
-                    serde_json::Value::Number(n) if n.is_i64() => DataType::Int64,
-                    serde_json::Value::Number(_) => DataType::Float64,
-                    serde_json::Value::String(_) => DataType::Utf8,
-                    _ => DataType::Utf8,
-                };
-                all_keys
-                    .entry(key.clone())
-                    .and_modify(|e| {
-                        if e != &dt {
-                            // Widen to float if mixing int/float
-                            if matches!(
-                                (e.clone(), dt.clone()),
-                                (DataType::Int64, DataType::Float64)
-                                    | (DataType::Float64, DataType::Int64)
-                            ) {
-                                *e = DataType::Float64;
-                            } else {
-                                *e = DataType::Utf8;
-                            }
-                        }
-                    })
-                    .or_insert(dt);
-            }
-        }
-    }
-
-    // Build Arrow schema: metadata + inferred columns
-    let mut fields = vec![
-        Field::new("offset", DataType::Int64, false),
-        Field::new("publish_time", DataType::Int64, false),
-    ];
-    let field_names: Vec<String> = all_keys.keys().cloned().collect();
-    let field_types: Vec<DataType> = all_keys.values().cloned().collect();
-    for (name, dt) in &all_keys {
-        fields.push(Field::new(name, dt.clone(), true));
-    }
-    let schema = Arc::new(Schema::new(fields));
-
-    // 4. Build RecordBatch
-    let n = decoded_msgs.len();
-    let mut offsets = Int64Builder::with_capacity(n);
-    let mut publish_times = Int64Builder::with_capacity(n);
-
-    // Dynamic column builders
-    enum ColBuilder {
-        Int64(Int64Builder),
-        Float64(Float64Builder),
-        Utf8(StringBuilder),
-    }
-    let mut col_builders: Vec<ColBuilder> = field_types
-        .iter()
-        .map(|dt| match dt {
-            DataType::Int64 => ColBuilder::Int64(Int64Builder::with_capacity(n)),
-            DataType::Float64 => ColBuilder::Float64(Float64Builder::with_capacity(n)),
-            _ => ColBuilder::Utf8(StringBuilder::with_capacity(n, n * 32)),
-        })
-        .collect();
-
-    for (offset, msg) in &decoded_msgs {
-        offsets.append_value(*offset as i64);
-        publish_times.append_value(msg.publish_time as i64);
-
-        let json_obj: Option<serde_json::Map<String, serde_json::Value>> =
-            serde_json::from_slice(&msg.payload)
-                .ok()
-                .and_then(|v: serde_json::Value| match v {
-                    serde_json::Value::Object(m) => Some(m),
-                    _ => None,
-                });
-
-        for (i, name) in field_names.iter().enumerate() {
-            let value = json_obj.as_ref().and_then(|m| m.get(name));
-            match &mut col_builders[i] {
-                ColBuilder::Int64(b) => match value {
-                    Some(serde_json::Value::Number(n)) => b.append_value(n.as_i64().unwrap_or(0)),
-                    _ => b.append_null(),
-                },
-                ColBuilder::Float64(b) => match value {
-                    Some(serde_json::Value::Number(n)) => b.append_value(n.as_f64().unwrap_or(0.0)),
-                    _ => b.append_null(),
-                },
-                ColBuilder::Utf8(b) => match value {
-                    Some(serde_json::Value::String(s)) => b.append_value(s),
-                    Some(other) => b.append_value(other.to_string()),
-                    None => b.append_null(),
-                },
-            }
-        }
-    }
-
-    let mut arrays: Vec<Arc<dyn arrow_array::Array>> =
-        vec![Arc::new(offsets.finish()), Arc::new(publish_times.finish())];
-    for builder in &mut col_builders {
-        match builder {
-            ColBuilder::Int64(b) => arrays.push(Arc::new(b.finish())),
-            ColBuilder::Float64(b) => arrays.push(Arc::new(b.finish())),
-            ColBuilder::Utf8(b) => arrays.push(Arc::new(b.finish())),
-        }
-    }
-
-    let batch = RecordBatch::try_new(schema.clone(), arrays).expect("build batch");
-
-    // 5. Write Parquet
-    let parquet_path =
-        object_store::path::Path::from("iceberg/default/sensors/data/part-0.parquet");
-    let props = parquet::file::properties::WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::ZSTD(Default::default()))
-        .build();
-    let object_writer = parquet::arrow::async_writer::ParquetObjectWriter::new(
-        storage.store.clone(),
-        parquet_path.clone(),
-    );
-    let mut writer = parquet::arrow::async_writer::AsyncArrowWriter::try_new(
-        object_writer,
-        schema.clone(),
-        Some(props),
-    )
-    .expect("create writer");
-    writer.write(&batch).await.expect("write");
-    writer.close().await.expect("close");
-
-    // 6. Read back and verify typed columns
-    let reader = ParquetObjectReader::new(storage.store.clone(), parquet_path.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .expect("builder");
-    let read_schema = builder.schema().clone();
-    let mut stream = builder.build().expect("stream");
-
-    // Verify schema has expected columns
-    let field_map: std::collections::HashMap<_, _> = read_schema
-        .fields()
-        .iter()
-        .map(|f| (f.name().clone(), f.data_type().clone()))
-        .collect();
-    assert_eq!(field_map.get("humidity").unwrap(), &DataType::Int64);
-    assert_eq!(field_map.get("temperature").unwrap(), &DataType::Float64);
-    assert_eq!(field_map.get("unit").unwrap(), &DataType::Utf8);
-
-    let mut total_rows = 0;
-    while let Some(result) = stream.next().await {
-        let read_batch = result.expect("read batch");
-
-        // Find column indices by name
-        let temp_idx = read_schema
-            .index_of("temperature")
-            .expect("temperature column");
-        let humidity_idx = read_schema.index_of("humidity").expect("humidity column");
-        let unit_idx = read_schema.index_of("unit").expect("unit column");
-
-        let temps = read_batch
-            .column(temp_idx)
-            .as_primitive::<arrow_array::types::Float64Type>();
-        let humidities = read_batch
-            .column(humidity_idx)
-            .as_primitive::<arrow_array::types::Int64Type>();
-        let units = read_batch.column(unit_idx).as_string::<i32>();
-
-        for i in 0..read_batch.num_rows() {
-            let row = total_rows + i;
-            let expected_temp = 20.0 + (row as f64) * 0.5;
-            let expected_humidity = 60 + (row as i64);
-
-            assert!(
-                (temps.value(i) - expected_temp).abs() < 0.001,
-                "temperature mismatch at row {}: got {}, expected {}",
-                row,
-                temps.value(i),
-                expected_temp
-            );
-            assert_eq!(
-                humidities.value(i),
-                expected_humidity,
-                "humidity mismatch at row {}",
-                row
-            );
-            assert_eq!(units.value(i), "celsius", "unit mismatch at row {}", row);
-        }
-
-        total_rows += read_batch.num_rows();
-    }
-
-    assert_eq!(total_rows, 15, "should have all 15 rows in parquet");
-}
 
 // ============================================================================
 // Multi-segment pipeline

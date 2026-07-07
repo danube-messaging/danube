@@ -3,14 +3,14 @@
 //! Each `TopicWorker` runs as an independent tokio task:
 //! 1. Poll `ListSegmentDescriptors` gRPC for new sealed segments
 //! 2. Read each .dnb1 segment from object storage
-//! 3. Decode WAL frames → StreamMessage
-//! 4. Infer or apply schema → Arrow RecordBatch
-//! 5. Flush to Parquet when size/time threshold is reached
-//! 6. Update checkpoint in object storage
+//! 3. Resolve schema via Schema Registry (or fallback to envelope)
+//! 4. Build Arrow RecordBatch → flush to Parquet
+//! 5. Update checkpoint in object storage
 
 use crate::checkpoint::{Checkpoint, CheckpointStore};
 use crate::config::{CompactionConfig, TopicConfig};
 use crate::schema::{self, SchemaMode};
+use crate::schema_resolver::SchemaResolver;
 use crate::segment_reader::{self, DecodedMessage};
 use crate::storage::StorageHandle;
 use crate::table_manager::TableManager;
@@ -34,6 +34,8 @@ pub struct TopicWorker {
     poll_interval: std::time::Duration,
     /// Iceberg table manager (None = Parquet-only mode).
     table_manager: Option<TableManager>,
+    /// Schema resolver for fetching schemas from the registry.
+    schema_resolver: SchemaResolver,
 }
 
 impl TopicWorker {
@@ -45,6 +47,7 @@ impl TopicWorker {
         broker_address: String,
         poll_interval_seconds: u64,
         catalog: Option<Arc<dyn iceberg::Catalog>>,
+        schema_resolver: SchemaResolver,
     ) -> Self {
         let table_manager = catalog.map(TableManager::new);
         Self {
@@ -55,11 +58,12 @@ impl TopicWorker {
             broker_address,
             poll_interval: std::time::Duration::from_secs(poll_interval_seconds),
             table_manager,
+            schema_resolver,
         }
     }
 
     /// Run the worker loop until shutdown signal.
-    pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
+    pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) {
         let fq_topic = self.topic_config.fully_qualified_topic();
         info!(topic = %fq_topic, "starting topic worker");
 
@@ -88,7 +92,7 @@ impl TopicWorker {
             )
             .await;
 
-        // Schema mode: inferred on first batch of messages
+        // Schema mode: resolved on first batch of messages
         let mut schema_mode: Option<SchemaMode> = None;
 
         // Message buffer for compaction (accumulate across segments until flush)
@@ -97,9 +101,8 @@ impl TopicWorker {
         let mut last_flush = Instant::now();
 
         let target_size = self.compaction.target_parquet_size_mb * 1024 * 1024;
-        let max_flush_interval = std::time::Duration::from_secs(
-            self.compaction.max_flush_interval_seconds,
-        );
+        let max_flush_interval =
+            std::time::Duration::from_secs(self.compaction.max_flush_interval_seconds);
 
         loop {
             // Check shutdown
@@ -108,9 +111,7 @@ impl TopicWorker {
                 // Flush remaining buffer before exit
                 if !buffer.is_empty() {
                     if let Some(ref mode) = schema_mode {
-                        if let Err(e) = self
-                            .flush_buffer(&mut buffer, mode, &mut checkpoint)
-                            .await
+                        if let Err(e) = self.flush_buffer(&mut buffer, mode, &mut checkpoint).await
                         {
                             error!(topic = %fq_topic, error = %e, "flush on shutdown failed");
                         }
@@ -137,19 +138,31 @@ impl TopicWorker {
                             "received new messages from segments"
                         );
 
-                        // Infer schema on first batch
+                        // Resolve schema on first batch
                         if schema_mode.is_none() {
                             let msgs: Vec<_> =
                                 new_messages.iter().map(|dm| dm.message.clone()).collect();
-                            schema_mode = Some(schema::infer_schema(&msgs));
-                            info!(
-                                topic = %fq_topic,
-                                mode = ?schema_mode.as_ref().map(|m| match m {
-                                    SchemaMode::Envelope => "envelope",
-                                    SchemaMode::InferredJson { .. } => "inferred_json",
-                                }),
-                                "schema mode determined"
-                            );
+                            match self.schema_resolver.resolve(&msgs).await {
+                                Ok(mode) => {
+                                    info!(
+                                        topic = %fq_topic,
+                                        mode = ?match &mode {
+                                            SchemaMode::Envelope => "envelope",
+                                            SchemaMode::Registry { .. } => "registry",
+                                        },
+                                        "schema mode determined"
+                                    );
+                                    schema_mode = Some(mode);
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        topic = %fq_topic,
+                                        error = %e,
+                                        "schema resolution failed, falling back to envelope"
+                                    );
+                                    schema_mode = Some(SchemaMode::Envelope);
+                                }
+                            }
                         }
 
                         buffer_bytes += bytes;
@@ -207,10 +220,7 @@ impl TopicWorker {
             after_offset,
         };
 
-        let response = client
-            .list_segment_descriptors(request)
-            .await?
-            .into_inner();
+        let response = client.list_segment_descriptors(request).await?.into_inner();
 
         if response.segments.is_empty() {
             return Ok(Vec::new());
@@ -272,17 +282,13 @@ impl TopicWorker {
                 let schema = batch.schema();
                 (batch, schema)
             }
-            SchemaMode::InferredJson {
+            SchemaMode::Registry {
                 schema,
                 field_names,
                 field_types,
             } => {
-                let batch = schema::messages_to_inferred_batch(
-                    buffer,
-                    field_names,
-                    field_types,
-                    schema,
-                )?;
+                let batch =
+                    schema::messages_to_registry_batch(buffer, field_names, field_types, schema)?;
                 (batch, schema.clone())
             }
         };
