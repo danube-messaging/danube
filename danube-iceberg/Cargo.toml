@@ -43,6 +43,13 @@ metrics = { workspace = true }
 anyhow = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
+# Iceberg (catalog integration + table management — all backends compiled in)
+iceberg = "0.9.1"
+iceberg-catalog-rest = "0.9.1"
+iceberg-catalog-glue = "0.9.1"
+iceberg-catalog-s3tables = "0.9.1"
+iceberg-catalog-sql = "0.9.1"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 crc32fast = "1"

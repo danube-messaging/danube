@@ -8,11 +8,14 @@
 //! gRPC API, reads .dnb1 files directly from object storage, and writes
 //! Parquet files back to object storage.
 
+mod catalog;
 mod checkpoint;
 mod config;
+mod iceberg_schema;
 mod schema;
 mod segment_reader;
 mod storage;
+mod table_manager;
 mod worker;
 mod writer;
 
@@ -57,6 +60,15 @@ async fn main() -> anyhow::Result<()> {
         "connected to object storage"
     );
 
+    // Build Iceberg catalog (if configured)
+    let iceberg_catalog: Option<Arc<dyn iceberg::Catalog>> = if config.catalog.is_disabled() {
+        info!("catalog type is 'none' — running in Parquet-only mode (no Iceberg catalog)");
+        None
+    } else {
+        let cat = catalog::build_catalog(&config.catalog).await?;
+        Some(cat)
+    };
+
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -82,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
             config.storage.output_prefix.clone(),
             config.broker.address.clone(),
             config.polling.interval_seconds,
+            iceberg_catalog.clone(),
         );
 
         let rx = shutdown_rx.clone();

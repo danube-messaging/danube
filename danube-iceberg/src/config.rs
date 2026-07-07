@@ -4,6 +4,7 @@
 //! compaction thresholds.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Top-level configuration for `danube-iceberg`.
@@ -13,6 +14,9 @@ pub struct Config {
     pub broker: BrokerConfig,
     /// Object storage backend for reading .dnb1 and writing .parquet.
     pub storage: StorageConfig,
+    /// Iceberg catalog configuration (optional — omit for Parquet-only mode).
+    #[serde(default)]
+    pub catalog: CatalogConfig,
     /// Topics to export (explicit opt-in list).
     pub topics: Vec<TopicConfig>,
     /// Global compaction defaults.
@@ -106,6 +110,50 @@ impl Default for PollingConfig {
     }
 }
 
+/// Iceberg catalog configuration.
+///
+/// Supported catalog types:
+/// - `"rest"` — REST catalog (Nessie, Polaris, Tabular, Snowflake, Databricks Unity)
+/// - `"glue"` — AWS Glue Data Catalog
+/// - `"s3tables"` — AWS S3 Tables (managed Iceberg)
+/// - `"sql"` — SQL-backed catalog (SQLite, PostgreSQL)
+/// - `"none"` — Parquet-only mode (no catalog integration)
+#[derive(Debug, Deserialize)]
+pub struct CatalogConfig {
+    /// Catalog type: "rest", "glue", "s3tables", "sql", or "none".
+    #[serde(rename = "type", default = "default_catalog_type")]
+    pub type_: String,
+    /// Catalog name (used as identifier when loading).
+    #[serde(default = "default_catalog_name")]
+    pub name: String,
+    /// Catalog-specific properties passed to the builder's `load()` method.
+    ///
+    /// Common keys by catalog type:
+    /// - REST: `uri`, `warehouse`, `credential`, `token`
+    /// - Glue: `warehouse`
+    /// - S3Tables: `table_bucket_arn`, `endpoint_url`
+    /// - SQL: `uri`, `warehouse`
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+}
+
+impl CatalogConfig {
+    /// Returns true if catalog integration is disabled (Parquet-only mode).
+    pub fn is_disabled(&self) -> bool {
+        self.type_ == "none"
+    }
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self {
+            type_: default_catalog_type(),
+            name: default_catalog_name(),
+            properties: HashMap::new(),
+        }
+    }
+}
+
 fn default_output_prefix() -> String {
     "iceberg".to_string()
 }
@@ -120,6 +168,14 @@ fn default_max_flush_interval_seconds() -> u64 {
 
 fn default_poll_interval_seconds() -> u64 {
     30
+}
+
+fn default_catalog_type() -> String {
+    "none".to_string()
+}
+
+fn default_catalog_name() -> String {
+    "danube_catalog".to_string()
 }
 
 impl Config {

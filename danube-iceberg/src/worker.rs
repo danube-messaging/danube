@@ -13,6 +13,7 @@ use crate::config::{CompactionConfig, TopicConfig};
 use crate::schema::{self, SchemaMode};
 use crate::segment_reader::{self, DecodedMessage};
 use crate::storage::StorageHandle;
+use crate::table_manager::TableManager;
 use crate::writer::{self, WriterConfig};
 use danube_core::proto::{
     storage_service_client::StorageServiceClient, ListSegmentDescriptorsRequest,
@@ -31,6 +32,8 @@ pub struct TopicWorker {
     checkpoint_store: CheckpointStore,
     broker_address: String,
     poll_interval: std::time::Duration,
+    /// Iceberg table manager (None = Parquet-only mode).
+    table_manager: Option<TableManager>,
 }
 
 impl TopicWorker {
@@ -41,7 +44,9 @@ impl TopicWorker {
         output_prefix: String,
         broker_address: String,
         poll_interval_seconds: u64,
+        catalog: Option<Arc<dyn iceberg::Catalog>>,
     ) -> Self {
+        let table_manager = catalog.map(TableManager::new);
         Self {
             topic_config,
             compaction,
@@ -49,6 +54,7 @@ impl TopicWorker {
             checkpoint_store: CheckpointStore::new(&output_prefix),
             broker_address,
             poll_interval: std::time::Duration::from_secs(poll_interval_seconds),
+            table_manager,
         }
     }
 
@@ -312,6 +318,25 @@ impl TopicWorker {
             last_offset = checkpoint.last_offset,
             "flushed to parquet"
         );
+
+        // Commit to Iceberg catalog (if configured)
+        if let Some(ref tm) = self.table_manager {
+            let table = tm
+                .get_or_create_table(
+                    &self.topic_config.namespace,
+                    &self.topic_config.table_name,
+                    &batch.schema(),
+                )
+                .await?;
+
+            tm.commit_data_file(
+                &table,
+                &result.path,
+                result.num_rows as u64,
+                result.file_size_bytes,
+            )
+            .await?;
+        }
 
         buffer.clear();
         Ok(())

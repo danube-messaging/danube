@@ -65,3 +65,13 @@ EXPOSE 8080
 
 # Define entrypoint
 ENTRYPOINT ["/usr/local/bin/danube-admin"]
+
+# Iceberg stage: lakehouse connector (sidecar)
+FROM base AS iceberg
+
+# Copy the danube-iceberg binary from the builder stage
+COPY --from=builder /app/target/release/danube-iceberg /usr/local/bin/danube-iceberg
+
+# Define entrypoint
+ENTRYPOINT ["/usr/local/bin/danube-iceberg"]
+CMD ["--config", "/etc/danube-iceberg-config.yaml"]

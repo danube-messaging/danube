@@ -68,15 +68,21 @@ pub async fn write_parquet(
 
     let num_rows = batch.num_rows();
 
+    // Get file size from object storage metadata
+    let head = storage.store.head(&path).await?;
+    let file_size_bytes = head.size as u64;
+
     info!(
         path = %path,
         rows = num_rows,
+        size_bytes = file_size_bytes,
         "parquet file written"
     );
 
     Ok(ParquetWriteResult {
         path: path.to_string(),
         num_rows,
+        file_size_bytes,
     })
 }
 
@@ -86,4 +92,6 @@ pub struct ParquetWriteResult {
     pub path: String,
     /// Number of rows in the file.
     pub num_rows: usize,
+    /// File size in bytes (from object store metadata).
+    pub file_size_bytes: u64,
 }
