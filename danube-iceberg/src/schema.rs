@@ -10,7 +10,6 @@
 
 use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
-    UInt64Builder,
 };
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
@@ -41,12 +40,12 @@ pub enum SchemaMode {
 /// universal fallback when JSON inference fails or isn't applicable.
 pub fn envelope_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
-        Field::new("offset", DataType::UInt64, false),
-        Field::new("publish_time", DataType::UInt64, false),
+        Field::new("offset", DataType::Int64, false),
+        Field::new("publish_time", DataType::Int64, false),
         Field::new("producer_name", DataType::Utf8, false),
         Field::new("routing_key", DataType::Utf8, true),
-        Field::new("schema_id", DataType::UInt64, true),
-        Field::new("schema_version", DataType::UInt64, true),
+        Field::new("schema_id", DataType::Int64, true),
+        Field::new("schema_version", DataType::Int64, true),
         Field::new("payload", DataType::Binary, false),
         Field::new("attributes_json", DataType::Utf8, true),
     ]))
@@ -103,8 +102,8 @@ pub fn infer_schema(messages: &[StreamMessage]) -> SchemaMode {
 
     // Build the Arrow schema: metadata columns + inferred payload columns
     let mut fields = vec![
-        Field::new("offset", DataType::UInt64, false),
-        Field::new("publish_time", DataType::UInt64, false),
+        Field::new("offset", DataType::Int64, false),
+        Field::new("publish_time", DataType::Int64, false),
         Field::new("producer_name", DataType::Utf8, false),
         Field::new("routing_key", DataType::Utf8, true),
     ];
@@ -177,19 +176,19 @@ pub fn messages_to_envelope_batch(
 ) -> anyhow::Result<RecordBatch> {
     let schema = envelope_schema();
 
-    let mut offsets = UInt64Builder::with_capacity(messages.len());
-    let mut publish_times = UInt64Builder::with_capacity(messages.len());
+    let mut offsets = Int64Builder::with_capacity(messages.len());
+    let mut publish_times = Int64Builder::with_capacity(messages.len());
     let mut producers = StringBuilder::with_capacity(messages.len(), messages.len() * 32);
     let mut routing_keys = StringBuilder::with_capacity(messages.len(), messages.len() * 16);
-    let mut schema_ids = UInt64Builder::with_capacity(messages.len());
-    let mut schema_versions = UInt64Builder::with_capacity(messages.len());
+    let mut schema_ids = Int64Builder::with_capacity(messages.len());
+    let mut schema_versions = Int64Builder::with_capacity(messages.len());
     let mut payloads = BinaryBuilder::with_capacity(messages.len(), messages.len() * 256);
     let mut attributes = StringBuilder::with_capacity(messages.len(), messages.len() * 64);
 
     for dm in messages {
         let msg = &dm.message;
-        offsets.append_value(dm.offset);
-        publish_times.append_value(msg.publish_time);
+        offsets.append_value(dm.offset as i64);
+        publish_times.append_value(msg.publish_time as i64);
         producers.append_value(&msg.producer_name);
 
         match &msg.routing_key {
@@ -198,12 +197,12 @@ pub fn messages_to_envelope_batch(
         }
 
         match msg.schema_id {
-            Some(id) => schema_ids.append_value(id),
+            Some(id) => schema_ids.append_value(id as i64),
             None => schema_ids.append_null(),
         }
 
         match msg.schema_version {
-            Some(v) => schema_versions.append_value(v as u64),
+            Some(v) => schema_versions.append_value(v as i64),
             None => schema_versions.append_null(),
         }
 
@@ -247,8 +246,8 @@ pub fn messages_to_inferred_batch(
     let n = messages.len();
 
     // Metadata columns
-    let mut offsets = UInt64Builder::with_capacity(n);
-    let mut publish_times = UInt64Builder::with_capacity(n);
+    let mut offsets = Int64Builder::with_capacity(n);
+    let mut publish_times = Int64Builder::with_capacity(n);
     let mut producers = StringBuilder::with_capacity(n, n * 32);
     let mut routing_keys = StringBuilder::with_capacity(n, n * 16);
 
@@ -260,8 +259,8 @@ pub fn messages_to_inferred_batch(
 
     for dm in messages {
         let msg = &dm.message;
-        offsets.append_value(dm.offset);
-        publish_times.append_value(msg.publish_time);
+        offsets.append_value(dm.offset as i64);
+        publish_times.append_value(msg.publish_time as i64);
         producers.append_value(&msg.producer_name);
         match &msg.routing_key {
             Some(k) => routing_keys.append_value(k),

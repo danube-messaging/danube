@@ -23,7 +23,7 @@
 
 mod common;
 
-use arrow_array::builder::{BinaryBuilder, StringBuilder, UInt64Builder};
+use arrow_array::builder::{BinaryBuilder, StringBuilder, Int64Builder};
 use arrow_array::cast::AsArray;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
@@ -37,17 +37,17 @@ use std::sync::Arc;
 /// Build a simple RecordBatch for testing writes.
 fn make_test_batch(num_rows: usize) -> (Arc<Schema>, RecordBatch) {
     let schema = Arc::new(Schema::new(vec![
-        Field::new("offset", DataType::UInt64, false),
+        Field::new("offset", DataType::Int64, false),
         Field::new("producer", DataType::Utf8, false),
         Field::new("payload", DataType::Binary, false),
     ]));
 
-    let mut offsets = UInt64Builder::with_capacity(num_rows);
+    let mut offsets = Int64Builder::with_capacity(num_rows);
     let mut producers = StringBuilder::with_capacity(num_rows, num_rows * 16);
     let mut payloads = BinaryBuilder::with_capacity(num_rows, num_rows * 32);
 
     for i in 0..num_rows {
-        offsets.append_value(i as u64);
+        offsets.append_value(i as i64);
         producers.append_value(format!("producer-{}", i));
         payloads.append_value(format!("payload-{}", i).as_bytes());
     }
@@ -156,7 +156,7 @@ async fn write_parquet_read_back() {
         if total_rows == 0 && read_batch.num_rows() > 0 {
             let offsets = read_batch
                 .column(0)
-                .as_primitive::<arrow_array::types::UInt64Type>();
+                .as_primitive::<arrow_array::types::Int64Type>();
             assert_eq!(offsets.value(0), 0);
 
             let producers = read_batch.column(1).as_string::<i32>();

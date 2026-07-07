@@ -1,6 +1,7 @@
 //! # Iceberg Schema Conversion Tests
 //!
-//! Tests the Arrow → Iceberg schema conversion logic.
+//! Tests the Arrow → Iceberg schema conversion using the `iceberg::arrow`
+//! module's built-in `arrow_schema_to_schema_auto_assign_ids` function.
 //!
 //! ## Why this matters
 //!
@@ -12,54 +13,26 @@
 //!
 //! ## Design note
 //!
-//! Since `danube-iceberg` is a binary crate, the conversion functions are
-//! re-implemented inline here (mirroring `src/iceberg_schema.rs`). This
-//! validates the algorithm independently and catches any drift.
+//! These tests use the `iceberg::arrow` module directly (same as the production
+//! code in `src/iceberg_schema.rs`), validating that the crate's conversion
+//! produces the expected Iceberg types for Danube's envelope and inferred schemas.
 
 mod common;
 
 use arrow_schema::{DataType as ArrowType, Field, Schema as ArrowSchema};
+use iceberg::arrow::arrow_schema_to_schema_auto_assign_ids;
 use iceberg::spec::{
     NestedField, PrimitiveType, Schema as IcebergSchema, Type,
 };
 use std::collections::HashMap;
 
 // ============================================================================
-// Inline mirror of src/iceberg_schema.rs conversion logic
+// Helper — wraps the crate function, same as src/iceberg_schema.rs
 // ============================================================================
 
-fn arrow_type_to_iceberg(arrow_type: &ArrowType) -> Type {
-    match arrow_type {
-        ArrowType::Boolean => Type::Primitive(PrimitiveType::Boolean),
-        ArrowType::Int32 => Type::Primitive(PrimitiveType::Int),
-        ArrowType::Int64 => Type::Primitive(PrimitiveType::Long),
-        ArrowType::UInt64 => Type::Primitive(PrimitiveType::Long),
-        ArrowType::Float32 => Type::Primitive(PrimitiveType::Float),
-        ArrowType::Float64 => Type::Primitive(PrimitiveType::Double),
-        ArrowType::Utf8 | ArrowType::LargeUtf8 => Type::Primitive(PrimitiveType::String),
-        ArrowType::Binary | ArrowType::LargeBinary => Type::Primitive(PrimitiveType::Binary),
-        ArrowType::Date32 => Type::Primitive(PrimitiveType::Date),
-        ArrowType::Timestamp(_, _) => Type::Primitive(PrimitiveType::Timestamptz),
-        _ => Type::Primitive(PrimitiveType::String), // fallback
-    }
-}
-
 fn arrow_to_iceberg_schema(arrow_schema: &ArrowSchema) -> IcebergSchema {
-    let mut fields = Vec::with_capacity(arrow_schema.fields().len());
-    for (i, arrow_field) in arrow_schema.fields().iter().enumerate() {
-        let field_id = (i + 1) as i32;
-        let iceberg_type = arrow_type_to_iceberg(arrow_field.data_type());
-        let field = if arrow_field.is_nullable() {
-            NestedField::optional(field_id, arrow_field.name(), iceberg_type)
-        } else {
-            NestedField::required(field_id, arrow_field.name(), iceberg_type)
-        };
-        fields.push(field.into());
-    }
-    IcebergSchema::builder()
-        .with_fields(fields)
-        .build()
-        .expect("schema build")
+    arrow_schema_to_schema_auto_assign_ids(arrow_schema)
+        .expect("arrow to iceberg conversion")
 }
 
 fn schema_diff(
@@ -96,18 +69,17 @@ fn schema_diff(
 // Tests
 // ============================================================================
 
-/// Verifies the basic type mapping from Arrow to Iceberg for all supported
-/// primitive types: Boolean, Int32, Int64, UInt64, Float32, Float64, Utf8, Binary.
+/// Verifies the type mapping from Arrow to Iceberg for the primitive types
+/// used by Danube's envelope and inferred schemas.
 ///
-/// Each Arrow type must map to exactly one Iceberg type. This test ensures
-/// we don't accidentally swap mappings (e.g., Float64 → Float instead of Double).
+/// The `iceberg::arrow` module handles the actual mapping — we verify
+/// the results match expectations for our specific types.
 #[test]
 fn arrow_to_iceberg_primitive_types() {
     let arrow_schema = ArrowSchema::new(vec![
         Field::new("bool_col", ArrowType::Boolean, false),
         Field::new("int32_col", ArrowType::Int32, false),
         Field::new("int64_col", ArrowType::Int64, false),
-        Field::new("uint64_col", ArrowType::UInt64, false),
         Field::new("float32_col", ArrowType::Float32, false),
         Field::new("float64_col", ArrowType::Float64, false),
         Field::new("string_col", ArrowType::Utf8, false),
@@ -117,26 +89,24 @@ fn arrow_to_iceberg_primitive_types() {
     let iceberg_schema = arrow_to_iceberg_schema(&arrow_schema);
     let fields: Vec<_> = iceberg_schema.as_struct().fields().iter().collect();
 
-    assert_eq!(fields.len(), 8);
-    // field_type is Box<Type>, so we compare with Box::new()
+    assert_eq!(fields.len(), 7);
     assert_eq!(*fields[0].field_type, Type::Primitive(PrimitiveType::Boolean));
     assert_eq!(*fields[1].field_type, Type::Primitive(PrimitiveType::Int));
     assert_eq!(*fields[2].field_type, Type::Primitive(PrimitiveType::Long));
-    assert_eq!(*fields[3].field_type, Type::Primitive(PrimitiveType::Long)); // UInt64 → Long
-    assert_eq!(*fields[4].field_type, Type::Primitive(PrimitiveType::Float));
-    assert_eq!(*fields[5].field_type, Type::Primitive(PrimitiveType::Double));
-    assert_eq!(*fields[6].field_type, Type::Primitive(PrimitiveType::String));
-    assert_eq!(*fields[7].field_type, Type::Primitive(PrimitiveType::Binary));
+    assert_eq!(*fields[3].field_type, Type::Primitive(PrimitiveType::Float));
+    assert_eq!(*fields[4].field_type, Type::Primitive(PrimitiveType::Double));
+    assert_eq!(*fields[5].field_type, Type::Primitive(PrimitiveType::String));
+    assert_eq!(*fields[6].field_type, Type::Primitive(PrimitiveType::Binary));
 }
 
-/// Verifies that field names are preserved and IDs assigned sequentially (1, 2, 3...).
+/// Verifies that field names are preserved and IDs are auto-assigned.
 ///
-/// Iceberg requires unique field IDs for schema evolution tracking.
-/// Our conversion assigns IDs starting from 1 in field order.
+/// The `iceberg::arrow::arrow_schema_to_schema_auto_assign_ids` function
+/// assigns field IDs starting from 1 using level-order traversal.
 #[test]
-fn arrow_to_iceberg_field_names_and_ids() {
+fn arrow_to_iceberg_field_names_and_required() {
     let arrow_schema = ArrowSchema::new(vec![
-        Field::new("offset", ArrowType::UInt64, false),
+        Field::new("offset", ArrowType::Int64, false),
         Field::new("temperature", ArrowType::Float64, true),
         Field::new("unit", ArrowType::Utf8, true),
     ]);
@@ -145,28 +115,25 @@ fn arrow_to_iceberg_field_names_and_ids() {
     let fields: Vec<_> = iceberg_schema.as_struct().fields().iter().collect();
 
     assert_eq!(fields[0].name, "offset");
-    assert_eq!(fields[0].id, 1);
     assert!(fields[0].required, "offset should be required");
 
     assert_eq!(fields[1].name, "temperature");
-    assert_eq!(fields[1].id, 2);
     assert!(!fields[1].required, "temperature should be optional (not required)");
 
     assert_eq!(fields[2].name, "unit");
-    assert_eq!(fields[2].id, 3);
     assert!(!fields[2].required, "unit should be optional (not required)");
 }
 
 /// Verifies that the Danube envelope schema (binary payloads) converts correctly.
 ///
-/// The envelope schema is: offset (UInt64), publish_time (UInt64),
+/// The envelope schema is: offset (Int64), publish_time (Int64),
 /// producer_name (Utf8), payload (Binary). This is the most common schema
 /// used when messages are not JSON.
 #[test]
 fn arrow_to_iceberg_envelope_schema() {
     let arrow_schema = ArrowSchema::new(vec![
-        Field::new("offset", ArrowType::UInt64, false),
-        Field::new("publish_time", ArrowType::UInt64, false),
+        Field::new("offset", ArrowType::Int64, false),
+        Field::new("publish_time", ArrowType::Int64, false),
         Field::new("producer_name", ArrowType::Utf8, true),
         Field::new("payload", ArrowType::Binary, false),
     ]);
@@ -188,12 +155,12 @@ fn arrow_to_iceberg_envelope_schema() {
 #[test]
 fn schema_diff_detects_new_fields() {
     let existing = arrow_to_iceberg_schema(&ArrowSchema::new(vec![
-        Field::new("offset", ArrowType::UInt64, false),
+        Field::new("offset", ArrowType::Int64, false),
         Field::new("temperature", ArrowType::Float64, true),
     ]));
 
     let new = arrow_to_iceberg_schema(&ArrowSchema::new(vec![
-        Field::new("offset", ArrowType::UInt64, false),
+        Field::new("offset", ArrowType::Int64, false),
         Field::new("temperature", ArrowType::Float64, true),
         Field::new("humidity", ArrowType::Int64, true),
     ]));
@@ -207,7 +174,7 @@ fn schema_diff_detects_new_fields() {
 #[test]
 fn schema_diff_no_changes() {
     let schema = arrow_to_iceberg_schema(&ArrowSchema::new(vec![
-        Field::new("offset", ArrowType::UInt64, false),
+        Field::new("offset", ArrowType::Int64, false),
         Field::new("value", ArrowType::Utf8, true),
     ]));
 

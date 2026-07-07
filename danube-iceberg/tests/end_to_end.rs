@@ -30,7 +30,7 @@
 mod common;
 
 use arrow_array::builder::{
-    BinaryBuilder, Float64Builder, Int64Builder, StringBuilder, UInt64Builder,
+    BinaryBuilder, Float64Builder, Int64Builder, StringBuilder,
 };
 use arrow_array::cast::AsArray;
 use arrow_array::RecordBatch;
@@ -114,20 +114,20 @@ async fn segment_to_parquet_envelope() {
 
     // 4. Convert to envelope RecordBatch
     let envelope_schema = Arc::new(Schema::new(vec![
-        Field::new("offset", DataType::UInt64, false),
-        Field::new("publish_time", DataType::UInt64, false),
+        Field::new("offset", DataType::Int64, false),
+        Field::new("publish_time", DataType::Int64, false),
         Field::new("producer_name", DataType::Utf8, false),
         Field::new("payload", DataType::Binary, false),
     ]));
 
-    let mut offsets = UInt64Builder::with_capacity(20);
-    let mut publish_times = UInt64Builder::with_capacity(20);
+    let mut offsets = Int64Builder::with_capacity(20);
+    let mut publish_times = Int64Builder::with_capacity(20);
     let mut producers = StringBuilder::with_capacity(20, 20 * 32);
     let mut payloads = BinaryBuilder::with_capacity(20, 20 * 64);
 
     for (offset, msg) in &decoded_messages {
-        offsets.append_value(*offset);
-        publish_times.append_value(msg.publish_time);
+        offsets.append_value(*offset as i64);
+        publish_times.append_value(msg.publish_time as i64);
         producers.append_value(&msg.producer_name);
         payloads.append_value(&msg.payload);
     }
@@ -175,7 +175,7 @@ async fn segment_to_parquet_envelope() {
 
         let read_offsets = read_batch
             .column(0)
-            .as_primitive::<arrow_array::types::UInt64Type>();
+            .as_primitive::<arrow_array::types::Int64Type>();
         let read_producers = read_batch.column(2).as_string::<i32>();
         let read_payloads = read_batch.column(3).as_binary::<i32>();
 
@@ -183,7 +183,7 @@ async fn segment_to_parquet_envelope() {
             let offset = read_offsets.value(i);
             let row = total_rows + i;
 
-            assert_eq!(offset, row as u64, "offset mismatch at row {}", row);
+            assert_eq!(offset, row as i64, "offset mismatch at row {}", row);
             assert_eq!(
                 read_producers.value(i),
                 "test-producer-1",
@@ -303,8 +303,8 @@ async fn segment_to_parquet_json_inferred() {
 
     // Build Arrow schema: metadata + inferred columns
     let mut fields = vec![
-        Field::new("offset", DataType::UInt64, false),
-        Field::new("publish_time", DataType::UInt64, false),
+        Field::new("offset", DataType::Int64, false),
+        Field::new("publish_time", DataType::Int64, false),
     ];
     let field_names: Vec<String> = all_keys.keys().cloned().collect();
     let field_types: Vec<DataType> = all_keys.values().cloned().collect();
@@ -315,8 +315,8 @@ async fn segment_to_parquet_json_inferred() {
 
     // 4. Build RecordBatch
     let n = decoded_msgs.len();
-    let mut offsets = UInt64Builder::with_capacity(n);
-    let mut publish_times = UInt64Builder::with_capacity(n);
+    let mut offsets = Int64Builder::with_capacity(n);
+    let mut publish_times = Int64Builder::with_capacity(n);
 
     // Dynamic column builders
     enum ColBuilder {
@@ -334,8 +334,8 @@ async fn segment_to_parquet_json_inferred() {
         .collect();
 
     for (offset, msg) in &decoded_msgs {
-        offsets.append_value(*offset);
-        publish_times.append_value(msg.publish_time);
+        offsets.append_value(*offset as i64);
+        publish_times.append_value(msg.publish_time as i64);
 
         let json_obj: Option<serde_json::Map<String, serde_json::Value>> =
             serde_json::from_slice(&msg.payload)
