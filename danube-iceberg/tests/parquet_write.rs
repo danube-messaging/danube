@@ -1,19 +1,17 @@
-//! # Parquet File Writing Tests
+//! # Parquet Format Mechanics Tests
 //!
-//! These tests validate the final output stage of the `danube-iceberg` pipeline:
-//! writing Arrow RecordBatch data to Parquet files on object storage.
+//! These tests validate low-level Parquet file writing and reading using
+//! `AsyncArrowWriter` + `ParquetObjectWriter` directly.
 //!
-//! ## Why this matters
-//!
-//! Parquet is the output format that makes Danube data queryable by analytics
-//! engines (DuckDB, Trino, Athena, Snowflake). If the Parquet writer produces
-//! invalid files, corrupts data during write, or uses wrong compression, the
-//! entire lakehouse integration is broken.
+//! **Note:** In production, `danube-iceberg` writes through iceberg's
+//! `DataFileWriter` pipeline (see `iceberg_writer.rs` tests). These tests
+//! validate the underlying Parquet format correctness independently:
+//! ZSTD compression, data roundtrip fidelity, and object store integration.
 //!
 //! ## What we test
 //!
 //! 1. **File creation** — verifies that `AsyncArrowWriter` + `ParquetObjectWriter`
-//!    actually produces a non-empty file in object storage
+//!    produces a non-empty file in object storage
 //! 2. **Read-back roundtrip** — writes 20 rows, reads them back, and verifies
 //!    every column value matches the original data
 //! 3. **ZSTD compression** — verifies that the Parquet file metadata reports

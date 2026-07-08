@@ -178,7 +178,9 @@ async fn commit_data_file_to_table() {
     let table_ident = TableIdent::new(ns.clone(), "events".to_string());
     let table = catalog.load_table(&table_ident).await.expect("load table");
 
-    // Build DataFile descriptor (simulates what writer.rs produces)
+    // Build DataFile descriptor (tests the Transaction API directly —
+    // in production, writer.rs uses iceberg's DataFileWriter pipeline
+    // to produce DataFile instances with full column statistics)
     let data_file = DataFileBuilder::default()
         .content(DataContentType::Data)
         .file_path("/tmp/test_warehouse/default/events/data/part-001.parquet".to_string())
