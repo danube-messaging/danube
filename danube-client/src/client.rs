@@ -117,6 +117,21 @@ impl DanubeClient {
             .await?;
         Ok(cnx.grpc_cnx.clone())
     }
+
+    /// Get a gRPC channel to the service URL configured in the builder.
+    ///
+    /// Convenience wrapper around [`get_broker_channel`] for external tools
+    /// (e.g., `danube-iceberg`) that connect directly to the configured broker
+    /// without topic-based lookup or proxy routing.
+    ///
+    /// Uses the same connection pool and TLS/mTLS configuration.
+    pub async fn get_service_channel(&self) -> Result<tonic::transport::Channel> {
+        let cnx = self
+            .cnx_manager
+            .get_connection(&self.uri, &self.uri)
+            .await?;
+        Ok(cnx.grpc_cnx.clone())
+    }
 }
 
 /// A builder for configuring and creating a `DanubeClient` instance.

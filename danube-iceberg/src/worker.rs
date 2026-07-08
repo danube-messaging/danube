@@ -38,6 +38,7 @@ use crate::segment_reader::{self, DecodedMessage};
 use crate::storage::StorageHandle;
 use crate::table_manager::TableManager;
 use crate::writer::{self, WriterConfig};
+use danube_client::DanubeClient;
 use danube_core::proto::{
     storage_service_client::StorageServiceClient, ListSegmentDescriptorsRequest,
     SegmentDescriptorProto,
@@ -107,7 +108,8 @@ pub struct TopicWorker {
     compaction: CompactionConfig,
     storage: Arc<StorageHandle>,
     checkpoint_store: CheckpointStore,
-    broker_address: String,
+    /// Danube client — provides connection pool (with TLS/mTLS) and schema registry.
+    danube_client: DanubeClient,
     poll_interval: Duration,
     /// Iceberg table manager (None = Parquet-only mode).
     table_manager: Option<TableManager>,
@@ -121,18 +123,18 @@ impl TopicWorker {
         compaction: CompactionConfig,
         storage: Arc<StorageHandle>,
         output_prefix: String,
-        broker_address: String,
+        danube_client: DanubeClient,
         poll_interval_seconds: u64,
         catalog: Option<Arc<dyn iceberg::Catalog>>,
-        schema_resolver: SchemaResolver,
     ) -> Self {
         let table_manager = catalog.map(TableManager::new);
+        let schema_resolver = SchemaResolver::new(danube_client.clone());
         Self {
             topic_config,
             compaction,
             storage,
             checkpoint_store: CheckpointStore::new(&output_prefix),
-            broker_address,
+            danube_client,
             poll_interval: Duration::from_secs(poll_interval_seconds),
             table_manager,
             schema_resolver,
@@ -148,15 +150,13 @@ impl TopicWorker {
         let fq_topic = self.topic_config.fully_qualified_topic();
         info!(topic = %fq_topic, "starting topic worker");
 
-        // Connect to broker gRPC
-        let channel = match Channel::from_shared(format!("http://{}", self.broker_address))
-            .expect("valid broker address")
-            .connect()
-            .await
-        {
+        // Get a gRPC channel from the shared connection pool.
+        // All workers reuse the same underlying HTTP/2 connection via
+        // DanubeClient's ConnectionManager (which also handles TLS/mTLS).
+        let channel = match self.get_broker_channel().await {
             Ok(ch) => ch,
             Err(e) => {
-                error!(topic = %fq_topic, error = %e, "failed to connect to broker, worker exiting");
+                error!(topic = %fq_topic, error = %e, "failed to get broker channel, worker exiting");
                 return;
             }
         };
@@ -456,6 +456,17 @@ impl TopicWorker {
     // -----------------------------------------------------------------------
     // Segment polling
     // -----------------------------------------------------------------------
+
+    /// Get a gRPC channel from the shared DanubeClient connection pool.
+    ///
+    /// All workers share one connection (HTTP/2 multiplexed) with TLS/mTLS
+    /// handled transparently by the DanubeClient's ConnectionManager.
+    async fn get_broker_channel(&self) -> anyhow::Result<Channel> {
+        self.danube_client
+            .get_service_channel()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to get broker channel: {}", e))
+    }
 
     /// Poll the broker for new sealed segment descriptors (metadata only).
     ///

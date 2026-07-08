@@ -73,13 +73,17 @@ async fn main() -> anyhow::Result<()> {
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Build Danube client for Schema Registry access
+    // Build Danube client — provides connection pool (with TLS/mTLS) and schema registry.
+    // All workers share the same underlying HTTP/2 connection via ConnectionManager.
     let danube_client = danube_client::DanubeClient::builder()
         .service_url(&format!("http://{}", config.broker.address))
         .build()
         .await
         .map_err(|e| anyhow::anyhow!("failed to build Danube client: {}", e))?;
-    info!("connected to Danube Schema Registry");
+    info!(
+        broker = %config.broker.address,
+        "connected to Danube broker (shared connection pool)"
+    );
 
     // Spawn one worker per configured topic
     let mut handles = Vec::new();
@@ -96,18 +100,14 @@ async fn main() -> anyhow::Result<()> {
             "spawning topic worker"
         );
 
-        // Each worker gets its own SchemaResolver (with its own cache)
-        let resolver = schema_resolver::SchemaResolver::new(danube_client.clone());
-
         let worker = worker::TopicWorker::new(
             topic_cfg,
             compaction,
             storage.clone(),
             config.storage.output_prefix.clone(),
-            config.broker.address.clone(),
+            danube_client.clone(),
             config.polling.interval_seconds,
             iceberg_catalog.clone(),
-            resolver,
         );
 
         let rx = shutdown_rx.clone();
