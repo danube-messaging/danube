@@ -2,7 +2,7 @@
 
 **Lakehouse connector for Danube messaging — continuously exports streaming data to Apache Iceberg tables.**
 
-Danube Iceberg runs as a **standalone sidecar** alongside your Danube cluster. It discovers sealed WAL segments from object storage, converts them to Apache Parquet files, and optionally registers them with an Iceberg catalog, making your streaming data instantly queryable by DuckDB, Snowflake, Athena, Trino, Spark, and any other engine that speaks Iceberg or Parquet.
+Danube Iceberg runs as a **standalone sidecar** alongside your Danube cluster. It discovers sealed WAL segments from object storage, converts them to Apache Iceberg data files with full column-level statistics, and registers them with an Iceberg catalog — making your streaming data instantly queryable by DuckDB, Snowflake, Athena, Trino, Spark, and any other engine that speaks Iceberg.
 
 ## How It Works
 
@@ -15,7 +15,8 @@ Danube Cluster                danube-iceberg                 Analytics Engine
       │                             │                               │
       └──────────────────────▶ 1. Discover segments                 │
                                2. Decode WAL frames                 │
-                               3. Write Parquet (zstd)              │
+                               3. Write Iceberg data files          │
+                                  (Parquet + column statistics)     │
                                4. Commit to Iceberg catalog         │
                                5. Checkpoint progress               │
                                         │                           │
@@ -24,20 +25,44 @@ Danube Cluster                danube-iceberg                 Analytics Engine
                                                               Query tables
 ```
 
-1. **Segment discovery**: Polls the Danube broker's gRPC API to find newly sealed `.dnb1` segments in object storage.
+1. **Segment discovery**: Polls the Danube broker's gRPC API (`StorageService`) to find newly sealed `.dnb1` segments in object storage.
 2. **WAL decoding**: Reads raw segment files and decodes the WAL frames back into messages.
-3. **Parquet conversion**: Converts messages to columnar Apache Parquet format (zstd compressed).
-4. **Catalog commit**: Registers the Parquet files with an Iceberg catalog so analytics engines can discover and query them.
-5. **Checkpointing**: Tracks progress per topic so it picks up exactly where it left off after restarts.
+3. **Iceberg data file writing**: Converts messages to Iceberg data files using iceberg-rust's writer pipeline (`ParquetWriterBuilder → RollingFileWriter → DataFileWriter`), producing Parquet files with ZSTD compression and **full per-column statistics** (min/max bounds, null counts, value counts, column sizes).
+4. **Catalog commit**: Commits data files to the Iceberg catalog via `Transaction::fast_append`, making them discoverable by query engines.
+5. **Checkpointing**: Tracks progress per topic in object storage so it picks up exactly where it left off after restarts.
 
 ## Architecture
 
-`danube-iceberg` is designed for **isolation**, it runs as an independent process with its own scaling and failure domain:
+`danube-iceberg` is designed for **isolation** — it runs as an independent process with its own scaling and failure domain:
 
 - **No broker impact**: Reads directly from object storage, not from broker memory. The broker is never slowed down by analytics workloads.
 - **Independent scaling**: Run one instance per cluster, or scale horizontally with topic partitioning.
-- **Crash-safe**: Checkpoints persisted to object storage. Restart at any time without data loss or duplication.
-- **Schema-less**: Automatically infers Arrow schemas from JSON payloads. No schema registry needed (though it works with one too).
+- **Crash-safe**: Checkpoints persisted to object storage. Restart at any time without data loss (at-least-once semantics).
+- **Shared connection pool**: All topic workers share a single `DanubeClient` with HTTP/2 multiplexed connections — even 100+ topics use one TCP connection.
+- **Schema-aware**: Resolves schemas from the Danube Schema Registry when available. Falls back to an envelope schema (offset, publish_time, producer_name, payload) for schema-less topics.
+- **Schema evolution detection**: Detects new columns in incoming data and logs warnings. Full schema evolution will be applied when iceberg-rust adds `Transaction::update_schema()`.
+
+### Writer Pipeline
+
+Unlike writing raw Parquet files manually, `danube-iceberg` uses iceberg-rust's composable writer stack:
+
+```
+ParquetWriterBuilder → RollingFileWriterBuilder → DataFileWriterBuilder
+    → DataFileWriter.write(batch)
+    → DataFileWriter.close() → Vec<DataFile> (with full statistics)
+    → Transaction::fast_append().add_data_files(data_files)
+```
+
+This produces `DataFile` metadata with per-column statistics that enable query engines to perform **predicate pushdown** and **file pruning** — queries like `WHERE timestamp > '2025-01-01'` skip data files whose max timestamp is before the cutoff.
+
+| Statistic | Description |
+|-----------|-------------|
+| `column_sizes` | Compressed size per column |
+| `value_counts` | Number of values per column |
+| `null_value_counts` | Number of nulls per column |
+| `lower_bounds` | Minimum value per column |
+| `upper_bounds` | Maximum value per column |
+| `split_offsets` | Row group byte offsets |
 
 ## Quick Start
 
@@ -68,7 +93,6 @@ storage:
     access_key: "minioadmin"
     secret_key: "minioadmin"
 
-# Iceberg catalog (optional — omit for Parquet-only mode)
 catalog:
   type: "rest"
   name: "danube_catalog"
@@ -90,7 +114,6 @@ topics:
 | `glue` | AWS Glue Data Catalog | AWS-native, zero-infra |
 | `s3tables` | AWS S3 Tables | Managed Iceberg on S3 |
 | `sql` | SQL-backed (SQLite, PostgreSQL) | Self-hosted, dev/test |
-| *(omit)* | Parquet-only mode | Just write Parquet files, no catalog |
 
 
 ### Topics
@@ -144,7 +167,7 @@ services:
 
 ```bash
 cargo build --package danube-iceberg
-cargo test --package danube-iceberg
+cargo test --package danube-iceberg      # 41 tests
 cargo run --package danube-iceberg -- --config config-example.yaml
 ```
 
