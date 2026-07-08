@@ -2,20 +2,20 @@
 //!
 //! Handles creating, loading, and committing data files to Iceberg tables.
 //! Each topic maps to one Iceberg table. The `TableManager` ensures the table
-//! exists (creating it if needed) and commits Parquet data files after each flush.
+//! exists (creating it if needed) and commits data files after each flush.
 //!
 //! ## Commit flow
 //!
 //! ```text
-//! 1. writer.rs produces a Parquet file in object storage
-//! 2. TableManager builds a DataFile descriptor (path, format, row count, size)
-//! 3. Transaction::new(table).fast_append().add_data_files([data_file])
-//! 4. transaction.commit(&catalog) — atomic metadata update
+//! 1. writer.rs produces DataFile(s) via iceberg's writer pipeline
+//!    (ParquetWriterBuilder → RollingFileWriter → DataFileWriter)
+//!    with full per-column statistics (min/max, nulls, sizes)
+//! 2. Transaction::new(table).fast_append().add_data_files(data_files)
+//! 3. transaction.commit(&catalog) — atomic metadata update
 //! ```
 
 use crate::iceberg_schema;
 use arrow_schema::Schema as ArrowSchema;
-use iceberg::spec::{DataContentType, DataFileBuilder, DataFileFormat, Struct};
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use std::sync::Arc;
@@ -108,38 +108,33 @@ impl TableManager {
         }
     }
 
-    /// Commit a Parquet data file to an Iceberg table via fast_append.
+    /// Commit data files to an Iceberg table via fast_append.
     ///
-    /// This is the core integration point: after `writer.rs` produces a Parquet
-    /// file, we register it with the Iceberg catalog so it appears in table scans.
-    pub async fn commit_data_file(
+    /// The `DataFile` instances are produced by iceberg's writer pipeline
+    /// and already contain full per-column statistics (min/max bounds,
+    /// null counts, value counts, column sizes).
+    ///
+    /// ## Commit ordering
+    ///
+    /// This is called *after* the data files are written to storage but
+    /// *before* saving the checkpoint — ensuring at-least-once semantics.
+    pub async fn commit_data_files(
         &self,
         table: &iceberg::table::Table,
-        data_file_path: &str,
-        record_count: u64,
-        file_size_bytes: u64,
+        data_files: Vec<iceberg::spec::DataFile>,
     ) -> anyhow::Result<iceberg::table::Table> {
-        // Build the DataFile descriptor
-        let data_file = DataFileBuilder::default()
-            .content(DataContentType::Data)
-            .file_path(data_file_path.to_string())
-            .file_format(DataFileFormat::Parquet)
-            .record_count(record_count)
-            .file_size_in_bytes(file_size_bytes)
-            .partition(Struct::empty())
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build DataFile: {}", e))?;
+        let total_records: u64 = data_files.iter().map(|f| f.record_count()).sum();
+        let file_count = data_files.len();
 
         debug!(
-            path = %data_file_path,
-            records = record_count,
-            size_bytes = file_size_bytes,
-            "committing data file to iceberg"
+            files = file_count,
+            records = total_records,
+            "committing data files to iceberg"
         );
 
         // Transaction: fast_append → commit
         let tx = Transaction::new(table);
-        let action = tx.fast_append().add_data_files(vec![data_file]);
+        let action = tx.fast_append().add_data_files(data_files);
         let tx = action
             .apply(tx)
             .map_err(|e| anyhow::anyhow!("fast_append apply failed: {}", e))?;
@@ -150,9 +145,9 @@ impl TableManager {
             .map_err(|e| anyhow::anyhow!("iceberg commit failed: {}", e))?;
 
         info!(
-            path = %data_file_path,
-            records = record_count,
-            "committed data file to iceberg table"
+            files = file_count,
+            records = total_records,
+            "committed data files to iceberg table"
         );
 
         Ok(updated_table)

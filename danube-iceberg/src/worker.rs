@@ -37,7 +37,7 @@ use crate::schema_resolver::SchemaResolver;
 use crate::segment_reader::{self, DecodedMessage};
 use crate::storage::StorageHandle;
 use crate::table_manager::TableManager;
-use crate::writer::{self, WriterConfig};
+use crate::writer;
 use danube_client::DanubeClient;
 use danube_core::proto::{
     storage_service_client::StorageServiceClient, ListSegmentDescriptorsRequest,
@@ -529,11 +529,11 @@ impl TopicWorker {
         }
     }
 
-    /// Flush the accumulated message buffer to a Parquet file and update checkpoint.
+    /// Flush the accumulated message buffer to Iceberg data files and update checkpoint.
     ///
     /// ## Commit ordering (at-least-once semantics)
     ///
-    /// The sequence is: **Write Parquet → Commit Iceberg → Save Checkpoint**.
+    /// The sequence is: **Write Data Files → Commit Iceberg → Save Checkpoint**.
     ///
     /// This guarantees the checkpoint never advances past data that was committed
     /// to the Iceberg catalog. A crash at any point produces at-worst duplicate
@@ -550,71 +550,54 @@ impl TopicWorker {
 
         let fq_topic = self.topic_config.fully_qualified_topic();
 
-        // Build RecordBatch
-        let (batch, schema_ref) = match mode {
-            SchemaMode::Envelope => {
-                let batch = schema::messages_to_envelope_batch(buffer)?;
-                let schema = batch.schema();
-                (batch, schema)
-            }
+        // Build RecordBatch from buffered messages
+        let batch = match mode {
+            SchemaMode::Envelope => schema::messages_to_envelope_batch(buffer)?,
             SchemaMode::Registry {
                 schema,
                 field_names,
                 field_types,
                 ..
-            } => {
-                let batch =
-                    schema::messages_to_registry_batch(buffer, field_names, field_types, schema)?;
-                (batch, schema.clone())
-            }
+            } => schema::messages_to_registry_batch(buffer, field_names, field_types, schema)?,
         };
 
-        // Step 1: Write Parquet file to object storage
-        let writer_config = WriterConfig {
-            output_prefix: self.checkpoint_store.output_prefix().to_string(),
-            namespace: self.topic_config.namespace.clone(),
-            topic: self.topic_config.topic.clone(),
-        };
+        let num_rows = batch.num_rows();
+        let target_size = self.compaction.target_parquet_size_mb * 1024 * 1024;
 
-        let result =
-            writer::write_parquet(&self.storage, &writer_config, schema_ref, &batch).await?;
+        // Get or create the Iceberg table
+        let tm = self.table_manager.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("table_manager is required — danube-iceberg must be configured with an Iceberg catalog")
+        })?;
 
-        // Step 2: Commit to Iceberg catalog BEFORE saving checkpoint.
-        // If this fails, the checkpoint is not advanced → on restart we
-        // re-process the same offsets (at-least-once, no data loss).
-        if let Some(ref tm) = self.table_manager {
-            let table = tm
-                .get_or_create_table(
-                    &self.topic_config.namespace,
-                    &self.topic_config.table_name,
-                    &batch.schema(),
-                )
-                .await?;
-
-            // Check for schema evolution (detection-only in iceberg-rust 0.9.1).
-            // Logs a warning if the Arrow schema has new columns that the
-            // Iceberg table schema doesn't know about yet.
-            if let Err(e) = tm.evolve_schema_if_needed(&table, &batch.schema()).await {
-                warn!(
-                    topic = %fq_topic,
-                    error = %e,
-                    "incompatible schema change detected, data file will still be committed \
-                     with the current Iceberg table schema"
-                );
-            }
-
-            tm.commit_data_file(
-                &table,
-                &result.path,
-                result.num_rows as u64,
-                result.file_size_bytes,
+        let table = tm
+            .get_or_create_table(
+                &self.topic_config.namespace,
+                &self.topic_config.table_name,
+                &batch.schema(),
             )
             .await?;
+
+        // Check for schema evolution (detection-only in iceberg-rust 0.9.1).
+        if let Err(e) = tm.evolve_schema_if_needed(&table, &batch.schema()).await {
+            warn!(
+                topic = %fq_topic,
+                error = %e,
+                "incompatible schema change detected, data file will still be committed \
+                 with the current Iceberg table schema"
+            );
         }
 
-        // Step 3: Save checkpoint LAST — only after data is safely committed.
+        // Write data files through iceberg's writer pipeline.
+        // This produces Parquet files with full column-level statistics.
+        let data_files = writer::write_data_files(&table, batch, target_size).await?;
+
+        // Commit data files to the Iceberg catalog.
+        // If this fails, checkpoint is NOT advanced → re-process on restart.
+        tm.commit_data_files(&table, data_files).await?;
+
+        // Save checkpoint LAST — only after data is safely committed.
         let max_offset = buffer.iter().map(|m| m.offset).max().unwrap_or(0);
-        checkpoint.advance(max_offset, result.num_rows);
+        checkpoint.advance(max_offset, num_rows);
 
         self.checkpoint_store
             .save(
@@ -627,10 +610,9 @@ impl TopicWorker {
 
         info!(
             topic = %fq_topic,
-            parquet_path = %result.path,
-            rows = result.num_rows,
+            rows = num_rows,
             last_offset = checkpoint.last_offset,
-            "flushed to parquet"
+            "flushed to iceberg"
         );
 
         buffer.clear();

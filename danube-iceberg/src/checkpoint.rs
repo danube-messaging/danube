@@ -59,10 +59,6 @@ impl CheckpointStore {
         }
     }
 
-    pub fn output_prefix(&self) -> &str {
-        &self.output_prefix
-    }
-
     /// Derive the checkpoint path for a topic.
     fn checkpoint_path(
         &self,

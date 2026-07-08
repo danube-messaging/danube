@@ -41,6 +41,7 @@ bytes = { workspace = true }
 chrono = { version = "0.4", features = ["clock"] }
 metrics = { workspace = true }
 anyhow = { workspace = true }
+async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 # Iceberg (catalog integration + table management — all backends compiled in)
