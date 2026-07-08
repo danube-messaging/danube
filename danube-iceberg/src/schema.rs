@@ -23,6 +23,10 @@ pub enum SchemaMode {
     Envelope,
     /// Schema from registry — payload fields promoted to typed Arrow columns.
     Registry {
+        /// Schema ID from the Danube Schema Registry.
+        schema_id: u64,
+        /// Schema version from the Danube Schema Registry.
+        schema_version: u32,
         /// Arrow schema with metadata columns + registry-defined payload columns.
         schema: Arc<Schema>,
         /// Ordered field names from the registry schema (payload columns only).

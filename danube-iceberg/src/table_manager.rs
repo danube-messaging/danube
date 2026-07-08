@@ -158,12 +158,19 @@ impl TableManager {
         Ok(updated_table)
     }
 
-    /// Check if the table schema needs evolution (new fields) and apply if needed.
+    /// Check if the table schema needs evolution (new fields) and report.
     ///
-    /// Iceberg supports additive schema evolution — we can add new columns without
-    /// breaking existing data. This is called when the inferred JSON schema changes
-    /// (e.g., a producer adds a new field to their JSON payloads).
-    #[allow(dead_code)] // Prepared for schema evolution — will be called from worker.rs
+    /// Iceberg supports additive schema evolution (adding nullable columns
+    /// without rewriting data), but `iceberg-rust 0.9.1` does not expose
+    /// `update_schema()` on `Transaction`. This method performs detection
+    /// only — it compares the existing table schema against the new Arrow
+    /// schema and logs the result.
+    ///
+    /// When `iceberg-rust` adds schema evolution to its Transaction API,
+    /// this method should be updated to apply the change atomically.
+    ///
+    /// Returns `Ok(true)` if new fields were detected, `Ok(false)` if
+    /// schemas are identical, or `Err` on incompatible type changes.
     pub async fn evolve_schema_if_needed(
         &self,
         table: &iceberg::table::Table,
@@ -178,18 +185,20 @@ impl TableManager {
                     return Ok(false); // No evolution needed
                 }
 
+                let field_names: Vec<_> = new_fields.iter().map(|f| f.name.as_str()).collect();
                 warn!(
                     new_fields = new_fields.len(),
-                    "schema evolution detected — new fields will be added on next table creation"
+                    field_names = ?field_names,
+                    "schema evolution detected — new columns found but iceberg-rust 0.9.1 \
+                     does not support Transaction::update_schema(). New Parquet files will \
+                     contain the additional columns; the Iceberg table schema will be updated \
+                     when the crate adds this capability."
                 );
 
-                // Note: Full schema evolution via Transaction is complex in iceberg-rs 0.9.1.
-                // For now, we log the diff. The next table recreation will pick up new fields.
-                // TODO: Implement Transaction-based schema evolution when iceberg-rs API stabilizes.
                 Ok(true)
             }
             Err(e) => {
-                warn!(error = %e, "incompatible schema change detected");
+                warn!(error = %e, "incompatible schema change detected — rejecting");
                 Err(e)
             }
         }

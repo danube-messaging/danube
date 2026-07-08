@@ -93,7 +93,7 @@ impl SchemaResolver {
             .await
             .map_err(|e| anyhow::anyhow!("failed to fetch schema {}/{}: {}", schema_id, version, e))?;
 
-        let mode = self.convert_schema_info(&schema_info)?;
+        let mode = self.convert_schema_info(schema_id, version, &schema_info)?;
 
         // Cache the result
         self.cache.insert((schema_id, version), mode.clone());
@@ -109,7 +109,12 @@ impl SchemaResolver {
     }
 
     /// Convert a SchemaInfo from the registry to a SchemaMode.
-    fn convert_schema_info(&self, info: &SchemaInfo) -> anyhow::Result<SchemaMode> {
+    fn convert_schema_info(
+        &self,
+        schema_id: u64,
+        version: u32,
+        info: &SchemaInfo,
+    ) -> anyhow::Result<SchemaMode> {
         match info.schema_type.as_str() {
             "json_schema" | "json" => {
                 let definition = info.schema_definition_as_string().ok_or_else(|| {
@@ -118,6 +123,8 @@ impl SchemaResolver {
                 let (field_names, field_types) = json_schema_to_arrow_fields(&definition)?;
                 let schema = build_registry_schema(&field_names, &field_types);
                 Ok(SchemaMode::Registry {
+                    schema_id,
+                    schema_version: version,
                     schema,
                     field_names,
                     field_types,
@@ -130,6 +137,8 @@ impl SchemaResolver {
                 let (field_names, field_types) = avro_schema_to_arrow_fields(&definition)?;
                 let schema = build_registry_schema(&field_names, &field_types);
                 Ok(SchemaMode::Registry {
+                    schema_id,
+                    schema_version: version,
                     schema,
                     field_names,
                     field_types,

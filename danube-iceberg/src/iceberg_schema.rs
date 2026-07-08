@@ -29,7 +29,6 @@ pub fn arrow_to_iceberg_schema(arrow_schema: &ArrowSchema) -> anyhow::Result<Ice
 ///
 /// Returns `Ok(new_fields)` with the list of fields to add, or `Err` if there
 /// is an incompatible change.
-#[allow(dead_code)] // Prepared for schema evolution — will be called from worker.rs
 pub fn schema_diff(
     existing: &IcebergSchema,
     new: &IcebergSchema,
