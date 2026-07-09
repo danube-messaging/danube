@@ -39,7 +39,7 @@ Danube Cluster                danube-iceberg                 Analytics Engine
 - **Independent scaling**: Run one instance per cluster, or scale horizontally with topic partitioning.
 - **Crash-safe**: Checkpoints persisted to object storage. Restart at any time without data loss (at-least-once semantics).
 - **Shared connection pool**: All topic workers share a single `DanubeClient` with HTTP/2 multiplexed connections — even 100+ topics use one TCP connection.
-- **Schema-aware**: Resolves schemas from the Danube Schema Registry when available. Falls back to an envelope schema (offset, publish_time, producer_name, payload) for schema-less topics.
+- **Schema-aware**: Resolves schemas from the Danube Schema Registry when available, with native decoding for both **JSON** and **Avro** payload formats (`arrow-json` and `arrow-avro`). Falls back to an envelope schema (offset, publish_time, producer_name, payload) for schema-less topics.
 - **Schema evolution detection**: Detects new columns in incoming data and logs warnings. Full schema evolution will be applied when iceberg-rust adds `Transaction::update_schema()`.
 
 ### Writer Pipeline
@@ -167,7 +167,7 @@ services:
 
 ```bash
 cargo build --package danube-iceberg
-cargo test --package danube-iceberg      # 41 tests
+cargo test --package danube-iceberg      # 49 tests
 cargo run --package danube-iceberg -- --config config-example.yaml
 ```
 
