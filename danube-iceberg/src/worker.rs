@@ -219,18 +219,27 @@ impl TopicWorker {
                     break;
                 }
 
-                self.process_segment(
-                    seg,
-                    &topic_path,
-                    &fq_topic,
-                    &mut buf,
-                    &mut schema_mode,
-                    &mut schema_resolved_successfully,
-                    &mut checkpoint,
-                    target_size,
-                    max_flush_interval,
-                )
-                .await;
+                if let Err(e) = self
+                    .process_segment(
+                        seg,
+                        &topic_path,
+                        &fq_topic,
+                        &mut buf,
+                        &mut schema_mode,
+                        &mut schema_resolved_successfully,
+                        &mut checkpoint,
+                        target_size,
+                        max_flush_interval,
+                    )
+                    .await
+                {
+                    warn!(
+                        topic = %fq_topic,
+                        error = %e,
+                        "segment processing failed, will retry on next poll"
+                    );
+                    break;
+                }
             }
 
             // ── Time-based flush ────────────────────────────────────────
@@ -256,6 +265,9 @@ impl TopicWorker {
     // -----------------------------------------------------------------------
 
     /// Process a single segment: read, resolve schema, buffer, and flush if needed.
+    ///
+    /// Returns `Err` if a flush fails — the caller must stop processing
+    /// further segments to prevent mixing schemas in the buffer.
     async fn process_segment(
         &mut self,
         seg: &SegmentDescriptorProto,
@@ -267,25 +279,40 @@ impl TopicWorker {
         checkpoint: &mut Checkpoint,
         target_size: usize,
         max_flush_interval: Duration,
-    ) {
-        let messages = match segment_reader::read_segment(
+    ) -> anyhow::Result<()> {
+        let decode_result = match segment_reader::read_segment(
             &self.storage,
             topic_path,
             &seg.segment_id,
         )
         .await
         {
-            Ok(msgs) if msgs.is_empty() => return,
-            Ok(msgs) => msgs,
+            Ok(result) if result.messages.is_empty() && result.corrupt_at_offset.is_none() => {
+                return Ok(());
+            }
+            Ok(result) => result,
             Err(e) => {
                 warn!(
                     segment_id = %seg.segment_id,
                     error = %e,
                     "failed to read segment, skipping"
                 );
-                return;
+                return Ok(());
             }
         };
+
+        let is_corrupt = decode_result.corrupt_at_offset.is_some();
+        let messages = decode_result.messages;
+
+        if is_corrupt {
+            warn!(
+                topic = %fq_topic,
+                segment_id = %seg.segment_id,
+                corrupt_at_offset = ?decode_result.corrupt_at_offset,
+                good_messages = messages.len(),
+                "corrupt segment detected — will flush partial data and skip past segment"
+            );
+        }
 
         let payload_bytes: usize = messages.iter().map(|m| m.message.payload.len()).sum();
 
@@ -294,11 +321,14 @@ impl TopicWorker {
             segment_id = %seg.segment_id,
             messages = messages.len(),
             bytes = payload_bytes,
+            corrupt = is_corrupt,
             "read segment"
         );
 
         // Schema resolution: first-time, retry on failure, or version bump.
-        if self.needs_schema_resolve(schema_mode, schema_resolved_successfully, &messages) {
+        if !messages.is_empty()
+            && self.needs_schema_resolve(schema_mode, schema_resolved_successfully, &messages)
+        {
             // Flush buffered data before switching schemas.
             if !buf.is_empty() {
                 if let Some(ref mode) = schema_mode {
@@ -314,9 +344,9 @@ impl TopicWorker {
                             error!(
                                 topic = %fq_topic,
                                 error = %e,
-                                "flush at schema boundary failed"
+                                "flush at schema boundary failed, halting segment processing"
                             );
-                            return;
+                            return Err(e);
                         }
                     }
                 }
@@ -331,7 +361,51 @@ impl TopicWorker {
             .await;
         }
 
-        buf.extend(messages, payload_bytes);
+        if !messages.is_empty() {
+            buf.extend(messages, payload_bytes);
+        }
+
+        // If segment was corrupt, flush whatever we have and skip past it.
+        // This prevents the infinite loop where we re-fetch the same corrupt
+        // segment on every poll cycle.
+        if is_corrupt {
+            if !buf.is_empty() {
+                if let Some(ref mode) = schema_mode {
+                    self.try_flush(buf, mode, checkpoint, fq_topic).await;
+                }
+            }
+
+            // Advance checkpoint past the corrupt segment's end offset so we
+            // don't re-fetch it. Use the segment descriptor's end_offset.
+            let skip_offset = seg.end_offset;
+            if skip_offset > checkpoint.last_offset {
+                warn!(
+                    topic = %fq_topic,
+                    segment_id = %seg.segment_id,
+                    skipping_to_offset = skip_offset,
+                    "advancing checkpoint past corrupt segment"
+                );
+                checkpoint.last_offset = skip_offset;
+                if let Err(e) = self
+                    .checkpoint_store
+                    .save(
+                        &self.storage,
+                        &self.topic_config.namespace,
+                        &self.topic_config.topic,
+                        checkpoint,
+                    )
+                    .await
+                {
+                    error!(
+                        topic = %fq_topic,
+                        error = %e,
+                        "failed to save checkpoint after skipping corrupt segment"
+                    );
+                }
+            }
+
+            return Ok(());
+        }
 
         // Flush if buffer exceeds thresholds.
         if buf.should_flush(target_size, max_flush_interval) {
@@ -339,6 +413,8 @@ impl TopicWorker {
                 self.try_flush(buf, mode, checkpoint, fq_topic).await;
             }
         }
+
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -554,11 +630,16 @@ impl TopicWorker {
         let batch = match mode {
             SchemaMode::Envelope => schema::messages_to_envelope_batch(buffer)?,
             SchemaMode::Registry {
+                schema_id,
                 schema,
-                field_names,
-                field_types,
+                payload_format,
                 ..
-            } => schema::messages_to_registry_batch(buffer, field_names, field_types, schema)?,
+            } => schema::messages_to_registry_batch(
+                buffer,
+                schema,
+                payload_format,
+                *schema_id,
+            )?,
         };
 
         let num_rows = batch.num_rows();

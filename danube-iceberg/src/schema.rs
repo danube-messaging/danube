@@ -16,6 +16,24 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use std::sync::Arc;
 
+/// How message payloads are encoded on the wire.
+///
+/// This determines how `messages_to_registry_batch` decodes each message's
+/// payload bytes before feeding them to the Arrow batch builder.
+#[derive(Debug, Clone)]
+pub enum PayloadFormat {
+    /// Payloads are JSON text — can be fed directly to `arrow_json::ReaderBuilder`.
+    Json,
+    /// Payloads are Avro binary — decoded directly to Arrow via
+    /// `arrow_avro::reader::Decoder` using Confluent wire framing.
+    ///
+    /// Carries the raw Avro schema JSON needed by the Confluent decoder.
+    Avro {
+        /// Raw Avro schema JSON definition from the Danube Schema Registry.
+        schema_json: String,
+    },
+}
+
 /// The resolved schema mode for a topic.
 #[derive(Debug, Clone)]
 pub enum SchemaMode {
@@ -29,10 +47,8 @@ pub enum SchemaMode {
         schema_version: u32,
         /// Arrow schema with metadata columns + registry-defined payload columns.
         schema: Arc<Schema>,
-        /// Ordered field names from the registry schema (payload columns only).
-        field_names: Vec<String>,
-        /// Arrow data types for each registry field.
-        field_types: Vec<DataType>,
+        /// How the payload bytes are encoded (JSON text or Avro binary).
+        payload_format: PayloadFormat,
     },
 }
 
@@ -124,27 +140,26 @@ pub fn messages_to_envelope_batch(
 ///
 /// Message metadata (offset, publish_time, producer_name, routing_key) are
 /// always included as the first 4 columns. The remaining columns come from
-/// the registry schema — payload is parsed as JSON and fields are extracted
-/// into typed columns.
+/// the registry schema.
+///
+/// The `payload_format` determines how payload bytes are decoded:
+/// - **JSON**: fed directly to `arrow_json::ReaderBuilder`.
+/// - **Avro**: each raw datum is wrapped in a Confluent wire-format frame
+///   (`0x00` + 4-byte BE schema_id + Avro body) and decoded directly to Arrow
+///   via `arrow_avro::reader::Decoder` — no intermediate JSON conversion.
 pub fn messages_to_registry_batch(
     messages: &[crate::segment_reader::DecodedMessage],
-    field_names: &[String],
-    field_types: &[DataType],
     schema: &Arc<Schema>,
+    payload_format: &PayloadFormat,
+    schema_id: u64,
 ) -> anyhow::Result<RecordBatch> {
     let n = messages.len();
 
-    // Metadata columns
+    // Metadata columns (built manually — not part of the payload)
     let mut offsets = Int64Builder::with_capacity(n);
     let mut publish_times = Int64Builder::with_capacity(n);
     let mut producers = StringBuilder::with_capacity(n, n * 32);
     let mut routing_keys = StringBuilder::with_capacity(n, n * 16);
-
-    // Registry-defined payload columns — one builder per field
-    let mut col_builders: Vec<ColumnBuilder> = field_types
-        .iter()
-        .map(|dt| ColumnBuilder::new(dt, n))
-        .collect();
 
     for dm in messages {
         let msg = &dm.message;
@@ -155,25 +170,22 @@ pub fn messages_to_registry_batch(
             Some(k) => routing_keys.append_value(k),
             None => routing_keys.append_null(),
         }
-
-        // Parse the JSON payload
-        let json_obj: Option<serde_json::Map<String, serde_json::Value>> =
-            serde_json::from_slice(&msg.payload)
-                .ok()
-                .and_then(|v: serde_json::Value| {
-                    if let serde_json::Value::Object(m) = v {
-                        Some(m)
-                    } else {
-                        None
-                    }
-                });
-
-        for (i, name) in field_names.iter().enumerate() {
-            let value = json_obj.as_ref().and_then(|m| m.get(name));
-            col_builders[i].append(value);
-        }
     }
 
+    // Build the payload-only schema (skip the 4 metadata columns)
+    let payload_fields: Vec<arrow_schema::FieldRef> =
+        schema.fields().iter().skip(4).cloned().collect();
+    let payload_schema = Arc::new(Schema::new(payload_fields));
+
+    // Build the payload RecordBatch according to the wire format
+    let payload_batch = match payload_format {
+        PayloadFormat::Json => decode_json_payloads(messages, &payload_schema)?,
+        PayloadFormat::Avro { schema_json } => {
+            decode_avro_payloads(messages, schema_json, schema_id)?
+        }
+    };
+
+    // Merge: metadata columns + payload columns → final RecordBatch
     let mut arrays: Vec<Arc<dyn arrow_array::Array>> = vec![
         Arc::new(offsets.finish()),
         Arc::new(publish_times.finish()),
@@ -181,85 +193,117 @@ pub fn messages_to_registry_batch(
         Arc::new(routing_keys.finish()),
     ];
 
-    for builder in &mut col_builders {
-        arrays.push(builder.finish());
+    for i in 0..payload_batch.num_columns() {
+        arrays.push(payload_batch.column(i).clone());
     }
 
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     Ok(batch)
 }
 
-// ============================================================================
-// Dynamic column builder (per registry-defined field)
-// ============================================================================
+/// Decode JSON text payloads into a payload-only RecordBatch.
+///
+/// Each message's payload is expected to be a JSON object. Invalid JSON
+/// payloads emit an empty object `{}` so the row gets null values for all
+/// fields rather than failing the entire batch.
+fn decode_json_payloads(
+    messages: &[crate::segment_reader::DecodedMessage],
+    payload_schema: &Arc<Schema>,
+) -> anyhow::Result<RecordBatch> {
+    let n = messages.len();
+    let mut json_lines: Vec<u8> = Vec::with_capacity(n * 256);
 
-enum ColumnBuilder {
-    Boolean(arrow_array::builder::BooleanBuilder),
-    Int64(Int64Builder),
-    Float64(arrow_array::builder::Float64Builder),
-    Utf8(StringBuilder),
+    for dm in messages {
+        if serde_json::from_slice::<serde_json::Value>(&dm.message.payload).is_ok() {
+            json_lines.extend_from_slice(&dm.message.payload);
+        } else {
+            json_lines.extend_from_slice(b"{}");
+        }
+        json_lines.push(b'\n');
+    }
+
+    let cursor = std::io::Cursor::new(json_lines);
+    let mut reader = arrow_json::ReaderBuilder::new(payload_schema.clone())
+        .with_batch_size(n)
+        .build(cursor)?;
+
+    let batch = reader
+        .next()
+        .transpose()?
+        .unwrap_or_else(|| RecordBatch::new_empty(payload_schema.clone()));
+
+    Ok(batch)
 }
 
-impl ColumnBuilder {
-    fn new(dt: &DataType, capacity: usize) -> Self {
-        match dt {
-            DataType::Boolean => {
-                Self::Boolean(arrow_array::builder::BooleanBuilder::with_capacity(capacity))
+/// Decode Avro binary payloads directly to a payload-only RecordBatch.
+///
+/// Uses `arrow_avro::reader::Decoder` with Confluent wire framing. Each raw
+/// Avro datum is prefixed with a 5-byte Confluent header:
+/// `[0x00, schema_id_be[0..4]]` before being fed to the decoder.
+///
+/// This provides native Avro → Arrow type mapping without any intermediate
+/// JSON serialization — `arrow-avro` handles all Avro types (records, arrays,
+/// maps, unions, logical types) directly.
+fn decode_avro_payloads(
+    messages: &[crate::segment_reader::DecodedMessage],
+    avro_schema_json: &str,
+    schema_id: u64,
+) -> anyhow::Result<RecordBatch> {
+
+    // Register the Avro schema in a Confluent-style store keyed by numeric ID
+    let mut store = arrow_avro::schema::SchemaStore::new_with_type(
+        arrow_avro::schema::FingerprintAlgorithm::Id,
+    );
+    let avro_schema = arrow_avro::schema::AvroSchema::new(avro_schema_json.to_string());
+    store.set(
+        arrow_avro::schema::Fingerprint::Id(schema_id as u32),
+        avro_schema,
+    )?;
+
+    // Build a Confluent-aware decoder
+    let mut decoder = arrow_avro::reader::ReaderBuilder::new()
+        .with_writer_schema_store(store)
+        .with_batch_size(messages.len())
+        .build_decoder()?;
+
+    // Frame each raw Avro datum as a Confluent message and decode
+    let confluent_id = (schema_id as u32).to_be_bytes();
+    for dm in messages {
+        let payload = &dm.message.payload;
+        let mut frame = Vec::with_capacity(5 + payload.len());
+        frame.push(0x00); // Confluent magic byte
+        frame.extend_from_slice(&confluent_id);
+        frame.extend_from_slice(payload);
+
+        match decoder.decode(&frame) {
+            Ok(consumed) => {
+                if consumed != frame.len() {
+                    tracing::warn!(
+                        offset = dm.offset,
+                        consumed,
+                        frame_len = frame.len(),
+                        "Avro decoder didn't consume entire frame"
+                    );
+                }
             }
-            DataType::Int64 => Self::Int64(Int64Builder::with_capacity(capacity)),
-            DataType::Float64 => {
-                Self::Float64(arrow_array::builder::Float64Builder::with_capacity(capacity))
+            Err(e) => {
+                tracing::warn!(
+                    offset = dm.offset,
+                    error = %e,
+                    "failed to decode Avro payload — row may be missing"
+                );
             }
-            _ => Self::Utf8(StringBuilder::with_capacity(capacity, capacity * 32)),
         }
     }
 
-    fn append(&mut self, value: Option<&serde_json::Value>) {
-        match self {
-            Self::Boolean(b) => match value {
-                Some(serde_json::Value::Bool(v)) => b.append_value(*v),
-                Some(serde_json::Value::Null) | None => b.append_null(),
-                _ => b.append_null(),
-            },
-            Self::Int64(b) => match value {
-                Some(serde_json::Value::Number(n)) => {
-                    if let Some(v) = n.as_i64() {
-                        b.append_value(v);
-                    } else if let Some(v) = n.as_f64() {
-                        b.append_value(v as i64);
-                    } else {
-                        b.append_null();
-                    }
-                }
-                Some(serde_json::Value::Null) | None => b.append_null(),
-                _ => b.append_null(),
-            },
-            Self::Float64(b) => match value {
-                Some(serde_json::Value::Number(n)) => {
-                    if let Some(v) = n.as_f64() {
-                        b.append_value(v);
-                    } else {
-                        b.append_null();
-                    }
-                }
-                Some(serde_json::Value::Null) | None => b.append_null(),
-                _ => b.append_null(),
-            },
-            Self::Utf8(b) => match value {
-                Some(serde_json::Value::String(s)) => b.append_value(s),
-                Some(serde_json::Value::Null) | None => b.append_null(),
-                // Arrays and objects → JSON stringify
-                Some(other) => b.append_value(other.to_string()),
-            },
-        }
-    }
+    // Flush all decoded rows into a single RecordBatch
+    let batch = decoder
+        .flush()?
+        .unwrap_or_else(|| RecordBatch::new_empty(Arc::new(Schema::empty())));
 
-    fn finish(&mut self) -> Arc<dyn arrow_array::Array> {
-        match self {
-            Self::Boolean(b) => Arc::new(b.finish()),
-            Self::Int64(b) => Arc::new(b.finish()),
-            Self::Float64(b) => Arc::new(b.finish()),
-            Self::Utf8(b) => Arc::new(b.finish()),
-        }
-    }
+    Ok(batch)
 }
+
+#[cfg(test)]
+#[path = "schema_tests.rs"]
+mod tests;

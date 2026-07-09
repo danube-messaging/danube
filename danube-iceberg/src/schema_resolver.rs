@@ -20,7 +20,7 @@
 //! | `number`      | Envelope mode                           |
 //! | `protobuf`    | Envelope mode (future: proto → Arrow)   |
 
-use crate::schema::SchemaMode;
+use crate::schema::{PayloadFormat, SchemaMode};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use danube_client::{DanubeClient, SchemaInfo};
 use danube_core::message::StreamMessage;
@@ -67,31 +67,24 @@ impl SchemaResolver {
         };
 
         // Use version from the message, default to latest (version 1)
-        let version = messages
-            .iter()
-            .find_map(|m| m.schema_version)
-            .unwrap_or(1);
+        let version = messages.iter().find_map(|m| m.schema_version).unwrap_or(1);
 
         // Check cache
         if let Some(cached) = self.cache.get(&(schema_id, version)) {
-            debug!(
-                schema_id,
-                version, "schema cache hit"
-            );
+            debug!(schema_id, version, "schema cache hit");
             return Ok(cached.clone());
         }
 
         // Fetch from registry
-        info!(
-            schema_id,
-            version, "fetching schema from registry"
-        );
+        info!(schema_id, version, "fetching schema from registry");
 
         let schema_client = self.danube_client.schema();
         let schema_info = schema_client
             .get_schema_version(schema_id, Some(version))
             .await
-            .map_err(|e| anyhow::anyhow!("failed to fetch schema {}/{}: {}", schema_id, version, e))?;
+            .map_err(|e| {
+                anyhow::anyhow!("failed to fetch schema {}/{}: {}", schema_id, version, e)
+            })?;
 
         let mode = self.convert_schema_info(schema_id, version, &schema_info)?;
 
@@ -117,31 +110,32 @@ impl SchemaResolver {
     ) -> anyhow::Result<SchemaMode> {
         match info.schema_type.as_str() {
             "json_schema" | "json" => {
-                let definition = info.schema_definition_as_string().ok_or_else(|| {
-                    anyhow::anyhow!("json_schema definition is not valid UTF-8")
-                })?;
+                let definition = info
+                    .schema_definition_as_string()
+                    .ok_or_else(|| anyhow::anyhow!("json_schema definition is not valid UTF-8"))?;
                 let (field_names, field_types) = json_schema_to_arrow_fields(&definition)?;
                 let schema = build_registry_schema(&field_names, &field_types);
                 Ok(SchemaMode::Registry {
                     schema_id,
                     schema_version: version,
                     schema,
-                    field_names,
-                    field_types,
+                    payload_format: PayloadFormat::Json,
                 })
             }
             "avro" => {
-                let definition = info.schema_definition_as_string().ok_or_else(|| {
-                    anyhow::anyhow!("avro schema definition is not valid UTF-8")
-                })?;
+                let definition = info
+                    .schema_definition_as_string()
+                    .ok_or_else(|| anyhow::anyhow!("avro schema definition is not valid UTF-8"))?;
                 let (field_names, field_types) = avro_schema_to_arrow_fields(&definition)?;
                 let schema = build_registry_schema(&field_names, &field_types);
+
                 Ok(SchemaMode::Registry {
                     schema_id,
                     schema_version: version,
                     schema,
-                    field_names,
-                    field_types,
+                    payload_format: PayloadFormat::Avro {
+                        schema_json: definition.to_string(),
+                    },
                 })
             }
             // bytes, string, number, protobuf → no structured payload
@@ -177,10 +171,11 @@ fn build_registry_schema(field_names: &[String], field_types: &[DataType]) -> Ar
 // JSON Schema → Arrow conversion
 // ============================================================================
 
-/// Parse a JSON Schema document and extract flat field definitions as Arrow types.
+/// Parse a JSON Schema document and extract field definitions as Arrow types.
 ///
-/// Supports flat objects only (no `$ref`, `allOf`, nested objects).
-/// Nested objects and arrays are stringified to JSON (stored as Utf8).
+/// Recursively converts nested objects to `Struct` and arrays to `List`,
+/// taking full advantage of `arrow_json::ReaderBuilder`'s native complex
+/// type support.
 ///
 /// ## Type mapping
 ///
@@ -190,11 +185,9 @@ fn build_registry_schema(field_names: &[String], field_types: &[DataType]) -> Ar
 /// | `integer`        | `Int64`    |
 /// | `number`         | `Float64`  |
 /// | `boolean`        | `Boolean`  |
-/// | `object`         | `Utf8` (JSON stringified) |
-/// | `array`          | `Utf8` (JSON stringified) |
-fn json_schema_to_arrow_fields(
-    definition: &str,
-) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
+/// | `object`         | `Struct` (recursive) |
+/// | `array`          | `List` (of items type) |
+fn json_schema_to_arrow_fields(definition: &str) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
     let schema: serde_json::Value = serde_json::from_str(definition)
         .map_err(|e| anyhow::anyhow!("invalid JSON Schema: {}", e))?;
 
@@ -207,21 +200,7 @@ fn json_schema_to_arrow_fields(
     let mut field_types = Vec::new();
 
     for (name, prop) in properties {
-        let json_type = prop
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("string");
-
-        let arrow_type = match json_type {
-            "string" => DataType::Utf8,
-            "integer" => DataType::Int64,
-            "number" => DataType::Float64,
-            "boolean" => DataType::Boolean,
-            // Nested objects and arrays → stringify as JSON
-            "object" | "array" => DataType::Utf8,
-            _ => DataType::Utf8,
-        };
-
+        let arrow_type = json_schema_type_to_arrow(prop);
         field_names.push(name.clone());
         field_types.push(arrow_type);
     }
@@ -229,11 +208,60 @@ fn json_schema_to_arrow_fields(
     Ok((field_names, field_types))
 }
 
+/// Convert a single JSON Schema type definition to an Arrow DataType.
+///
+/// Handles nested `object` (→ `Struct`) and `array` (→ `List`) recursively.
+fn json_schema_type_to_arrow(prop: &serde_json::Value) -> DataType {
+    let json_type = prop
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("string");
+
+    match json_type {
+        "string" => DataType::Utf8,
+        "integer" => DataType::Int64,
+        "number" => DataType::Float64,
+        "boolean" => DataType::Boolean,
+        "object" => {
+            // Recurse into nested object properties → Struct
+            if let Some(props) = prop.get("properties").and_then(|p| p.as_object()) {
+                let fields: Vec<Field> = props
+                    .iter()
+                    .map(|(name, sub_prop)| {
+                        Field::new(name, json_schema_type_to_arrow(sub_prop), true)
+                    })
+                    .collect();
+                if fields.is_empty() {
+                    DataType::Utf8 // empty object → stringify
+                } else {
+                    DataType::Struct(fields.into())
+                }
+            } else {
+                DataType::Utf8 // no properties defined → stringify
+            }
+        }
+        "array" => {
+            // Convert items type → List
+            if let Some(items) = prop.get("items") {
+                let item_type = json_schema_type_to_arrow(items);
+                DataType::List(Arc::new(Field::new("item", item_type, true)))
+            } else {
+                // No items schema → list of strings
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+            }
+        }
+        _ => DataType::Utf8,
+    }
+}
+
 // ============================================================================
 // Avro Schema → Arrow conversion
 // ============================================================================
 
 /// Parse an Avro schema and extract field definitions as Arrow types.
+///
+/// Recursively converts nested records to `Struct`, arrays to `List`,
+/// and maps to `Map`, taking full advantage of `arrow_json::ReaderBuilder`.
 ///
 /// ## Type mapping
 ///
@@ -248,11 +276,10 @@ fn json_schema_to_arrow_fields(
 /// | `bytes`     | `Binary`   |
 /// | `null`      | `Utf8`     |
 /// | union       | inner type (if `["null", T]`) |
-/// | record/map  | `Utf8` (JSON stringified) |
-/// | array       | `Utf8` (JSON stringified) |
-fn avro_schema_to_arrow_fields(
-    definition: &str,
-) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
+/// | record      | `Struct` (recursive) |
+/// | array       | `List` (of items type) |
+/// | map         | `Map<Utf8, V>` |
+fn avro_schema_to_arrow_fields(definition: &str) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
     let schema: serde_json::Value = serde_json::from_str(definition)
         .map_err(|e| anyhow::anyhow!("invalid Avro schema: {}", e))?;
 
@@ -284,6 +311,9 @@ fn avro_schema_to_arrow_fields(
 }
 
 /// Convert a single Avro type to an Arrow DataType.
+///
+/// Handles nested records (→ `Struct`), arrays (→ `List`), and
+/// maps (→ `Map<Utf8, V>`) recursively.
 fn avro_type_to_arrow(avro_type: &serde_json::Value) -> DataType {
     match avro_type {
         serde_json::Value::String(s) => match s.as_str() {
@@ -293,7 +323,7 @@ fn avro_type_to_arrow(avro_type: &serde_json::Value) -> DataType {
             "boolean" => DataType::Boolean,
             "bytes" => DataType::Binary,
             "null" => DataType::Utf8,
-            // Named types (records, enums, fixed) → stringify
+            // Named types (enums, fixed) → stringify
             _ => DataType::Utf8,
         },
         // Union type: ["null", "string"] → use the non-null type
@@ -309,110 +339,66 @@ fn avro_type_to_arrow(avro_type: &serde_json::Value) -> DataType {
                 DataType::Utf8
             }
         }
-        // Complex type object (record, map, array, etc.) → stringify
+        // Complex type object: {"type": "record", ...}, {"type": "array", ...}, etc.
+        serde_json::Value::Object(obj) => {
+            let type_name = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match type_name {
+                "record" => {
+                    // Nested record → Struct
+                    if let Some(fields) = obj.get("fields").and_then(|f| f.as_array()) {
+                        let arrow_fields: Vec<Field> = fields
+                            .iter()
+                            .filter_map(|f| {
+                                let name = f.get("name")?.as_str()?;
+                                let ft = f.get("type")?;
+                                Some(Field::new(name, avro_type_to_arrow(ft), true))
+                            })
+                            .collect();
+                        if arrow_fields.is_empty() {
+                            DataType::Utf8
+                        } else {
+                            DataType::Struct(arrow_fields.into())
+                        }
+                    } else {
+                        DataType::Utf8
+                    }
+                }
+                "array" => {
+                    // Avro array → List
+                    let item_type = obj
+                        .get("items")
+                        .map(avro_type_to_arrow)
+                        .unwrap_or(DataType::Utf8);
+                    DataType::List(Arc::new(Field::new("item", item_type, true)))
+                }
+                "map" => {
+                    // Avro map → Map<Utf8, V>
+                    let value_type = obj
+                        .get("values")
+                        .map(avro_type_to_arrow)
+                        .unwrap_or(DataType::Utf8);
+                    DataType::Map(
+                        Arc::new(Field::new(
+                            "entries",
+                            DataType::Struct(
+                                vec![
+                                    Field::new("key", DataType::Utf8, false),
+                                    Field::new("value", value_type, true),
+                                ]
+                                .into(),
+                            ),
+                            false,
+                        )),
+                        false,
+                    )
+                }
+                _ => DataType::Utf8,
+            }
+        }
         _ => DataType::Utf8,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn json_schema_flat_object() {
-        let schema = r#"{
-            "type": "object",
-            "properties": {
-                "temperature": { "type": "number" },
-                "humidity": { "type": "integer" },
-                "unit": { "type": "string" },
-                "active": { "type": "boolean" }
-            }
-        }"#;
-
-        let (names, types) = json_schema_to_arrow_fields(schema).unwrap();
-        assert_eq!(names.len(), 4);
-        assert!(names.contains(&"temperature".to_string()));
-        assert!(names.contains(&"humidity".to_string()));
-        assert!(names.contains(&"unit".to_string()));
-        assert!(names.contains(&"active".to_string()));
-
-        let temp_idx = names.iter().position(|n| n == "temperature").unwrap();
-        assert_eq!(types[temp_idx], DataType::Float64);
-
-        let humid_idx = names.iter().position(|n| n == "humidity").unwrap();
-        assert_eq!(types[humid_idx], DataType::Int64);
-    }
-
-    #[test]
-    fn json_schema_nested_stringified() {
-        let schema = r#"{
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
-                "metadata": { "type": "object" },
-                "tags": { "type": "array" }
-            }
-        }"#;
-
-        let (names, types) = json_schema_to_arrow_fields(schema).unwrap();
-        let meta_idx = names.iter().position(|n| n == "metadata").unwrap();
-        assert_eq!(types[meta_idx], DataType::Utf8, "nested object → Utf8");
-
-        let tags_idx = names.iter().position(|n| n == "tags").unwrap();
-        assert_eq!(types[tags_idx], DataType::Utf8, "array → Utf8");
-    }
-
-    #[test]
-    fn avro_schema_flat_record() {
-        let schema = r#"{
-            "type": "record",
-            "name": "SensorReading",
-            "fields": [
-                { "name": "sensor_id", "type": "string" },
-                { "name": "temperature", "type": "double" },
-                { "name": "count", "type": "long" },
-                { "name": "active", "type": "boolean" }
-            ]
-        }"#;
-
-        let (names, types) = avro_schema_to_arrow_fields(schema).unwrap();
-        assert_eq!(names, vec!["sensor_id", "temperature", "count", "active"]);
-        assert_eq!(types[0], DataType::Utf8);
-        assert_eq!(types[1], DataType::Float64);
-        assert_eq!(types[2], DataType::Int64);
-        assert_eq!(types[3], DataType::Boolean);
-    }
-
-    #[test]
-    fn avro_schema_nullable_union() {
-        let schema = r#"{
-            "type": "record",
-            "name": "Event",
-            "fields": [
-                { "name": "name", "type": "string" },
-                { "name": "value", "type": ["null", "double"] }
-            ]
-        }"#;
-
-        let (names, types) = avro_schema_to_arrow_fields(schema).unwrap();
-        assert_eq!(names, vec!["name", "value"]);
-        assert_eq!(types[0], DataType::Utf8);
-        assert_eq!(types[1], DataType::Float64, "union [null, double] → Float64");
-    }
-
-    #[test]
-    fn build_registry_schema_has_metadata_columns() {
-        let names = vec!["temp".to_string(), "unit".to_string()];
-        let types = vec![DataType::Float64, DataType::Utf8];
-        let schema = build_registry_schema(&names, &types);
-
-        assert_eq!(schema.fields().len(), 6); // 4 metadata + 2 payload
-        assert_eq!(schema.field(0).name(), "offset");
-        assert_eq!(schema.field(1).name(), "publish_time");
-        assert_eq!(schema.field(2).name(), "producer_name");
-        assert_eq!(schema.field(3).name(), "routing_key");
-        assert_eq!(schema.field(4).name(), "temp");
-        assert_eq!(schema.field(5).name(), "unit");
-    }
-}
+#[path = "schema_resolver_tests.rs"]
+mod tests;

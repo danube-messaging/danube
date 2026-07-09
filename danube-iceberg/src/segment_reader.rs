@@ -3,6 +3,12 @@
 //!
 //! Uses `danube_persistent_storage::frames::decode_next_frame` for WAL frame
 //! parsing and bincode for message deserialization.
+//!
+//! ## Corruption handling
+//!
+//! If a CRC mismatch is detected mid-segment, the reader returns all
+//! successfully decoded messages plus the corrupt offset via `DecodeResult`.
+//! The caller can flush partial data and skip past the corrupt segment.
 
 use crate::storage::StorageHandle;
 use danube_core::message::StreamMessage;
@@ -18,7 +24,7 @@ pub async fn read_segment(
     storage: &StorageHandle,
     topic_path: &str,
     segment_id: &str,
-) -> anyhow::Result<Vec<DecodedMessage>> {
+) -> anyhow::Result<DecodeResult> {
     let relative = format!(
         "storage/topics/{}/segments/{}",
         topic_path, segment_id
@@ -37,7 +43,7 @@ pub async fn read_segment(
         "fetched segment, decoding frames"
     );
 
-    decode_frames(&data)
+    Ok(decode_frames(&data))
 }
 
 /// A decoded message with its WAL offset.
@@ -48,9 +54,24 @@ pub struct DecodedMessage {
     pub message: StreamMessage,
 }
 
+/// Result of decoding a segment's WAL frames.
+pub struct DecodeResult {
+    /// Successfully decoded messages (may be partial if corruption was found).
+    pub messages: Vec<DecodedMessage>,
+    /// If `Some`, a CRC mismatch was encountered at this offset.
+    /// Messages before this offset are valid; the rest of the segment is corrupt.
+    /// The worker should flush partial data and skip past this segment.
+    pub corrupt_at_offset: Option<u64>,
+}
+
 /// Decode all WAL frames from raw .dnb1 bytes into messages.
-fn decode_frames(data: &[u8]) -> anyhow::Result<Vec<DecodedMessage>> {
+///
+/// On CRC mismatch, returns all successfully decoded messages up to the
+/// corruption point and sets `corrupt_at_offset` so the caller can skip
+/// past the corrupt segment.
+fn decode_frames(data: &[u8]) -> DecodeResult {
     let mut messages = Vec::new();
+    let mut corrupt_at_offset = None;
     let mut cursor = 0;
 
     loop {
@@ -92,15 +113,25 @@ fn decode_frames(data: &[u8]) -> anyhow::Result<Vec<DecodedMessage>> {
                     offset,
                     expected_crc,
                     computed_crc,
-                    "CRC mismatch in segment, stopping decode"
+                    "CRC mismatch in segment — partial data will be flushed, \
+                     segment will be skipped"
                 );
+                corrupt_at_offset = Some(offset);
                 break;
             }
         }
     }
 
-    debug!(count = messages.len(), "decoded messages from segment");
-    Ok(messages)
+    debug!(
+        count = messages.len(),
+        corrupt = corrupt_at_offset.is_some(),
+        "decoded messages from segment"
+    );
+
+    DecodeResult {
+        messages,
+        corrupt_at_offset,
+    }
 }
 
 /// Deserialize a StreamMessage from bincode-encoded bytes.
