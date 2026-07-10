@@ -668,6 +668,25 @@ impl TopicWorker {
             );
         }
 
+        // Re-project the batch to the Iceberg table's Arrow schema.
+        //
+        // iceberg-rust's ParquetWriter matches columns by Iceberg field ID
+        // (stored in Arrow metadata as "PARQUET:field_id"). Our RecordBatch
+        // comes from the segment decoder and lacks these IDs. We solve this
+        // by converting the Iceberg schema → Arrow schema (with IDs) and
+        // rebuilding the batch with that schema.
+        let iceberg_schema = table.metadata().current_schema();
+        let iceberg_arrow_schema: arrow_schema::Schema = iceberg_schema
+            .as_ref()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("failed to convert Iceberg schema to Arrow: {}", e))?;
+
+        let batch = arrow_array::RecordBatch::try_new(
+            std::sync::Arc::new(iceberg_arrow_schema),
+            batch.columns().to_vec(),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to re-project batch with Iceberg field IDs: {}", e))?;
+
         // Write data files through iceberg's writer pipeline.
         // This produces Parquet files with full column-level statistics.
         let data_files = writer::write_data_files(&table, batch, target_size).await?;
