@@ -64,7 +64,7 @@ storage:
     check_interval_minutes: 5
   wal:
     rotation:
-      max_bytes: 1048576  # 1 MiB — small for demo (production: 536870912)
+      max_bytes: 65536  # 64 KiB — very small for demo (production: 536870912)
     advanced:
       cache_capacity: 1024
       file_sync:

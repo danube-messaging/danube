@@ -54,7 +54,7 @@ impl TableManager {
                 debug!(namespace = %namespace, table = %table_name, "loaded existing iceberg table");
                 Ok(table)
             }
-            Err(_) => {
+            Err(_load_err) => {
                 // Table doesn't exist — create namespace if needed, then create table
                 info!(
                     namespace = %namespace,
@@ -84,26 +84,37 @@ impl TableManager {
                     .schema(iceberg_schema)
                     .build();
 
-                let table = self
-                    .catalog
-                    .create_table(&ns, table_creation)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to create iceberg table '{}/{}': {}",
-                            namespace,
-                            table_name,
-                            e
-                        )
-                    })?;
+                match self.catalog.create_table(&ns, table_creation).await {
+                    Ok(table) => {
+                        info!(
+                            namespace = %namespace,
+                            table = %table_name,
+                            "created iceberg table"
+                        );
+                        Ok(table)
+                    }
+                    Err(create_err) => {
+                        // Table may have been created concurrently, or load_table failed
+                        // for a transient reason. Try loading again.
+                        debug!(
+                            namespace = %namespace,
+                            table = %table_name,
+                            create_error = %create_err,
+                            "create_table failed, retrying load_table"
+                        );
 
-                info!(
-                    namespace = %namespace,
-                    table = %table_name,
-                    "created iceberg table"
-                );
-
-                Ok(table)
+                        self.catalog.load_table(&table_ident).await.map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to create or load iceberg table '{}/{}': \
+                                 create_error={}, load_error={}",
+                                namespace,
+                                table_name,
+                                create_err,
+                                e
+                            )
+                        })
+                    }
+                }
             }
         }
     }
