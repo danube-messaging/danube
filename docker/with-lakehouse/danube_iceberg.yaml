@@ -37,7 +37,7 @@ compaction:
   max_flush_interval_seconds: 30     # Flush every 30s (production: 300)
 
 # Topics to export — each maps to one Iceberg table.
-# All 4 IoT data streams become separate Iceberg tables in the edge1 namespace.
+# All 3 IoT data streams become separate Iceberg tables in the edge1 namespace.
 topics:
   - namespace: "edge1"
     topic: "telemetry"
@@ -58,14 +58,7 @@ topics:
     table_name: "alert_data"
     compaction:
       target_parquet_size_mb: 1
-      max_flush_interval_seconds: 60   # Alerts are bursty, longer flush window
-
-  - namespace: "edge1"
-    topic: "diagnostics"
-    table_name: "diagnostics_data"
-    compaction:
-      target_parquet_size_mb: 1
-      max_flush_interval_seconds: 120  # Diagnostics are low frequency
+      max_flush_interval_seconds: 30
 
 # Polling — check for new sealed segments frequently for demo
 polling:

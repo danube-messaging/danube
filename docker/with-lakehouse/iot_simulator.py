@@ -1,13 +1,13 @@
 """
 IoT Device Simulator — Danube Lakehouse Demo
 
-Simulates multiple IoT sensor devices publishing data via MQTT across
-4 distinct topic categories:
+Simulates IoT sensor devices publishing data via MQTT across 3 topic categories:
 
-  1. telemetry  — temperature, humidity, pressure readings (high frequency)
+  1. telemetry  — temperature, humidity, pressure readings
   2. sensors    — machine vibration / RPM readings
-  3. alerts     — threshold-based alerts (low frequency, bursty)
-  4. diagnostics — device health / uptime reports (low frequency)
+  3. alerts     — threshold-based alerts (fires every round per device)
+
+Each topic gets roughly equal message volume (~3 msg/s each ≈ 9 msg/s total).
 
 Pipeline:
   This script → MQTT (1883) → Edge Broker → Cluster Brokers → danube-iceberg → Iceberg/Parquet
@@ -15,7 +15,7 @@ Pipeline:
 Environment variables:
   MQTT_BROKER      — MQTT broker hostname (default: edge-broker)
   MQTT_PORT        — MQTT broker port (default: 1883)
-  NUM_DEVICES      — Number of simulated devices (default: 10)
+  NUM_DEVICES      — Number of simulated devices (default: 9, 3 per topic)
   PUBLISH_INTERVAL — Seconds between publish rounds (default: 1)
   DURATION         — Total runtime in seconds (default: 0 = infinite)
 """
@@ -34,7 +34,7 @@ import paho.mqtt.client as mqtt
 # ---------------------------------------------------------------------------
 MQTT_BROKER = os.getenv("MQTT_BROKER", "edge-broker")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-NUM_DEVICES = int(os.getenv("NUM_DEVICES", "10"))
+NUM_DEVICES = int(os.getenv("NUM_DEVICES", "9"))
 PUBLISH_INTERVAL = float(os.getenv("PUBLISH_INTERVAL", "1"))
 DURATION = int(os.getenv("DURATION", "0"))  # 0 = run forever
 
@@ -42,7 +42,7 @@ DURATION = int(os.getenv("DURATION", "0"))  # 0 = run forever
 LOCATIONS = [
     "warehouse-A", "warehouse-B", "factory-floor",
     "cold-storage", "rooftop", "loading-dock",
-    "clean-room", "server-room", "lab-1", "lab-2",
+    "clean-room", "server-room", "lab-1",
 ]
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def on_disconnect(client, userdata, rc):
 # ---------------------------------------------------------------------------
 
 class TelemetryDevice:
-    """Temperature / humidity / pressure sensor (high frequency)."""
+    """Temperature / humidity / pressure sensor."""
 
     def __init__(self, device_id: str, location: str):
         self.device_id = device_id
@@ -149,7 +149,7 @@ class SensorDevice:
 
 
 class AlertDevice:
-    """Threshold-based alert generator (bursty, low frequency)."""
+    """Threshold-based alert generator. Fires every round for fair volume."""
 
     ALERT_TYPES = ["over_temp", "low_battery", "high_vibration", "door_open", "leak_detected"]
     SEVERITIES = ["info", "warning", "critical"]
@@ -161,10 +161,6 @@ class AlertDevice:
     def mqtt_topic(self) -> str:
         return f"device/{self.device_id}/alerts"
 
-    def should_fire(self) -> bool:
-        """Alerts fire randomly ~20% of rounds."""
-        return random.random() < 0.20
-
     def reading(self) -> dict:
         return {
             "device_id": self.device_id,
@@ -173,39 +169,7 @@ class AlertDevice:
             "severity": random.choice(self.SEVERITIES),
             "value": round(random.uniform(0, 100), 2),
             "message": f"Alert from {self.device_id} at {self.location}",
-            "acknowledged": False,
-            "timestamp": int(time.time()),
-        }
-
-
-class DiagnosticsDevice:
-    """Device health / uptime reporter (low frequency)."""
-
-    def __init__(self, device_id: str, location: str):
-        self.device_id = device_id
-        self.location = location
-        self.boot_time = int(time.time()) - random.randint(3600, 86400 * 7)
-        self.msg_count = 0
-
-    def mqtt_topic(self) -> str:
-        return f"device/{self.device_id}/diagnostics"
-
-    def should_report(self, round_num: int) -> bool:
-        """Diagnostics report every ~10 rounds."""
-        return round_num % 10 == 0
-
-    def reading(self) -> dict:
-        self.msg_count += 1
-        uptime_s = int(time.time()) - self.boot_time
-        return {
-            "device_id": self.device_id,
-            "location": self.location,
-            "uptime_seconds": uptime_s,
-            "cpu_pct": round(random.uniform(5.0, 85.0), 1),
-            "mem_used_mb": round(random.uniform(32, 256), 1),
-            "disk_free_mb": round(random.uniform(100, 4096), 0),
-            "firmware_version": "2.4.1",
-            "messages_sent": self.msg_count,
+            "acknowledged": random.choice([True, False]),
             "timestamp": int(time.time()),
         }
 
@@ -223,19 +187,18 @@ def main():
     print(f"  Devices:        {NUM_DEVICES}")
     print(f"  Interval:       {PUBLISH_INTERVAL}s")
     print(f"  Duration:       {'♾️  infinite' if DURATION == 0 else f'{DURATION}s'}")
-    print(f"  Topics:         telemetry, sensors, alerts, diagnostics")
+    print(f"  Topics:         telemetry, sensors, alerts")
     print("=" * 60)
 
-    # Create virtual devices — distribute across 4 categories
+    # Create virtual devices — distribute evenly across 3 categories
     telemetry_devices = []
     sensor_devices = []
     alert_devices = []
-    diag_devices = []
 
     for i in range(NUM_DEVICES):
         device_id = f"sensor-{i + 1:02d}"
         location = LOCATIONS[i % len(LOCATIONS)]
-        category = i % 4  # Round-robin across categories
+        category = i % 3  # Round-robin across 3 categories
 
         if category == 0:
             dev = TelemetryDevice(device_id, location)
@@ -245,21 +208,16 @@ def main():
             dev = SensorDevice(device_id, location)
             sensor_devices.append(dev)
             label = "sensors"
-        elif category == 2:
+        else:
             dev = AlertDevice(device_id, location)
             alert_devices.append(dev)
             label = "alerts"
-        else:
-            dev = DiagnosticsDevice(device_id, location)
-            diag_devices.append(dev)
-            label = "diagnostics"
 
         print(f"  📡 {device_id:>12s} @ {location:<16s} [{label}]")
 
     print(f"\n  Summary: {len(telemetry_devices)} telemetry, "
           f"{len(sensor_devices)} sensors, "
-          f"{len(alert_devices)} alerts, "
-          f"{len(diag_devices)} diagnostics")
+          f"{len(alert_devices)} alerts")
 
     # Connect to MQTT broker with retry
     client = mqtt.Client(client_id=f"iot-simulator-{int(time.time())}")
@@ -294,9 +252,8 @@ def main():
     # Publish loop
     start_time = time.time()
     last_status = start_time
-    round_num = 0
 
-    print(f"\n🚀 Starting publish loop (4 topics, ~{NUM_DEVICES} msg/s)...\n")
+    print(f"\n🚀 Starting publish loop (3 topics, ~{NUM_DEVICES} msg/s)...\n")
 
     try:
         while not shutdown:
@@ -305,33 +262,21 @@ def main():
                 print(f"\n⏱️  Duration limit ({DURATION}s) reached.")
                 break
 
-            round_num += 1
-
-            # --- Telemetry: every round ---
+            # All devices publish every round for equal volume
             for dev in telemetry_devices:
                 if shutdown:
                     break
                 _publish(client, dev.mqtt_topic(), dev.reading())
 
-            # --- Sensors: every round ---
             for dev in sensor_devices:
                 if shutdown:
                     break
                 _publish(client, dev.mqtt_topic(), dev.reading())
 
-            # --- Alerts: probabilistic (~20% of rounds) ---
             for dev in alert_devices:
                 if shutdown:
                     break
-                if dev.should_fire():
-                    _publish(client, dev.mqtt_topic(), dev.reading())
-
-            # --- Diagnostics: every 10th round ---
-            for dev in diag_devices:
-                if shutdown:
-                    break
-                if dev.should_report(round_num):
-                    _publish(client, dev.mqtt_topic(), dev.reading())
+                _publish(client, dev.mqtt_topic(), dev.reading())
 
             # Status update every 30 seconds
             now = time.time()
@@ -381,8 +326,8 @@ def _publish(client, topic: str, payload: dict):
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
         error_count += 1
 
-    # Track per-topic counts (use the Danube topic category)
-    category = topic.split("/")[-1]  # telemetry, vibration, alerts, diagnostics
+    # Track per-topic counts
+    category = topic.split("/")[-1]  # telemetry, vibration, alerts
     topic_counts[category] = topic_counts.get(category, 0) + 1
 
 

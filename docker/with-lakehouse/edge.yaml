@@ -37,13 +37,6 @@ mqtt:
       extract_attributes:
         device_id: "$1"
 
-    # Diagnostics: device/sensor-XX/diagnostics → /edge1/diagnostics
-    - mqtt_pattern: "device/+/diagnostics"
-      danube_topic: "/edge1/diagnostics"
-      schema_subject: "diagnostics-events"
-      extract_attributes:
-        device_id: "$1"
-
     # Catch-all: any unmatched MQTT topic
     - mqtt_pattern: "#"
       danube_topic: "/edge1/unrouted"

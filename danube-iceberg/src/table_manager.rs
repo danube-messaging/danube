@@ -74,10 +74,31 @@ impl TableManager {
                 // Convert Arrow schema → Iceberg schema
                 let iceberg_schema = iceberg_schema::arrow_to_iceberg_schema(arrow_schema)?;
 
-                // Create the table
+                // Create the table with standard Iceberg metadata management properties.
                 let table_creation = TableCreation::builder()
                     .name(table_name.to_string())
                     .schema(iceberg_schema)
+                    .properties(std::collections::HashMap::from([
+                        // Limit how many metadata.json versions are kept. Without this,
+                        // every commit creates a new metadata file and old ones accumulate
+                        // indefinitely. 10 is the Iceberg default.
+                        (
+                            "write.metadata.previous-versions-max".to_string(),
+                            "10".to_string(),
+                        ),
+                        // Enable automatic cleanup of old metadata files after commit.
+                        (
+                            "write.metadata.delete-after-commit.enabled".to_string(),
+                            "true".to_string(),
+                        ),
+                        // Standard Parquet compression.
+                        (
+                            "write.parquet.compression-codec".to_string(),
+                            "zstd".to_string(),
+                        ),
+                        // Iceberg format version 2 (supports row-level deletes, etc.)
+                        ("format-version".to_string(), "2".to_string()),
+                    ]))
                     .build();
 
                 match self.catalog.create_table(&ns, table_creation).await {

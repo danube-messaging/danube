@@ -240,14 +240,7 @@ services:
           --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"alert_type":{"type":"string"},"severity":{"type":"string"},"value":{"type":"number"},"message":{"type":"string"},"acknowledged":{"type":"boolean"},"timestamp":{"type":"integer"}},"required":["device_id","alert_type","severity"]}' \
           --description "Threshold alerts: over_temp, low_battery, high_vibration, etc."
 
-        echo "Registering 'diagnostics-events' schema..."
-        /usr/local/bin/danube-admin schemas register \
-          diagnostics-events \
-          --schema-type json_schema \
-          --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"uptime_seconds":{"type":"integer"},"cpu_pct":{"type":"number"},"mem_used_mb":{"type":"number"},"disk_free_mb":{"type":"number"},"firmware_version":{"type":"string"},"messages_sent":{"type":"integer"},"timestamp":{"type":"integer"}},"required":["device_id","uptime_seconds"]}' \
-          --description "Device diagnostics: CPU, memory, disk, uptime, firmware"
-
-        echo "✅ Cluster initialization complete (4 schemas registered)"
+        echo "✅ Cluster initialization complete (3 schemas registered)"
 
   # ==========================================================================
   # Edge Broker: MQTT gateway → Cluster replication
@@ -299,7 +292,9 @@ services:
       minio:
         condition: service_healthy
     networks:
-      - lakehouse_net
+      lakehouse_net:
+        aliases:
+          - rest
     ports:
       - "8181:8181"
     environment:
@@ -350,7 +345,7 @@ services:
     environment:
       - MQTT_BROKER=edge-broker
       - MQTT_PORT=1883
-      - NUM_DEVICES=10
+      - NUM_DEVICES=9
       - PUBLISH_INTERVAL=1
       - DURATION=1800       # Run for 30 minutes
     networks:
