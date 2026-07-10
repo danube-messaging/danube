@@ -63,11 +63,7 @@ impl TableManager {
                 );
 
                 // Ensure namespace exists (idempotent — ignore "already exists" errors)
-                if let Err(e) = self
-                    .catalog
-                    .create_namespace(&ns, Default::default())
-                    .await
-                {
+                if let Err(e) = self.catalog.create_namespace(&ns, Default::default()).await {
                     debug!(
                         namespace = %namespace,
                         error = %e,
