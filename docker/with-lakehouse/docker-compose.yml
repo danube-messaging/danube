@@ -1,0 +1,389 @@
+# Licensed under the Apache License, Version 2.0
+# Danube Lakehouse Pipeline — Full E2E Demo
+#
+# Complete data pipeline:
+#   IoT Simulator (MQTT) → Edge Broker → Cluster (3 brokers, S3/MinIO)
+#   → danube-iceberg (Parquet/Iceberg) → Iceberg REST Catalog → Spark SQL
+#
+# Usage:
+#   docker-compose up -d --build
+#   # Wait ~2 minutes for data to flow through the pipeline
+#   # Open http://localhost:8888 for Spark Jupyter (token: lakehouse)
+#   # Open http://localhost:9001 for MinIO Console (minioadmin / minioadmin123)
+
+services:
+  # ==========================================================================
+  # Storage Layer: MinIO (S3-compatible)
+  # ==========================================================================
+  minio:
+    container_name: "lakehouse-minio"
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+      - MINIO_DOMAIN=minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    command: ["server", "/data", "--console-address", ":9001"]
+    networks:
+      lakehouse_net:
+        aliases:
+          - warehouse.minio
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # MinIO client: create required buckets
+  mc:
+    container_name: "lakehouse-mc"
+    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse_net
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO to be ready...';
+      until (/usr/bin/mc alias set lakehouse http://minio:9000 minioadmin minioadmin123) do 
+        echo 'MinIO not ready, waiting...' && sleep 2; 
+      done;
+      echo 'Creating buckets...';
+      /usr/bin/mc mb lakehouse/danube-messages || true;
+      /usr/bin/mc mb lakehouse/warehouse || true;
+      /usr/bin/mc anonymous set public lakehouse/warehouse;
+      echo 'Buckets created successfully';
+      exit 0;
+      "
+
+  # ==========================================================================
+  # Danube Cluster: 3 Brokers (Raft consensus, S3 durable storage)
+  # ==========================================================================
+  broker1:
+    container_name: "lakehouse-broker1"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
+    restart: on-failure
+    depends_on:
+      mc:
+        condition: service_completed_successfully
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info,openraft=warn
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_broker_lakehouse.yml:/etc/danube_broker.yml:ro
+      - broker1_data:/danube-data
+    networks:
+      - lakehouse_net
+    ports:
+      - "6650:6650"   # Broker gRPC
+      - "50051:50051" # Admin API
+      - "9040:9040"   # Prometheus metrics
+    command:
+      [
+        "--config-file", "/etc/danube_broker.yml",
+        "--broker-addr", "0.0.0.0:6650",
+        "--admin-addr", "0.0.0.0:50051",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker1:6650",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  broker2:
+    container_name: "lakehouse-broker2"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
+    restart: on-failure
+    depends_on:
+      mc:
+        condition: service_completed_successfully
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info,openraft=warn
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_broker_lakehouse.yml:/etc/danube_broker.yml:ro
+      - broker2_data:/danube-data
+    networks:
+      - lakehouse_net
+    ports:
+      - "6651:6650"
+      - "50052:50051"
+      - "9041:9040"
+    command:
+      [
+        "--config-file", "/etc/danube_broker.yml",
+        "--broker-addr", "0.0.0.0:6650",
+        "--admin-addr", "0.0.0.0:50051",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker2:6650",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  broker3:
+    container_name: "lakehouse-broker3"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
+    restart: on-failure
+    depends_on:
+      mc:
+        condition: service_completed_successfully
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,danube_persistent_storage=info,openraft=warn
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_broker_lakehouse.yml:/etc/danube_broker.yml:ro
+      - broker3_data:/danube-data
+    networks:
+      - lakehouse_net
+    ports:
+      - "6652:6650"
+      - "50053:50051"
+      - "9042:9040"
+    command:
+      [
+        "--config-file", "/etc/danube_broker.yml",
+        "--broker-addr", "0.0.0.0:6650",
+        "--admin-addr", "0.0.0.0:50051",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker3:6650",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ==========================================================================
+  # Admin Init: Register schema + namespace on the cluster
+  # ==========================================================================
+  admin-init:
+    container_name: "lakehouse-admin-init"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: admin
+    depends_on:
+      broker1:
+        condition: service_healthy
+      broker2:
+        condition: service_healthy
+      broker3:
+        condition: service_healthy
+    networks:
+      - lakehouse_net
+    environment:
+      - DANUBE_ADMIN_ENDPOINT=http://broker1:50051
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for cluster to stabilize..."
+        sleep 10
+
+        echo "Creating namespace 'edge1'..."
+        /usr/local/bin/danube-admin namespaces create edge1 || true
+
+        echo "Registering 'telemetry-events' schema..."
+        /usr/local/bin/danube-admin schemas register \
+          telemetry-events \
+          --schema-type json_schema \
+          --schema '{"type":"object","properties":{"temperature":{"type":"number"},"humidity":{"type":"number"},"pressure":{"type":"number"},"device_id":{"type":"string"},"location":{"type":"string"},"battery_pct":{"type":"number"},"timestamp":{"type":"number"}},"required":["temperature","device_id"]}' \
+          --description "IoT telemetry events from edge devices"
+
+        echo "✅ Cluster initialization complete"
+
+  # ==========================================================================
+  # Edge Broker: MQTT gateway → Cluster replication
+  # ==========================================================================
+  edge-broker:
+    container_name: "lakehouse-edge-broker"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: broker
+    restart: on-failure
+    depends_on:
+      admin-init:
+        condition: service_completed_successfully
+    environment:
+      - RUST_LOG=danube_broker=info,danube_edge=info,danube_core=info,openraft=warn
+    volumes:
+      - ./edge.yaml:/etc/edge.yaml:ro
+      - edge_data:/danube-data
+    networks:
+      - lakehouse_net
+    ports:
+      - "1883:1883"   # MQTT
+      - "6653:6650"   # Broker gRPC (edge)
+    command:
+      [
+        "--mode", "edge",
+        "--broker-addr", "0.0.0.0:6650",
+        "--admin-addr", "0.0.0.0:50051",
+        "--raft-addr", "0.0.0.0:7650",
+        "--data-dir", "/danube-data/edge",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--edge-config", "/etc/edge.yaml",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9040/metrics || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ==========================================================================
+  # Iceberg REST Catalog: Manages table metadata
+  # ==========================================================================
+  iceberg-rest:
+    container_name: "lakehouse-iceberg-rest"
+    image: apache/iceberg-rest-fixture
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse_net
+    ports:
+      - "8181:8181"
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+
+  # ==========================================================================
+  # danube-iceberg: Lakehouse converter (segments → Parquet/Iceberg)
+  # ==========================================================================
+  danube-iceberg:
+    container_name: "lakehouse-danube-iceberg"
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      target: iceberg
+    restart: on-failure
+    depends_on:
+      admin-init:
+        condition: service_completed_successfully
+      iceberg-rest:
+        condition: service_started
+    environment:
+      - RUST_LOG=danube_iceberg=info
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./danube_iceberg.yaml:/etc/danube-iceberg-config.yaml:ro
+    networks:
+      - lakehouse_net
+
+  # ==========================================================================
+  # IoT Simulator: Publishes MQTT telemetry to edge broker
+  # ==========================================================================
+  iot-simulator:
+    container_name: "lakehouse-iot-simulator"
+    build:
+      context: .
+      dockerfile: Dockerfile.iot-simulator
+    depends_on:
+      edge-broker:
+        condition: service_healthy
+    environment:
+      - MQTT_BROKER=edge-broker
+      - MQTT_PORT=1883
+      - NUM_DEVICES=3
+      - PUBLISH_INTERVAL=2
+      - DURATION=300       # Run for 5 minutes (0 = infinite)
+    networks:
+      - lakehouse_net
+
+  # ==========================================================================
+  # Spark-Iceberg: Jupyter Notebook for querying Iceberg tables
+  # ==========================================================================
+  spark-iceberg:
+    container_name: "lakehouse-spark"
+    image: tabulario/spark-iceberg
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse_net
+    ports:
+      - "8888:8888"   # Jupyter Notebook
+      - "8080:8080"   # Spark UI
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_REGION=us-east-1
+
+  # ==========================================================================
+  # Prometheus: Metrics collection
+  # ==========================================================================
+  prometheus:
+    container_name: "lakehouse-prometheus"
+    image: prom/prometheus:latest
+    depends_on:
+      broker1:
+        condition: service_started
+    networks:
+      - lakehouse_net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+networks:
+  lakehouse_net:
+    name: lakehouse_net
+    driver: bridge
+
+volumes:
+  minio_data:
+    name: lakehouse_minio_data
+  broker1_data:
+    name: lakehouse_broker1_data
+  broker2_data:
+    name: lakehouse_broker2_data
+  broker3_data:
+    name: lakehouse_broker3_data
+  edge_data:
+    name: lakehouse_edge_data
