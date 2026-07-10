@@ -1,0 +1,65 @@
+# danube-iceberg configuration — Lakehouse Pipeline (Docker)
+# Converts sealed Danube segments (.dnb1) to Apache Iceberg / Parquet tables.
+# Used by: danube-iceberg in docker/with-lakehouse/docker-compose.yml
+
+# Broker connection — any broker in the Danube cluster.
+broker:
+  address: "broker1:6650"
+
+# Object storage — where segments are read from and Parquet files are written to.
+# Must match the cluster broker's durable storage config.
+storage:
+  backend: "s3"
+  root: "s3://danube-messages/cluster-data"
+  output_prefix: "iceberg"
+  options:
+    endpoint: "http://minio:9000"
+    region: "us-east-1"
+    access_key: "minioadmin"
+    secret_key: "minioadmin123"
+
+# Iceberg REST catalog — manages table metadata for Spark/Trino/etc.
+catalog:
+  type: "rest"
+  name: "danube_catalog"
+  properties:
+    uri: "http://iceberg-rest:8181"
+    warehouse: "s3://warehouse/"
+    s3.endpoint: "http://minio:9000"
+    s3.access-key-id: "minioadmin"
+    s3.secret-access-key: "minioadmin123"
+    s3.region: "us-east-1"
+    s3.path-style-access: "true"
+
+# Compaction: small thresholds for demo (fast Parquet flushes)
+compaction:
+  target_parquet_size_mb: 1          # Flush at 1 MiB (production: 200)
+  max_flush_interval_seconds: 30     # Flush every 30s (production: 300)
+
+# Topics to export — each maps to one Iceberg table.
+# All 3 IoT data streams become separate Iceberg tables in the edge1 namespace.
+topics:
+  - namespace: "edge1"
+    topic: "telemetry"
+    table_name: "telemetry_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 30
+
+  - namespace: "edge1"
+    topic: "sensors"
+    table_name: "sensor_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 30
+
+  - namespace: "edge1"
+    topic: "alerts"
+    table_name: "alert_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 30
+
+# Polling — check for new sealed segments frequently for demo
+polling:
+  interval_seconds: 10

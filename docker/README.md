@@ -7,6 +7,7 @@ Choose the right setup for your use case:
 | **[quickstart](#quickstart)** | 3 Brokers + CLI + Prometheus | Filesystem | Quick testing, learning, MCP development |
 | **[with-ui](#with-ui)** | + Admin Server + Web UI | Filesystem | Cluster monitoring, visual exploration |
 | **[with-cloud-storage](#with-cloud-storage)** | + MinIO + MC | S3/MinIO | Cloud storage testing, durability testing |
+| **[with-lakehouse](#with-lakehouse)** | + Edge + Iceberg + Spark | S3/MinIO | Lakehouse pipeline, Iceberg/Parquet, analytics |
 | **[local-development](#local-development)** | All above (builds from source) | Filesystem | Development, testing local changes |
 
 ## Prerequisites
@@ -149,6 +150,50 @@ docker exec -it danube-cli danube-cli consume \
   --subscription "persistent-sub" \
   --sub-type exclusive
 ```
+
+### Stop
+
+```bash
+docker-compose down -v
+```
+
+---
+
+## With Lakehouse
+
+**Full data pipeline: IoT → Edge → Cluster → Iceberg/Parquet → Spark SQL** — Perfect for lakehouse integration testing and analytics demos.
+
+**Services:** MinIO, 3 Brokers (S3 storage), Edge Broker (MQTT), danube-iceberg, Iceberg REST Catalog, Spark-Iceberg (Jupyter), IoT Simulator, Prometheus  
+**Storage:** MinIO (S3-compatible)  
+**Additional Ports:** 1883 (MQTT), 8181 (Iceberg REST), 8888 (Jupyter), 9000/9001 (MinIO)
+
+### Start
+
+```bash
+cd with-lakehouse/
+docker-compose up -d --build
+# First build takes ~10 minutes (compiles Rust workspace)
+```
+
+### Query Iceberg Tables
+
+Open **http://localhost:8888** (Spark Jupyter Notebook):
+
+```sql
+-- In a Spark SQL cell:
+SELECT device_id, temperature, humidity, timestamp
+FROM danube_catalog.edge1.telemetry_data
+ORDER BY timestamp DESC
+LIMIT 20;
+```
+
+### Verify Pipeline
+
+1. **IoT Simulator logs:** `docker logs lakehouse-iot-simulator`
+2. **MinIO Console:** http://localhost:9001 (login: `minioadmin` / `minioadmin123`)
+3. **danube-iceberg logs:** `docker logs lakehouse-danube-iceberg`
+
+See [with-lakehouse/README.md](with-lakehouse/README.md) for full documentation.
 
 ### Stop
 
@@ -359,12 +404,23 @@ storage:
 docker/
 ├── README.md                    # This file
 ├── prometheus.yml               # Shared Prometheus config
+├── danube_broker.yml            # Filesystem backend config
+├── danube_broker_cloud.yml      # S3/MinIO backend config
 ├── quickstart/
 │   └── docker-compose.yml
 ├── with-ui/
 │   └── docker-compose.yml
 ├── with-cloud-storage/
 │   └── docker-compose.yml
+├── with-lakehouse/
+│   ├── docker-compose.yml       # Full lakehouse pipeline
+│   ├── danube_broker_lakehouse.yml
+│   ├── danube_iceberg.yaml
+│   ├── edge.yaml
+│   ├── iot_simulator.py
+│   ├── Dockerfile.iot-simulator
+│   ├── requirements.txt
+│   └── README.md
 └── local-development/
     └── docker-compose.yml
 ```
@@ -372,5 +428,6 @@ docker/
 Config files referenced from `docker/`:
 - `danube_broker.yml` - Filesystem backend (default)
 - `danube_broker_cloud.yml` - S3/MinIO backend
+- `with-lakehouse/danube_broker_lakehouse.yml` - S3/MinIO with small WAL rotation for lakehouse demo
 
 Metadata is managed by embedded Raft consensus (no external dependencies like etcd).

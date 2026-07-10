@@ -108,6 +108,19 @@ impl SchemaResolver {
         version: u32,
         info: &SchemaInfo,
     ) -> anyhow::Result<SchemaMode> {
+        let definition_preview = info
+            .schema_definition_as_string()
+            .map(|s| s.chars().take(200).collect::<String>())
+            .unwrap_or_else(|| format!("<binary {} bytes>", info.schema_definition.len()));
+
+        debug!(
+            schema_id,
+            version,
+            schema_type = %info.schema_type,
+            definition = %definition_preview,
+            "converting schema from registry"
+        );
+
         match info.schema_type.as_str() {
             "json_schema" | "json" => {
                 let definition = info
@@ -188,8 +201,22 @@ fn build_registry_schema(field_names: &[String], field_types: &[DataType]) -> Ar
 /// | `object`         | `Struct` (recursive) |
 /// | `array`          | `List` (of items type) |
 fn json_schema_to_arrow_fields(definition: &str) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
-    let schema: serde_json::Value = serde_json::from_str(definition)
+    let parsed: serde_json::Value = serde_json::from_str(definition)
         .map_err(|e| anyhow::anyhow!("invalid JSON Schema: {}", e))?;
+
+    // The Danube schema registry may wrap the schema in an envelope:
+    //   {"JsonSchema": {"raw_schema": "{...actual JSON Schema...}"}}
+    // Unwrap it if present; otherwise use the value directly.
+    let schema = if let Some(raw) = parsed
+        .get("JsonSchema")
+        .and_then(|j| j.get("raw_schema"))
+        .and_then(|r| r.as_str())
+    {
+        serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("invalid inner JSON Schema in raw_schema: {}", e))?
+    } else {
+        parsed
+    };
 
     let properties = schema
         .get("properties")
@@ -280,8 +307,21 @@ fn json_schema_type_to_arrow(prop: &serde_json::Value) -> DataType {
 /// | array       | `List` (of items type) |
 /// | map         | `Map<Utf8, V>` |
 fn avro_schema_to_arrow_fields(definition: &str) -> anyhow::Result<(Vec<String>, Vec<DataType>)> {
-    let schema: serde_json::Value = serde_json::from_str(definition)
+    let parsed: serde_json::Value = serde_json::from_str(definition)
         .map_err(|e| anyhow::anyhow!("invalid Avro schema: {}", e))?;
+
+    // Unwrap registry envelope if present:
+    //   {"Avro": {"raw_schema": "{...actual Avro schema...}"}}
+    let schema = if let Some(raw) = parsed
+        .get("Avro")
+        .and_then(|a| a.get("raw_schema"))
+        .and_then(|r| r.as_str())
+    {
+        serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("invalid inner Avro schema in raw_schema: {}", e))?
+    } else {
+        parsed
+    };
 
     let fields = schema
         .get("fields")

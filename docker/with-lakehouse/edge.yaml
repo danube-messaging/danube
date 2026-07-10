@@ -1,0 +1,46 @@
+# Danube Edge Broker Configuration — Lakehouse Pipeline (Docker)
+# Connects to the cluster and exposes an MQTT gateway for IoT devices.
+# Used by: edge-broker in docker/with-lakehouse/docker-compose.yml
+
+edge:
+  edge_name: "edge1"
+  cluster_url: "http://broker1:6650"
+  token: ""
+  heartbeat_interval_ms: 10000
+
+replicator:
+  batch_size: 50
+  batch_timeout_ms: 500
+
+mqtt:
+  listener: "0.0.0.0:1883"
+
+  topic_mappings:
+    # IoT telemetry: device/sensor-XX/telemetry → /edge1/telemetry
+    - mqtt_pattern: "device/+/telemetry"
+      danube_topic: "/edge1/telemetry"
+      schema_subject: "telemetry-events"
+      extract_attributes:
+        device_id: "$1"
+
+    # Machine sensors: sensors/sensor-XX/vibration → /edge1/sensors
+    - mqtt_pattern: "sensors/+/vibration"
+      danube_topic: "/edge1/sensors"
+      schema_subject: "sensor-events"
+      extract_attributes:
+        device_id: "$1"
+
+    # Alerts: device/sensor-XX/alerts → /edge1/alerts
+    - mqtt_pattern: "device/+/alerts"
+      danube_topic: "/edge1/alerts"
+      schema_subject: "alert-events"
+      extract_attributes:
+        device_id: "$1"
+
+    # Catch-all: any unmatched MQTT topic
+    - mqtt_pattern: "#"
+      danube_topic: "/edge1/unrouted"
+
+  ingestion:
+    batch_size: 50
+    batch_timeout_ms: 500

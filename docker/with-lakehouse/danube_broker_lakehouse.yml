@@ -1,0 +1,84 @@
+# Danube Broker Configuration — Lakehouse Pipeline (Docker)
+# S3/MinIO durable storage with small WAL rotation for fast segment sealing.
+# Used by: broker1, broker2, broker3 in docker/with-lakehouse/docker-compose.yml
+
+cluster_name: "DANUBE_LAKEHOUSE_CLUSTER"
+
+broker:
+  host: "0.0.0.0"
+  ports:
+    client: 6650
+    admin: 50051
+    raft: 7650
+    prometheus: 9040
+
+# Metadata Store (Raft — embedded, no external dependency)
+meta_store:
+  data_dir: "./danube-data/raft"
+  seed_nodes:
+    - "broker1:7650"
+    - "broker2:7650"
+    - "broker3:7650"
+
+# Bootstrap both default and edge namespaces
+bootstrap_namespaces:
+  - "default"
+  - "edge1"
+
+auto_create_topics: true
+
+auth:
+  mode: none
+
+load_manager:
+  assignment_strategy: "fair"
+  load_report_interval_seconds: 30
+  rebalancing:
+    enabled: false
+    aggressiveness: "balanced"
+    check_interval_seconds: 300
+    max_moves_per_hour: 10
+    cooldown_seconds: 60
+    min_brokers_for_rebalance: 2
+    min_topic_age_seconds: 300
+    blacklist_topics: []
+
+# Storage: S3/MinIO with small WAL rotation for demo
+# WAL rotation at 1 MiB → segments seal quickly → danube-iceberg picks them up fast
+storage:
+  mode: object_store
+  local_wal_root: "./danube-data/wal"
+  metadata_prefix: "/danube"
+  durable:
+    backend: "s3"
+    root: "s3://danube-messages/cluster-data"
+    region: "us-east-1"
+    endpoint: "http://minio:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin123"
+    anonymous: false
+    virtual_host_style: false
+  local_retention:
+    time_minutes: 2880
+    size_mb: 20480
+    check_interval_minutes: 5
+  wal:
+    rotation:
+      max_bytes: 65536  # 64 KiB — very small for demo (production: 536870912)
+    advanced:
+      cache_capacity: 1024
+      file_sync:
+        interval_ms: 5000
+        max_batch_bytes: 10485760
+
+dispatch:
+  max_unacked_messages: 10
+
+policies:
+  max_producers_per_topic: 0
+  max_subscriptions_per_topic: 0
+  max_consumers_per_topic: 0
+  max_consumers_per_subscription: 0
+  max_publish_rate: 0
+  max_subscription_dispatch_rate: 0
+  max_message_size: 52428800

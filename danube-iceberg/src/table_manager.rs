@@ -54,7 +54,7 @@ impl TableManager {
                 debug!(namespace = %namespace, table = %table_name, "loaded existing iceberg table");
                 Ok(table)
             }
-            Err(_) => {
+            Err(_load_err) => {
                 // Table doesn't exist — create namespace if needed, then create table
                 info!(
                     namespace = %namespace,
@@ -63,11 +63,7 @@ impl TableManager {
                 );
 
                 // Ensure namespace exists (idempotent — ignore "already exists" errors)
-                if let Err(e) = self
-                    .catalog
-                    .create_namespace(&ns, Default::default())
-                    .await
-                {
+                if let Err(e) = self.catalog.create_namespace(&ns, Default::default()).await {
                     debug!(
                         namespace = %namespace,
                         error = %e,
@@ -78,32 +74,64 @@ impl TableManager {
                 // Convert Arrow schema → Iceberg schema
                 let iceberg_schema = iceberg_schema::arrow_to_iceberg_schema(arrow_schema)?;
 
-                // Create the table
+                // Create the table with standard Iceberg metadata management properties.
                 let table_creation = TableCreation::builder()
                     .name(table_name.to_string())
                     .schema(iceberg_schema)
+                    .properties(std::collections::HashMap::from([
+                        // Limit how many metadata.json versions are kept. Without this,
+                        // every commit creates a new metadata file and old ones accumulate
+                        // indefinitely. 10 is the Iceberg default.
+                        (
+                            "write.metadata.previous-versions-max".to_string(),
+                            "10".to_string(),
+                        ),
+                        // Enable automatic cleanup of old metadata files after commit.
+                        (
+                            "write.metadata.delete-after-commit.enabled".to_string(),
+                            "true".to_string(),
+                        ),
+                        // Standard Parquet compression.
+                        (
+                            "write.parquet.compression-codec".to_string(),
+                            "zstd".to_string(),
+                        ),
+                        // Iceberg format version 2 (supports row-level deletes, etc.)
+                        ("format-version".to_string(), "2".to_string()),
+                    ]))
                     .build();
 
-                let table = self
-                    .catalog
-                    .create_table(&ns, table_creation)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to create iceberg table '{}/{}': {}",
-                            namespace,
-                            table_name,
-                            e
-                        )
-                    })?;
+                match self.catalog.create_table(&ns, table_creation).await {
+                    Ok(table) => {
+                        info!(
+                            namespace = %namespace,
+                            table = %table_name,
+                            "created iceberg table"
+                        );
+                        Ok(table)
+                    }
+                    Err(create_err) => {
+                        // Table may have been created concurrently, or load_table failed
+                        // for a transient reason. Try loading again.
+                        debug!(
+                            namespace = %namespace,
+                            table = %table_name,
+                            create_error = %create_err,
+                            "create_table failed, retrying load_table"
+                        );
 
-                info!(
-                    namespace = %namespace,
-                    table = %table_name,
-                    "created iceberg table"
-                );
-
-                Ok(table)
+                        self.catalog.load_table(&table_ident).await.map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to create or load iceberg table '{}/{}': \
+                                 create_error={}, load_error={}",
+                                namespace,
+                                table_name,
+                                create_err,
+                                e
+                            )
+                        })
+                    }
+                }
             }
         }
     }

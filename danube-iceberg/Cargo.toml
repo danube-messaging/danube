@@ -24,6 +24,7 @@ iceberg-catalog-rest = "0.9.1"
 iceberg-catalog-glue = "0.9.1"
 iceberg-catalog-s3tables = "0.9.1"
 iceberg-catalog-sql = "0.9.1"
+iceberg-storage-opendal = "0.9.1"
 
 # Arrow/Parquet (aligned with iceberg 0.9.1's arrow 57 release train)
 arrow-array = "57"

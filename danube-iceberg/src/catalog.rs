@@ -28,7 +28,15 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
         "rest" => {
             use iceberg::CatalogBuilder;
             use iceberg_catalog_rest::RestCatalogBuilder;
+            use iceberg_storage_opendal::OpenDalStorageFactory;
+
+            let storage_factory = Arc::new(OpenDalStorageFactory::S3 {
+                configured_scheme: "s3".to_string(),
+                customized_credential_load: None,
+            });
+
             let cat = RestCatalogBuilder::default()
+                .with_storage_factory(storage_factory)
                 .load(&config.name, config.properties.clone())
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to build REST catalog: {}", e))?;
