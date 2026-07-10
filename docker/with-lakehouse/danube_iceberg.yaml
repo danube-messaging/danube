@@ -25,6 +25,11 @@ catalog:
   properties:
     uri: "http://iceberg-rest:8181"
     warehouse: "s3://warehouse/"
+    s3.endpoint: "http://minio:9000"
+    s3.access-key-id: "minioadmin"
+    s3.secret-access-key: "minioadmin123"
+    s3.region: "us-east-1"
+    s3.path-style-access: "true"
 
 # Compaction: small thresholds for demo (fast Parquet flushes)
 compaction:
@@ -32,6 +37,7 @@ compaction:
   max_flush_interval_seconds: 30     # Flush every 30s (production: 300)
 
 # Topics to export — each maps to one Iceberg table.
+# All 4 IoT data streams become separate Iceberg tables in the edge1 namespace.
 topics:
   - namespace: "edge1"
     topic: "telemetry"
@@ -39,6 +45,27 @@ topics:
     compaction:
       target_parquet_size_mb: 1
       max_flush_interval_seconds: 30
+
+  - namespace: "edge1"
+    topic: "sensors"
+    table_name: "sensor_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 30
+
+  - namespace: "edge1"
+    topic: "alerts"
+    table_name: "alert_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 60   # Alerts are bursty, longer flush window
+
+  - namespace: "edge1"
+    topic: "diagnostics"
+    table_name: "diagnostics_data"
+    compaction:
+      target_parquet_size_mb: 1
+      max_flush_interval_seconds: 120  # Diagnostics are low frequency
 
 # Polling — check for new sealed segments frequently for demo
 polling:

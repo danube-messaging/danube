@@ -675,17 +675,40 @@ impl TopicWorker {
         // comes from the segment decoder and lacks these IDs. We solve this
         // by converting the Iceberg schema → Arrow schema (with IDs) and
         // rebuilding the batch with that schema.
+        //
+        // Additionally, Iceberg's type mapping uses Large variants for
+        // variable-length types (Binary→LargeBinary, Utf8→LargeUtf8),
+        // so we cast columns where the types differ.
         let iceberg_schema = table.metadata().current_schema();
         let iceberg_arrow_schema: arrow_schema::Schema = iceberg_schema
             .as_ref()
             .try_into()
             .map_err(|e| anyhow::anyhow!("failed to convert Iceberg schema to Arrow: {}", e))?;
 
-        let batch = arrow_array::RecordBatch::try_new(
-            std::sync::Arc::new(iceberg_arrow_schema),
-            batch.columns().to_vec(),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to re-project batch with Iceberg field IDs: {}", e))?;
+        let target_schema = std::sync::Arc::new(iceberg_arrow_schema);
+        let mut casted_columns = Vec::with_capacity(batch.num_columns());
+
+        for (i, target_field) in target_schema.fields().iter().enumerate() {
+            let source_col = batch.column(i);
+            if source_col.data_type() != target_field.data_type() {
+                let casted = arrow_cast::cast::cast(source_col, target_field.data_type())
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to cast column '{}' from {:?} to {:?}: {}",
+                            target_field.name(),
+                            source_col.data_type(),
+                            target_field.data_type(),
+                            e
+                        )
+                    })?;
+                casted_columns.push(casted);
+            } else {
+                casted_columns.push(source_col.clone());
+            }
+        }
+
+        let batch = arrow_array::RecordBatch::try_new(target_schema, casted_columns)
+            .map_err(|e| anyhow::anyhow!("failed to re-project batch with Iceberg field IDs: {}", e))?;
 
         // Write data files through iceberg's writer pipeline.
         // This produces Parquet files with full column-level statistics.

@@ -108,6 +108,19 @@ impl SchemaResolver {
         version: u32,
         info: &SchemaInfo,
     ) -> anyhow::Result<SchemaMode> {
+        let definition_preview = info
+            .schema_definition_as_string()
+            .map(|s| s.chars().take(200).collect::<String>())
+            .unwrap_or_else(|| format!("<binary {} bytes>", info.schema_definition.len()));
+
+        debug!(
+            schema_id,
+            version,
+            schema_type = %info.schema_type,
+            definition = %definition_preview,
+            "converting schema from registry"
+        );
+
         match info.schema_type.as_str() {
             "json_schema" | "json" => {
                 let definition = info

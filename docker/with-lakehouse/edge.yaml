@@ -16,19 +16,33 @@ mqtt:
   listener: "0.0.0.0:1883"
 
   topic_mappings:
-    # IoT telemetry: device/sensor-1/telemetry → /edge1/telemetry
+    # IoT telemetry: device/sensor-XX/telemetry → /edge1/telemetry
     - mqtt_pattern: "device/+/telemetry"
       danube_topic: "/edge1/telemetry"
       schema_subject: "telemetry-events"
       extract_attributes:
         device_id: "$1"
 
-    # Sensor readings: sensors/temperature/celsius → /edge1/sensors
-    - mqtt_pattern: "sensors/+/+"
+    # Machine sensors: sensors/sensor-XX/vibration → /edge1/sensors
+    - mqtt_pattern: "sensors/+/vibration"
       danube_topic: "/edge1/sensors"
+      schema_subject: "sensor-events"
       extract_attributes:
-        sensor_type: "$1"
-        measurement: "$2"
+        device_id: "$1"
+
+    # Alerts: device/sensor-XX/alerts → /edge1/alerts
+    - mqtt_pattern: "device/+/alerts"
+      danube_topic: "/edge1/alerts"
+      schema_subject: "alert-events"
+      extract_attributes:
+        device_id: "$1"
+
+    # Diagnostics: device/sensor-XX/diagnostics → /edge1/diagnostics
+    - mqtt_pattern: "device/+/diagnostics"
+      danube_topic: "/edge1/diagnostics"
+      schema_subject: "diagnostics-events"
+      extract_attributes:
+        device_id: "$1"
 
     # Catch-all: any unmatched MQTT topic
     - mqtt_pattern: "#"

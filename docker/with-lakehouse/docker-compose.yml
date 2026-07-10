@@ -223,10 +223,31 @@ services:
         /usr/local/bin/danube-admin schemas register \
           telemetry-events \
           --schema-type json_schema \
-          --schema '{"type":"object","properties":{"temperature":{"type":"number"},"humidity":{"type":"number"},"pressure":{"type":"number"},"device_id":{"type":"string"},"location":{"type":"string"},"battery_pct":{"type":"number"},"timestamp":{"type":"number"}},"required":["temperature","device_id"]}' \
-          --description "IoT telemetry events from edge devices"
+          --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"temperature":{"type":"number"},"humidity":{"type":"number"},"pressure":{"type":"number"},"battery_pct":{"type":"number"},"timestamp":{"type":"integer"}},"required":["device_id","temperature"]}' \
+          --description "IoT telemetry: temperature, humidity, pressure from edge sensors"
 
-        echo "✅ Cluster initialization complete"
+        echo "Registering 'sensor-events' schema..."
+        /usr/local/bin/danube-admin schemas register \
+          sensor-events \
+          --schema-type json_schema \
+          --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"rpm":{"type":"number"},"vibration_mm_s":{"type":"number"},"motor_temp_c":{"type":"number"},"power_watts":{"type":"number"},"timestamp":{"type":"integer"}},"required":["device_id","rpm"]}' \
+          --description "Machine sensors: RPM, vibration, motor temperature, power"
+
+        echo "Registering 'alert-events' schema..."
+        /usr/local/bin/danube-admin schemas register \
+          alert-events \
+          --schema-type json_schema \
+          --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"alert_type":{"type":"string"},"severity":{"type":"string"},"value":{"type":"number"},"message":{"type":"string"},"acknowledged":{"type":"boolean"},"timestamp":{"type":"integer"}},"required":["device_id","alert_type","severity"]}' \
+          --description "Threshold alerts: over_temp, low_battery, high_vibration, etc."
+
+        echo "Registering 'diagnostics-events' schema..."
+        /usr/local/bin/danube-admin schemas register \
+          diagnostics-events \
+          --schema-type json_schema \
+          --schema '{"type":"object","properties":{"device_id":{"type":"string"},"location":{"type":"string"},"uptime_seconds":{"type":"integer"},"cpu_pct":{"type":"number"},"mem_used_mb":{"type":"number"},"disk_free_mb":{"type":"number"},"firmware_version":{"type":"string"},"messages_sent":{"type":"integer"},"timestamp":{"type":"integer"}},"required":["device_id","uptime_seconds"]}' \
+          --description "Device diagnostics: CPU, memory, disk, uptime, firmware"
+
+        echo "✅ Cluster initialization complete (4 schemas registered)"
 
   # ==========================================================================
   # Edge Broker: MQTT gateway → Cluster replication
@@ -305,7 +326,7 @@ services:
       iceberg-rest:
         condition: service_started
     environment:
-      - RUST_LOG=danube_iceberg=info
+      - RUST_LOG=danube_iceberg=info,danube_iceberg::schema_resolver=debug
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin123
       - AWS_REGION=us-east-1
@@ -325,12 +346,13 @@ services:
     depends_on:
       edge-broker:
         condition: service_healthy
+    restart: on-failure
     environment:
       - MQTT_BROKER=edge-broker
       - MQTT_PORT=1883
-      - NUM_DEVICES=3
-      - PUBLISH_INTERVAL=2
-      - DURATION=300       # Run for 5 minutes (0 = infinite)
+      - NUM_DEVICES=10
+      - PUBLISH_INTERVAL=1
+      - DURATION=1800       # Run for 30 minutes
     networks:
       - lakehouse_net
 

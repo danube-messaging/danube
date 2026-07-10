@@ -1,19 +1,23 @@
 """
-IoT Device Simulator — Lakehouse Pipeline Demo
+IoT Device Simulator — Danube Lakehouse Demo
 
-Simulates multiple IoT sensor devices publishing telemetry data via MQTT
-to the Danube Edge Broker. Each device sends temperature, humidity, and
-pressure readings every few seconds.
+Simulates multiple IoT sensor devices publishing data via MQTT across
+4 distinct topic categories:
+
+  1. telemetry  — temperature, humidity, pressure readings (high frequency)
+  2. sensors    — machine vibration / RPM readings
+  3. alerts     — threshold-based alerts (low frequency, bursty)
+  4. diagnostics — device health / uptime reports (low frequency)
 
 Pipeline:
   This script → MQTT (1883) → Edge Broker → Cluster Brokers → danube-iceberg → Iceberg/Parquet
 
 Environment variables:
-  MQTT_BROKER     — MQTT broker hostname (default: edge-broker)
-  MQTT_PORT       — MQTT broker port (default: 1883)
-  NUM_DEVICES     — Number of simulated devices (default: 3)
-  PUBLISH_INTERVAL— Seconds between publishes per device (default: 2)
-  DURATION        — Total runtime in seconds (default: 300, 0 = infinite)
+  MQTT_BROKER      — MQTT broker hostname (default: edge-broker)
+  MQTT_PORT        — MQTT broker port (default: 1883)
+  NUM_DEVICES      — Number of simulated devices (default: 10)
+  PUBLISH_INTERVAL — Seconds between publish rounds (default: 1)
+  DURATION         — Total runtime in seconds (default: 0 = infinite)
 """
 
 import json
@@ -30,15 +34,16 @@ import paho.mqtt.client as mqtt
 # ---------------------------------------------------------------------------
 MQTT_BROKER = os.getenv("MQTT_BROKER", "edge-broker")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-NUM_DEVICES = int(os.getenv("NUM_DEVICES", "3"))
-PUBLISH_INTERVAL = float(os.getenv("PUBLISH_INTERVAL", "2"))
-DURATION = int(os.getenv("DURATION", "300"))  # 0 = run forever
-
-# MQTT topic pattern: device/{device_id}/telemetry
-MQTT_TOPIC_TEMPLATE = "device/{device_id}/telemetry"
+NUM_DEVICES = int(os.getenv("NUM_DEVICES", "10"))
+PUBLISH_INTERVAL = float(os.getenv("PUBLISH_INTERVAL", "1"))
+DURATION = int(os.getenv("DURATION", "0"))  # 0 = run forever
 
 # Simulated device locations
-LOCATIONS = ["warehouse-A", "warehouse-B", "factory-floor", "cold-storage", "rooftop"]
+LOCATIONS = [
+    "warehouse-A", "warehouse-B", "factory-floor",
+    "cold-storage", "rooftop", "loading-dock",
+    "clean-room", "server-room", "lab-1", "lab-2",
+]
 
 # ---------------------------------------------------------------------------
 # Signal handling for graceful shutdown
@@ -61,6 +66,7 @@ signal.signal(signal.SIGINT, handle_signal)
 connected = False
 publish_count = 0
 error_count = 0
+topic_counts = {}
 
 
 def on_connect(client, userdata, flags, rc):
@@ -85,21 +91,26 @@ def on_disconnect(client, userdata, rc):
 
 
 # ---------------------------------------------------------------------------
-# Sensor data generation
+# Device classes — each topic category has a distinct payload shape
 # ---------------------------------------------------------------------------
-class VirtualDevice:
-    """Simulates an IoT sensor device with realistic drifting readings."""
+
+class TelemetryDevice:
+    """Temperature / humidity / pressure sensor (high frequency)."""
 
     def __init__(self, device_id: str, location: str):
         self.device_id = device_id
         self.location = location
-        # Base values with some per-device variation
         self.base_temp = random.uniform(18.0, 35.0)
         self.base_humidity = random.uniform(30.0, 80.0)
         self.base_pressure = random.uniform(1010.0, 1025.0)
 
+    def mqtt_topic(self) -> str:
+        return f"device/{self.device_id}/telemetry"
+
     def reading(self) -> dict:
-        """Generate a telemetry reading with realistic noise."""
+        self.base_temp += random.gauss(0, 0.1)
+        self.base_humidity += random.gauss(0, 0.3)
+        self.base_pressure += random.gauss(0, 0.05)
         return {
             "device_id": self.device_id,
             "location": self.location,
@@ -110,18 +121,100 @@ class VirtualDevice:
             "timestamp": int(time.time()),
         }
 
-    def drift(self):
-        """Simulate slow environmental drift over time."""
-        self.base_temp += random.gauss(0, 0.1)
-        self.base_humidity += random.gauss(0, 0.3)
-        self.base_pressure += random.gauss(0, 0.05)
+
+class SensorDevice:
+    """Machine vibration / RPM sensor."""
+
+    def __init__(self, device_id: str, location: str):
+        self.device_id = device_id
+        self.location = location
+        self.base_rpm = random.uniform(1200.0, 3600.0)
+        self.base_vibration = random.uniform(0.5, 3.0)
+
+    def mqtt_topic(self) -> str:
+        return f"sensors/{self.device_id}/vibration"
+
+    def reading(self) -> dict:
+        self.base_rpm += random.gauss(0, 5.0)
+        self.base_vibration += random.gauss(0, 0.05)
+        return {
+            "device_id": self.device_id,
+            "location": self.location,
+            "rpm": round(self.base_rpm + random.gauss(0, 20.0), 1),
+            "vibration_mm_s": round(max(0, self.base_vibration + random.gauss(0, 0.2)), 3),
+            "motor_temp_c": round(random.uniform(40.0, 90.0), 1),
+            "power_watts": round(random.uniform(100.0, 2000.0), 0),
+            "timestamp": int(time.time()),
+        }
+
+
+class AlertDevice:
+    """Threshold-based alert generator (bursty, low frequency)."""
+
+    ALERT_TYPES = ["over_temp", "low_battery", "high_vibration", "door_open", "leak_detected"]
+    SEVERITIES = ["info", "warning", "critical"]
+
+    def __init__(self, device_id: str, location: str):
+        self.device_id = device_id
+        self.location = location
+
+    def mqtt_topic(self) -> str:
+        return f"device/{self.device_id}/alerts"
+
+    def should_fire(self) -> bool:
+        """Alerts fire randomly ~20% of rounds."""
+        return random.random() < 0.20
+
+    def reading(self) -> dict:
+        return {
+            "device_id": self.device_id,
+            "location": self.location,
+            "alert_type": random.choice(self.ALERT_TYPES),
+            "severity": random.choice(self.SEVERITIES),
+            "value": round(random.uniform(0, 100), 2),
+            "message": f"Alert from {self.device_id} at {self.location}",
+            "acknowledged": False,
+            "timestamp": int(time.time()),
+        }
+
+
+class DiagnosticsDevice:
+    """Device health / uptime reporter (low frequency)."""
+
+    def __init__(self, device_id: str, location: str):
+        self.device_id = device_id
+        self.location = location
+        self.boot_time = int(time.time()) - random.randint(3600, 86400 * 7)
+        self.msg_count = 0
+
+    def mqtt_topic(self) -> str:
+        return f"device/{self.device_id}/diagnostics"
+
+    def should_report(self, round_num: int) -> bool:
+        """Diagnostics report every ~10 rounds."""
+        return round_num % 10 == 0
+
+    def reading(self) -> dict:
+        self.msg_count += 1
+        uptime_s = int(time.time()) - self.boot_time
+        return {
+            "device_id": self.device_id,
+            "location": self.location,
+            "uptime_seconds": uptime_s,
+            "cpu_pct": round(random.uniform(5.0, 85.0), 1),
+            "mem_used_mb": round(random.uniform(32, 256), 1),
+            "disk_free_mb": round(random.uniform(100, 4096), 0),
+            "firmware_version": "2.4.1",
+            "messages_sent": self.msg_count,
+            "timestamp": int(time.time()),
+        }
 
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def main():
-    global shutdown, connected, publish_count, error_count
+    global shutdown, connected, publish_count, error_count, topic_counts
 
     print("=" * 60)
     print("  🌡️  IoT Device Simulator — Danube Lakehouse Demo")
@@ -129,16 +222,44 @@ def main():
     print(f"  MQTT Broker:    {MQTT_BROKER}:{MQTT_PORT}")
     print(f"  Devices:        {NUM_DEVICES}")
     print(f"  Interval:       {PUBLISH_INTERVAL}s")
-    print(f"  Duration:       {'infinite' if DURATION == 0 else f'{DURATION}s'}")
+    print(f"  Duration:       {'♾️  infinite' if DURATION == 0 else f'{DURATION}s'}")
+    print(f"  Topics:         telemetry, sensors, alerts, diagnostics")
     print("=" * 60)
 
-    # Create virtual devices
-    devices = []
+    # Create virtual devices — distribute across 4 categories
+    telemetry_devices = []
+    sensor_devices = []
+    alert_devices = []
+    diag_devices = []
+
     for i in range(NUM_DEVICES):
-        device_id = f"sensor-{i + 1}"
+        device_id = f"sensor-{i + 1:02d}"
         location = LOCATIONS[i % len(LOCATIONS)]
-        devices.append(VirtualDevice(device_id, location))
-        print(f"  📡 Device: {device_id} @ {location}")
+        category = i % 4  # Round-robin across categories
+
+        if category == 0:
+            dev = TelemetryDevice(device_id, location)
+            telemetry_devices.append(dev)
+            label = "telemetry"
+        elif category == 1:
+            dev = SensorDevice(device_id, location)
+            sensor_devices.append(dev)
+            label = "sensors"
+        elif category == 2:
+            dev = AlertDevice(device_id, location)
+            alert_devices.append(dev)
+            label = "alerts"
+        else:
+            dev = DiagnosticsDevice(device_id, location)
+            diag_devices.append(dev)
+            label = "diagnostics"
+
+        print(f"  📡 {device_id:>12s} @ {location:<16s} [{label}]")
+
+    print(f"\n  Summary: {len(telemetry_devices)} telemetry, "
+          f"{len(sensor_devices)} sensors, "
+          f"{len(alert_devices)} alerts, "
+          f"{len(diag_devices)} diagnostics")
 
     # Connect to MQTT broker with retry
     client = mqtt.Client(client_id=f"iot-simulator-{int(time.time())}")
@@ -173,8 +294,9 @@ def main():
     # Publish loop
     start_time = time.time()
     last_status = start_time
+    round_num = 0
 
-    print(f"\n🚀 Starting telemetry publish loop...")
+    print(f"\n🚀 Starting publish loop (4 topics, ~{NUM_DEVICES} msg/s)...\n")
 
     try:
         while not shutdown:
@@ -183,30 +305,45 @@ def main():
                 print(f"\n⏱️  Duration limit ({DURATION}s) reached.")
                 break
 
-            for device in devices:
+            round_num += 1
+
+            # --- Telemetry: every round ---
+            for dev in telemetry_devices:
                 if shutdown:
                     break
+                _publish(client, dev.mqtt_topic(), dev.reading())
 
-                reading = device.reading()
-                topic = MQTT_TOPIC_TEMPLATE.format(device_id=device.device_id)
-                payload = json.dumps(reading)
+            # --- Sensors: every round ---
+            for dev in sensor_devices:
+                if shutdown:
+                    break
+                _publish(client, dev.mqtt_topic(), dev.reading())
 
-                result = client.publish(topic, payload, qos=1)
-                if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                    error_count += 1
+            # --- Alerts: probabilistic (~20% of rounds) ---
+            for dev in alert_devices:
+                if shutdown:
+                    break
+                if dev.should_fire():
+                    _publish(client, dev.mqtt_topic(), dev.reading())
 
-                device.drift()
+            # --- Diagnostics: every 10th round ---
+            for dev in diag_devices:
+                if shutdown:
+                    break
+                if dev.should_report(round_num):
+                    _publish(client, dev.mqtt_topic(), dev.reading())
 
             # Status update every 30 seconds
             now = time.time()
             if now - last_status >= 30:
                 elapsed = int(now - start_time)
                 rate = publish_count / max(elapsed, 1)
+                topics_str = ", ".join(
+                    f"{t}={c}" for t, c in sorted(topic_counts.items())
+                )
                 print(
-                    f"  📊 Status: {publish_count} published, "
-                    f"{error_count} errors, "
-                    f"{rate:.1f} msg/s, "
-                    f"{elapsed}s elapsed"
+                    f"  📊 {elapsed:>6d}s | {publish_count:>8d} msgs | "
+                    f"{rate:.1f} msg/s | {topics_str}"
                 )
                 last_status = now
 
@@ -218,11 +355,13 @@ def main():
     # Summary
     elapsed = int(time.time() - start_time)
     print(f"\n{'=' * 60}")
-    print(f"  📈 Simulation Complete")
+    print(f"  📈 Simulation {'Stopped' if shutdown else 'Complete'}")
     print(f"  Total published: {publish_count}")
     print(f"  Errors:          {error_count}")
     print(f"  Duration:        {elapsed}s")
     print(f"  Avg rate:        {publish_count / max(elapsed, 1):.1f} msg/s")
+    for topic, count in sorted(topic_counts.items()):
+        print(f"    {topic}: {count}")
     print(f"{'=' * 60}")
 
     client.disconnect()
@@ -232,7 +371,19 @@ def main():
         print(f"⚠️  Completed with {error_count} errors")
         sys.exit(1)
     else:
-        print("✅ Simulator completed successfully")
+        print("✅ Simulator stopped cleanly")
+
+
+def _publish(client, topic: str, payload: dict):
+    """Publish a JSON payload to an MQTT topic."""
+    global error_count, topic_counts
+    result = client.publish(topic, json.dumps(payload), qos=1)
+    if result.rc != mqtt.MQTT_ERR_SUCCESS:
+        error_count += 1
+
+    # Track per-topic counts (use the Danube topic category)
+    category = topic.split("/")[-1]  # telemetry, vibration, alerts, diagnostics
+    topic_counts[category] = topic_counts.get(category, 0) + 1
 
 
 if __name__ == "__main__":

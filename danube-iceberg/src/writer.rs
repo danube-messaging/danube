@@ -59,7 +59,7 @@ pub async fn write_data_files(
 
     let file_name_generator = DefaultFileNameGenerator::new(
         "part".to_string(),
-        None,
+        Some(uuid::Uuid::new_v4().to_string()),
         iceberg::spec::DataFileFormat::Parquet,
     );
 
