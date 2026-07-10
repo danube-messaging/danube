@@ -33,6 +33,7 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/danube-broker
             target/x86_64-unknown-linux-gnu/release/danube-cli
             target/x86_64-unknown-linux-gnu/release/danube-admin
+            target/x86_64-unknown-linux-gnu/release/danube-iceberg
 
   build-macos:
     runs-on: macos-latest
@@ -59,6 +60,7 @@ jobs:
             target/aarch64-apple-darwin/release/danube-broker
             target/aarch64-apple-darwin/release/danube-cli
             target/aarch64-apple-darwin/release/danube-admin
+            target/aarch64-apple-darwin/release/danube-iceberg
 
   build-windows:
     runs-on: windows-latest
@@ -86,6 +88,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release/danube-broker.exe
             target/x86_64-pc-windows-msvc/release/danube-cli.exe
             target/x86_64-pc-windows-msvc/release/danube-admin.exe
+            target/x86_64-pc-windows-msvc/release/danube-iceberg.exe
 
   docker-build:
     strategy:
@@ -187,6 +190,29 @@ jobs:
           cache-from: type=gha,scope=admin-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=admin-${{ matrix.arch }}
 
+      - name: Extract metadata for Danube Iceberg
+        id: meta-iceberg
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/danube-iceberg
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=true
+
+      - name: Build and push Danube Iceberg image (${{ matrix.arch }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: iceberg
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/danube-iceberg:${{ github.ref_name }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/danube-iceberg:latest-${{ matrix.arch }}
+          labels: ${{ steps.meta-iceberg.outputs.labels }}
+          cache-from: type=gha,scope=iceberg-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=iceberg-${{ matrix.arch }}
+
   docker-manifest:
     needs: docker-build
     runs-on: ubuntu-latest
@@ -212,6 +238,7 @@ jobs:
           BROKER="ghcr.io/${{ github.repository_owner }}/danube-broker"
           CLI="ghcr.io/${{ github.repository_owner }}/danube-cli"
           ADMIN="ghcr.io/${{ github.repository_owner }}/danube-admin"
+          ICEBERG="ghcr.io/${{ github.repository_owner }}/danube-iceberg"
 
           docker buildx imagetools create \
             -t ${BROKER}:${TAG} \
@@ -230,6 +257,12 @@ jobs:
             -t ${ADMIN}:latest \
             ${ADMIN}:${TAG}-amd64 \
             ${ADMIN}:${TAG}-arm64
+
+          docker buildx imagetools create \
+            -t ${ICEBERG}:${TAG} \
+            -t ${ICEBERG}:latest \
+            ${ICEBERG}:${TAG}-amd64 \
+            ${ICEBERG}:${TAG}-arm64
 
   release:
     needs: [build-linux, build-macos, build-windows, docker-manifest]
@@ -268,21 +301,21 @@ jobs:
           mkdir -p release
 
           # --- Linux (x86_64) ---
-          for bin in danube-broker danube-cli danube-admin; do
+          for bin in danube-broker danube-cli danube-admin danube-iceberg; do
             ARCHIVE="${bin}-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
             chmod +x "artifacts/linux/${bin}"
             tar czf "release/${ARCHIVE}" -C artifacts/linux "${bin}"
           done
 
           # --- macOS (Apple Silicon) ---
-          for bin in danube-broker danube-cli danube-admin; do
+          for bin in danube-broker danube-cli danube-admin danube-iceberg; do
             ARCHIVE="${bin}-${VERSION}-aarch64-apple-darwin.tar.gz"
             chmod +x "artifacts/macos/${bin}"
             tar czf "release/${ARCHIVE}" -C artifacts/macos "${bin}"
           done
 
           # --- Windows (x86_64) ---
-          for bin in danube-broker danube-cli danube-admin; do
+          for bin in danube-broker danube-cli danube-admin danube-iceberg; do
             ARCHIVE="${bin}-${VERSION}-x86_64-pc-windows-msvc.zip"
             (cd artifacts/windows && zip -q "../../release/${ARCHIVE}" "${bin}.exe")
           done
@@ -327,6 +360,11 @@ jobs:
           - **Linux (x86_64)**: [danube-admin-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
           - **macOS (Apple Silicon)**: [danube-admin-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-aarch64-apple-darwin.tar.gz)
           - **Windows (x86_64)**: [danube-admin-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-admin-${VERSION}-x86_64-pc-windows-msvc.zip)
+
+          ## Danube Iceberg (Lakehouse Converter):
+          - **Linux (x86_64)**: [danube-iceberg-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-iceberg-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+          - **macOS (Apple Silicon)**: [danube-iceberg-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-iceberg-${VERSION}-aarch64-apple-darwin.tar.gz)
+          - **Windows (x86_64)**: [danube-iceberg-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-iceberg-${VERSION}-x86_64-pc-windows-msvc.zip)
  
           ## Checksums:
           - **SHA256**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${VERSION}/checksums.txt)
@@ -335,6 +373,7 @@ jobs:
           - **Danube Broker**: \`ghcr.io/${{ github.repository_owner }}/danube-broker:${VERSION}\`
           - **Danube CLI**: \`ghcr.io/${{ github.repository_owner }}/danube-cli:${VERSION}\`
           - **Danube Admin**: \`ghcr.io/${{ github.repository_owner }}/danube-admin:${VERSION}\`
+          - **Danube Iceberg**: \`ghcr.io/${{ github.repository_owner }}/danube-iceberg:${VERSION}\`
           
           ### Quick Start with Docker:
           \`\`\`bash
