@@ -31,6 +31,9 @@ members = [
 
     # -- Danube admin (consolidated CLI + Server)
     "danube-admin",
+
+    # -- Danube Iceberg lakehouse converter (standalone binary)
+    "danube-iceberg",
 ]
 
 [workspace.dependencies]

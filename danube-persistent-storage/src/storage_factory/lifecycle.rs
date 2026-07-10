@@ -40,6 +40,31 @@ impl StorageFactory {
         }
     }
 
+    /// Returns completed segment descriptors for a topic, ordered by start_offset.
+    ///
+    /// Used by the `ListSegmentDescriptors` gRPC RPC to let external tools (e.g.,
+    /// `danube-iceberg`) discover sealed segments for Parquet conversion.
+    ///
+    /// Only segments with `completed = true` are returned. If `after_offset > 0`,
+    /// only segments with `start_offset > after_offset` are included (for
+    /// incremental polling).
+    pub async fn list_segment_descriptors(
+        &self,
+        topic_name: &str,
+        after_offset: u64,
+    ) -> Result<Vec<crate::SegmentDescriptor>, PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        let mut descriptors = self.segment_catalog.list_segments(&topic_path).await?;
+
+        // Filter: only completed segments, and only those after the checkpoint
+        descriptors.retain(|d| d.completed && d.start_offset > after_offset);
+
+        // Sort by start_offset for deterministic ordering
+        descriptors.sort_by_key(|d| d.start_offset);
+
+        Ok(descriptors)
+    }
+
     fn segment_export_interval_seconds(config: &StorageFactoryConfig) -> u64 {
         config.segment_export_interval_seconds.unwrap_or(300)
     }

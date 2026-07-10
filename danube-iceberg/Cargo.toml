@@ -1,0 +1,64 @@
+[package]
+name = "danube-iceberg"
+version = "0.15.0"
+description = "Standalone Iceberg lakehouse converter for Danube messaging"
+authors = ["Dan Rusei <dan.rusei@gmail.com>"]
+repository = "https://github.com/danube-messaging/danube"
+readme = "README.md"
+license = "Apache-2.0"
+edition = "2021"
+
+[[bin]]
+name = "danube-iceberg"
+path = "src/main.rs"
+
+[dependencies]
+# Danube crates (frame decoding + proto types + schema registry client)
+danube-core = { path = "../danube-core" }
+danube-client = { path = "../danube-client" }
+danube-persistent-storage = { path = "../danube-persistent-storage" }
+
+# Iceberg (catalog integration + table management — all backends compiled in)
+iceberg = "0.9.1"
+iceberg-catalog-rest = "0.9.1"
+iceberg-catalog-glue = "0.9.1"
+iceberg-catalog-s3tables = "0.9.1"
+iceberg-catalog-sql = "0.9.1"
+
+# Arrow/Parquet (aligned with iceberg 0.9.1's arrow 57 release train)
+arrow-array = "57"
+arrow-schema = "57"
+arrow-cast = "57"
+arrow-json = "57"
+arrow-avro = "57"
+parquet = { version = "57", default-features = false, features = ["arrow", "zstd", "async", "object_store"] }
+
+# Storage (parquet 57 depends on object_store 0.12.5)
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+
+# Runtime
+tokio = { workspace = true }
+tonic = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bincode = { version = "2.0.1", features = ["serde"] }
+bytes = { workspace = true }
+chrono = { version = "0.4", features = ["clock"] }
+metrics = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+crc32fast = "1"
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+apache-avro = "0.21"
+
+[lints]
+workspace = true

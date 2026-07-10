@@ -7,7 +7,7 @@ pub struct DurableObjectMetadata {
     etag: Option<String>,
 }
 
-pub(crate) fn segment_object_path(topic_path: &str, segment_id: &str) -> String {
+pub fn segment_object_path(topic_path: &str, segment_id: &str) -> String {
     format!("storage/topics/{}/segments/{}", topic_path, segment_id)
 }
 

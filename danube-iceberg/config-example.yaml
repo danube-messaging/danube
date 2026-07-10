@@ -1,0 +1,83 @@
+# danube-iceberg configuration example
+#
+# This is the configuration file for the danube-iceberg lakehouse converter.
+# It converts sealed Danube segments (.dnb1) to Apache Parquet / Iceberg format.
+
+# Broker connection — any broker in the Danube cluster.
+broker:
+  address: "localhost:6650"
+
+# Object storage — where segments are read from and Parquet files are written to.
+storage:
+  backend: "s3"                        # s3 | gcs | azure | fs
+  root: "s3://my-bucket/danube"        # Root path for .dnb1 segments
+  output_prefix: "iceberg"             # Parquet output subdirectory
+  options:
+    endpoint: "http://minio:9000"      # S3-compatible endpoint
+    region: "us-east-1"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+
+# Iceberg catalog — manages table metadata for analytics engines.
+# Supported types: rest, glue, s3tables, sql
+# Omit this section entirely for Parquet-only mode (no catalog).
+catalog:
+  type: "rest"
+  name: "danube_catalog"
+  properties:
+    uri: "http://nessie:19120/api/v1"
+    warehouse: "s3://my-bucket/warehouse"
+
+# --- Alternative catalog configurations ---
+#
+# AWS Glue Data Catalog:
+# catalog:
+#   type: "glue"
+#   name: "glue_catalog"
+#   properties:
+#     warehouse: "s3://my-datalake/warehouse"
+#
+# AWS S3 Tables (managed Iceberg):
+# catalog:
+#   type: "s3tables"
+#   name: "s3tables_catalog"
+#   properties:
+#     table_bucket_arn: "arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket"
+#
+# SQL catalog (SQLite — good for dev/test):
+# catalog:
+#   type: "sql"
+#   name: "sql_catalog"
+#   properties:
+#     uri: "sqlite://iceberg_catalog.db"
+#     warehouse: "/tmp/warehouse"
+#
+# SQL catalog (PostgreSQL — production):
+# catalog:
+#   type: "sql"
+#   name: "sql_catalog"
+#   properties:
+#     uri: "postgresql://user:pass@localhost:5432/iceberg"
+#     warehouse: "s3://my-bucket/warehouse"
+
+# Global compaction settings — defaults for all topics.
+compaction:
+  target_parquet_size_mb: 200          # Flush when buffer reaches this size
+  max_flush_interval_seconds: 300      # Flush at least every 5 minutes
+
+# Topics to export — each topic maps to one Iceberg table.
+# Only configured topics are exported (explicit opt-in).
+topics:
+  - namespace: "default"
+    topic: "sensor-data"
+    table_name: "sensor_data"
+  - namespace: "default"
+    topic: "events"
+    table_name: "events"
+    compaction:                         # Per-topic override
+      target_parquet_size_mb: 100
+      max_flush_interval_seconds: 60
+
+# Polling — how often to check for new sealed segments.
+polling:
+  interval_seconds: 30

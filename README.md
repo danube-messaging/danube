@@ -109,6 +109,8 @@ Edge mode is designed for factory floors, remote sites, and any environment wher
 
 🏭 **Edge** : MQTT v3.1.1/v5.0 ingestion, schema validation at the edge, WAL-buffered replication
 
+🧊 **[Lakehouse](danube-iceberg/)** : Standalone sidecar that continuously exports streaming data to Apache Iceberg tables with full column-level statistics, supporting JSON and Avro payloads.
+
 🔌 **[Danube Connect](https://danube-messaging.com/integrations/danube-connect/)** : Out-of-process connector ecosystem for databases, analytics, and IoT (MQTT, Delta Lake, Qdrant, SurrealDB, and more)
 
 🤖 **AI Admin** : [MCP integration](https://danube-messaging.com/admin/mcp/) for managing your cluster with natural language via Claude, Cursor, or Windsurf
@@ -133,6 +135,7 @@ Edge mode is designed for factory floors, remote sites, and any environment wher
 
 - **[danube-broker](danube-broker/)** : Core messaging broker
 - **[danube-edge](danube-edge/)** : Edge MQTT gateway and replicator
+- **[danube-iceberg](danube-iceberg/)** : Lakehouse connector, exports streaming data to Apache Iceberg tables
 - **[danube-schema](danube-schema/)** : Schema registry (JSON Schema, Avro, Protobuf)
 - **[danube-raft](danube-raft/)** : Embedded Raft consensus
 - **[danube-persistent-storage](danube-persistent-storage/)** : WAL and durable storage engine
