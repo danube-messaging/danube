@@ -1,3 +1,33 @@
+<!-- v0.15.1 START -->
+## v0.15.1 - 2026-07-11
+
+**Danube Iceberg - Native Lakehouse Integration**
+
+Streaming platforms and data lakes have historically been separate systems. Getting data from one to the other means building and maintaining ETL pipelines like Kafka Connect, Spark Streaming jobs, or custom Flink applications, that add operational complexity, introduce latency, and break when schemas change.
+
+This release makes Danube a lakehouse-native messaging platform. The new `danube-iceberg` sidecar continuously converts sealed WAL segments into Apache Iceberg tables, making streaming data instantly queryable by Spark, Trino, DuckDB, Snowflake, and any engine that speaks Iceberg, with zero ETL pipelines to build or maintain.
+
+**Documentation**: [Danube Iceberg Overview](https://danube-messaging.com/lakehouse/overview/) · [Configuration Reference](https://danube-messaging.com/reference/iceberg-configuration/)
+
+### Danube Iceberg
+
+* **Lakehouse sidecar** (#237): New `danube-iceberg` binary that runs alongside the Danube cluster and continuously exports streaming data to Apache Iceberg tables. Discovers sealed `.dnb1` segments from object storage, decodes WAL frames, writes Parquet data files with ZSTD compression, and commits them to an Iceberg catalog via atomic `fast_append` transactions. by @danrusei in f5e7abd
+
+* **Schema-aware Parquet conversion** (#237): Resolves schemas from the Danube Schema Registry (JSON Schema and Avro) and produces typed Parquet columns. A temperature reading becomes a `Float64` column named `temperature`, not an opaque byte array. Query engines get real column names, native types, and per-column statistics (min/max bounds, null counts) for predicate pushdown and file pruning. Topics without a schema use an envelope fallback with `offset`, `publish_time`, `producer_name`, and `payload` columns. by @danrusei in f5e7abd
+
+* **Multi-catalog support** (#237): Supports REST catalogs (Nessie, Polaris, Tabular, Unity), AWS Glue, AWS S3 Tables, and SQL-backed catalogs (SQLite, PostgreSQL). A Parquet-only mode is available for environments without a catalog. by @danrusei in f5e7abd
+
+* **Crash-safe checkpointing and Iceberg V2 table management** (#237): Tracks progress per topic in object storage with at-least-once delivery semantics, and creates tables with Iceberg V2 format, metadata retention, and automatic cleanup after commits. by @danrusei in f5e7abd
+
+### Docker Compose Lakehouse Demo
+
+* **End-to-end pipeline demo** (#238): Complete [Docker Compose Lakehouse](https://github.com/danube-messaging/danube/tree/main/docker/with-lakehouse) setup demonstrating the full lakehouse pipeline: 9 simulated IoT devices → Edge Broker (MQTT) → 3-node Cluster → danube-iceberg → Apache Spark SQL (Jupyter Notebook). Includes MinIO for S3-compatible storage, Iceberg REST catalog, Prometheus monitoring, and pre-configured Jupyter notebooks for querying all three Iceberg tables (telemetry, sensors, alerts). by @danrusei in 8a06983
+
+### Storage Backend Migration
+
+* **Replaced OpenDAL with `object_store` v0.14** (#236): Migrated the durable storage backend from OpenDAL to the `object_store` crate (the same library used by Apache Arrow, DataFusion, and Delta Lake). Adds streaming reads via `GetResultPayload::Stream` for memory-efficient segment processing, multipart uploads for large segment exports, and a cleaner async API surface. This also aligns `danube-persistent-storage` and `danube-iceberg` on the same storage abstraction, enabling both to share credentials and connection configuration. by @danrusei in f8e8f97
+<!-- v0.15.1 END -->
+
 <!-- v0.15.0 START -->
 ## v0.15.0 - 2026-06-15
 

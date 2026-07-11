@@ -1,4 +1,4 @@
-# Danube Lakehouse Pipeline — Docker Compose
+# Danube Lakehouse Pipeline - Docker Compose
 
 **Full end-to-end demo**: IoT devices → MQTT → Edge Broker → Cluster → Iceberg/Parquet → Spark SQL
 
@@ -40,11 +40,11 @@ This setup demonstrates the complete Danube lakehouse data pipeline, from simula
 | Broker 2 | `lakehouse-broker2` | 6651, 50052, 9041 | Cluster broker |
 | Broker 3 | `lakehouse-broker3` | 6652, 50053, 9042 | Cluster broker |
 | Edge Broker | `lakehouse-edge-broker` | 1883, 6653 | MQTT gateway → cluster replication |
-| Admin Init | `lakehouse-admin-init` | — | Registers schemas + namespaces (runs once) |
-| danube-iceberg | `lakehouse-danube-iceberg` | — | Converts segments to Parquet/Iceberg |
+| Admin Init | `lakehouse-admin-init` |: | Registers schemas + namespaces (runs once) |
+| danube-iceberg | `lakehouse-danube-iceberg` |: | Converts segments to Parquet/Iceberg |
 | Iceberg REST | `lakehouse-iceberg-rest` | 8181 | Iceberg catalog metadata server |
 | Spark | `lakehouse-spark` | 8888, 8080 | Jupyter Notebook for SQL queries |
-| IoT Simulator | `lakehouse-iot-simulator` | — | 9 IoT devices across 3 MQTT topics |
+| IoT Simulator | `lakehouse-iot-simulator` |: | 9 IoT devices across 3 MQTT topics |
 | Prometheus | `lakehouse-prometheus` | 9090 | Metrics collection |
 
 ## Prerequisites
@@ -89,8 +89,8 @@ Open **http://localhost:9001** (login: `minioadmin` / `minioadmin123`).
 
 Check these two buckets:
 
-- **`danube-messages`** → `cluster-data/storage/topics/edge1/` — sealed `.dnb1` segment files (the raw WAL segments exported by brokers)
-- **`warehouse`** → `edge1/telemetry_data/data/` — Parquet files written by `danube-iceberg`, organized in the standard Iceberg table layout
+- **`danube-messages`** → `cluster-data/storage/topics/edge1/`: sealed `.dnb1` segment files (the raw WAL segments exported by brokers)
+- **`warehouse`** → `edge1/telemetry_data/data/`: Parquet files written by `danube-iceberg`, organized in the standard Iceberg table layout
 
 ### 4. Query with Spark SQL (Jupyter)
 
@@ -98,7 +98,7 @@ Open **http://localhost:8888** (token: `lakehouse`, or check `docker logs lakeho
 
 Create a new **Python 3** notebook and run the following cells one at a time:
 
-**Cell 1 — Connect to catalog and list tables:**
+**Cell 1: Connect to catalog and list tables:**
 
 ```python
 # The tabulario/spark-iceberg image pre-configures a catalog named 'demo'
@@ -121,7 +121,7 @@ Expected output:
 +---------+--------------+-----------+
 ```
 
-**Cell 2 — Query telemetry readings:**
+**Cell 2: Query telemetry readings:**
 
 ```python
 spark.sql("""
@@ -132,7 +132,7 @@ spark.sql("""
 """).show()
 ```
 
-**Cell 3 — Aggregation per device:**
+**Cell 3: Aggregation per device:**
 
 ```python
 spark.sql("""
@@ -149,7 +149,7 @@ spark.sql("""
 """).show()
 ```
 
-**Cell 4 — Query machine sensors:**
+**Cell 4: Query machine sensors:**
 
 ```python
 spark.sql("""
@@ -160,7 +160,7 @@ spark.sql("""
 """).show()
 ```
 
-**Cell 5 — Query alerts:**
+**Cell 5: Query alerts:**
 
 ```python
 spark.sql("""
@@ -171,7 +171,7 @@ spark.sql("""
 """).show()
 ```
 
-**Cell 6 — Alert severity breakdown:**
+**Cell 6: Alert severity breakdown:**
 
 ```python
 spark.sql("""
@@ -186,7 +186,7 @@ spark.sql("""
 """).show(30)
 ```
 
-**Cell 7 — Cross-table: devices with both sensor data and alerts:**
+**Cell 7: Cross-table: devices with both sensor data and alerts:**
 
 ```python
 spark.sql("""
@@ -201,7 +201,7 @@ spark.sql("""
 """).show()
 ```
 
-**Cell 8 — Iceberg metadata: view table snapshots (time-travel history):**
+**Cell 8: Iceberg metadata: view table snapshots (time-travel history):**
 
 ```python
 spark.sql("SELECT * FROM edge1.telemetry_data.snapshots").show(truncate=False)
@@ -302,14 +302,14 @@ Standard Iceberg table properties are set at creation time:
 
 ### Spark SQL ← Query
 
-The `tabulario/spark-iceberg` container runs Spark with a **Jupyter Notebook** interface and comes pre-configured with an Iceberg catalog named `demo` pointing to the REST catalog. Once Parquet files are committed, any standard SQL query works — including aggregations, joins, and Iceberg-specific features like time-travel (`SELECT * FROM table.snapshots`).
+The `tabulario/spark-iceberg` container runs Spark with a **Jupyter Notebook** interface and comes pre-configured with an Iceberg catalog named `demo` pointing to the REST catalog. Once Parquet files are committed, any standard SQL query works: including aggregations, joins, and Iceberg-specific features like time-travel (`SELECT * FROM table.snapshots`).
 
 ## Configuration
 
 ### Broker Config: `danube_broker_lakehouse.yml`
 
 Based on the cloud storage config with:
-- **WAL rotation:** 64 KiB (small for fast demo — production uses 512 MiB)
+- **WAL rotation:** 64 KiB (small for fast demo: production uses 512 MiB)
 - **S3 endpoint:** `http://minio:9000`
 - **Bootstrap namespaces:** `default` + `edge1`
 
@@ -375,7 +375,7 @@ docker compose build --no-cache broker1
 2. Check edge broker is replicating: `docker logs lakehouse-edge-broker`
 3. Check segments exist in MinIO Console at `danube-messages/cluster-data/storage/topics/`
 4. Check danube-iceberg logs: `docker logs lakehouse-danube-iceberg`
-5. Wait 5–7 minutes — the pipeline needs time for WAL rotation + segment export + Parquet conversion
+5. Wait 5–7 minutes: the pipeline needs time for WAL rotation + segment export + Parquet conversion
 
 ### Port conflicts
 
