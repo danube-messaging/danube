@@ -27,20 +27,17 @@
 
 mod common;
 
-use arrow_array::builder::{
-    BinaryBuilder, Int64Builder, StringBuilder,
-};
+use arrow_array::builder::{BinaryBuilder, Int64Builder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use common::{
-    build_local_storage, build_segment_from_messages, make_test_message,
-    write_segment_to_storage,
+    build_local_storage, build_segment_from_messages, make_test_message, write_segment_to_storage,
 };
 use danube_persistent_storage::frames::decode_next_frame;
 use futures_util::StreamExt;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStoreExt, PutPayload};
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use std::sync::Arc;
@@ -200,7 +197,6 @@ async fn segment_to_parquet_envelope() {
 
     assert_eq!(total_rows, 20, "should have all 20 rows in parquet");
 }
-
 
 // ============================================================================
 // Multi-segment pipeline

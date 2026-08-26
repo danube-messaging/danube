@@ -16,7 +16,7 @@
 
 use crate::iceberg_schema;
 use arrow_schema::Schema as ArrowSchema;
-use iceberg::transaction::{ApplyTransactionAction, Transaction};
+use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -181,19 +181,66 @@ impl TableManager {
         Ok(updated_table)
     }
 
-    /// Check if the table schema needs evolution (new fields) and report.
+    /// Check if the table schema needs evolution (new fields) and apply updates.
     ///
     /// Iceberg supports additive schema evolution (adding nullable columns
-    /// without rewriting data), but `iceberg-rust 0.9.1` does not expose
-    /// `update_schema()` on `Transaction`. This method performs detection
-    /// only — it compares the existing table schema against the new Arrow
-    /// schema and logs the result.
+    /// without rewriting data). When new fields are detected, this method applies
+    /// `Transaction::update_schema()` and commits the updated schema to the catalog.
     ///
-    /// When `iceberg-rust` adds schema evolution to its Transaction API,
-    /// this method should be updated to apply the change atomically.
-    ///
-    /// Returns `Ok(true)` if new fields were detected, `Ok(false)` if
-    /// schemas are identical, or `Err` on incompatible type changes.
+    /// Returns:
+    /// - `Ok(Some(updated_table))` if schema evolution was applied
+    /// - `Ok(None)` if existing schema already matches (no new fields)
+    /// - `Err` on incompatible type changes or commit errors.
+    pub async fn evolve_schema(
+        &self,
+        table: &iceberg::table::Table,
+        new_arrow_schema: &ArrowSchema,
+    ) -> anyhow::Result<Option<iceberg::table::Table>> {
+        let new_iceberg_schema = iceberg_schema::arrow_to_iceberg_schema(new_arrow_schema)?;
+        let existing_schema = table.metadata().current_schema();
+
+        let new_fields = iceberg_schema::schema_diff(existing_schema, &new_iceberg_schema)?;
+        if new_fields.is_empty() {
+            return Ok(None);
+        }
+
+        let field_names: Vec<_> = new_fields.iter().map(|f| f.name.as_str()).collect();
+        info!(
+            table = %table.identifier(),
+            new_fields = new_fields.len(),
+            field_names = ?field_names,
+            "schema evolution detected — adding new columns to Iceberg table"
+        );
+
+        let tx = Transaction::new(table);
+        let mut update_schema_action = tx.update_schema();
+
+        for field in new_fields {
+            update_schema_action = update_schema_action.add_column(AddColumn::optional(
+                field.name,
+                (*field.field_type).clone(),
+            ));
+        }
+
+        let tx = update_schema_action
+            .apply(tx)
+            .map_err(|e| anyhow::anyhow!("update_schema apply failed: {}", e))?;
+
+        let updated_table = tx
+            .commit(&*self.catalog)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to commit schema evolution: {}", e))?;
+
+        info!(
+            table = %table.identifier(),
+            "schema evolution committed successfully"
+        );
+
+        Ok(Some(updated_table))
+    }
+
+    /// Backwards-compatible detection-only helper.
+    #[allow(dead_code)]
     pub async fn evolve_schema_if_needed(
         &self,
         table: &iceberg::table::Table,
@@ -203,23 +250,7 @@ impl TableManager {
         let existing_schema = table.metadata().current_schema();
 
         match iceberg_schema::schema_diff(existing_schema, &new_iceberg_schema) {
-            Ok(new_fields) => {
-                if new_fields.is_empty() {
-                    return Ok(false); // No evolution needed
-                }
-
-                let field_names: Vec<_> = new_fields.iter().map(|f| f.name.as_str()).collect();
-                warn!(
-                    new_fields = new_fields.len(),
-                    field_names = ?field_names,
-                    "schema evolution detected — new columns found but iceberg-rust 0.9.1 \
-                     does not support Transaction::update_schema(). New Parquet files will \
-                     contain the additional columns; the Iceberg table schema will be updated \
-                     when the crate adds this capability."
-                );
-
-                Ok(true)
-            }
+            Ok(new_fields) => Ok(!new_fields.is_empty()),
             Err(e) => {
                 warn!(error = %e, "incompatible schema change detected — rejecting");
                 Err(e)

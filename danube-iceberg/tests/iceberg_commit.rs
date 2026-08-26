@@ -25,7 +25,7 @@ use iceberg::spec::{
     DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType,
     Schema as IcebergSchema, Struct, Type,
 };
-use iceberg::transaction::{ApplyTransactionAction, Transaction};
+use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -251,4 +251,49 @@ async fn list_tables_in_namespace() {
     let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"table_a"));
     assert!(names.contains(&"table_b"));
+}
+
+/// Verifies schema evolution via `Transaction::update_schema()`.
+///
+/// Iceberg 0.10.x added support for updating table schemas via transactions.
+/// This test verifies creating a table with 4 fields, applying `update_schema`
+/// to add a new optional column ("extra_metric"), committing the transaction,
+/// and verifying that the table's updated metadata includes all 5 fields.
+#[tokio::test]
+async fn schema_evolution_via_transaction() {
+    let catalog = build_memory_catalog().await;
+
+    let ns = NamespaceIdent::from_strs(["default"]).unwrap();
+    catalog
+        .create_namespace(&ns, Default::default())
+        .await
+        .expect("create namespace");
+
+    let initial_schema = envelope_iceberg_schema();
+    let table_creation = TableCreation::builder()
+        .name("evolving_topic".to_string())
+        .schema(initial_schema)
+        .build();
+
+    let table = catalog
+        .create_table(&ns, table_creation)
+        .await
+        .expect("create table");
+
+    assert_eq!(table.metadata().current_schema().as_struct().fields().len(), 4);
+
+    // Evolve schema by adding a new optional Float column
+    let tx = Transaction::new(&table);
+    let action = tx.update_schema().add_column(AddColumn::optional(
+        "extra_metric",
+        Type::Primitive(PrimitiveType::Float),
+    ));
+    let tx = action.apply(tx).expect("apply update_schema");
+    let updated_table = tx.commit(&*catalog).await.expect("commit schema update");
+
+    let fields = updated_table.metadata().current_schema().as_struct().fields();
+    assert_eq!(fields.len(), 5, "schema should now have 5 fields");
+    assert_eq!(fields[4].name, "extra_metric");
+    assert_eq!(*fields[4].field_type, Type::Primitive(PrimitiveType::Float));
+    assert!(!fields[4].required, "new column should be optional");
 }

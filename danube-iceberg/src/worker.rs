@@ -650,7 +650,7 @@ impl TopicWorker {
             anyhow::anyhow!("table_manager is required — danube-iceberg must be configured with an Iceberg catalog")
         })?;
 
-        let table = tm
+        let mut table = tm
             .get_or_create_table(
                 &self.topic_config.namespace,
                 &self.topic_config.table_name,
@@ -658,14 +658,20 @@ impl TopicWorker {
             )
             .await?;
 
-        // Check for schema evolution (detection-only in iceberg-rust 0.9.1).
-        if let Err(e) = tm.evolve_schema_if_needed(&table, &batch.schema()).await {
-            warn!(
-                topic = %fq_topic,
-                error = %e,
-                "incompatible schema change detected, data file will still be committed \
-                 with the current Iceberg table schema"
-            );
+        // Check and apply schema evolution if new fields are detected.
+        match tm.evolve_schema(&table, &batch.schema()).await {
+            Ok(Some(updated_table)) => {
+                table = updated_table;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(
+                    topic = %fq_topic,
+                    error = %e,
+                    "schema evolution failed or incompatible change detected, data file will \
+                     still be committed with current Iceberg table schema"
+                );
+            }
         }
 
         // Re-project the batch to the Iceberg table's Arrow schema.

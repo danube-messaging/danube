@@ -31,7 +31,6 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
             use iceberg_storage_opendal::OpenDalStorageFactory;
 
             let storage_factory = Arc::new(OpenDalStorageFactory::S3 {
-                configured_scheme: "s3".to_string(),
                 customized_credential_load: None,
             });
 

@@ -27,7 +27,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use common::build_local_storage;
 use futures_util::StreamExt;
-use object_store::ObjectStore;
+use object_store::ObjectStoreExt;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use std::sync::Arc;

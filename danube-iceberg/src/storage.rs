@@ -1,8 +1,7 @@
 //! Object store construction for danube-iceberg.
 //!
-//! Builds an `Arc<dyn ObjectStore>` from the YAML config. This is independent
-//! from `danube-persistent-storage`'s object_store (which uses v0.14) — here
-//! we use the v0.13.2 that aligns with `parquet` 57.
+//! Builds an `Arc<dyn ObjectStore>` from the YAML config, using `object_store`
+//! v0.13.2 that aligns with `parquet` 58.
 
 use crate::config::StorageConfig;
 use object_store::aws::AmazonS3Builder;

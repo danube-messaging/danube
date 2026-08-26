@@ -19,23 +19,23 @@ danube-client = { path = "../danube-client" }
 danube-persistent-storage = { path = "../danube-persistent-storage" }
 
 # Iceberg (catalog integration + table management — all backends compiled in)
-iceberg = "0.9.1"
-iceberg-catalog-rest = "0.9.1"
-iceberg-catalog-glue = "0.9.1"
-iceberg-catalog-s3tables = "0.9.1"
-iceberg-catalog-sql = "0.9.1"
-iceberg-storage-opendal = "0.9.1"
+iceberg = "0.10.1"
+iceberg-catalog-rest = "0.10.1"
+iceberg-catalog-glue = "0.10.1"
+iceberg-catalog-s3tables = "0.10.1"
+iceberg-catalog-sql = "0.10.1"
+iceberg-storage-opendal = "0.10.1"
 
-# Arrow/Parquet (aligned with iceberg 0.9.1's arrow 57 release train)
-arrow-array = "57"
-arrow-schema = "57"
-arrow-cast = "57"
-arrow-json = "57"
-arrow-avro = "57"
-parquet = { version = "57", default-features = false, features = ["arrow", "zstd", "async", "object_store"] }
+# Arrow/Parquet (aligned with iceberg 0.10.1's arrow 58 release train)
+arrow-array = "58"
+arrow-schema = "58"
+arrow-cast = "58"
+arrow-json = "58"
+arrow-avro = "58"
+parquet = { version = "58", default-features = false, features = ["arrow", "zstd", "async", "object_store"] }
 
-# Storage (parquet 57 depends on object_store 0.12.5)
-object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+# Storage (parquet 58 depends on object_store 0.13.2)
+object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 
 # Runtime
 tokio = { workspace = true }

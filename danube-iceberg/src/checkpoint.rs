@@ -7,7 +7,7 @@
 
 use crate::storage::StorageHandle;
 use bytes::Bytes;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
