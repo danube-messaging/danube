@@ -36,6 +36,7 @@ use common::{
     write_segment_to_storage,
 };
 use danube_persistent_storage::frames::decode_next_frame;
+use object_store::ObjectStoreExt;
 
 // ============================================================================
 // Frame decoding tests

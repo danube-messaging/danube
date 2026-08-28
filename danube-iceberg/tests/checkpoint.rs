@@ -22,7 +22,7 @@ mod common;
 
 use bytes::Bytes;
 use common::build_local_storage;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStoreExt, PutPayload};
 
 /// Checkpoint data for testing (mirrors the checkpoint module).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

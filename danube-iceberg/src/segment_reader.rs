@@ -13,7 +13,7 @@
 use crate::storage::StorageHandle;
 use danube_core::message::StreamMessage;
 use danube_persistent_storage::frames::{decode_next_frame, FrameDecodeError};
-use object_store::ObjectStore;
+use object_store::ObjectStoreExt;
 use tracing::{debug, warn};
 
 /// Read a .dnb1 segment from object storage and decode all frames into messages.

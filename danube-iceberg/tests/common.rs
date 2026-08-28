@@ -26,6 +26,7 @@ use bytes::Bytes;
 use danube_core::message::{MessageID, StreamMessage};
 use danube_persistent_storage::frames::append_encoded_frame;
 use object_store::local::LocalFileSystem;
+use object_store::ObjectStoreExt;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

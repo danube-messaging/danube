@@ -47,14 +47,14 @@ pub async fn write_data_files(
     // Parquet writer properties
     let writer_props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(Default::default()))
-        .set_max_row_group_size(128 * 1024) // 128K rows per row group
+        .set_max_row_group_row_count(Some(128 * 1024)) // 128K rows per row group
         .build();
 
     // Level 1: File format writer (Parquet)
     let parquet_builder = ParquetWriterBuilder::new(writer_props, iceberg_schema);
 
     // Level 2: Location + file name generators (standard Iceberg layout)
-    let location_generator = DefaultLocationGenerator::new(metadata.clone())
+    let location_generator = DefaultLocationGenerator::new(metadata)
         .map_err(|e| anyhow::anyhow!("failed to create location generator: {}", e))?;
 
     let file_name_generator = DefaultFileNameGenerator::new(
