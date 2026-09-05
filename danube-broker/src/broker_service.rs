@@ -89,7 +89,7 @@ impl BrokerService {
         let consumers = ConsumerRegistry::new();
         let topic_registry = Arc::new(TopicRegistry::new(None));
         let resources_arc = Arc::new(resources);
-        let metrics_collector = Arc::new(MetricsCollector::new());
+        let metrics_collector = Arc::new(MetricsCollector::with_registry(topic_registry.clone()));
         let replicator = Arc::new(Replicator::new(broker_id));
 
         let topic_manager = TopicManager::new(
@@ -488,10 +488,9 @@ impl BrokerService {
         producer_name: &str,
     ) -> Option<u64> {
         let topic = self.topic_registry.get_topic(topic_name)?;
-        let producers = topic.producers.lock().await;
-        for (_id, producer) in producers.iter() {
-            if producer.producer_name == producer_name {
-                return Some(producer.producer_id);
+        for entry in topic.producers.iter() {
+            if entry.value().producer_name == producer_name {
+                return Some(entry.value().producer_id);
             }
         }
         None

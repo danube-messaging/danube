@@ -116,7 +116,7 @@ async fn reliable_single_ack_gating() {
 
     // Append the first message AFTER engine init; then notify to trigger dispatch loop
     ts.store_message(make_msg(100, 0, topic)).await.unwrap();
-    dispatcher.wake_dispatch().await.expect("wake first");
+    dispatcher.wake_dispatch().expect("wake first");
 
     // Expect first message (should be the only one available)
     let first = timeout(Duration::from_secs(2), rx.recv())
@@ -139,7 +139,7 @@ async fn reliable_single_ack_gating() {
 
     // Append the second message NOW; then notify to trigger next dispatch
     ts.store_message(make_msg(101, 1, topic)).await.unwrap();
-    dispatcher.wake_dispatch().await.expect("wake second");
+    dispatcher.wake_dispatch().expect("wake second");
 
     // Expect second message
     let second = timeout(Duration::from_secs(2), rx.recv())

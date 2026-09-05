@@ -439,7 +439,7 @@ impl TopicManager {
     /// Best-effort flush of all subscription cursors for a topic (reliable only).
     async fn flush_subscription_cursors(&self, topic_name: &str) -> Result<()> {
         if let Some(topic) = self.topic_registry.get_topic(topic_name) {
-            let subscriptions = topic.subscriptions.lock().await;
+            let subscriptions = topic.subscriptions.read().await;
             for (_sub_name, subscription) in subscriptions.iter() {
                 if let Some(dispatcher) = &subscription.dispatcher {
                     let _ = dispatcher.flush_progress_now().await;
@@ -539,7 +539,7 @@ impl TopicManager {
 
         if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
             let failure_policy = {
-                let subscriptions = topic.subscriptions.lock().await;
+                let subscriptions = topic.subscriptions.read().await;
                 subscriptions
                     .get(&subscription_options.subscription_name)
                     .map(|subscription| subscription.failure_policy.clone())
@@ -564,7 +564,7 @@ impl TopicManager {
     pub(crate) async fn find_consumer_by_id(&self, consumer_id: u64) -> Option<Consumer> {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
             if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
-                if let Some(subscription) = topic.subscriptions.lock().await.get(&subscription_name)
+                if let Some(subscription) = topic.subscriptions.read().await.get(&subscription_name)
                 {
                     return subscription.get_consumer(consumer_id);
                 }
@@ -606,7 +606,7 @@ impl TopicManager {
         if let Some((topic_name, subscription_name)) = self.consumers.get(consumer_id) {
             if let Some(topic) = self.topic_registry.get_topic(&topic_name) {
                 let dispatcher = {
-                    let subscriptions = topic.subscriptions.lock().await;
+                    let subscriptions = topic.subscriptions.read().await;
                     subscriptions
                         .get(&subscription_name)
                         .and_then(|subscription| subscription.dispatcher.clone())
@@ -616,7 +616,7 @@ impl TopicManager {
                     if let Err(e) = dispatcher.reset_pending(consumer_id).await {
                         tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to reset pending state");
                     }
-                    if let Err(e) = dispatcher.wake_dispatch().await {
+                    if let Err(e) = dispatcher.wake_dispatch() {
                         tracing::warn!(consumer_id = %consumer_id, error = %e, "failed to wake dispatcher");
                     }
                 }
@@ -871,6 +871,7 @@ impl ProducerRegistry {
     }
 
     /// Returns true if a `producer_id` is registered.
+    #[allow(dead_code)]
     pub(crate) fn contains(&self, producer_id: u64) -> bool {
         self.0.contains_key(&producer_id)
     }

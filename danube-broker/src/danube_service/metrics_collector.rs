@@ -9,6 +9,7 @@
 //! - Scraping our own HTTP endpoint is inefficient
 //! - We need real-time access without HTTP overhead
 
+use crate::topic_registry::TopicRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -32,21 +33,37 @@ pub(crate) struct TopicMetricsSnapshot {
 
 /// Global metrics collector
 /// 
-/// This structure is updated whenever metrics are recorded. It provides
-/// fast read access for LoadReport generation without scraping endpoints.
+/// This structure pulls metrics directly from registered topics on demand for
+/// LoadReport generation, eliminating write-lock contention on message publishing.
 #[derive(Debug, Clone)]
 pub(crate) struct MetricsCollector {
+    topic_registry: Arc<RwLock<Option<Arc<TopicRegistry>>>>,
     topics: Arc<RwLock<HashMap<String, TopicMetricsSnapshot>>>,
 }
 
 impl MetricsCollector {
     pub fn new() -> Self {
         Self {
+            topic_registry: Arc::new(RwLock::new(None)),
             topics: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    pub fn with_registry(registry: Arc<TopicRegistry>) -> Self {
+        Self {
+            topic_registry: Arc::new(RwLock::new(Some(registry))),
+            topics: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn set_topic_registry(&self, registry: Arc<TopicRegistry>) {
+        let mut reg = self.topic_registry.write().await;
+        *reg = Some(registry);
+    }
     
-    /// Record a message published to a topic
+    /// Record a message published to a topic (legacy fallback)
+    #[allow(dead_code)]
     pub async fn record_message_in(&self, topic_name: &str, bytes: u64) {
         let mut topics = self.topics.write().await;
         let snapshot = topics.entry(topic_name.to_string()).or_default();
@@ -85,16 +102,41 @@ impl MetricsCollector {
     }
     
     /// Get snapshot for a specific topic
-    /// Currently unused - we use get_all_snapshots() instead
     #[allow(dead_code)]
     pub async fn get_topic_snapshot(&self, topic_name: &str) -> Option<TopicMetricsSnapshot> {
+        let registry_opt = {
+            self.topic_registry.read().await.clone()
+        };
+
+        if let Some(registry) = registry_opt {
+            if let Some(topic) = registry.get_topic(topic_name) {
+                return Some(topic.metrics_snapshot().await);
+            }
+        }
         let topics = self.topics.read().await;
         topics.get(topic_name).cloned()
     }
     
     /// Get all topic snapshots
     pub async fn get_all_snapshots(&self) -> HashMap<String, TopicMetricsSnapshot> {
-        self.topics.read().await.clone()
+        let registry_opt = {
+            self.topic_registry.read().await.clone()
+        };
+
+        if let Some(registry) = registry_opt {
+            let mut result = HashMap::new();
+            for (name, topic) in registry.get_all_topic_instances() {
+                result.insert(name, topic.metrics_snapshot().await);
+            }
+            // Include fallback entries if any exist
+            let fallback = self.topics.read().await;
+            for (k, v) in fallback.iter() {
+                result.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            result
+        } else {
+            self.topics.read().await.clone()
+        }
     }
     
     /// Remove a topic (when it's deleted)

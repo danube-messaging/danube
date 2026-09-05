@@ -98,6 +98,14 @@ impl TopicRegistry {
         self.topics.iter().map(|entry| entry.key().clone()).collect()
     }
 
+    /// Returns all registered topics and their Arc<Topic> handles.
+    pub fn get_all_topic_instances(&self) -> Vec<(String, Arc<Topic>)> {
+        self.topics
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
     /// Check if a topic exists in the registry
     pub fn contains_topic(&self, topic_name: &str) -> bool {
         self.topics.contains_key(topic_name)

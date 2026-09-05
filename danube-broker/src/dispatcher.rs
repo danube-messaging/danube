@@ -222,12 +222,22 @@ impl Dispatcher {
         }
     }
 
-    pub(crate) async fn wake_dispatch(&self) -> Result<()> {
+    pub(crate) fn wake_dispatch(&self) -> Result<()> {
         match &self.handle {
-            DispatcherHandle::Reliable { control_tx, .. } => control_tx
-                .send(DispatcherCommand::PollAndDispatch)
-                .await
-                .map_err(|_| anyhow!("Failed to wake dispatcher")),
+            DispatcherHandle::Reliable { control_tx, .. } => {
+                match control_tx.try_send(DispatcherCommand::PollAndDispatch) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // Coalesce wakeups: a poll command is already queued in the control channel.
+                        // Since the reliable dispatch loop drains messages until no more are ready
+                        // or the window is exhausted, dropping redundant poll signals is completely safe.
+                        Ok(())
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        Err(anyhow!("Failed to wake dispatcher: channel closed"))
+                    }
+                }
+            }
             _ => Ok(()),
         }
     }
