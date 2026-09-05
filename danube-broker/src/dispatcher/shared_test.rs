@@ -122,7 +122,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Append first message and notify -> expect delivery to one of the consumers
     ts.store_message(make_msg(500, 0, topic)).await.unwrap();
-    dispatcher.wake_dispatch().await.expect("wake first");
+    dispatcher.wake_dispatch().expect("wake first");
 
     // Expect first delivery to either c1 or c2
     let first_delivered = timeout(Duration::from_secs(2), async {
@@ -146,7 +146,7 @@ async fn reliable_multiple_round_robin_ack_gating() {
 
     // Append second message and notify -> expect other consumer to receive next (round-robin)
     ts.store_message(make_msg(501, 1, topic)).await.unwrap();
-    dispatcher.wake_dispatch().await.expect("wake second");
+    dispatcher.wake_dispatch().expect("wake second");
 
     let second_delivered = timeout(Duration::from_secs(2), async {
         tokio::select! {

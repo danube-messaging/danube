@@ -193,7 +193,7 @@ async fn reliable_subscription_materializes_with_persisted_failure_policy() -> A
         .await?
         .expect("stored failure policy");
 
-    let subscriptions = topic.subscriptions.lock().await;
+    let subscriptions = topic.subscriptions.read().await;
     let subscription = subscriptions.get("sub-a").expect("subscription exists");
 
     assert_eq!(subscription.failure_policy, stored_policy);
@@ -457,7 +457,7 @@ async fn non_reliable_topic_publish_does_not_stall_on_full_subscription() -> Any
         .await?;
 
     let (slow_consumer, fast_consumer) = {
-        let subs = topic.subscriptions.lock().await;
+        let subs = topic.subscriptions.read().await;
         let slow = subs
             .get("slow-sub")
             .and_then(|sub| sub.get_consumer(slow_consumer_id))

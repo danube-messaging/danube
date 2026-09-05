@@ -127,16 +127,9 @@ impl ProducerService for DanubeServerImpl {
         &self,
         request: Request<ProtoStreamMessage>,
     ) -> Result<Response<MessageResponse>, tonic::Status> {
-        let security_context = get_security_context(&request)?;
+        let _security_context = get_security_context(&request)?;
         let req = request.into_inner();
         let stream_message: StreamMessage = req.into();
-
-        enforce_authorization(
-            &security_context,
-            &Resource::Topic(stream_message.msg_id.topic_name.clone()),
-            Permission::Produce,
-            &self.service.resources.security,
-        ).await?;
 
         trace!(
             message_id = %stream_message.request_id,
@@ -149,18 +142,29 @@ impl ProducerService for DanubeServerImpl {
 
         let service = self.service.as_ref();
 
-        // check if the producer exist
-        if !service
-            .topic_manager
-            .producers
-            .contains(stream_message.msg_id.producer_id)
-        {
-            let status = Status::not_found(format!(
-                "The producer with id {} does not exist",
-                stream_message.msg_id.producer_id
-            ));
-            counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
-            return Err(status);
+        // Fast-path authorization: verify the producer session is active and registered to this topic.
+        // Full multi-scope RBAC authorization was already enforced at connection/creation time in `create_producer`.
+        match service.topic_manager.producers.get_topic(stream_message.msg_id.producer_id) {
+            Some(ref registered_topic) if registered_topic == &stream_message.msg_id.topic_name => {
+                // Producer is valid and authorized for this topic
+            }
+            Some(_) => {
+                let status = Status::permission_denied(format!(
+                    "The producer with id {} is not authorized for topic {}",
+                    stream_message.msg_id.producer_id,
+                    stream_message.msg_id.topic_name
+                ));
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
+                return Err(status);
+            }
+            None => {
+                let status = Status::not_found(format!(
+                    "The producer with id {} does not exist",
+                    stream_message.msg_id.producer_id
+                ));
+                counter!(BROKER_RPC_TOTAL.name, "service"=>"producer", "method"=>"send_message", "result"=>"error").increment(1);
+                return Err(status);
+            }
         }
 
         let req_id = stream_message.request_id;

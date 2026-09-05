@@ -5,10 +5,12 @@ use danube_core::{
     storage::{PersistentStorage, StartPosition, TopicStream},
 };
 use danube_schema::{SchemaResources, TopicSchemaContext};
+use dashmap::DashMap;
 use metrics::{counter, gauge, histogram};
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::Duration;
 use tracing::{debug, warn};
 
@@ -17,7 +19,7 @@ use crate::{
         TOPIC_ACTIVE_SUBSCRIPTIONS, TOPIC_BYTES_IN_TOTAL, TOPIC_MESSAGES_IN_TOTAL,
         TOPIC_MESSAGE_SIZE_BYTES,
     },
-    danube_service::metrics_collector::MetricsCollector,
+    danube_service::metrics_collector::{MetricsCollector, TopicMetricsSnapshot},
     dispatcher::{DispatchStrategy, Dispatcher},
     message::{AckMessage, NackMessage},
     policies::Policies,
@@ -59,9 +61,12 @@ pub(crate) struct Topic {
     // Topic-level policies
     pub(crate) topic_policies: Option<Policies>,
     // subscription_name -> Subscription
-    pub(crate) subscriptions: Mutex<HashMap<String, Subscription>>,
+    pub(crate) subscriptions: RwLock<HashMap<String, Subscription>>,
     // the producers currently connected to this topic, producer_id -> Producer
-    pub(crate) producers: Mutex<HashMap<u64, Producer>>,
+    pub(crate) producers: DashMap<u64, Producer>,
+    // Ingress counters for LoadReport and monitoring (lock-free)
+    pub(crate) messages_in: AtomicU64,
+    pub(crate) bytes_in: AtomicU64,
     // the retention strategy for the topic, Reliable vs NonReliable
     pub(crate) dispatch_strategy: DispatchStrategy,
     // handle to metadata topic resources for cleanup operations
@@ -100,8 +105,10 @@ impl Topic {
             topic_name: topic_name.into(),
             schema_context: TopicSchemaContext::new(resources_schema),
             topic_policies: None,
-            subscriptions: Mutex::new(HashMap::new()),
-            producers: Mutex::new(HashMap::new()),
+            subscriptions: RwLock::new(HashMap::new()),
+            producers: DashMap::new(),
+            messages_in: AtomicU64::new(0),
+            bytes_in: AtomicU64::new(0),
             dispatch_strategy,
             resources_topic,
             topic_store,
@@ -115,19 +122,31 @@ impl Topic {
 
     /// Get current producer count for metrics
     pub(crate) async fn get_producer_count(&self) -> usize {
-        self.producers.lock().await.len()
+        self.producers.len()
     }
 
     /// Get current consumer count for metrics (across all subscriptions)
     pub(crate) async fn get_consumer_count(&self) -> usize {
-        let subscriptions = self.subscriptions.lock().await;
+        let subscriptions = self.subscriptions.read().await;
         subscriptions.values().map(|sub| sub.consumer_count()).sum()
     }
 
     /// Get subscription count for metrics
     #[allow(dead_code)]
     pub(crate) async fn get_subscription_count(&self) -> usize {
-        self.subscriptions.lock().await.len()
+        self.subscriptions.read().await.len()
+    }
+
+    /// Returns a snapshot of topic metrics for LoadReport generation
+    pub(crate) async fn metrics_snapshot(&self) -> TopicMetricsSnapshot {
+        TopicMetricsSnapshot {
+            messages_in_total: self.messages_in.load(Ordering::Relaxed),
+            bytes_in_total: self.bytes_in.load(Ordering::Relaxed),
+            active_producers: self.producers.len(),
+            active_consumers: self.get_consumer_count().await,
+            active_subscriptions: self.subscriptions.read().await.len(),
+            total_backlog_messages: 0,
+        }
     }
 
     #[allow(unused_assignments)]
@@ -139,24 +158,19 @@ impl Topic {
     ) -> Result<serde_json::Value> {
         // Policy: max_producers_per_topic
         self.can_add_producer().await?;
-        let mut producer_config = serde_json::Value::String(String::new());
-        let mut producers = self.producers.lock().await;
+        let new_producer = Producer::new(
+            producer_id,
+            producer_name.into(),
+            self.topic_name.clone(),
+            producer_access_mode,
+        );
+        let producer_config = serde_json::to_value(&new_producer)?;
 
-        match producers.entry(producer_id) {
-            Entry::Vacant(entry) => {
-                let new_producer = Producer::new(
-                    producer_id,
-                    producer_name.into(),
-                    self.topic_name.clone(),
-                    producer_access_mode,
-                );
-
-                producer_config = serde_json::to_value(&new_producer)?;
-
+        match self.producers.entry(producer_id) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(new_producer);
             }
-            Entry::Occupied(entry) => {
-                //let current_producer = entry.get();
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
                 debug!(producer_id = %entry.key(), topic = %self.topic_name, "producer already exists");
                 return Err(anyhow!(" the producer already exist"));
             }
@@ -171,9 +185,8 @@ impl Topic {
 
         // Disconnect all the topic producers
         {
-            let mut producers = self.producers.lock().await;
-            for (_, producer) in producers.iter_mut() {
-                let producer_id = producer.disconnect();
+            for mut entry in self.producers.iter_mut() {
+                let producer_id = entry.value_mut().disconnect();
                 disconnected_producers.push(producer_id);
             }
 
@@ -184,7 +197,7 @@ impl Topic {
         }
 
         // Disconnect all the topic subscriptions
-        let mut subs_guard = self.subscriptions.lock().await;
+        let mut subs_guard = self.subscriptions.write().await;
         for (_, subscription) in subs_guard.iter_mut() {
             let mut consumers = subscription.disconnect().await?;
             disconnected_consumers.append(&mut consumers);
@@ -247,17 +260,14 @@ impl Topic {
             .validate_message(&stream_message, &self.topic_name)
             .await?;
 
-            let producer_id = stream_message.msg_id.producer_id;
-            {
-                let producers = self.producers.lock().await;
-                if !producers.contains_key(&producer_id) {
-                    return Err(anyhow!(
-                        "the producer with id {} is not attached to topic name: {}",
-                        producer_id,
-                        self.topic_name
-                    ));
-                }
-            }
+        let producer_id = stream_message.msg_id.producer_id;
+        if !self.producers.contains_key(&producer_id) {
+            return Err(anyhow!(
+                "the producer with id {} is not attached to topic name: {}",
+                producer_id,
+                self.topic_name
+            ));
+        }
 
         // Update ingress counters (topic only)
         counter!(
@@ -271,10 +281,9 @@ impl Topic {
         )
         .increment(stream_message.payload.len() as u64);
 
-        // Dual-track metrics for LoadReport
-        self.metrics_collector
-            .record_message_in(&self.topic_name, stream_message.payload.len() as u64)
-            .await;
+        // Update internal atomic counters for LoadReport (lock-free)
+        self.messages_in.fetch_add(1, Ordering::Relaxed);
+        self.bytes_in.fetch_add(stream_message.payload.len() as u64, Ordering::Relaxed);
 
         // Process message based on dispatch strategy
         match &self.dispatch_strategy {
@@ -304,7 +313,7 @@ impl Topic {
     async fn dispatch_to_subscriptions_async(&self, stream_message: StreamMessage) -> Result<()> {
         // Phase 1: snapshot dispatchers under lock (cheap clone — just channel handles)
         let targets: Vec<(String, Dispatcher)> = {
-            let subs = self.subscriptions.lock().await;
+            let subs = self.subscriptions.read().await;
             subs.iter()
                 .filter_map(|(name, sub)| {
                     sub.dispatcher.as_ref().map(|d| (name.clone(), d.clone()))
@@ -329,7 +338,7 @@ impl Topic {
 
         // Phase 3: re-lock only to mark failures idle
         if !idle_names.is_empty() {
-            let mut subs = self.subscriptions.lock().await;
+            let mut subs = self.subscriptions.write().await;
             for name in &idle_names {
                 if let Some(sub) = subs.get_mut(name) {
                     sub.mark_idle();
@@ -358,7 +367,7 @@ impl Topic {
 
     async fn wake_reliable_dispatchers(&self) {
         let dispatchers: Vec<Dispatcher> = {
-            let subscriptions = self.subscriptions.lock().await;
+            let subscriptions = self.subscriptions.read().await;
             subscriptions
                 .values()
                 .filter_map(|subscription| subscription.dispatcher.clone())
@@ -366,7 +375,7 @@ impl Topic {
         };
 
         for dispatcher in dispatchers {
-            if let Err(err) = dispatcher.wake_dispatch().await {
+            if let Err(err) = dispatcher.wake_dispatch() {
                 debug!(
                     topic = %self.topic_name,
                     error = %err,
@@ -377,31 +386,25 @@ impl Topic {
     }
 
     pub(crate) async fn ack_message(&self, ack_msg: AckMessage) -> Result<()> {
-        let mut subscriptions = self.subscriptions.lock().await;
+        let subscriptions = self.subscriptions.read().await;
         let subscription = subscriptions
-            .get_mut(ack_msg.subscription_name.as_str())
+            .get(ack_msg.subscription_name.as_str())
             .ok_or_else(|| anyhow!("Subscription not found"))?;
         subscription.ack_message(ack_msg).await?;
         Ok(())
     }
 
     pub(crate) async fn nack_message(&self, nack_msg: NackMessage) -> Result<()> {
-        let mut subscriptions = self.subscriptions.lock().await;
+        let subscriptions = self.subscriptions.read().await;
         let subscription = subscriptions
-            .get_mut(nack_msg.subscription_name.as_str())
+            .get(nack_msg.subscription_name.as_str())
             .ok_or_else(|| anyhow!("Subscription not found"))?;
         subscription.nack_message(nack_msg).await?;
         Ok(())
     }
 
     pub(crate) async fn get_producer_status(&self, producer_id: u64) -> bool {
-        let producers = self.producers.lock().await;
-        if let Some(producer) = producers.get(&producer_id) {
-            if producer.status == true {
-                return true;
-            }
-        }
-        false
+        self.producers.get(&producer_id).map_or(false, |p| p.status)
     }
 
     // Subscribe to the topic and create a consumer for receiving messages
@@ -416,7 +419,7 @@ impl Topic {
 
         // Check if subscription already exists without holding the lock across awaits
         let is_new = {
-            let subs = self.subscriptions.lock().await;
+            let subs = self.subscriptions.read().await;
             !subs.contains_key(&options.subscription_name)
         };
 
@@ -475,7 +478,7 @@ impl Topic {
             }
 
             // Insert the new subscription
-            let mut subs = self.subscriptions.lock().await;
+            let mut subs = self.subscriptions.write().await;
             subs.insert(options.subscription_name.clone(), new_subscription);
             // Gauge: topic active subscriptions ++
             gauge!(TOPIC_ACTIVE_SUBSCRIPTIONS.name, "topic" => self.topic_name.clone())
@@ -492,7 +495,7 @@ impl Topic {
             .await?;
 
         // Retrieve the subscription and proceed
-        let mut subs = self.subscriptions.lock().await;
+        let mut subs = self.subscriptions.write().await;
         let subscription = subs
             .get_mut(&options.subscription_name)
             .expect("subscription must exist at this point");
@@ -512,7 +515,7 @@ impl Topic {
     // should be called if all consumers are disconnected
     pub(crate) async fn unsubscribe(&self, subscription_name: &str) {
         let subs_count = {
-            let mut subs = self.subscriptions.lock().await;
+            let mut subs = self.subscriptions.write().await;
             subs.remove(subscription_name);
             subs.len()
         };
@@ -534,7 +537,7 @@ impl Topic {
         let mut removed_consumers = Vec::new();
 
         {
-            let subs = self.subscriptions.lock().await;
+            let subs = self.subscriptions.read().await;
             for (name, sub) in subs.iter() {
                 if let Some(idle_since) = sub.idle_since {
                     if now.duration_since(idle_since) > grace_period {
@@ -573,7 +576,7 @@ impl Topic {
         subscription_name: &str,
         consumer_name: &str,
     ) -> Option<u64> {
-        let mut sub_guard = self.subscriptions.lock().await;
+        let mut sub_guard = self.subscriptions.write().await;
         let subscription = match sub_guard.get_mut(subscription_name) {
             Some(subscr) => subscr,
             None => return None,
@@ -589,7 +592,7 @@ impl Topic {
 
     // check_subscription checks if the subscription is activelly used by any consumer
     pub(crate) async fn check_subscription(&self, subscription: &str) -> Option<bool> {
-        let sub_guard = self.subscriptions.lock().await;
+        let sub_guard = self.subscriptions.read().await;
         let subs = sub_guard.get(subscription)?;
 
         let consumers = subs.get_consumers();
@@ -664,18 +667,17 @@ impl Topic {
     }
 
     // ===== Helper counters =====
+    #[allow(dead_code)]
     pub(crate) async fn producer_count(&self) -> usize {
-        let producers = self.producers.lock().await;
-        producers.len()
+        self.producers.len()
     }
 
     pub(crate) async fn subscription_count(&self) -> usize {
-        let subscriptions = self.subscriptions.lock().await;
-        subscriptions.len()
+        self.subscriptions.read().await.len()
     }
 
     pub(crate) async fn total_consumer_count(&self) -> usize {
-        let subscriptions = self.subscriptions.lock().await;
+        let subscriptions = self.subscriptions.read().await;
         let mut total = 0usize;
         for (_name, sub) in subscriptions.iter() {
             total += sub.consumer_count();
@@ -693,7 +695,7 @@ impl Topic {
         if limit == 0 {
             return Ok(());
         }
-        let current = self.producer_count().await as u32;
+        let current = self.producers.len() as u32;
         if current >= limit {
             return Err(anyhow!(
                 "Producer limit reached for topic {}. Current: {}, Limit: {}",
@@ -734,7 +736,7 @@ impl Topic {
             .map(|p| p.get_max_consumers_per_subscription())
             .unwrap_or(0);
         if per_sub_limit > 0 {
-            let subscriptions = self.subscriptions.lock().await;
+            let subscriptions = self.subscriptions.read().await;
             if let Some(sub) = subscriptions.get(sub_name) {
                 let current = sub.consumer_count() as u32;
                 if current >= per_sub_limit {
