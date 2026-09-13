@@ -1,3 +1,41 @@
+<!-- v0.16.0 START -->
+## v0.16.0 - 2026-09-13
+
+**Core Engine Performance, Zero-Copy Pipeline & Concurrency Optimization**
+
+This release delivers comprehensive performance, throughput, and memory footprint improvements across the entire Danube stack. Through systematic profiling of hot execution paths, we eliminated mutex contention, removed intermediate queue hops, introduced zero-copy serialization, and replaced repeated schema and log compilations with lock-free, pre-compiled in-memory fast paths.
+
+### ⚡ Broker & Consumer Streaming Pipeline
+
+* **Direct consumer streaming** (#241) — Eliminated intermediate forwarding tasks and secondary `mpsc` queue hops in the consumer message pipeline. Messages now stream directly from dispatchers into the Tonic gRPC response channel using a 3-tier lock separation strategy (lock-free atomic health checks, zero-lock async sends, and isolated session mutexes). Includes zero-CPU idle disconnect detection and single-attach session takeover protection. by @danrusei in 9c49208
+
+* **Produce path & topic concurrency** (#240) — Replaced coarse topic mutex locks with `DashMap` for producers and `RwLock` for subscriptions, allowing message publishing and consumer acknowledgments to proceed in parallel without cross-blocking. Bypassed redundant RBAC checks on hot paths by verifying active producer sessions in-memory, and added lock-free atomic topic ingress counters. by @danrusei in 889d56d
+
+* **Zero-copy payload egress & pre-cached metrics** (#242) — Configured Protobuf code generation with `.bytes(".danube.StreamMessage.payload")` to use `bytes::Bytes` directly, achieving true zero-copy payload serialization on gRPC egress. Pre-cached `metrics::Counter` handles directly in `Topic` and `Consumer`, eliminating dynamic string allocations and metric registry lookups on every message. Added continuous fractional token replenishment to the rate limiter. by @danrusei in 6854867
+
+### 💾 Persistent Storage WAL Engine
+
+* **Hot-path allocation elimination** (#244) — Moved message payloads directly into the WAL in-memory cache on `append()`, cutting redundant heap allocations. Guarded broadcast loops with `receiver_count() > 0` so non-tailing topics skip message clones and iterations entirely. Removed duplicate cloning in `read_cached_since()`. by @danrusei in 7e8ae67
+
+* **$O(1)$ amortized cache eviction & zero-copy carry buffer** (#244) — Switched cache eviction to `BTreeMap::pop_first()`, replacing repetitive $O(\log N)$ tree lookups and key clones. Upgraded the WAL streaming reader's carry buffer to `bytes::BytesMut` using `split_to()`, eliminating continuous 64KB+ memory moves during segment parsing. by @danrusei in 7e8ae67
+
+### 🏛️ Embedded Raft Consensus
+
+* **Compact bincode log serialization** (#243) — Replaced human-readable JSON log storage in `RedbLogStore` with compact `bincode` binary encoding for Raft entries (`append`, `try_get_log_entries`, `get_log_state`), drastically reducing log size, disk I/O, and CPU serialization overhead. Added custom serde handling for dynamic JSON values. by @danrusei in 9157acc
+
+* **Watcher fast-paths & clean shutdown** (#243) — Short-circuited state machine event dispatches when no watchers are active, avoiding event allocations and JSON serialization on write paths. Adopted borrowed `Cow<'_, str>` for zero-allocation prefix matching, and added graceful `RaftNode::shutdown()` for clean termination. by @danrusei in 9157acc
+
+### 🛡️ Schema Registry & Validation
+
+* **Lock-free validation & compiled validator cache** (#245) — Replaced four serial Tokio mutex acquisitions on `validate_message()` with lock-free atomics (`AtomicU8`, `AtomicBool`) and concurrent `RwLock` structures. Pre-compiles JSON Schema and Avro AST validators once per schema version (`Arc<dyn PayloadValidator>`), eliminating per-message AST recompilations and metadata lookups. by @danrusei in 4a89c1e
+
+* **Zero-allocation metrics & CI coverage** (#245) — Replaced dynamic formatting in schema validation counters with static string slices (`policy.as_str()`). Updated CI workflow triggers to run end-to-end schema admin operations on any `danube-schema` changes. by @danrusei in 4a89c1e
+
+### 🧊 Lakehouse Integration
+
+* **Apache Iceberg & Arrow updates with schema evolution** (#239) — Updated Apache Iceberg and Arrow dependencies in `danube-iceberg`, adding active schema evolution to propagate evolving topic schema definitions into Parquet file schemas and Iceberg catalog metadata automatically. by @danrusei in 8e78fb1
+<!-- v0.16.0 END -->
+
 <!-- v0.15.1 START -->
 ## v0.15.1 - 2026-07-11
 
