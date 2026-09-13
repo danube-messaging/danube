@@ -108,6 +108,33 @@ impl fmt::Display for ValidationPolicy {
     }
 }
 
+impl ValidationPolicy {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ValidationPolicy::None => "none",
+            ValidationPolicy::Warn => "warn",
+            ValidationPolicy::Enforce => "enforce",
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            ValidationPolicy::None => 0,
+            ValidationPolicy::Warn => 1,
+            ValidationPolicy::Enforce => 2,
+        }
+    }
+
+    pub fn from_u8(val: u8) -> Self {
+        match val {
+            0 => ValidationPolicy::None,
+            1 => ValidationPolicy::Warn,
+            2 => ValidationPolicy::Enforce,
+            _ => ValidationPolicy::Warn,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +174,21 @@ mod tests {
 
         // Test invalid
         assert_eq!(SchemaType::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_validation_policy_conversions_and_as_str() {
+        assert_eq!(ValidationPolicy::None.as_str(), "none");
+        assert_eq!(ValidationPolicy::Warn.as_str(), "warn");
+        assert_eq!(ValidationPolicy::Enforce.as_str(), "enforce");
+
+        assert_eq!(ValidationPolicy::None.to_u8(), 0);
+        assert_eq!(ValidationPolicy::Warn.to_u8(), 1);
+        assert_eq!(ValidationPolicy::Enforce.to_u8(), 2);
+
+        assert_eq!(ValidationPolicy::from_u8(0), ValidationPolicy::None);
+        assert_eq!(ValidationPolicy::from_u8(1), ValidationPolicy::Warn);
+        assert_eq!(ValidationPolicy::from_u8(2), ValidationPolicy::Enforce);
+        assert_eq!(ValidationPolicy::from_u8(99), ValidationPolicy::Warn);
     }
 }

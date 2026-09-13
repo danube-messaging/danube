@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 metrics = { workspace = true }
+bytes = { workspace = true }
 
 # Schema format dependencies
 apache-avro = "0.21"
