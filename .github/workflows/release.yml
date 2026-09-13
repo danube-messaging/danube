@@ -131,7 +131,7 @@ jobs:
             type=raw,value=latest,enable=true
 
       - name: Build and push Danube Broker image (${{ matrix.arch }})
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           target: broker
@@ -154,7 +154,7 @@ jobs:
             type=raw,value=latest,enable=true
 
       - name: Build and push Danube CLI image (${{ matrix.arch }})
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           target: cli
@@ -177,7 +177,7 @@ jobs:
             type=raw,value=latest,enable=true
 
       - name: Build and push Danube Admin image (${{ matrix.arch }})
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           target: admin
@@ -200,7 +200,7 @@ jobs:
             type=raw,value=latest,enable=true
 
       - name: Build and push Danube Iceberg image (${{ matrix.arch }})
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           target: iceberg

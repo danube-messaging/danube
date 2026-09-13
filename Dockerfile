@@ -1,14 +1,20 @@
-# Use debian:bullseye-slim as the base image for both build and final stages
-FROM debian:bullseye-slim AS base
+# Use debian:bookworm-slim as the base image for both build and final stages
+FROM debian:bookworm-slim AS base
+
+# Install runtime dependencies (ca-certificates and curl)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Rust in the build stage
 FROM base AS builder
 
-# Install necessary dependencies for building
-RUN apt-get update && apt-get install -y \
+# Install necessary build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    curl \
-    protobuf-compiler
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
@@ -23,16 +29,13 @@ COPY . .
 # Build the project
 RUN cargo build --release
 
-# Broker stage: use the same base image as the build stage
+# Broker stage: use the base runtime image
 FROM base AS broker
-
-# Install protobuf-compiler in the final image as well
-RUN apt-get update && apt-get install -y protobuf-compiler curl
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /app/target/release/danube-broker /usr/local/bin/danube-broker
 
-# Copy the configuration file into the container (adjust the path if needed)
+# Copy the configuration file into the container
 COPY config/danube_broker.yml /etc/danube_broker.yml
 
 # Expose the ports: client, admin, Raft transport, Prometheus
@@ -42,11 +45,8 @@ EXPOSE 6650 50051 7650 9040
 ENTRYPOINT ["/usr/local/bin/danube-broker"]
 CMD ["--config-file", "/etc/danube_broker.yml"]
 
-# CLI stage: use the same base image as the build stage
+# CLI stage: use the base runtime image
 FROM base AS cli
-
-# Install protobuf-compiler and curl for testing
-RUN apt-get update && apt-get install -y protobuf-compiler curl
 
 # Copy the compiled CLI binary from the builder stage
 COPY --from=builder /app/target/release/danube-cli /usr/local/bin/danube-cli
