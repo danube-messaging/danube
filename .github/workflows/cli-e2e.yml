@@ -6,6 +6,7 @@ on:
       - "danube-admin/**"
       - "danube-cli/**"
       - "danube-broker/**"
+      - "danube-schema/**"
       - "danube-core/proto/DanubeAdmin.proto"
 
 jobs:
