@@ -14,7 +14,7 @@
 
 Danube is an open-source messaging platform built in Rust for teams that need reliable pub/sub and streaming without the operational overhead. Built on [Tokio](https://tokio.rs/) and [openraft](https://github.com/databendlabs/openraft), metadata is replicated through embedded Raft consensus, so there are no external dependencies to deploy or manage. Run it as a single-node **standalone** broker, scale to a multi-node **cluster**, or deploy at the **edge** to ingest MQTT device data into the cloud, all from the same binary.
 
-📖 **Full documentation at [danube-messaging.com](https://danube-messaging.com/)**
+📖 **Full documentation at [danube-messaging.com](https://danube-messaging.com/)** · 🧭 **[Why Danube? Architecture & Positioning](danube_positioning.md)**
 
 ---
 
@@ -115,7 +115,7 @@ Edge mode is designed for factory floors, remote sites, and any environment wher
 
 🤖 **AI Admin** : [MCP integration](https://danube-messaging.com/admin/mcp/) for managing your cluster with natural language via Claude, Cursor, or Windsurf
 
-📖 **Learn more** : [Topics](https://danube-messaging.com/concepts/topics/) · [Subscriptions](https://danube-messaging.com/concepts/subscriptions/) · [Persistence](https://danube-messaging.com/concepts/persistence/) · [Security](https://danube-messaging.com/security/overview/) · [Architecture](https://danube-messaging.com/architecture/overview/)
+📖 **Learn more** : [Positioning & Architecture](danube_positioning.md) · [Topics](https://danube-messaging.com/concepts/topics/) · [Subscriptions](https://danube-messaging.com/concepts/subscriptions/) · [Persistence](https://danube-messaging.com/concepts/persistence/) · [Security](https://danube-messaging.com/security/overview/) · [Architecture](https://danube-messaging.com/architecture/overview/)
 
 ---
 
