@@ -63,8 +63,8 @@ Danube v2 collapses the legacy multi-binary, YAML-heavy messaging stack into an 
 ### 1. One Binary (`danube`): Broker, CLI, UI Server, and MCP
 No separate broker, CLI, admin, or bridge binaries to keep in sync:
 - `danube up` — Runs the broker (`cluster`, `standalone`, or `edge` mode; also the default when no subcommand is given)
-- `danube ctl` — Full operator & developer CLI (`produce`, `consume`, `apply`, `topics`, `schemas`, `brokers`, `cluster`, `namespaces`, `security`, `serve`)
-- `danube mcp` — Built-in Model Context Protocol (MCP) server (stdio or Streamable HTTP) with built-in cluster telemetry, broker log access, schema inference, and guarded destructive operations
+- `danube ctl` — Full operator & developer CLI (`produce`, `consume`, `apply`, `topics`, `schemas`, `brokers`, `cluster`, `namespaces`, `security`, `serve`), including `topics peek`, `topics seek`, `topics replay-dlq`, `topics infer-schema`, and `topics branch`
+- `danube mcp` — Built-in Model Context Protocol (MCP) server (stdio or Streamable HTTP) with built-in cluster telemetry, broker log access, schema inference, subscription seek/DLQ replay, and confirmation-guarded destructive operations
 
 ### 2. Zero-YAML Operations, StreamIntents & Declarative State
 - **Zero-config startup**: Start single-node or multi-node clusters purely via CLI flags and environment variables; runtime cluster state lives in embedded Raft (`--recovery-config` remains available strictly as a break-glass local override if Raft quorum is lost).
@@ -75,8 +75,8 @@ No separate broker, CLI, admin, or bridge binaries to keep in sync:
 - **Execution Lease Heartbeats (`extend_lease`)**: Long-running LLM calls and tool steps extend processing leases without triggering redelivery storms.
 - **Persisted Progress Checkpoints (`report_progress`)**: Workers checkpoint `checkpoint_data` into durable topic state so failover resumes at the last completed step instead of restarting expensive workflows from zero.
 - **Cascading Task-Tree Cancellation (`cancel_task_tree`)**: Cancel an entire parent task tree across `x-correlation-id` / `x-parent-msg-id` so queued descendant messages are skipped cleanly at dispatch.
-- **Copy-on-Write Stream Branching (`danube ctl topics branch`)**: Fork any topic at an offset or timestamp using reference-counted WAL and object-store segments for zero-copy replay, debugging, and counterfactual evaluation.
-- **Request-Reply & Schema Inference**: Built-in `DanubeClient::request_reply` with correlation matching and `infer_topic_schema` to synthesize JSON Schema Draft-07 contracts from live samples.
+- **Stream Branching (`danube ctl topics branch`)**: Fork any topic at an offset or timestamp into an independent writable branch topic (copying retained WAL segments up to the branch point with reference-counted branch protection) for isolated replay, debugging, and counterfactual evaluation.
+- **Request-Reply & Schema Inference**: Built-in `DanubeClient::request_reply` with correlation matching and `infer_topic_schema` (`danube ctl topics infer-schema`) to synthesize JSON Schema Draft-07 contracts from live samples.
 
 ### 4. High-Throughput Dual-Dispatch Engine & Honest Durability
 - **Non-Reliable & Reliable Side-by-Side**: Run zero-disk-I/O in-memory streams next to durable WAL + Cloud Storage topics in the same cluster.
@@ -86,12 +86,12 @@ No separate broker, CLI, admin, or bridge binaries to keep in sync:
 
 ### 5. Zero-Touch Security, Auto-TLS & Voter Safety
 - **Embedded Auto-TLS (`--auth-mode auto-tls`)**: Automatically initializes an embedded Cluster CA in Raft (encrypted at rest via `DANUBE_CLUSTER_SECRET` or local secret) and distributes node certificates.
-- **Strict RBAC & Payload Guardrails**: Default-deny RBAC including dedicated `ReadPayload` permission for payload peeking, `dry_run` defaults on destructive MCP tools, Raft audit trail, and break-glass bootstrap token recovery so admins cannot lock themselves out.
-- **Production Quorum Safety**: Caps Raft voters (`target_voter_count`), promotes surplus brokers as non-voting learners, and gracefully drains on `SIGTERM` instead of churning Raft membership.
+- **Strict RBAC & Payload Guardrails**: Default-deny RBAC including dedicated `ReadPayload` permission for payload peeking, `confirm_destructive=true` confirmation guardrails on destructive MCP tools (plus `dry_run` preview support on rebalance, unload, and `apply`), Raft audit trail, and break-glass bootstrap token recovery so admins cannot lock themselves out.
+- **Production Quorum Safety**: Caps Raft voters (`target_voter_count`), promotes surplus brokers as non-voting learners, supports `--seed-nodes` with `--join` self-join via `JoinCluster`, and gracefully drains on `SIGTERM` instead of churning Raft membership.
 
 ### 6. Lakehouse-Native & Edge-Ready
-- **Embedded Lakehouse Library (`danube-iceberg`)**: Feature-gated (`--features danube-broker/lakehouse`) Apache Iceberg Parquet + statistics writer running on an isolated Tokio runtime with `--node-role` workload separation (`broker`, `lakehouse`, `all`) and REST (including AWS SigV4) or SQL catalog support.
-- **Consolidated Edge Gateway**: Edge mode (`--mode edge`) bridges MQTT v3.1.1/v5.0 devices through a local WAL into a single consolidated cloud ingest topic (`/edge/{edge-name}/mqtt` with `x-mqtt-topic` metadata), protecting cloud Raft metadata from per-device topic explosion.
+- **Embedded Lakehouse Library (`danube-iceberg`)**: Feature-gated (`--features danube-broker/lakehouse`) Apache Iceberg Parquet + statistics writer running on an isolated Tokio runtime (`DANUBE_LAKEHOUSE_CONFIG` or idle standby) with `--node-role` workload separation (`broker`, `lakehouse`, `all`) and REST (including AWS SigV4) or SQL catalog support.
+- **Consolidated Edge Gateway**: Edge mode (`--mode edge`) bridges MQTT v3.1.1/v5.0 devices through a local WAL into a single consolidated cloud ingest topic (`/{edge-name}/ingest`, with optional `topic_map` overrides) preserving the original MQTT topic in the `mqtt.topic` attribute and `routing_key`, protecting cloud Raft metadata from per-device topic explosion.
 
 ---
 
@@ -116,7 +116,7 @@ danube up \
   --seed-nodes "node1:7650,node2:7650,node3:7650"
 ```
 
-Optional network isolation for control-plane traffic: add `--admin-addr 0.0.0.0:50051` to bind Admin gRPC on a separate listener, or `--node-role lakehouse|broker|all` to specialize nodes.
+Optional network isolation for control-plane traffic: add `--admin-addr 0.0.0.0:50051` to bind Admin gRPC on a separate listener, `--seed-nodes <addrs> --join` to auto-join an existing cluster, or `--node-role lakehouse|broker|all` to specialize nodes (`DANUBE_LAKEHOUSE_CONFIG` configures embedded Iceberg pipelines).
 
 Deploy with [Docker Compose](docker/README.md) or [Kubernetes](https://danube-messaging.com/getting-started/kubernetes/).
 
@@ -133,8 +133,8 @@ danube up --mode edge \
 
 ```
 MQTT devices ──► Danube Edge (up --mode edge) ──► Local WAL ──► Cloud Cluster
-                 (MQTT v3.1.1 / v5.0)             (survives     (/edge/<name>/mqtt
-                                                   outages)      with x-mqtt-topic)
+                 (MQTT v3.1.1 / v5.0)             (survives     (/<edge-name>/ingest
+                                                   outages)      with mqtt.topic & routing_key)
 ```
 
 ---

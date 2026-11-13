@@ -22,8 +22,8 @@ Queryable in DuckDB, Trino, Spark, Snowflake, Athena
 
 ## Architecture & Guarantees
 
-- **Workload Isolation (`LakehouseRuntime`):** Runs on a dedicated `danube-lakehouse` Tokio runtime with bounded worker threads so analytics serialization does not cause latency spikes in client message delivery.
-- **Node-Role Scheduling (`--node-role`):** Run `danube up --node-role broker` on latency-sensitive ingress nodes and `danube up --node-role lakehouse` on dedicated export nodes (or `--node-role all` by default).
+- **Workload Isolation (`LakehouseRuntime`):** Runs on a dedicated `danube-lakehouse` Tokio runtime with bounded worker threads so analytics serialization does not cause latency spikes in client message delivery. Configured via `DANUBE_LAKEHOUSE_CONFIG=/path/to/lakehouse.yaml` (starts in idle standby when unset).
+- **Node-Role Scheduling (`--node-role`):** Run `danube up --node-role broker` on latency-sensitive ingress nodes and `danube up --node-role lakehouse` on dedicated export nodes (or `--node-role all` by default). Dedicated `lakehouse` nodes register as `drained` (`lakehouse_only`) so `LoadManager` does not assign client topic partitions to them.
 - **Schema-Aware Conversion:** Resolves schemas from Danube's embedded Schema Registry (`json_schema`, `avro`) to emit typed Iceberg columns and per-column statistics, falling back to a structured envelope schema for schema-less topics.
 - **Catalog Support:**
   - `rest` — Apache Iceberg REST Catalog (Polaris, Nessie, Tabular, Unity, AWS SigV4 REST endpoints with `--features lakehouse-aws`)

@@ -26,7 +26,13 @@ danube ctl brokers balance
 danube ctl topics create /default/orders --partitions 3 --dispatch-strategy reliable
 danube ctl topics create /default/tasks --intent agent_task_queue
 
-# Zero-copy Copy-on-Write stream branching
+# Peek payloads, infer JSON Schema Draft-07, seek subscriptions, or replay DLQ
+danube ctl topics peek /default/orders --limit 5
+danube ctl topics infer-schema /default/orders --sample-size 20
+danube ctl topics seek /default/orders --subscription workers --offset 100
+danube ctl topics replay-dlq /default/orders --subscription workers --max-messages 50
+
+# Stream branching from offset or timestamp
 danube ctl topics branch /default/orders /default/orders-exp
 danube ctl topics branch /default/orders /default/orders-replay --at-offset 1000
 
@@ -71,11 +77,11 @@ danube mcp --http --listen-addr 0.0.0.0:8080 --broker-endpoint http://127.0.0.1:
 
 Built-in MCP capabilities include:
 - **Cluster & Brokers**: `list_brokers`, `get_leader`, `cluster_status`, `trigger_rebalance`, `get_cluster_balance`, `add_cluster_node`, `promote_cluster_node`, `remove_cluster_node`, `apply_desired_state`, `configure_object_store`
-- **Topics & Agent Workflows**: `list_topics`, `describe_topic`, `create_topic` (including `StreamIntent`), `delete_topic`, `peek_messages` (requires `ReadPayload` permission), `explain_consumer_stall`, `infer_topic_schema`, `branch_topic`
+- **Topics & Agent Workflows**: `list_topics`, `describe_topic`, `create_topic` (including `StreamIntent`), `delete_topic`, `peek_messages` (requires `ReadPayload` permission), `seek_subscription`, `replay_dlq`, `explain_consumer_stall`, `infer_topic_schema`, `branch_topic`
 - **Schema Registry**: `register_schema`, `get_schema`, `list_schema_versions`, `check_compatibility`, `set_compatibility_mode`, `list_subjects`
 - **Security**: `create_role`, `get_role`, `list_roles`, `delete_role`, `create_binding`, `list_bindings`, `delete_binding`
-- **Diagnostics & Built-in Telemetry/Logs**: `health_check`, `analyze_consumer_lag`, `get_recommendations`, Prometheus metrics, and `get_broker_logs` (uses built-in broker log/telemetry ring buffers when no external Prometheus/Docker log source is configured)
-- **Safety Guardrails**: Destructive MCP mutations default to dry-run or require explicit confirmation, RBAC separates payload inspection (`ReadPayload`) from administrative actions, and control-plane changes are recorded in the broker audit log.
+- **Diagnostics & Built-in Telemetry/Logs**: `health_check`, `analyze_consumer_lag`, `get_recommendations`, `get_cluster_metrics` / `get_broker_metrics` / `get_topic_metrics` (with `GetMetricsSnapshot` gRPC fallback), and `get_broker_logs` (with `GetBrokerLogs` gRPC ring-buffer fallback when no external Prometheus/Docker log source is configured)
+- **Safety Guardrails**: Destructive MCP mutations require explicit `confirm_destructive: true` (and `dry_run` preview support on rebalance, unload, and `apply_desired_state`), errors surface cleanly via MCP `is_error`, RBAC separates payload inspection (`ReadPayload`) from administrative actions, and control-plane changes are recorded in the broker audit log.
 
 ---
 
