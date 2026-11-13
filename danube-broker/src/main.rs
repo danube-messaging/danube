@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
                 san_hosts.push(service_config.broker_addr.ip().to_string());
 
                 let provisioned = crate::security::auto_tls::provision_local_auto_tls(
-                    Path::new(&service_config.meta_store.data_dir),
+                    Path::new(data_dir),
                     &san_hosts,
                 )?;
                 tracing::info!(
@@ -293,13 +293,16 @@ async fn main() -> Result<()> {
         service_config.connect_url = url;
     }
 
-    // If `admin_addr` is provided via command-line args, override the value from the config file
+    // If `admin_addr` is provided via command-line args, override the value from the config file.
+    // Otherwise in zero-YAML mode, keep admin_addr aligned with broker_addr for single-port multiplexing.
     if let Some(admin_addr) = args.admin_addr {
         let admin_address: SocketAddr = admin_addr.parse().context(format!(
             "Failed to parse into Socket address: {}",
             admin_addr
         ))?;
         service_config.admin_addr = admin_address;
+    } else if args.recovery_config.is_none() {
+        service_config.admin_addr = service_config.broker_addr;
     }
 
     // If `prom_exporter` is provided via command-line args, override the value from the config file
@@ -426,7 +429,7 @@ async fn main() -> Result<()> {
     if let Some((ref provisioned, ref san_hosts)) = auto_tls_provisioned {
         if let Some(cluster_jwt_secret) = crate::security::auto_tls::sync_cluster_ca_with_raft(
             store_arc.as_ref(),
-            Path::new(&service_config.meta_store.data_dir),
+            Path::new(data_dir),
             provisioned,
             san_hosts,
         )

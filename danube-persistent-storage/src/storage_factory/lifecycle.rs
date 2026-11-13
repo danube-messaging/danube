@@ -29,6 +29,7 @@ impl StorageFactory {
             mobility_state,
             durable_store: Arc::new(std::sync::RwLock::new(durable_store)),
             cloud_tiered_topics: Arc::new(dashmap::DashSet::new()),
+            sealed_resumed_topics: Arc::new(dashmap::DashSet::new()),
             topics: Arc::new(dashmap::DashMap::new()),
             segment_exporters: Arc::new(dashmap::DashMap::new()),
             segment_exporter_tokens: Arc::new(dashmap::DashMap::new()),
@@ -543,6 +544,7 @@ impl StorageFactory {
         broker_id: u64,
     ) -> Result<SealInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
+        self.sealed_resumed_topics.remove(&topic_path);
         let wal = match self.topics.remove(&topic_path) {
             Some((_, w)) => w,
             None => {

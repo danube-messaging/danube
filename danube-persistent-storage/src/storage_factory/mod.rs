@@ -27,6 +27,7 @@ pub struct StorageFactory {
     mobility_state: MobilityState,
     durable_store: Arc<RwLock<Option<Arc<dyn DurableStore>>>>,
     cloud_tiered_topics: Arc<DashSet<String>>,
+    sealed_resumed_topics: Arc<DashSet<String>>,
     topics: Arc<DashMap<String, Wal>>,
     segment_exporters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     segment_exporter_tokens: Arc<DashMap<String, CancellationToken>>,

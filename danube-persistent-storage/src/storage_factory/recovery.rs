@@ -61,7 +61,8 @@ impl StorageFactory {
         PersistentStorageError,
     > {
         if let Some(existing) = self.topics.get(topic_path) {
-            return Ok((existing.clone(), None, None, false, None));
+            let resumed = self.sealed_resumed_topics.contains(topic_path);
+            return Ok((existing.clone(), None, None, resumed, None));
         }
 
         let mut cfg = self.base_cfg.clone();
@@ -173,6 +174,11 @@ impl StorageFactory {
             }
         }
 
+        if recovery.resumed_from_sealed {
+            self.sealed_resumed_topics.insert(topic_path.to_string());
+        } else {
+            self.sealed_resumed_topics.remove(topic_path);
+        }
         self.topics.insert(topic_path.to_string(), wal.clone());
         Ok((wal, root_path, ckpt_store, recovery.resumed_from_sealed, rotation_rx))
     }

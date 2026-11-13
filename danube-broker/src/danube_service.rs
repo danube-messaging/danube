@@ -149,7 +149,11 @@ impl DanubeService {
             cluster_admin,
         );
 
-        let admin_handle = if self.service_config.admin_addr != self.service_config.broker_addr {
+        let same_port_multiplex = self.service_config.admin_addr == self.service_config.broker_addr
+            || (self.service_config.admin_addr.port() == self.service_config.broker_addr.port()
+                && (self.service_config.broker_addr.ip().is_unspecified()
+                    || self.service_config.admin_addr.ip().is_unspecified()));
+        let admin_handle = if !same_port_multiplex {
             let handle = admin_impl.clone().start().await;
             info!(
                 admin_addr = %self.service_config.admin_addr,
@@ -1080,11 +1084,24 @@ fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources) {
             warn!(broker_id, error = %err, "failed to mark broker draining on SIGTERM");
         }
         let topics = resources.cluster.get_topics_for_broker(&broker_key).await;
+        let had_topics = !topics.is_empty();
         for topic in topics {
             if let Err(err) = resources.cluster.mark_topic_for_unload(&topic, broker_id).await {
-                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic unload on SIGTERM");
+                warn!(broker_id, topic = %topic, error = %err, "failed to mark topic for unload on SIGTERM");
+            }
+            if let Err(err) = resources.cluster.schedule_topic_deletion(&broker_key, &topic).await {
+                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic deletion on SIGTERM");
             }
         }
+        if had_topics {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        let _ = resources
+            .cluster
+            .set_broker_state(&broker_key, "drained", Some("sigterm_drain"))
+            .await;
+        info!(broker_id, "graceful drain complete, exiting");
+        std::process::exit(0);
     });
 }
 
