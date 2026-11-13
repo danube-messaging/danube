@@ -232,6 +232,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    service_config.admin_tls = matches!(
+        service_config.auth.mode,
+        crate::security::config::AuthMode::Tls
+    ) && service_config.auth.tls.is_some();
+
     // If `broker_addr` is provided via command-line args, override the value from the config file
     if let Some(broker_addr) = args.broker_addr {
         let broker_address: SocketAddr = broker_addr.parse().context(format!(

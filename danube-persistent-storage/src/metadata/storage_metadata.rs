@@ -41,6 +41,9 @@ pub struct SegmentDescriptor {
     /// Originating topic path where the physical object is stored when branched (None = current topic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_topic: Option<String>,
+    /// Inclusive upper-bound offset valid for this topic when sharing an object from a longer parent segment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_valid_offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,8 +281,44 @@ impl StorageMetadata {
         Ok(())
     }
 
+    /// Find every other topic in metadata that holds a segment descriptor pointing to `(origin_topic, segment_id)`.
+    pub async fn list_other_segment_references(
+        &self,
+        origin_topic: &str,
+        segment_id: &str,
+        excluding_topic: &str,
+    ) -> Result<Vec<(String, String, SegmentDescriptor)>, PersistentStorageError> {
+        let prefix = format!("{}/storage/topics/", self.root);
+        let kvs = self
+            .store
+            .get_bulk(&prefix)
+            .await
+            .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
+
+        let mut refs = Vec::new();
+        for kv in kvs {
+            let Some(rel) = kv.key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((topic_path, start_padded)) = rel.split_once("/segments/") else {
+                continue;
+            };
+            if start_padded.is_empty() || start_padded == "cur" || topic_path == excluding_topic {
+                continue;
+            }
+            if let Ok(desc) = serde_json::from_slice::<SegmentDescriptor>(&kv.value) {
+                let effective_origin = desc.object_topic.as_deref().unwrap_or(topic_path);
+                if effective_origin == origin_topic && desc.segment_id == segment_id {
+                    refs.push((topic_path.to_string(), start_padded.to_string(), desc));
+                }
+            }
+        }
+        Ok(refs)
+    }
+
     /// Zero-copy branch sealed segment descriptors from `source_topic` to `target_topic`
-    /// up to optional `max_offset` (inclusive on `start_offset`), incrementing `ref_count`.
+    /// up to optional `max_offset` (inclusive on `start_offset`), clamping `max_valid_offset`
+    /// and updating reference counts across all sharing topics.
     pub async fn branch_topic_segments(
         &self,
         source_topic: &str,
@@ -290,22 +329,36 @@ impl StorageMetadata {
         let mut copied = 0usize;
         let mut last_padded: Option<String> = None;
 
-        for mut desc in descriptors {
+        for desc in descriptors {
             if let Some(limit) = max_offset {
                 if desc.start_offset > limit {
                     continue;
                 }
             }
-            let next_rc = desc.ref_count.max(1).saturating_add(1);
-            desc.ref_count = next_rc;
             let start_padded = format!("{:020}", desc.start_offset);
-
-            // Persist incremented ref_count on source topic descriptor
-            self.put_segment_descriptor(source_topic, &start_padded, &desc)
+            let origin_topic = desc.object_topic.as_deref().unwrap_or(source_topic);
+            let other_refs = self
+                .list_other_segment_references(origin_topic, &desc.segment_id, target_topic)
                 .await?;
+            let total_refs = (other_refs.len() as u32).saturating_add(1).max(2);
 
-            // Write branched descriptor under target_topic pointing to the physical object topic
+            for (other_topic, other_padded, mut other_desc) in other_refs {
+                if other_desc.ref_count != total_refs {
+                    other_desc.ref_count = total_refs;
+                    self.put_segment_descriptor(&other_topic, &other_padded, &other_desc)
+                        .await?;
+                }
+            }
+
+            let effective_limit = match (max_offset, desc.max_valid_offset) {
+                (Some(limit), Some(prev)) => Some(limit.min(prev)),
+                (Some(limit), None) => Some(limit),
+                (None, prev) => prev,
+            };
+
             let mut branched = desc.clone();
+            branched.ref_count = total_refs;
+            branched.max_valid_offset = effective_limit.filter(|&limit| limit < desc.end_offset);
             if branched.object_topic.is_none() {
                 branched.object_topic = Some(source_topic.to_string());
             }

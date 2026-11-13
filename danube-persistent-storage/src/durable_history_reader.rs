@@ -79,7 +79,10 @@ impl DurableHistoryReader {
             .get_segment_descriptors(self.topic_path())
             .await?;
         // Keep only overlapping descriptors and ensure ascending order by start_offset.
-        descriptors.retain(|d| d.end_offset >= start);
+        descriptors.retain(|d| {
+            let effective_end = d.max_valid_offset.map_or(d.end_offset, |m| d.end_offset.min(m));
+            effective_end >= start
+        });
         if let Some(end) = end_inclusive {
             descriptors.retain(|d| d.start_offset <= end);
         }
@@ -93,6 +96,7 @@ impl DurableHistoryReader {
 
         // State for current object
         let mut cur_reader: Option<DurableRangeReader> = None;
+        let mut cur_max_valid_offset: Option<u64> = None;
         let mut carry: Vec<u8> = Vec::new();
         let mut emit_buf: VecDeque<StreamMessage> = VecDeque::new();
 
@@ -124,6 +128,7 @@ impl DurableHistoryReader {
                     let reader = durable_store.open_segment_reader(&key, start_byte).await?;
                     counter!(DURABLE_HISTORY_SEGMENTS_READ_TOTAL.name, "topic"=> topic_path.clone(), "provider"=> provider.clone()).increment(1);
                     cur_reader = Some(reader);
+                    cur_max_valid_offset = desc.max_valid_offset;
                     carry.clear();
                 }
 
@@ -137,6 +142,7 @@ impl DurableHistoryReader {
                 if chunk.is_empty() {
                     // End of current object
                     cur_reader = None;
+                    cur_max_valid_offset = None;
                     continue;
                 }
                 carry.extend_from_slice(&chunk);
@@ -149,11 +155,12 @@ impl DurableHistoryReader {
                     counter!(DURABLE_HISTORY_READER_ERRORS_TOTAL.name, "provider"=> provider.clone(), "reason"=> reason).increment(1);
                     Err(e)?;
                 }
-                // Filter by requested offset range and push into emit buffer (reverse for pop())
-                for (_off, msg) in parsed
-                    .into_iter()
-                    .filter(|(off, _)| *off >= start && end_inclusive.map(|e| *off <= e).unwrap_or(true))
-                {
+                // Filter by requested offset range and descriptor clamp, then push into emit buffer
+                for (_off, msg) in parsed.into_iter().filter(|(off, _)| {
+                    *off >= start
+                        && end_inclusive.map(|e| *off <= e).unwrap_or(true)
+                        && cur_max_valid_offset.map(|m| *off <= m).unwrap_or(true)
+                }) {
                     emit_buf.push_back(msg);
                 }
             }

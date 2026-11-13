@@ -166,6 +166,8 @@ pub fn build_stream_message(
         .unwrap_or_default()
         .as_millis() as u64;
 
+    let routing_key = attributes.get("mqtt.topic").cloned();
+
     StreamMessage {
         request_id: 0,
         msg_id: MessageID {
@@ -181,7 +183,7 @@ pub fn build_stream_message(
         attributes,
         schema_id: None,
         schema_version: None,
-        routing_key: None,
+        routing_key,
     }
 }
 
@@ -273,5 +275,17 @@ mod tests {
             result.attributes.get("edge.node_id").unwrap(),
             "factory-floor-1"
         );
+    }
+
+    #[test]
+    fn test_build_stream_message_sets_routing_key_from_mqtt_topic() {
+        let router = TopicRouter::new(&[make_mapping("sensors/+/temp", "/edge/ingest", vec![])]);
+        let resolved = router.resolve("sensors/line1/temp").unwrap();
+        let msg = build_stream_message(
+            &resolved.danube_topic,
+            Bytes::from_static(b"22.5"),
+            resolved.attributes,
+        );
+        assert_eq!(msg.routing_key.as_deref(), Some("sensors/line1/temp"));
     }
 }

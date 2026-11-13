@@ -73,6 +73,7 @@ mod tests {
             offset_index: Some(index),
             ref_count: 1,
             object_topic: None,
+            max_valid_offset: None,
         };
         let start_padded = format!("{:020}", start_offset);
         meta.put_segment_descriptor(topic_path, &start_padded, &desc)
@@ -181,5 +182,44 @@ mod tests {
         for (i, m) in msgs.into_iter().enumerate() {
             assert_eq!(m.payload, format!("cloud-{}", i).into_bytes());
         }
+    }
+
+    #[tokio::test]
+    async fn test_durable_history_reader_respects_max_valid_offset_clamp() {
+        let topic_parent = "ns/parent-clamp";
+        let topic_child = "ns/child-clamp";
+
+        let durable_store = Arc::new(ObjStoreDurable::new(
+            ObjStore::new(BackendConfig::Memory {
+                root: "mem-clamp".to_string(),
+            })
+            .expect("cloud store mem"),
+        )) as Arc<dyn DurableStore>;
+
+        let mem = MemoryStore::new().await.expect("memory meta store");
+        let mem_arc: Arc<dyn MetadataStore> = Arc::new(mem);
+        let meta = StorageMetadata::new(mem_arc, "/danube".to_string());
+        let messages = (0..6u64).map(|i| make_msg(i, topic_parent)).collect::<Vec<_>>();
+        seed_segment(durable_store.clone(), &meta, topic_parent, messages).await;
+
+        let copied = meta
+            .branch_topic_segments(topic_parent, topic_child, Some(2))
+            .await
+            .expect("branch segments");
+        assert_eq!(copied, 1);
+
+        let child_reader = DurableHistoryReader::new(
+            durable_store.clone(),
+            meta.clone(),
+            topic_child.to_string(),
+        );
+        // Unbounded read on branched topic must still clamp at max_valid_offset (2).
+        let stream = child_reader.read_range(0, None).await.expect("child read");
+        let msgs: Vec<StreamMessage> = stream
+            .try_collect::<Vec<StreamMessage>>()
+            .await
+            .expect("try_collect");
+        let offsets: Vec<u64> = msgs.into_iter().map(|m| m.msg_id.topic_offset).collect();
+        assert_eq!(offsets, vec![0, 1, 2]);
     }
 }

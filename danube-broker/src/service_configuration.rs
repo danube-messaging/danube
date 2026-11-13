@@ -284,8 +284,9 @@ impl ServiceConfiguration {
             self.load_manager = Some(load_manager);
         }
         if let Some(auth) = recovery.auth {
-            let is_tls = auth.mode == AuthMode::Tls;
+            let is_tls = auth.mode == AuthMode::Tls && auth.tls.is_some();
             self.auth = auth;
+            self.admin_tls = is_tls;
             if is_tls {
                 self.broker_url = self.broker_url.replace("http://", "https://");
                 self.connect_url = self.connect_url.replace("http://", "https://");

@@ -185,18 +185,23 @@ impl DanubeService {
         };
 
         // ----- Mode-specific startup
+        let broker_admin = if admin_handle.is_none() {
+            Some(admin_impl)
+        } else {
+            None
+        };
         match self.mode {
             BrokerMode::Cluster => {
                 self.start_cluster_mode(
                     cluster.expect("ClusterServices required for cluster mode"),
                     schema_registry,
                     edge_service,
-                    admin_impl,
+                    broker_admin,
                 )
                 .await?;
             }
             BrokerMode::Standalone => {
-                self.start_standalone_mode(schema_registry, edge_service, admin_impl)
+                self.start_standalone_mode(schema_registry, edge_service, broker_admin)
                     .await?;
             }
             BrokerMode::Edge => {
@@ -206,7 +211,7 @@ impl DanubeService {
                     self.edge_service
                         .clone()
                         .expect("edge_service must be set for Edge mode"),
-                    admin_impl,
+                    broker_admin,
                 )
                 .await?;
             }
@@ -242,7 +247,7 @@ impl DanubeService {
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
-        admin_impl: DanubeAdminImpl,
+        broker_admin: Option<DanubeAdminImpl>,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -270,13 +275,17 @@ impl DanubeService {
 
         // 8. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
+            .start_broker_grpc(schema_registry, edge_service, broker_admin)
             .await?;
 
         // 9. Start cluster orchestration services
         self.start_orchestration_services(&mut cluster).await?;
 
-        spawn_graceful_sigterm_drain(self.broker_id, self.resources.clone());
+        spawn_graceful_sigterm_drain(
+            self.broker_id,
+            self.resources.clone(),
+            Arc::clone(&self.broker),
+        );
         spawn_dead_node_reaper(
             cluster.raft.clone(),
             cluster.leadership.clone(),
@@ -307,7 +316,7 @@ impl DanubeService {
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
-        admin_impl: DanubeAdminImpl,
+        broker_admin: Option<DanubeAdminImpl>,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -333,7 +342,7 @@ impl DanubeService {
 
         // 5. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
+            .start_broker_grpc(schema_registry, edge_service, broker_admin)
             .await?;
 
         info!(
@@ -366,7 +375,7 @@ impl DanubeService {
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
         edge_svc: Arc<EdgeService>,
-        admin_impl: DanubeAdminImpl,
+        broker_admin: Option<DanubeAdminImpl>,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -392,7 +401,7 @@ impl DanubeService {
 
         // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
+            .start_broker_grpc(schema_registry, edge_service, broker_admin)
             .await?;
 
         // 6. Ensure MQTT-mapped topics exist locally in the broker
@@ -888,9 +897,10 @@ pub(crate) fn should_reap_dead_node(
     true
 }
 
-/// On SIGTERM / SIGINT, drain this broker gracefully (mark `"draining"` and schedule
-/// hosted topics for unload) WITHOUT removing the node from Raft membership.
-fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources) {
+/// On SIGTERM / SIGINT, drain this broker gracefully (mark `"draining"`, unload hosted
+/// topics locally so cursors/WAL are flushed and sealed, mark them ready for reassignment,
+/// and exit cleanly) WITHOUT removing the node from Raft membership.
+fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources, broker: Arc<BrokerService>) {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -924,9 +934,28 @@ fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources) {
         let topics = resources.cluster.get_topics_for_broker(&broker_key).await;
         for topic in topics {
             if let Err(err) = resources.cluster.mark_topic_for_unload(&topic, broker_id).await {
-                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic unload on SIGTERM");
+                warn!(broker_id, topic = %topic, error = %err, "failed to mark topic for unload on SIGTERM");
+            }
+            if let Err(err) = resources
+                .cluster
+                .schedule_topic_deletion(&broker_key, &topic)
+                .await
+            {
+                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic deletion on SIGTERM");
+            }
+            if let Err(err) = broker.topic_manager.unload_topic(&topic).await {
+                warn!(broker_id, topic = %topic, error = %err, "failed to unload topic locally on SIGTERM");
+            }
+            if let Err(err) = resources
+                .cluster
+                .mark_topic_unload_ready(&topic, broker_id)
+                .await
+            {
+                warn!(broker_id, topic = %topic, error = %err, "failed to mark topic unload ready on SIGTERM");
             }
         }
+        info!(broker_id, "graceful drain complete; exiting");
+        std::process::exit(0);
     });
 }
 

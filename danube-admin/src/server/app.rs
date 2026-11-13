@@ -206,37 +206,45 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
+fn is_http_request_authorized(
+    auth_token: Option<&str>,
+    require_auth: bool,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    if path == "/ui/v1/health" {
+        return true;
+    }
+
+    if auth_token.is_none() && !require_auth {
+        return true;
+    }
+
+    let provided = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    matches!((auth_token, provided), (Some(expected), Some(actual)) if actual == expected)
+}
+
 async fn http_auth_middleware(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> std::result::Result<Response, StatusCode> {
-    if request.uri().path() == "/ui/v1/health" {
-        return Ok(next.run(request).await);
-    }
-
-    if state.auth_token.is_none() && !state.require_auth {
-        return Ok(next.run(request).await);
-    }
-
-    let provided = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
-        .or_else(|| {
-            request
-                .headers()
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-        })
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    match (&state.auth_token, provided) {
-        (Some(expected), Some(actual)) if actual == expected => Ok(next.run(request).await),
-        (None, Some(_)) if state.require_auth => Ok(next.run(request).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
+    if is_http_request_authorized(
+        state.auth_token.as_deref(),
+        state.require_auth,
+        request.uri().path(),
+        request.headers(),
+    ) {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -246,4 +254,52 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthDto> {
         status: "ok",
         leader_reachable: reachable,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_http_request_authorized;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    #[test]
+    fn http_auth_fails_closed_when_require_auth_has_no_configured_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer arbitrary-token"),
+        );
+        assert!(!is_http_request_authorized(
+            None,
+            true,
+            "/ui/v1/cluster",
+            &headers
+        ));
+        assert!(is_http_request_authorized(
+            None,
+            true,
+            "/ui/v1/health",
+            &headers
+        ));
+    }
+
+    #[test]
+    fn http_auth_checks_expected_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-123"),
+        );
+        assert!(is_http_request_authorized(
+            Some("secret-123"),
+            true,
+            "/ui/v1/cluster",
+            &headers
+        ));
+        assert!(!is_http_request_authorized(
+            Some("other-token"),
+            true,
+            "/ui/v1/cluster",
+            &headers
+        ));
+    }
 }

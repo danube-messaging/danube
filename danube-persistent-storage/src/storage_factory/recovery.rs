@@ -66,14 +66,10 @@ impl StorageFactory {
         let mut cfg = self.base_cfg.clone();
         let mut root_path: Option<PathBuf> = None;
         let mut ckpt_store: Option<Arc<CheckpointStore>> = None;
-        if let Some(mut root) = cfg.dir.clone() {
-            let parts: Vec<&str> = topic_path.split('/').collect();
-            if parts.len() == 2 {
-                root.push(parts[0]);
-                root.push(parts[1]);
-            }
-            root_path = Some(root.clone());
-            cfg.dir = Some(root);
+        if let Some(root) = cfg.dir.clone() {
+            let topic_dir = resolve_topic_wal_dir(root, topic_path);
+            root_path = Some(topic_dir.clone());
+            cfg.dir = Some(topic_dir);
         }
         if let Some(dir) = cfg.dir.as_ref() {
             let wal_ckpt = dir.join("wal.ckpt");
@@ -178,13 +174,10 @@ impl StorageFactory {
     }
 
     pub(super) fn topic_wal_dir(&self, topic_path: &str) -> Option<PathBuf> {
-        let mut root = self.base_cfg.dir.clone()?;
-        let parts: Vec<&str> = topic_path.split('/').collect();
-        if parts.len() == 2 {
-            root.push(parts[0]);
-            root.push(parts[1]);
-        }
-        Some(root)
+        self.base_cfg
+            .dir
+            .clone()
+            .map(|root| resolve_topic_wal_dir(root, topic_path))
     }
 
     /// Return whether a checkpoint still points at usable local WAL files.
@@ -348,5 +341,40 @@ impl StorageFactory {
         };
 
         crate::valkey::recovery::download_unexported_stream(&client, topic_path, start_offset).await
+    }
+}
+
+fn resolve_topic_wal_dir(mut root: PathBuf, topic_path: &str) -> PathBuf {
+    let parts: Vec<&str> = topic_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() >= 2 {
+        root.push(parts[0]);
+        root.push(parts[1..].join("%2F"));
+    } else if parts.len() == 1 {
+        root.push(parts[0]);
+    }
+    root
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_topic_wal_dir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_resolve_topic_wal_dir_avoids_hierarchical_collision() {
+        let base = PathBuf::from("/tmp/wal-root");
+        let two_part = resolve_topic_wal_dir(base.clone(), "/default/orders");
+        let nested_a = resolve_topic_wal_dir(base.clone(), "/default/team/a");
+        let nested_b = resolve_topic_wal_dir(base.clone(), "/default/team/b");
+
+        assert_eq!(two_part, PathBuf::from("/tmp/wal-root/default/orders"));
+        assert_eq!(nested_a, PathBuf::from("/tmp/wal-root/default/team%2Fa"));
+        assert_eq!(nested_b, PathBuf::from("/tmp/wal-root/default/team%2Fb"));
+        assert_ne!(nested_a, base);
+        assert_ne!(nested_a, nested_b);
     }
 }

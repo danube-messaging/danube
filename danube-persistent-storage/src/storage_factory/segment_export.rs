@@ -237,6 +237,7 @@ impl StorageFactory {
             offset_index: build_offset_index(bytes),
             ref_count: 1,
             object_topic: None,
+            max_valid_offset: None,
         })
     }
 
@@ -291,29 +292,27 @@ pub(crate) async fn delete_topic_segments_with_refcount(
     topic_path: &str,
 ) -> Result<(), PersistentStorageError> {
     let segments = segment_catalog.list_segments(topic_path).await?;
+    let meta = segment_catalog.metadata();
     for segment in segments {
-        if segment.ref_count > 1 {
-            // If deleting a branched topic, decrement ref_count on the originating topic descriptor
-            if let Some(ref owner_topic) = segment.object_topic {
-                if owner_topic != topic_path {
-                    let start_padded = format!("{:020}", segment.start_offset);
-                    if let Ok(Some(mut owner_desc)) = segment_catalog
-                        .metadata()
-                        .get_segment_descriptor(owner_topic, &start_padded)
-                        .await
-                    {
-                        owner_desc.ref_count = owner_desc.ref_count.saturating_sub(1).max(1);
-                        let _ = segment_catalog
-                            .put_segment(owner_topic, &start_padded, &owner_desc)
-                            .await;
-                    }
+        let effective_topic = segment.object_topic.as_deref().unwrap_or(topic_path);
+        let remaining_refs = meta
+            .list_other_segment_references(effective_topic, &segment.segment_id, topic_path)
+            .await?;
+
+        if remaining_refs.is_empty() {
+            let object_path = segment_object_path(effective_topic, &segment.segment_id);
+            durable_store.delete_segment(&object_path).await?;
+        } else {
+            let next_rc = remaining_refs.len() as u32;
+            for (other_topic, start_padded, mut other_desc) in remaining_refs {
+                if other_desc.ref_count != next_rc {
+                    other_desc.ref_count = next_rc;
+                    let _ = segment_catalog
+                        .put_segment(&other_topic, &start_padded, &other_desc)
+                        .await;
                 }
             }
-            continue;
         }
-        let effective_topic = segment.object_topic.as_deref().unwrap_or(topic_path);
-        let object_path = segment_object_path(effective_topic, &segment.segment_id);
-        durable_store.delete_segment(&object_path).await?;
     }
     Ok(())
 }
@@ -359,6 +358,7 @@ mod tests {
             offset_index: None,
             ref_count: 1,
             object_topic: None,
+            max_valid_offset: None,
         };
         let start_padded = format!("{:020}", 0);
         catalog
@@ -406,6 +406,79 @@ mod tests {
         delete_topic_segments_with_refcount(&catalog, &durable, "ns/src")
             .await
             .expect("delete source segments");
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_parent_before_branch_preserves_object_until_branch_deleted() {
+        let mem_meta: Arc<dyn MetadataStore> =
+            Arc::new(MemoryStore::new().await.expect("memory store"));
+        let storage_meta = StorageMetadata::new(mem_meta, "/danube".to_string());
+        let catalog = SegmentCatalog::new(storage_meta.clone());
+
+        let obj_store = ObjStore::new(BackendConfig::Memory {
+            root: "mem-parent-first-test".to_string(),
+        })
+        .expect("mem obj store");
+        let durable = ObjStoreDurable::new(obj_store);
+
+        let seg_id = "data-0-parent-first.dnb1".to_string();
+        let obj_path = segment_object_path("ns/parent", &seg_id);
+        durable
+            .put_segment(&obj_path, b"parent-payload")
+            .await
+            .expect("put segment");
+
+        let desc = SegmentDescriptor {
+            segment_id: seg_id,
+            start_offset: 0,
+            end_offset: 9,
+            size: 14,
+            etag: None,
+            created_at: 1,
+            completed: true,
+            offset_index: None,
+            ref_count: 1,
+            object_topic: None,
+            max_valid_offset: None,
+        };
+        let start_padded = format!("{:020}", 0);
+        catalog
+            .put_segment("ns/parent", &start_padded, &desc)
+            .await
+            .expect("put parent descriptor");
+
+        let copied = storage_meta
+            .branch_topic_segments("ns/parent", "ns/child", Some(4))
+            .await
+            .expect("branch segments");
+        assert_eq!(copied, 1);
+
+        let child_desc = storage_meta
+            .get_segment_descriptor("ns/child", &start_padded)
+            .await
+            .expect("get child")
+            .expect("child exists");
+        assert_eq!(child_desc.max_valid_offset, Some(4));
+
+        // Delete parent FIRST: object must stay intact and child ref_count must drop to 1.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/parent")
+            .await
+            .expect("delete parent segments");
+        catalog.delete_topic("ns/parent").await.expect("delete parent meta");
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_ok());
+
+        let updated_child = storage_meta
+            .get_segment_descriptor("ns/child", &start_padded)
+            .await
+            .expect("get child after parent delete")
+            .expect("child still exists");
+        assert_eq!(updated_child.ref_count, 1);
+
+        // Deleting child last physically removes the shared segment object.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/child")
+            .await
+            .expect("delete child segments");
         assert!(durable.open_segment_reader(&obj_path, 0).await.is_err());
     }
 }

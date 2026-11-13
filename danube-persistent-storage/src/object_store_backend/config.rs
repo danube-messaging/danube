@@ -78,17 +78,24 @@ impl BackendConfig {
                         builder = builder.with_skip_signature(true);
                     }
                     if let Some(profile) = options.get("profile") {
-                        builder = builder.with_config(
-                            object_store::aws::AmazonS3ConfigKey::from_str("aws_profile")
-                                .unwrap_or(object_store::aws::AmazonS3ConfigKey::Region),
-                            profile,
+                        warn!(
+                            target = "object_store_backend",
+                            profile = %profile,
+                            "S3 profile option is not mapped into object_store::aws::AmazonS3ConfigKey; use ambient AWS_PROFILE / STS credentials or explicit access_key/secret_key/role_arn"
                         );
                     }
                     if let Some(role_arn) = options.get("role_arn") {
-                        warn!(
-                            target = "object_store_backend",
-                            role_arn = %role_arn,
-                            "S3 role_arn option configured; ensure STS / web-identity env vars are set if needed"
+                        builder = builder.with_config(
+                            object_store::aws::AmazonS3ConfigKey::from_str("role_arn")
+                                .expect("valid role_arn key"),
+                            role_arn,
+                        );
+                    }
+                    if let Some(session_name) = options.get("session_name") {
+                        builder = builder.with_config(
+                            object_store::aws::AmazonS3ConfigKey::from_str("role_session_name")
+                                .expect("valid role_session_name key"),
+                            session_name,
                         );
                     }
 
@@ -123,6 +130,7 @@ impl BackendConfig {
                             "anonymous",
                             "profile",
                             "role_arn",
+                            "session_name",
                             "virtual_host_style",
                         ],
                     );
@@ -278,4 +286,32 @@ pub(crate) fn split_fs_root(uri_or_path: &str) -> Result<(String, String), Strin
 fn normalize_prefix(p: &str) -> String {
     let trimmed = p.trim_matches('/');
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BackendConfig, ObjectStoreBackend};
+    use crate::object_store_backend::ObjStore;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_s3_role_arn_and_profile_do_not_corrupt_region() {
+        let mut options = HashMap::new();
+        options.insert("region".to_string(), "us-east-1".to_string());
+        options.insert("access_key".to_string(), "test-ak".to_string());
+        options.insert("secret_key".to_string(), "test-sk".to_string());
+        options.insert("profile".to_string(), "ignored-invalid-region".to_string());
+        options.insert(
+            "role_arn".to_string(),
+            "arn:aws:iam::123456789012:role/danube".to_string(),
+        );
+        options.insert("session_name".to_string(), "danube-test".to_string());
+
+        let store = ObjStore::new(BackendConfig::ObjectStore {
+            backend: ObjectStoreBackend::S3,
+            root: "s3://test-bucket/prefix".to_string(),
+            options,
+        });
+        assert!(store.is_ok(), "S3 builder failed: {:?}", store.err());
+    }
 }

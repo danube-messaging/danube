@@ -8,8 +8,9 @@ use crate::object_store_backend::ObjStoreDurable;
 use crate::valkey::ValkeyClient;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
+use danube_core::message::StreamMessage;
 use danube_core::metadata::MetadataStore;
-use danube_core::storage::{PersistentStorage, PersistentStorageError};
+use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -244,6 +245,68 @@ impl StorageFactory {
             .metadata()
             .branch_topic_segments(&src, &dst, max_offset)
             .await
+    }
+
+    /// Return the highest durable offset (respecting `max_valid_offset` clamps) present in
+    /// the topic's segment catalog, including segment 0.
+    pub async fn max_durable_offset(
+        &self,
+        topic_name: &str,
+    ) -> Result<Option<u64>, PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        let descriptors = self.segment_catalog.list_segments(&topic_path).await?;
+        Ok(descriptors
+            .into_iter()
+            .filter(|d| d.completed)
+            .map(|d| d.max_valid_offset.map_or(d.end_offset, |m| d.end_offset.min(m)))
+            .max())
+    }
+
+    /// Flush locally hosted WAL frames for `topic_name` and export sealed segments when
+    /// durable segment export is enabled for that topic.
+    pub async fn flush_topic(&self, topic_name: &str) -> Result<(), PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        if let Some(wal) = self.topics.get(&topic_path).map(|entry| entry.value().clone()) {
+            wal.flush().await?;
+            if self.should_start_background_export()
+                || self.cloud_tiered_topics.contains(&topic_path)
+            {
+                self.cut_and_export_topic_segments(&topic_path, &wal).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open a read-only storage handle backed solely by durable history segments without creating
+    /// local WAL files, clearing mobility state, or spawning exporter/deleter background tasks.
+    pub async fn open_read_only_durable(
+        &self,
+        topic_name: &str,
+    ) -> Result<Option<Arc<dyn PersistentStorage>>, PersistentStorageError> {
+        let Some(durable_store) = self.current_durable_store() else {
+            return Ok(None);
+        };
+        let topic_path = normalize_topic_path(topic_name);
+        let descriptors = self.segment_catalog.list_segments(&topic_path).await?;
+        if descriptors.is_empty() {
+            return Ok(None);
+        }
+        let head_offset = descriptors
+            .into_iter()
+            .filter(|d| d.completed)
+            .map(|d| {
+                d.max_valid_offset
+                    .map_or(d.end_offset, |m| d.end_offset.min(m))
+                    .saturating_add(1)
+            })
+            .max()
+            .unwrap_or(0);
+        Ok(Some(Arc::new(ReadOnlyDurableStorage {
+            durable_store,
+            metadata: self.segment_catalog.metadata().clone(),
+            topic_path,
+            head_offset,
+        })))
     }
 
     fn segment_export_interval_seconds(config: &StorageFactoryConfig) -> u64 {
@@ -514,5 +577,62 @@ impl StorageFactory {
         self.segment_catalog.delete_topic(&topic_path).await?;
         self.clear_topic_wal_state(&topic_path).await?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReadOnlyDurableStorage {
+    durable_store: Arc<dyn DurableStore>,
+    metadata: StorageMetadata,
+    topic_path: String,
+    head_offset: u64,
+}
+
+#[async_trait::async_trait]
+impl PersistentStorage for ReadOnlyDurableStorage {
+    async fn append_message(
+        &self,
+        _topic_name: &str,
+        _msg: StreamMessage,
+    ) -> Result<u64, PersistentStorageError> {
+        Err(PersistentStorageError::Unsupported(
+            "read-only durable storage does not support appends".to_string(),
+        ))
+    }
+
+    async fn create_reader(
+        &self,
+        _topic_name: &str,
+        start: StartPosition,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let start_offset = match start {
+            StartPosition::Latest => self.head_offset,
+            StartPosition::Offset(offset) => offset,
+        };
+        if start_offset >= self.head_offset {
+            return Ok(Box::pin(tokio_stream::empty()));
+        }
+        let reader = DurableHistoryReader::new(
+            self.durable_store.clone(),
+            self.metadata.clone(),
+            self.topic_path.clone(),
+        );
+        reader.read_range(start_offset, None).await
+    }
+
+    async fn ack_checkpoint(
+        &self,
+        _topic_name: &str,
+        _up_to_offset: u64,
+    ) -> Result<(), PersistentStorageError> {
+        Ok(())
+    }
+
+    async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
+        Ok(())
+    }
+
+    fn current_offset(&self) -> u64 {
+        self.head_offset
     }
 }
