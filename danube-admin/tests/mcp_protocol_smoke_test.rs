@@ -22,12 +22,32 @@ impl McpClient {
     /// Spawn MCP server as subprocess with stdio transport
     fn spawn() -> Self {
         let endpoint = std::env::var("DANUBE_ADMIN_ENDPOINT")
-            .unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
+            .unwrap_or_else(|_| "http://127.0.0.1:6650".to_string());
 
-        let process = Command::new(assert_cmd::cargo::cargo_bin!("danube-admin"))
-            .arg("serve")
-            .arg("--mode")
-            .arg("mcp")
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        let mut cmd = [
+            std::env::var("DANUBE_BIN").ok().map(std::path::PathBuf::from),
+            Some(workspace_root.join("./target/release/danube")),
+            Some(workspace_root.join("./target/debug/danube")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|p| p.exists())
+        .map(|bin| {
+            let mut c = Command::new(bin);
+            c.arg("mcp");
+            c
+        })
+        .unwrap_or_else(|| {
+            let mut c = Command::new("cargo");
+            c.current_dir(workspace_root);
+            c.args(["run", "-p", "danube-broker", "--bin", "danube", "--", "mcp"]);
+            c
+        });
+
+        let process = cmd
             .env("DANUBE_ADMIN_ENDPOINT", endpoint)
             .env("DANUBE_BROKER_ENDPOINT", "http://127.0.0.1:6650")
             .env("RUST_LOG", "error") // Reduce noise in test output

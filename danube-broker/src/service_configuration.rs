@@ -1,3 +1,4 @@
+use crate::args_parse::NodeRole;
 use crate::dispatch_config::DispatchConfig;
 use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
@@ -9,38 +10,9 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::Path;
 
-/// configuration settings loaded from the config file
-#[derive(Debug, Deserialize)]
-pub(crate) struct LoadConfiguration {
-    /// Danube cluster name
-    pub(crate) cluster_name: String,
-    /// Broker services configuration
-    pub(crate) broker: BrokerConfig,
-    /// Metadata store configuration
-    pub(crate) meta_store: MetaStoreConfig,
-    /// User Namespaces to be created on boot
-    pub(crate) bootstrap_namespaces: Vec<String>,
-    /// Allow producers to auto-create topics when missing (if None, defaults to true)
-    pub(crate) auto_create_topics: Option<bool>,
-    /// Broker policies, that can be overwritten by namespace / topic policies
-    pub(crate) policies: Policies,
-    pub(crate) storage: StorageConfig,
-    /// Authentication configuration
-    pub(crate) auth: AuthConfig,
-    /// Enable TLS on admin API (default: false, for remote management set to true)
-    #[serde(default)]
-    pub(crate) admin_tls: bool,
-    /// Load Manager configuration
-    #[serde(default)]
-    pub(crate) load_manager: Option<LoadManagerConfig>,
-    /// Dispatch configuration (pipelining depth, etc.)
-    #[serde(default)]
-    pub(crate) dispatch: DispatchConfig,
-}
-
 /// configuration settings for the Danube broker service
 /// includes various parameters that control the behavior and performance of the broker
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub(crate) struct ServiceConfiguration {
     /// Danube cluster name
     pub(crate) cluster_name: String,
@@ -56,7 +28,7 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_addr: std::net::SocketAddr,
     /// Prometheus exporter address
     pub(crate) prom_exporter: Option<std::net::SocketAddr>,
-    /// Raft inter-node gRPC transport port (from broker.ports.raft).
+    /// Raft inter-node gRPC transport port.
     pub(crate) raft_port: usize,
     /// Metadata store configuration (Raft data directory).
     pub(crate) meta_store: MetaStoreConfig,
@@ -76,67 +48,53 @@ pub(crate) struct ServiceConfiguration {
     /// Dispatch configuration (cluster-wide defaults for pipelining)
     pub(crate) dispatch_config: DispatchConfig,
     /// Edge replication configuration (edge mode only)
-    #[serde(default)]
     pub(crate) edge_config: Option<EdgeConfig>,
+    /// Workload role assigned to this node (broker, lakehouse, all)
+    pub(crate) node_role: NodeRole,
 }
 
 /// Edge mode configuration (broker-side).
 ///
-/// All edge settings (identity, replicator, MQTT) are loaded from the
-/// edge config file pointed to by `config_path`. The token can be
-/// overridden via `--edge-token` CLI arg.
-#[derive(Debug, Clone, Deserialize)]
+/// Edge settings (identity, replicator, MQTT) are constructed from CLI args (`edge_zero_yaml`),
+/// dynamic cloud Raft heartbeat sync, or a local `--recovery-config` override.
+#[derive(Debug, Clone)]
 pub(crate) struct EdgeConfig {
-    /// Path to the unified edge config file (e.g. "config/edge.yaml")
-    pub(crate) config_path: String,
+    /// Inline edge config
+    pub(crate) inline: danube_edge::config::EdgeConfig,
     /// Authentication token override (from --edge-token CLI arg)
-    #[serde(default)]
     pub(crate) token_override: Option<String>,
 }
 
-/// Broker services configuration
-#[derive(Debug, Deserialize)]
-pub(crate) struct BrokerConfig {
-    /// Hostname or IP address for all broker services
-    pub(crate) host: String,
-    /// Port configuration for broker services
-    pub(crate) ports: BrokerPorts,
-    /// Optional advertised addresses for proxy/k8s mode
+/// Local break-glass recovery override configuration (`--recovery-config`).
+///
+/// Used when Raft quorum is lost or locked out so an operator can force seed nodes,
+/// super admins, storage settings, load manager, auth, edge config, or bind addresses
+/// from a local JSON/YAML file.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct RecoveryConfig {
     #[serde(default)]
-    pub(crate) advertised_listeners: Option<AdvertisedListeners>,
-}
-
-/// Optional advertised addresses for proxy/k8s mode
-#[derive(Debug, Deserialize, Clone)]
-pub(crate) struct AdvertisedListeners {
-    /// Internal identity: reachable inside the cluster (inter-broker, topic ownership)
-    pub(crate) broker_url: String,
-    /// External: where clients connect (proxy/ingress address)
-    pub(crate) connect_url: String,
-}
-
-/// Broker port configuration
-#[derive(Debug, Deserialize)]
-pub(crate) struct BrokerPorts {
-    /// Client connections port (producers/consumers)
-    pub(crate) client: usize,
-    /// Admin API port
-    pub(crate) admin: usize,
-    /// Raft inter-node gRPC transport port
-    pub(crate) raft: usize,
-    /// Prometheus metrics exporter port (optional)
-    pub(crate) prometheus: Option<usize>,
+    pub(crate) seed_nodes: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) super_admins: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) auto_create_topics: Option<bool>,
+    #[serde(default)]
+    pub(crate) policies: Option<Policies>,
+    #[serde(default)]
+    pub(crate) storage: Option<StorageConfig>,
+    #[serde(default)]
+    pub(crate) load_manager: Option<LoadManagerConfig>,
+    #[serde(default)]
+    pub(crate) auth: Option<AuthConfig>,
+    #[serde(default)]
+    pub(crate) edge: Option<danube_edge::config::EdgeConfig>,
+    #[serde(default)]
+    pub(crate) broker_addr: Option<String>,
+    #[serde(default)]
+    pub(crate) admin_addr: Option<String>,
 }
 
 /// Metadata store configuration (Raft-only, ETCD removed).
-///
-/// The `node_id` is auto-generated on first boot and persisted in `{data_dir}/node_id`.
-/// The Raft transport port is in `broker.ports.raft`.
-///
-/// ```yaml
-/// meta_store:
-///   data_dir: "./danube-data/raft"
-/// ```
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct MetaStoreConfig {
     /// Directory for Raft log store, snapshots, and auto-generated node_id.
@@ -157,9 +115,7 @@ impl ServiceConfiguration {
         let broker_addr: SocketAddr = "127.0.0.1:6650"
             .parse()
             .context("Failed to create standalone broker_addr")?;
-        let admin_addr: SocketAddr = "127.0.0.1:50051"
-            .parse()
-            .context("Failed to create standalone admin_addr")?;
+        let admin_addr = broker_addr;
 
         Ok(Self {
             cluster_name: "STANDALONE".to_string(),
@@ -188,31 +144,84 @@ impl ServiceConfiguration {
             load_manager: None,
             dispatch_config: DispatchConfig::default(),
             edge_config: None,
+            node_role: NodeRole::All,
         })
     }
 
-    /// Creates an edge configuration with sensible defaults.
-    ///
-    /// Edge mode uses single-node Raft (like standalone), no LoadManager.
-    /// All edge-specific settings (identity, replicator, MQTT) are loaded
-    /// from the config file at runtime by `EdgeService`.
-    pub(crate) fn edge(
+    /// Creates a zero-YAML cluster configuration with sensible defaults rooted at `base_dir`.
+    pub(crate) fn cluster_zero_yaml(base_dir: &Path) -> Result<Self> {
+        let broker_addr: SocketAddr = "127.0.0.1:6650"
+            .parse()
+            .context("Failed to create zero-YAML cluster broker_addr")?;
+        let admin_addr = broker_addr;
+
+        Ok(Self {
+            cluster_name: "DANUBE".to_string(),
+            broker_addr,
+            broker_url: format!("http://{}", broker_addr),
+            connect_url: format!("http://{}", broker_addr),
+            proxy_enabled: false,
+            admin_addr,
+            prom_exporter: None,
+            raft_port: 7650,
+            meta_store: MetaStoreConfig {
+                data_dir: base_dir.join("raft").to_string_lossy().into_owned(),
+                seed_nodes: Vec::new(),
+            },
+            bootstrap_namespaces: vec!["default".to_string()],
+            auto_create_topics: true,
+            policies: Policies::new(),
+            storage: StorageConfig::single_node(base_dir),
+            auth: AuthConfig {
+                mode: AuthMode::None,
+                tls: None,
+                jwt: None,
+                super_admins: Vec::new(),
+            },
+            admin_tls: false,
+            load_manager: Some(LoadManagerConfig::default()),
+            dispatch_config: DispatchConfig::default(),
+            edge_config: None,
+            node_role: NodeRole::All,
+        })
+    }
+
+    /// Creates a zero-YAML edge configuration using `--cloud-endpoint` and optional `--edge-name` / `--mqtt-addr`.
+    pub(crate) fn edge_zero_yaml(
         base_dir: &Path,
-        config_path: String,
+        edge_name: Option<String>,
+        cloud_endpoint: String,
+        mqtt_addr: Option<String>,
         token_override: Option<String>,
     ) -> Result<Self> {
-        // Read the edge config to extract edge_name for cluster naming
-        // and bootstrap namespaces.
-        let edge_cfg = danube_edge::config::EdgeConfig::from_file(&config_path)
-            .context("failed to load edge config for bootstrap")?;
+        let resolved_edge_name = edge_name
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| {
+                std::env::var("HOSTNAME")
+                    .ok()
+                    .filter(|h| !h.trim().is_empty())
+            })
+            .unwrap_or_else(|| "edge-node".to_string());
+        let edge_cfg = danube_edge::config::EdgeConfig::zero_yaml(
+            resolved_edge_name,
+            cloud_endpoint,
+            mqtt_addr.unwrap_or_else(|| "0.0.0.0:1883".to_string()),
+            token_override.clone().unwrap_or_default(),
+        );
+        Self::edge_from_loaded(base_dir, edge_cfg, token_override)
+    }
+
+    fn edge_from_loaded(
+        base_dir: &Path,
+        edge_cfg: danube_edge::config::EdgeConfig,
+        token_override: Option<String>,
+    ) -> Result<Self> {
         let edge_name = edge_cfg.edge.edge_name.clone();
 
         let broker_addr: SocketAddr = "127.0.0.1:6650"
             .parse()
             .context("Failed to create edge broker_addr")?;
-        let admin_addr: SocketAddr = "127.0.0.1:50051"
-            .parse()
-            .context("Failed to create edge admin_addr")?;
+        let admin_addr = broker_addr;
 
         Ok(Self {
             cluster_name: format!("EDGE-{}", edge_name),
@@ -241,107 +250,84 @@ impl ServiceConfiguration {
             load_manager: None,
             dispatch_config: DispatchConfig::default(),
             edge_config: Some(EdgeConfig {
-                config_path,
+                inline: edge_cfg,
                 token_override,
             }),
+            node_role: NodeRole::All,
         })
     }
-}
 
-/// Implementing the TryFrom trait to transform LoadConfiguration into ServiceConfiguration
-impl TryFrom<LoadConfiguration> for ServiceConfiguration {
-    type Error = anyhow::Error;
+    /// Apply a local break-glass `--recovery-config` JSON or YAML file.
+    pub(crate) fn apply_recovery_config(&mut self, path: &Path) -> Result<()> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read recovery config {}", path.display()))?;
+        let recovery: RecoveryConfig = serde_json::from_str(&raw)
+            .or_else(|_| serde_yaml::from_str(&raw))
+            .with_context(|| format!("failed to parse recovery config {} as JSON or YAML", path.display()))?;
 
-    fn try_from(config: LoadConfiguration) -> Result<Self> {
-        let LoadConfiguration {
-            cluster_name,
-            broker,
-            meta_store,
-            bootstrap_namespaces,
-            auto_create_topics,
-            policies,
-            storage,
-            auth,
-            admin_tls,
-            load_manager,
-            dispatch,
-        } = config;
-        let BrokerConfig {
-            host,
-            ports,
-            advertised_listeners,
-        } = broker;
-        let BrokerPorts {
-            client,
-            admin,
-            raft,
-            prometheus,
-        } = ports;
-
-        let broker_addr: SocketAddr = format!("{}:{}", host, client)
-            .parse()
-            .context("Failed to create broker_addr")?;
-        let admin_addr: SocketAddr = format!("{}:{}", host, admin)
-            .parse()
-            .context("Failed to create admin_addr")?;
-        let prom_exporter: Option<SocketAddr> = if let Some(prom_port) = prometheus {
-            Some(
-                format!("{}:{}", host, prom_port)
-                    .parse()
-                    .context("Failed to create prom_exporter")?,
-            )
-        } else {
-            None
-        };
-
-        let scheme = match auth.mode {
-            AuthMode::Tls => "https",
-            _ => "http",
-        };
-        let broker_addr_str = broker_addr.to_string();
-        let (broker_url, connect_url) = if let Some(listeners) = advertised_listeners {
-            (
-                ensure_scheme(&listeners.broker_url, scheme),
-                ensure_scheme(&listeners.connect_url, scheme),
-            )
-        } else {
-            let url = format!("{}://{}", scheme, broker_addr_str);
-            (url.clone(), url)
-        };
-        let proxy_enabled = broker_url != connect_url;
-
-        Ok(ServiceConfiguration {
-            cluster_name,
-            broker_addr,
-            broker_url,
-            connect_url,
-            proxy_enabled,
-            admin_addr,
-            prom_exporter,
-            raft_port: raft,
-            meta_store,
-            bootstrap_namespaces,
-            auto_create_topics: auto_create_topics.unwrap_or(true),
-            policies,
-            storage,
-            auth,
-            admin_tls,
-            load_manager,
-            dispatch_config: {
-                dispatch.validate().context("invalid dispatch configuration")?;
-                dispatch
-            },
-            edge_config: None,
-        })
-    }
-}
-
-/// Ensures a URL string has a scheme prefix. If it already contains "://", returns as-is.
-fn ensure_scheme(url: &str, default_scheme: &str) -> String {
-    if url.contains("://") {
-        url.to_string()
-    } else {
-        format!("{}://{}", default_scheme, url)
+        if let Some(seed_nodes) = recovery.seed_nodes {
+            self.meta_store.seed_nodes = seed_nodes;
+        }
+        if let Some(super_admins) = recovery.super_admins {
+            self.auth.super_admins = super_admins;
+        }
+        if let Some(auto_create) = recovery.auto_create_topics {
+            self.auto_create_topics = auto_create;
+        }
+        if let Some(policies) = recovery.policies {
+            self.policies = policies;
+        }
+        if let Some(storage) = recovery.storage {
+            self.storage = storage;
+        }
+        if let Some(load_manager) = recovery.load_manager {
+            self.load_manager = Some(load_manager);
+        }
+        if let Some(auth) = recovery.auth {
+            let is_tls = auth.mode == AuthMode::Tls;
+            self.auth = auth;
+            if is_tls {
+                self.broker_url = self.broker_url.replace("http://", "https://");
+                self.connect_url = self.connect_url.replace("http://", "https://");
+            }
+        }
+        if let Some(edge_cfg) = recovery.edge {
+            let edge_name = edge_cfg.edge.edge_name.clone();
+            self.cluster_name = format!("EDGE-{}", edge_name);
+            if !self.bootstrap_namespaces.iter().any(|n| n == &edge_name) {
+                self.bootstrap_namespaces.push(edge_name);
+            }
+            let existing_override = self
+                .edge_config
+                .as_ref()
+                .and_then(|existing| existing.token_override.clone());
+            self.edge_config = Some(EdgeConfig {
+                inline: edge_cfg,
+                token_override: existing_override,
+            });
+        }
+        if let Some(broker_addr) = recovery.broker_addr {
+            let addr: SocketAddr = broker_addr
+                .parse()
+                .with_context(|| format!("invalid recovery broker_addr: {}", broker_addr))?;
+            self.broker_addr = addr;
+            if !self.proxy_enabled {
+                let scheme = if self.broker_url.starts_with("https://") {
+                    "https"
+                } else {
+                    "http"
+                };
+                let url = format!("{}://{}", scheme, addr);
+                self.broker_url = url.clone();
+                self.connect_url = url;
+            }
+        }
+        if let Some(admin_addr) = recovery.admin_addr {
+            self.admin_addr = admin_addr
+                .parse()
+                .with_context(|| format!("invalid recovery admin_addr: {}", admin_addr))?;
+        }
+        Ok(())
     }
 }
 
@@ -359,7 +345,7 @@ mod tests {
 
         assert_eq!(config.cluster_name, "STANDALONE");
         assert_eq!(config.broker_addr.to_string(), "127.0.0.1:6650");
-        assert_eq!(config.admin_addr.to_string(), "127.0.0.1:50051");
+        assert_eq!(config.admin_addr.to_string(), "127.0.0.1:6650");
         assert_eq!(config.raft_port, 7650);
         assert_eq!(config.meta_store.seed_nodes, Vec::<String>::new());
         assert_eq!(config.meta_store.data_dir, Path::new("local-data").join("raft").to_string_lossy());
@@ -381,5 +367,50 @@ mod tests {
             }
             _ => panic!("standalone storage must be local"),
         }
+    }
+
+    #[test]
+    fn builds_cluster_zero_yaml_and_recovery_override() {
+        let mut config = ServiceConfiguration::cluster_zero_yaml(Path::new("/tmp/danube-cluster"))
+            .expect("zero-YAML cluster config");
+        assert_eq!(config.cluster_name, "DANUBE");
+        assert!(config.load_manager.is_some());
+        assert_eq!(
+            config.meta_store.data_dir,
+            Path::new("/tmp/danube-cluster").join("raft").to_string_lossy()
+        );
+
+        let rec_path = std::env::temp_dir().join(format!("danube_recovery_{}.json", std::process::id()));
+        std::fs::write(
+            &rec_path,
+            r#"{"seed_nodes": ["node1:7650"], "super_admins": ["break-glass-admin"]}"#,
+        )
+        .unwrap();
+        config.apply_recovery_config(&rec_path).expect("apply recovery config");
+        let _ = std::fs::remove_file(&rec_path);
+        assert_eq!(config.meta_store.seed_nodes, vec!["node1:7650".to_string()]);
+        assert_eq!(config.auth.super_admins, vec!["break-glass-admin".to_string()]);
+    }
+
+    #[test]
+    fn builds_edge_zero_yaml_configuration() {
+        let config = ServiceConfiguration::edge_zero_yaml(
+            Path::new("/tmp/danube-edge"),
+            Some("edge-custom".to_string()),
+            "https://cloud.example:6650".to_string(),
+            Some("0.0.0.0:1884".to_string()),
+            Some("tok".to_string()),
+        )
+        .expect("edge zero-YAML config");
+
+        assert!(config.load_manager.is_none());
+        let edge_cfg = config.edge_config.expect("edge_config");
+        assert_eq!(edge_cfg.token_override.as_deref(), Some("tok"));
+        assert_eq!(edge_cfg.inline.edge.edge_name, "edge-custom");
+        assert_eq!(edge_cfg.inline.edge.cluster_url, "https://cloud.example:6650");
+        assert_eq!(
+            edge_cfg.inline.mqtt.as_ref().map(|m| m.listener.as_str()),
+            Some("0.0.0.0:1884")
+        );
     }
 }

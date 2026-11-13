@@ -1,6 +1,7 @@
 //! Unified edge configuration.
 //!
-//! Loaded from a single YAML file (e.g. `config/edge.yaml`) at edge startup.
+//! Constructed directly from CLI flags in zero-YAML mode (`danube up --mode edge --cloud-endpoint ...`)
+//! or loaded via `--recovery-config` overrides when custom mappings/batching are needed.
 //! Covers three sections:
 //! - `edge` — identity and cluster connectivity
 //! - `replicator` — WAL-to-cloud batching parameters
@@ -190,6 +191,40 @@ fn default_max_connections() -> usize {
 }
 
 impl EdgeConfig {
+    /// Construct a zero-YAML edge configuration routing all MQTT messages matching `#`
+    /// onto a single fixed Danube topic (`/{edge_name}/ingest`) so device fleets never
+    /// explode Raft/WAL topic counts.
+    pub fn zero_yaml(
+        edge_name: String,
+        cluster_url: String,
+        mqtt_listener: String,
+        token: String,
+    ) -> Self {
+        let danube_topic = format!("/{}/ingest", edge_name);
+        Self {
+            edge: EdgeIdentity {
+                edge_name,
+                cluster_url,
+                token,
+                heartbeat_interval_ms: default_heartbeat_interval_ms(),
+            },
+            replicator: ReplicatorConfig::default(),
+            mqtt: Some(MqttSection {
+                listener: mqtt_listener,
+                topic_mappings: vec![TopicMapping {
+                    mqtt_pattern: "#".to_string(),
+                    danube_topic,
+                    schema_subject: None,
+                    validation_policy: None,
+                    extract_attributes: HashMap::new(),
+                }],
+                ingestion: IngestionConfig::default(),
+                max_payload_size: default_max_payload_size(),
+                max_connections: default_max_connections(),
+            }),
+        }
+    }
+
     /// Load configuration from a YAML file.
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -237,9 +272,10 @@ impl EdgeConfig {
         }
     }
 
-    /// Validate that all MQTT topic mappings are under the edge's namespace.
+    /// Validate that all MQTT topic mappings are under the edge's namespace
+    /// and target fixed static Danube topics (no dynamic template substitutions).
     ///
-    /// Returns a list of topics that violate the `/{edge_name}/` prefix constraint.
+    /// Returns a list of topics that violate the `/{edge_name}/` prefix or static-topic constraint.
     /// An empty list means all topics are valid.
     pub fn validate_namespaces(&self) -> Vec<String> {
         let prefix = format!("/{}/", self.edge.edge_name);
@@ -247,7 +283,13 @@ impl EdgeConfig {
             Some(mqtt) => mqtt
                 .topic_mappings
                 .iter()
-                .filter(|m| !m.danube_topic.starts_with(&prefix))
+                .filter(|m| {
+                    !m.danube_topic.starts_with(&prefix)
+                        || m.danube_topic.contains('{')
+                        || m.danube_topic.contains('$')
+                        || m.danube_topic.contains('#')
+                        || m.danube_topic.contains('+')
+                })
                 .map(|m| m.danube_topic.clone())
                 .collect(),
             None => Vec::new(),

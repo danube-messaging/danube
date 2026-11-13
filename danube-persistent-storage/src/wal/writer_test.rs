@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::frames::{decode_next_frame, FRAME_HEADER_SIZE};
-    use crate::wal::writer::{run, LogCommand, WriterInit};
+    use crate::wal::writer::{run, LogCommand, WalSyncMode, WriterInit};
     use danube_core::message::{MessageID, StreamMessage};
     use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
@@ -58,6 +58,7 @@ mod tests {
             flush_max_batch_bytes: 1024,
             rotate_max_bytes: Some(2048),
             rotate_max_seconds: Some(10),
+            sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
         };
@@ -94,9 +95,10 @@ mod tests {
         let write_cmd = LogCommand::Write {
             offset: 1,
             bytes: test_bytes.clone(),
+            ack_tx: None,
         };
         match write_cmd {
-            LogCommand::Write { offset, bytes } => {
+            LogCommand::Write { offset, bytes, .. } => {
                 assert_eq!(offset, 1);
                 assert_eq!(bytes, test_bytes);
             }
@@ -158,6 +160,7 @@ mod tests {
             flush_max_batch_bytes: 1024,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
         };
@@ -175,6 +178,7 @@ mod tests {
             .send(LogCommand::Write {
                 offset: 0,
                 bytes: test_data,
+                ack_tx: None,
             })
             .await?;
 
@@ -232,6 +236,7 @@ mod tests {
             flush_max_batch_bytes: 64,
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
         };
@@ -249,6 +254,7 @@ mod tests {
             .send(LogCommand::Write {
                 offset: 123,
                 bytes: test_data.clone(),
+                ack_tx: None,
             })
             .await?;
 

@@ -1,16 +1,17 @@
 [package]
 name = "danube-iceberg"
 version = "0.16.0"
-description = "Standalone Iceberg lakehouse converter for Danube messaging"
+description = "Lakehouse Iceberg/Parquet sink for Danube messaging"
 authors = ["Dan Rusei <dan.rusei@gmail.com>"]
 repository = "https://github.com/danube-messaging/danube"
 readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
 
-[[bin]]
-name = "danube-iceberg"
-path = "src/main.rs"
+[features]
+default = ["rest"]
+rest = ["dep:iceberg-catalog-rest", "dep:iceberg-storage-opendal"]
+aws = ["rest", "dep:iceberg-catalog-glue", "dep:iceberg-catalog-s3tables"]
 
 [dependencies]
 # Danube crates (frame decoding + proto types + schema registry client)
@@ -18,13 +19,12 @@ danube-core = { path = "../danube-core" }
 danube-client = { path = "../danube-client" }
 danube-persistent-storage = { path = "../danube-persistent-storage" }
 
-# Iceberg (catalog integration + table management — all backends compiled in)
+# Iceberg (catalog integration + table management — feature-gated backends)
 iceberg = "0.10.1"
-iceberg-catalog-rest = "0.10.1"
-iceberg-catalog-glue = "0.10.1"
-iceberg-catalog-s3tables = "0.10.1"
-iceberg-catalog-sql = "0.10.1"
-iceberg-storage-opendal = "0.10.1"
+iceberg-catalog-rest = { version = "0.10.1", optional = true }
+iceberg-catalog-glue = { version = "0.10.1", optional = true }
+iceberg-catalog-s3tables = { version = "0.10.1", optional = true }
+iceberg-storage-opendal = { version = "0.10.1", optional = true }
 
 # Arrow/Parquet (aligned with iceberg 0.10.1's arrow 58 release train)
 arrow-array = "58"

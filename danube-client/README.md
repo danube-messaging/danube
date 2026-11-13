@@ -14,17 +14,18 @@ An async Rust client library for interacting with Danube Messaging platform.
 - **Reliable Dispatch** - Guaranteed message delivery with persistence (WAL + cloud storage)
 - **Schema Integration** - Type-safe messaging with automatic validation (Bytes, String, Number, Avro, JSON Schema, Protobuf)
 
-### 📥 Consumer Capabilities
+### 📥 Consumer & Workflow Capabilities
 
 - **Flexible Subscriptions** - Four subscription types for different use cases:
   - **Exclusive** - Single active consumer, guaranteed ordering
   - **Shared** - Load balancing across multiple consumers, parallel processing
   - **Failover** - High availability with automatic standby promotion
   - **Key-Shared** - Key-affinity routing with per-key ordering and optional key filtering
-- **Message Acknowledgment** - Reliable message processing with at-least-once delivery
+- **Message Acknowledgment & NACK** - Reliable message processing with at-least-once delivery and retry/backoff
+- **Agentic Workflow Primitives** - Extend processing leases (`extend_lease()`), persist incremental step checkpoints (`report_progress()`), cancel descendant task trees (`cancel_task_tree()`), and run correlated `request_reply()` calls (`x-danube-correlation-id`)
 - **Partitioned Consumption** - Automatic handling of messages from all partitions
 - **Batch Processing** - Efficient batch consumption for high-throughput scenarios
-- **Message Attributes** - Access metadata and custom headers
+- **Message Attributes** - Access metadata and custom headers (`correlation_id()`, `parent_msg_id()`)
 
 ### 🔐 Schema Registry
 

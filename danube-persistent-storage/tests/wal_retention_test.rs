@@ -40,6 +40,8 @@ async fn seed_durable_segment(
         created_at: 0,
         completed: true,
         offset_index: None,
+        ref_count: 1,
+        object_topic: None,
     };
     metadata
         .put_segment_descriptor(topic_path, &start_padded, &segment)

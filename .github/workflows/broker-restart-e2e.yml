@@ -27,13 +27,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Create certificate files
-        run: |
-          mkdir -p ./cert
-          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
-
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
@@ -53,12 +46,11 @@ jobs:
             raft_port=$((7650 + i))
             prom_port=$((9040 + i))
 
-            ./target/release/danube-broker \
-              --config-file config/danube_broker.yml \
+            ./target/release/danube up \
               --broker-addr 0.0.0.0:$broker_port \
               --admin-addr 0.0.0.0:$admin_port \
               --raft-addr 0.0.0.0:$raft_port \
-              --data-dir ./danube-data/broker-$i/raft \
+              --data-dir ./danube-data/broker-$i \
               --seed-nodes "$SEED_NODES" \
               --prom-exporter 0.0.0.0:$prom_port \
               > temp/broker_$broker_port.log 2>&1 &
@@ -90,13 +82,13 @@ jobs:
         run: |
           echo "Creating 3 test topics..."
           for i in 1 2 3; do
-            ./target/release/danube-admin topics create /default/restart-test-$i
+            ./target/release/danube ctl topics create /default/restart-test-$i
           done
           sleep 3
 
           echo ""
           echo "=== Topic distribution ==="
-          TOPICS_JSON=$(./target/release/danube-admin topics list --namespace default --output json)
+          TOPICS_JSON=$(./target/release/danube ctl topics list --namespace default --output json)
           echo "$TOPICS_JSON" | jq .
 
           TOPIC_COUNT=$(echo "$TOPICS_JSON" | jq length)
@@ -107,7 +99,7 @@ jobs:
           echo "Verified: 3 topics created"
 
           # Save broker IDs for later
-          BROKER_IDS=$(./target/release/danube-admin brokers list --output json | jq -r '.[].broker_id')
+          BROKER_IDS=$(./target/release/danube ctl brokers list --output json | jq -r '.[].broker_id')
           echo "$BROKER_IDS" > temp/broker_ids.txt
           echo ""
           echo "Broker IDs:"
@@ -121,13 +113,13 @@ jobs:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "=== Cluster status before kill ==="
-          ./target/release/danube-admin cluster status
+          ./target/release/danube ctl cluster status
 
           # Find which broker index (0/1/2) is the leader
           for i in 0 1 2; do
             admin_port=$((50051 + i))
             STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$admin_port \
-              ./target/release/danube-admin cluster status 2>&1)
+              ./target/release/danube ctl cluster status 2>&1)
             SELF_ID=$(echo "$STATUS" | grep 'Self Node ID' | awk '{print $NF}')
             LEADER_ID=$(echo "$STATUS" | grep 'Leader' | head -1 | awk '{print $NF}')
 
@@ -153,11 +145,11 @@ jobs:
           FOLLOWER_ADMIN=$((50051 + FOLLOWER_IDX))
           FOLLOWER_BROKER=$((6650 + FOLLOWER_IDX))
           FOLLOWER_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$FOLLOWER_ADMIN \
-            ./target/release/danube-admin cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+            ./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
           echo "$FOLLOWER_NODE_ID" > temp/follower_node_id.txt
 
           FOLLOWER_TOPICS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$FOLLOWER_ADMIN \
-            ./target/release/danube-admin topics list --broker "$FOLLOWER_NODE_ID" --output json 2>/dev/null || echo "[]")
+            ./target/release/danube ctl topics list --broker "$FOLLOWER_NODE_ID" --output json 2>/dev/null || echo "[]")
           FOLLOWER_TOPIC_COUNT=$(echo "$FOLLOWER_TOPICS" | jq length)
           echo "Follower broker $FOLLOWER_IDX (node=$FOLLOWER_NODE_ID) has $FOLLOWER_TOPIC_COUNT topics before kill"
           echo "$FOLLOWER_TOPIC_COUNT" > temp/follower_topic_count_before.txt
@@ -168,11 +160,10 @@ jobs:
           FOLLOWER_PID=$(cat temp/broker_$FOLLOWER_IDX.pid)
           FOLLOWER_PORT=$((6650 + FOLLOWER_IDX))
 
-          echo "Killing follower broker $FOLLOWER_IDX (pid=$FOLLOWER_PID, port=$FOLLOWER_PORT)..."
-          kill $FOLLOWER_PID
-          sleep 2
+          echo "Crash-killing follower broker $FOLLOWER_IDX (SIGKILL, pid=$FOLLOWER_PID, port=$FOLLOWER_PORT)..."
           kill -9 $FOLLOWER_PID 2>/dev/null || true
-          echo "Follower killed."
+          sleep 1
+          echo "Follower crash-killed."
 
       - name: "Phase 1: Restart follower broker (same data-dir)"
         env:
@@ -187,12 +178,11 @@ jobs:
 
           echo "Restarting follower broker $FOLLOWER_IDX (port=$broker_port, same data-dir)..."
           # Append to existing log so we can see the full history
-          ./target/release/danube-broker \
-            --config-file config/danube_broker.yml \
+          ./target/release/danube up \
             --broker-addr 0.0.0.0:$broker_port \
             --admin-addr 0.0.0.0:$admin_port \
             --raft-addr 0.0.0.0:$raft_port \
-            --data-dir ./danube-data/broker-$FOLLOWER_IDX/raft \
+            --data-dir ./danube-data/broker-$FOLLOWER_IDX \
             --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:$prom_port \
             >> temp/broker_$broker_port.log 2>&1 &
@@ -230,7 +220,7 @@ jobs:
 
           # 1. Cluster: verify 3 voters are present
           echo "=== Cluster status after follower restart ==="
-          CLUSTER_STATUS=$(./target/release/danube-admin cluster status 2>&1)
+          CLUSTER_STATUS=$(./target/release/danube ctl cluster status 2>&1)
           echo "$CLUSTER_STATUS"
           VOTER_COUNT=$(echo "$CLUSTER_STATUS" | grep 'Voters' | grep -oP '\d+' | wc -l)
           if [ "$VOTER_COUNT" -ge 3 ]; then
@@ -242,7 +232,7 @@ jobs:
 
           # 2. Broker state: verify the restarted broker is "active" (fast restart < TTL)
           echo ""
-          BROKERS_JSON=$(./target/release/danube-admin brokers list --output json)
+          BROKERS_JSON=$(./target/release/danube ctl brokers list --output json)
           echo "=== Brokers list ==="
           echo "$BROKERS_JSON" | jq .
           BROKER_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$FOLLOWER_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
@@ -257,7 +247,7 @@ jobs:
           # 3. Topics: verify the restarted broker has its topics back (reconciliation)
           sleep 3
           FOLLOWER_TOPICS_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$FOLLOWER_ADMIN \
-            ./target/release/danube-admin topics list --broker "$FOLLOWER_NODE_ID" --output json 2>/dev/null || echo "[]")
+            ./target/release/danube ctl topics list --broker "$FOLLOWER_NODE_ID" --output json 2>/dev/null || echo "[]")
           FOLLOWER_TOPIC_COUNT_AFTER=$(echo "$FOLLOWER_TOPICS_AFTER" | jq length)
           echo ""
           echo "Topics on follower after restart: $FOLLOWER_TOPIC_COUNT_AFTER (expected: $EXPECTED_TOPICS)"
@@ -271,7 +261,7 @@ jobs:
           fi
 
           # 4. Total topics unchanged
-          TOTAL_TOPICS=$(./target/release/danube-admin topics list --namespace default --output json | jq length)
+          TOTAL_TOPICS=$(./target/release/danube ctl topics list --namespace default --output json | jq length)
           echo "Total topics in cluster: $TOTAL_TOPICS"
           if [ "$TOTAL_TOPICS" -eq 3 ]; then
             echo "PASS: all 3 topics still exist"
@@ -294,7 +284,7 @@ jobs:
           for i in 0 1 2; do
             admin_port=$((50051 + i))
             STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$admin_port \
-              ./target/release/danube-admin cluster status 2>&1) || continue
+              ./target/release/danube ctl cluster status 2>&1) || continue
             SELF_ID=$(echo "$STATUS" | grep 'Self Node ID' | awk '{print $NF}')
             LEADER_ID=$(echo "$STATUS" | grep 'Leader' | head -1 | awk '{print $NF}')
 
@@ -313,7 +303,7 @@ jobs:
 
           # Record topics on the leader
           LEADER_TOPICS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$LEADER_ADMIN \
-            ./target/release/danube-admin topics list --broker "$LEADER_NODE_ID" --output json 2>/dev/null || echo "[]")
+            ./target/release/danube ctl topics list --broker "$LEADER_NODE_ID" --output json 2>/dev/null || echo "[]")
           LEADER_TOPIC_COUNT=$(echo "$LEADER_TOPICS" | jq length)
           echo "Leader broker $LEADER_IDX (node=$LEADER_NODE_ID) has $LEADER_TOPIC_COUNT topics"
           echo "$LEADER_TOPIC_COUNT" > temp/leader_topic_count_before.txt
@@ -333,11 +323,10 @@ jobs:
           LEADER_PID=$(cat temp/broker_$LEADER_IDX.pid)
           LEADER_PORT=$((6650 + LEADER_IDX))
 
-          echo "Killing LEADER broker $LEADER_IDX (pid=$LEADER_PID, port=$LEADER_PORT)..."
-          kill $LEADER_PID
-          sleep 2
+          echo "Crash-killing LEADER broker $LEADER_IDX (SIGKILL, pid=$LEADER_PID, port=$LEADER_PORT)..."
           kill -9 $LEADER_PID 2>/dev/null || true
-          echo "Leader killed."
+          sleep 1
+          echo "Leader crash-killed."
 
       - name: "Phase 2: Verify re-election on survivors"
         run: |
@@ -347,7 +336,7 @@ jobs:
           echo "Waiting for re-election (old leader: $OLD_LEADER)..."
           for attempt in $(seq 1 20); do
             STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
-              ./target/release/danube-admin cluster status 2>&1) || { sleep 2; continue; }
+              ./target/release/danube ctl cluster status 2>&1) || { sleep 2; continue; }
             NEW_LEADER=$(echo "$STATUS" | grep 'Leader' | head -1 | awk '{print $NF}')
 
             if [ -n "$NEW_LEADER" ] && [ "$NEW_LEADER" != "None" ] && [ "$NEW_LEADER" != "$OLD_LEADER" ]; then
@@ -374,12 +363,11 @@ jobs:
           SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 
           echo "Restarting killed leader broker $LEADER_IDX (port=$broker_port, same data-dir)..."
-          ./target/release/danube-broker \
-            --config-file config/danube_broker.yml \
+          ./target/release/danube up \
             --broker-addr 0.0.0.0:$broker_port \
             --admin-addr 0.0.0.0:$admin_port \
             --raft-addr 0.0.0.0:$raft_port \
-            --data-dir ./danube-data/broker-$LEADER_IDX/raft \
+            --data-dir ./danube-data/broker-$LEADER_IDX \
             --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:$prom_port \
             >> temp/broker_$broker_port.log 2>&1 &
@@ -416,7 +404,7 @@ jobs:
           # 1. Cluster: verify 3 voters are still present
           echo "=== Cluster status after leader restart ==="
           CLUSTER_STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
-            ./target/release/danube-admin cluster status 2>&1)
+            ./target/release/danube ctl cluster status 2>&1)
           echo "$CLUSTER_STATUS"
           VOTER_COUNT=$(echo "$CLUSTER_STATUS" | grep 'Voters' | grep -oP '\d+' | wc -l)
           if [ "$VOTER_COUNT" -ge 3 ]; then
@@ -429,7 +417,7 @@ jobs:
           # 2. Broker state: verify the restarted broker is registered and active
           echo ""
           BROKERS_JSON=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
-            ./target/release/danube-admin brokers list --output json)
+            ./target/release/danube ctl brokers list --output json)
           echo "=== Brokers list ==="
           echo "$BROKERS_JSON" | jq .
           BROKER_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$LEADER_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
@@ -444,7 +432,7 @@ jobs:
           # 3. Total topics unchanged
           sleep 3
           TOTAL_TOPICS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
-            ./target/release/danube-admin topics list --namespace default --output json | jq length)
+            ./target/release/danube ctl topics list --namespace default --output json | jq length)
           echo ""
           echo "Total topics in cluster: $TOTAL_TOPICS"
           if [ "$TOTAL_TOPICS" -eq 3 ]; then
@@ -456,7 +444,7 @@ jobs:
 
           # 4. Topics on the restarted broker (reconciliation)
           LEADER_TOPICS_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$LEADER_ADMIN \
-            ./target/release/danube-admin topics list --broker "$LEADER_NODE_ID" --output json 2>/dev/null || echo "[]")
+            ./target/release/danube ctl topics list --broker "$LEADER_NODE_ID" --output json 2>/dev/null || echo "[]")
           LEADER_TOPIC_COUNT_AFTER=$(echo "$LEADER_TOPICS_AFTER" | jq length)
           echo "Topics on restarted leader: $LEADER_TOPIC_COUNT_AFTER (had: $EXPECTED_TOPICS)"
 
@@ -469,6 +457,61 @@ jobs:
 
           echo ""
           echo "Phase 2 PASSED: leader restart with re-election and topic reconciliation"
+
+      # =====================================================================
+      # Phase 3: Graceful SIGTERM drain (marks draining + preserves Raft quorum)
+      # =====================================================================
+      - name: "Phase 3: Verify graceful SIGTERM drain"
+        run: |
+          SURVIVOR_ADMIN=$(cat temp/survivor_admin_port.txt)
+          STATUS=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+            ./target/release/danube ctl cluster status 2>&1)
+          LEADER_ID=$(echo "$STATUS" | grep 'Leader' | head -1 | awk '{print $NF}')
+
+          # Pick a follower broker index != leader to test graceful SIGTERM drain
+          DRAIN_IDX=""
+          DRAIN_NODE_ID=""
+          for i in 0 1 2; do
+            admin_port=$((50051 + i))
+            SELF_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$admin_port \
+              ./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}') || continue
+            if [ "$SELF_ID" != "$LEADER_ID" ]; then
+              DRAIN_IDX=$i
+              DRAIN_NODE_ID=$SELF_ID
+              break
+            fi
+          done
+
+          if [ -z "$DRAIN_IDX" ]; then
+            echo "FAIL: could not locate a follower to test SIGTERM drain"
+            exit 1
+          fi
+
+          DRAIN_PID=$(cat temp/broker_$DRAIN_IDX.pid)
+          echo "Sending SIGTERM to follower broker $DRAIN_IDX (node=$DRAIN_NODE_ID, pid=$DRAIN_PID)..."
+          kill -TERM "$DRAIN_PID"
+          sleep 3
+
+          BROKERS_JSON=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+            ./target/release/danube ctl brokers list --output json)
+          DRAIN_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$DRAIN_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
+          echo "Broker $DRAIN_NODE_ID status after SIGTERM: $DRAIN_STATUS"
+
+          if [ "$DRAIN_STATUS" != "draining" ] && [ "$DRAIN_STATUS" != "drained" ]; then
+            echo "FAIL: expected broker status 'draining' or 'drained' on SIGTERM, got '$DRAIN_STATUS'"
+            exit 1
+          fi
+
+          # Verify Raft membership was preserved (all 3 voters intact on rolling SIGTERM)
+          CLUSTER_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+            ./target/release/danube ctl cluster status 2>&1)
+          VOTER_COUNT=$(echo "$CLUSTER_AFTER" | grep 'Voters' | grep -oP '\d+' | wc -l)
+          if [ "$VOTER_COUNT" -lt 3 ]; then
+            echo "FAIL: expected 3 Raft voters preserved on SIGTERM, got $VOTER_COUNT"
+            exit 1
+          fi
+
+          echo "Phase 3 PASSED: SIGTERM transitioned follower to '$DRAIN_STATUS' while preserving 3 Raft voters"
 
       # =====================================================================
       # Final summary
@@ -493,9 +536,9 @@ jobs:
           echo "  - Topic reconciliation: topics restored on restarted leader"
           echo ""
           echo "=== Final cluster state ==="
-          ./target/release/danube-admin cluster status || true
-          ./target/release/danube-admin brokers list || true
-          ./target/release/danube-admin topics list --namespace default || true
+          ./target/release/danube ctl cluster status || true
+          ./target/release/danube ctl brokers list || true
+          ./target/release/danube ctl topics list --namespace default || true
 
       - name: Upload logs on failure
         if: failure()
@@ -508,4 +551,4 @@ jobs:
       - name: Stop brokers
         if: always()
         run: |
-          pkill -f danube-broker || true
+          pkill -x danube || true

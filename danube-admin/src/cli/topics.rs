@@ -1,12 +1,13 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
-    BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
+    BranchTopicRequest, BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
     GetSubscriptionFailurePolicyRequest, NamespaceRequest, NewTopicRequest,
     PartitionedTopicRequest, SetSubscriptionFailurePolicyRequest,
     SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
     SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy,
     SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest, TopicRequest,
+    UpdateTopicStorageModeRequest,
 };
 use danube_core::proto::danube_schema::{
     ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
@@ -113,6 +114,11 @@ enum TopicsCommands {
             help = "Dispatch strategy: non_reliable|reliable"
         )]
         dispatch_strategy: String,
+        #[arg(
+            long,
+            help = "Optional StreamIntent profile (e.g. agent_event_mesh, agent_task_queue, lakehouse_feed)"
+        )]
+        intent: Option<String>,
     },
     #[command(
         about = "Delete an existing topic",
@@ -262,6 +268,34 @@ enum TopicsCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
+    #[command(
+        about = "Update topic storage tiering (local -> cloud_tiered live)",
+        arg_required_else_help = true
+    )]
+    StorageMode {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["local", "cloud_tiered"], help = "Target storage mode")]
+        mode: String,
+        #[arg(long, default_value_t = false, help = "Force downgrade to local")]
+        force: bool,
+    },
+    #[command(
+        about = "Zero-copy branch a source topic into a new topic",
+        arg_required_else_help = true
+    )]
+    Branch {
+        #[arg(help = "Source topic path (e.g., '/default/orders')")]
+        source_topic: String,
+        #[arg(help = "Target branch topic path (e.g., '/default/orders-exp')")]
+        target_topic: String,
+        #[arg(long, help = "Optional inclusive offset to branch up to")]
+        at_offset: Option<u64>,
+        #[arg(long, help = "Optional publish timestamp (ns since epoch) to branch up to")]
+        at_timestamp_ns: Option<u64>,
+    },
 }
 
 pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
@@ -348,6 +382,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             partitions,
             schema_subject,
             dispatch_strategy,
+            intent,
         } => {
             let topic_path = normalize_topic(&topic, namespace.as_deref())?;
 
@@ -357,6 +392,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     partitions: parts as u32,
                     schema_subject: schema_subject.clone(),
                     dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
+                    intent: intent.clone(),
                 };
                 let response = client.create_partitioned_topic(req).await?;
                 if response.success {
@@ -371,6 +407,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     name: topic_path.clone(),
                     schema_subject: schema_subject.clone(),
                     dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
+                    intent: intent.clone(),
                 };
                 let response = client.create_topic(request).await?;
                 if response.success {
@@ -707,34 +744,63 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 }
             }
         }
+
+        TopicsCommands::StorageMode {
+            topic,
+            namespace,
+            mode,
+            force,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .update_topic_storage_mode(UpdateTopicStorageModeRequest {
+                    topic_name: topic_name.clone(),
+                    storage_mode: mode.clone(),
+                    force,
+                })
+                .await?;
+            if resp.success {
+                println!("Updated storage mode for {} -> {}", topic_name, mode);
+            }
+        }
+        TopicsCommands::Branch {
+            source_topic,
+            target_topic,
+            at_offset,
+            at_timestamp_ns,
+        } => {
+            let src = normalize_topic(&source_topic, None)?;
+            let dst = normalize_topic(&target_topic, None)?;
+            let resp = client
+                .branch_topic(BranchTopicRequest {
+                    source_topic: src,
+                    target_topic: dst,
+                    at_offset,
+                    at_timestamp_ns,
+                })
+                .await?;
+            println!(
+                "Branched {} -> {} up to offset {} (copied_segments={}, copied_local_messages={})",
+                resp.source_topic,
+                resp.target_topic,
+                resp.branched_up_to_offset,
+                resp.copied_segments,
+                resp.copied_local_messages
+            );
+        }
     }
 
     Ok(())
 }
 
-// Topics string representation:  /{namespace}/{topic-name}
+// Topics string representation: /{namespace}/{topic-segment...}
 fn validate_topic_format(input: &str) -> bool {
-    let parts: Vec<&str> = input.split('/').collect();
-
-    if parts.len() != 3 {
-        return false;
-    }
-
-    for part in parts.iter() {
-        if !part
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            return false;
-        }
-    }
-
-    true
+    danube_core::topic_path::TopicPath::parse(input).is_ok()
 }
 
 // Normalize topic path to "/namespace/topic". Accepts:
-//  - "/ns/topic"
-//  - "ns/topic"
+//  - "/ns/topic" or "/ns/nested/topic"
+//  - "ns/topic" or "ns/nested/topic"
 //  - "topic" when --namespace is provided
 fn normalize_topic(input: &str, namespace: Option<&str>) -> Result<String> {
     let s = input.trim();
@@ -745,12 +811,17 @@ fn normalize_topic(input: &str, namespace: Option<&str>) -> Result<String> {
         return Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic"));
     }
     let parts: Vec<&str> = s.split('/').collect();
-    match parts.len() {
-        2 => Ok(format!("/{}", s)),
-        1 => {
-            let ns = namespace.ok_or_else(|| anyhow::anyhow!("missing --namespace for topic without namespace"))?;
-            Ok(format!("/{}/{}", ns, s))
+    if parts.len() >= 2 {
+        let candidate = format!("/{}", s);
+        if validate_topic_format(&candidate) {
+            return Ok(candidate);
         }
-        _ => Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic")),
+    } else if parts.len() == 1 {
+        let ns = namespace.ok_or_else(|| anyhow::anyhow!("missing --namespace for topic without namespace"))?;
+        let candidate = format!("/{}/{}", ns, s);
+        if validate_topic_format(&candidate) {
+            return Ok(candidate);
+        }
     }
+    Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic"))
 }

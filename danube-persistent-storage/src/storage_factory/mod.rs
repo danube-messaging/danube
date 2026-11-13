@@ -13,19 +13,20 @@ use crate::valkey::config::WriteBufferConfig;
 use crate::valkey::ValkeyClient;
 use crate::wal::Wal;
 use crate::wal::deleter::DeleterConfig;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use danube_core::storage::PersistentStorageError;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct StorageFactory {
-    mode: StorageMode,
+    mode: Arc<RwLock<StorageMode>>,
     base_cfg: crate::wal::WalConfig,
     segment_catalog: SegmentCatalog,
     mobility_state: MobilityState,
-    durable_store: Option<Arc<dyn DurableStore>>,
+    durable_store: Arc<RwLock<Option<Arc<dyn DurableStore>>>>,
+    cloud_tiered_topics: Arc<DashSet<String>>,
     topics: Arc<DashMap<String, Wal>>,
     segment_exporters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     segment_exporter_tokens: Arc<DashMap<String, CancellationToken>>,
@@ -59,9 +60,5 @@ pub struct SealInfo {
 }
 
 pub(super) fn normalize_topic_path(topic_name: &str) -> String {
-    let trimmed = topic_name.strip_prefix('/').unwrap_or(topic_name);
-    let mut parts = trimmed.split('/');
-    let ns = parts.next().unwrap_or("");
-    let topic = parts.next().unwrap_or("");
-    format!("{}/{}", ns, topic)
+    topic_name.trim_start_matches('/').to_string()
 }

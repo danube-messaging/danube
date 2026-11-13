@@ -58,6 +58,14 @@ pub struct StreamMessage {
     pub routing_key: Option<String>,
 }
 
+pub const ATTR_CORRELATION_ID: &str = "x-danube-correlation-id";
+pub const ATTR_REPLY_TO: &str = "x-danube-reply-to";
+pub const ATTR_PARENT_MSG_ID: &str = "x-danube-parent-msg-id";
+pub const ATTR_ROOT_MSG_ID: &str = "x-danube-root-msg-id";
+pub const ATTR_DEADLINE_MS: &str = "x-danube-deadline-ms";
+pub const ATTR_COMPUTE_COST_UNITS: &str = "x-danube-compute-cost-units";
+pub const ATTR_CHECKPOINT_B64: &str = "x-danube-checkpoint-b64";
+
 impl StreamMessage {
     pub fn size(&self) -> usize {
         self.payload.len()
@@ -69,6 +77,67 @@ impl StreamMessage {
     /// Falls back to producer_name if no explicit routing_key is set.
     pub fn effective_routing_key(&self) -> &str {
         self.routing_key.as_deref().unwrap_or(&self.producer_name)
+    }
+
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.attributes.get(ATTR_CORRELATION_ID).map(String::as_str)
+    }
+
+    pub fn with_correlation_id(mut self, id: impl Into<String>) -> Self {
+        self.attributes.insert(ATTR_CORRELATION_ID.to_string(), id.into());
+        self
+    }
+
+    pub fn reply_to(&self) -> Option<&str> {
+        self.attributes.get(ATTR_REPLY_TO).map(String::as_str)
+    }
+
+    pub fn with_reply_to(mut self, topic: impl Into<String>) -> Self {
+        self.attributes.insert(ATTR_REPLY_TO.to_string(), topic.into());
+        self
+    }
+
+    pub fn parent_msg_id(&self) -> Option<&str> {
+        self.attributes.get(ATTR_PARENT_MSG_ID).map(String::as_str)
+    }
+
+    pub fn with_parent_msg_id(mut self, id: impl Into<String>) -> Self {
+        self.attributes.insert(ATTR_PARENT_MSG_ID.to_string(), id.into());
+        self
+    }
+
+    pub fn root_msg_id(&self) -> Option<&str> {
+        self.attributes.get(ATTR_ROOT_MSG_ID).map(String::as_str)
+    }
+
+    pub fn with_root_msg_id(mut self, id: impl Into<String>) -> Self {
+        self.attributes.insert(ATTR_ROOT_MSG_ID.to_string(), id.into());
+        self
+    }
+
+    pub fn deadline_ms(&self) -> Option<u64> {
+        self.attributes.get(ATTR_DEADLINE_MS).and_then(|s| s.parse::<u64>().ok())
+    }
+
+    pub fn with_deadline_ms(mut self, deadline_ms: u64) -> Self {
+        self.attributes.insert(ATTR_DEADLINE_MS.to_string(), deadline_ms.to_string());
+        self
+    }
+
+    pub fn compute_cost_units(&self) -> Option<u32> {
+        self.attributes
+            .get(ATTR_COMPUTE_COST_UNITS)
+            .and_then(|s| s.parse::<u32>().ok())
+    }
+
+    pub fn with_compute_cost_units(mut self, units: u32) -> Self {
+        self.attributes
+            .insert(ATTR_COMPUTE_COST_UNITS.to_string(), units.to_string());
+        self
+    }
+
+    pub fn checkpoint_b64(&self) -> Option<&str> {
+        self.attributes.get(ATTR_CHECKPOINT_B64).map(String::as_str)
     }
 }
 

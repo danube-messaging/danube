@@ -149,6 +149,10 @@ pub struct CreateTopicParams {
     /// If specified, the schema must already be registered. Use register_schema first.
     /// Example: "user-events-value", "analytics-v2"
     pub schema_subject: Option<String>,
+
+    /// Optional StreamIntent profile (e.g. "agent_event_mesh", "agent_task_queue",
+    /// "tool_invocation_log", "telemetry_firehose", "lakehouse_feed").
+    pub intent: Option<String>,
 }
 
 fn default_dispatch_strategy() -> String {
@@ -169,6 +173,7 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
             partitions: params.partitions,
             schema_subject: params.schema_subject,
             dispatch_strategy: dispatch,
+            intent: params.intent,
         };
 
         match client.create_partitioned_topic(req).await {
@@ -186,6 +191,7 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
             name: params.name.clone(),
             schema_subject: params.schema_subject,
             dispatch_strategy: dispatch,
+            intent: params.intent,
         };
 
         match client.create_topic(req).await {
@@ -652,5 +658,150 @@ pub async fn get_subscription_failure_policy(
             }
         }
         Err(e) => format!("Error getting failure policy: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PeekMessagesParams {
+    /// Full topic name including namespace, e.g. "/default/orders"
+    pub topic: String,
+    /// Starting offset to inspect (default: 0)
+    #[serde(default)]
+    pub start_offset: u64,
+    /// Number of messages to peek (1..=100, default: 10)
+    #[serde(default = "default_peek_count")]
+    pub count: u32,
+}
+
+fn default_peek_count() -> u32 {
+    10
+}
+
+pub async fn peek_messages(client: &Arc<AdminGrpcClient>, params: PeekMessagesParams) -> String {
+    let req = danube_core::admin_proto::PeekMessagesRequest {
+        topic: params.topic.clone(),
+        start_offset: params.start_offset,
+        count: params.count,
+    };
+    match client.peek_messages(req).await {
+        Ok(resp) => {
+            if resp.messages.is_empty() {
+                return format!("No messages found at or after offset {} on '{}'", params.start_offset, params.topic);
+            }
+            let mut out = format!("Peeked {} message(s) on '{}':\n", resp.messages.len(), resp.topic);
+            for msg in resp.messages {
+                let preview = match std::str::from_utf8(&msg.payload) {
+                    Ok(s) => s.to_string(),
+                    Err(_) => format!("<binary {} bytes>", msg.payload.len()),
+                };
+                out.push_str(&format!(
+                    "  [offset={}] producer={} ts={} payload={}\n",
+                    msg.offset, msg.producer_name, msg.publish_time, preview
+                ));
+            }
+            out
+        }
+        Err(e) => format!("Error peeking messages: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ExplainConsumerStallParams {
+    /// Full topic name including namespace, e.g. "/default/orders"
+    pub topic: String,
+    /// Subscription name to diagnose
+    pub subscription: String,
+}
+
+pub async fn explain_consumer_stall(
+    client: &Arc<AdminGrpcClient>,
+    params: ExplainConsumerStallParams,
+) -> String {
+    let req = danube_core::admin_proto::ExplainConsumerStallRequest {
+        topic: params.topic.clone(),
+        subscription: params.subscription.clone(),
+    };
+    match client.explain_consumer_stall(req).await {
+        Ok(resp) => {
+            let mut out = format!(
+                "Stall diagnosis for '{}' subscription '{}': status={}\n",
+                resp.topic, resp.subscription, resp.status
+            );
+            out.push_str(&format!(
+                "  Consumers: {}, Backlog: {}, Est In-Flight: {}, AckTimeoutPending: {}\n",
+                resp.consumer_count, resp.backlog, resp.in_flight_count, resp.ack_timeout_pending
+            ));
+            out.push_str(&format!("  Diagnosis: {}\n", resp.diagnosis));
+            for s in resp.suggestions {
+                out.push_str(&format!("  Suggestion: {}\n", s));
+            }
+            out
+        }
+        Err(e) => format!("Error explaining consumer stall: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InferTopicSchemaParams {
+    /// Full topic name including namespace, e.g. "/default/orders"
+    pub topic: String,
+    /// Number of recent messages to sample (default: 100)
+    #[serde(default = "default_sample_size")]
+    pub sample_size: u32,
+}
+
+fn default_sample_size() -> u32 {
+    100
+}
+
+pub async fn infer_topic_schema(
+    client: &Arc<AdminGrpcClient>,
+    params: InferTopicSchemaParams,
+) -> String {
+    let req = danube_core::admin_proto::InferTopicSchemaRequest {
+        topic: params.topic.clone(),
+        sample_size: params.sample_size,
+    };
+    match client.infer_topic_schema(req).await {
+        Ok(resp) => format!(
+            "Inferred JSON Schema for '{}' (sampled={}, valid_json={}):\n{}",
+            resp.topic, resp.sampled_count, resp.valid_json_count, resp.json_schema
+        ),
+        Err(e) => format!("Error inferring topic schema: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BranchTopicParams {
+    /// Source topic path, e.g. "/default/orders"
+    pub source_topic: String,
+    /// Target branch topic path, e.g. "/default/orders-exp"
+    pub target_topic: String,
+    /// Optional inclusive offset to branch up to
+    pub at_offset: Option<u64>,
+    /// Optional publish timestamp (nanoseconds since epoch) to branch up to
+    pub at_timestamp_ns: Option<u64>,
+}
+
+pub async fn branch_topic(
+    client: &Arc<AdminGrpcClient>,
+    params: BranchTopicParams,
+) -> String {
+    let req = danube_core::admin_proto::BranchTopicRequest {
+        source_topic: params.source_topic,
+        target_topic: params.target_topic,
+        at_offset: params.at_offset,
+        at_timestamp_ns: params.at_timestamp_ns,
+    };
+    match client.branch_topic(req).await {
+        Ok(resp) => format!(
+            "Branched '{}' -> '{}' up to offset {} (copied_segments={}, copied_local_messages={})",
+            resp.source_topic,
+            resp.target_topic,
+            resp.branched_up_to_offset,
+            resp.copied_segments,
+            resp.copied_local_messages
+        ),
+        Err(e) => format!("Error branching topic: {}", e),
     }
 }

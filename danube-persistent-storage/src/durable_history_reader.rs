@@ -111,7 +111,8 @@ impl DurableHistoryReader {
                     }
                     let desc = &descriptors[idx];
                     idx += 1;
-                    let key = segment_object_path(&topic_path, &desc.segment_id);
+                    let effective_topic = desc.object_topic.as_deref().unwrap_or(&topic_path);
+                    let key = segment_object_path(effective_topic, &desc.segment_id);
                     // Use sparse index if present to jump near the requested start offset.
                     let start_byte = match &desc.offset_index {
                         Some(index) if !index.is_empty() => {

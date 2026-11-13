@@ -841,12 +841,13 @@ impl LoadManager {
             // Extract namespace and topic from the full path
             let parts: Vec<&str> = full_assignment_path.split('/').collect();
             if parts.len() >= 6 {
-                // parts: ["", "cluster", "brokers", "{broker_id}", "{namespace}", "{topic}"]
+                // parts: ["", "cluster", "brokers", "{broker_id}", "{namespace}", "{topic...}"]
                 // Create unassigned entry: /cluster/unassigned/{ns}/{topic}
+                let topic_part = parts[5..].join("/");
                 let unassigned_path = join_path(&[
                     BASE_UNASSIGNED_PATH,
                     &parts[4], // namespace
-                    &parts[5], // topic
+                    &topic_part, // topic
                 ]);
 
                 // Create unassigned entry with empty value to signal Load Manager for reassignment

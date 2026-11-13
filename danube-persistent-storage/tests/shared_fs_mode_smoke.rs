@@ -253,6 +253,8 @@ async fn shared_fs_recovers_from_catalog_when_checkpoint_points_to_missing_local
         created_at: 1,
         completed: true,
         offset_index: None,
+        ref_count: 1,
+        object_topic: None,
     };
     storage_metadata
         .put_segment_descriptor(topic_path, "00000000000000000000", &segment)

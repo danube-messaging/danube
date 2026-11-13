@@ -554,3 +554,87 @@ pub async fn remove_cluster_node(
         Err(e) => format!("Error removing node: {}", e),
     }
 }
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ConfigureObjectStoreParams {
+    /// Object store backend: "s3", "gcs", "azblob", or "filesystem"
+    pub backend: String,
+    /// Object store URI root (e.g. "s3://my-bucket/danube")
+    pub root: String,
+    /// Optional backend options (region, endpoint, access_key, secret_key, etc.)
+    #[serde(default)]
+    pub options: std::collections::HashMap<String, String>,
+    /// Allow replacing an already active object store when cloud-tiered topics exist
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn configure_object_store(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureObjectStoreParams,
+) -> String {
+    let req = danube_core::admin_proto::ConfigureObjectStoreRequest {
+        backend: params.backend,
+        root: params.root,
+        options: params.options,
+        force: params.force,
+    };
+    match client.configure_object_store(req).await {
+        Ok(resp) => {
+            if resp.success {
+                resp.message
+            } else {
+                format!("Failed to configure object store: {}", resp.message)
+            }
+        }
+        Err(e) => format!("Error configuring object store: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ApplyDesiredStateParams {
+    /// YAML or JSON desired-state manifest string
+    pub manifest: String,
+    /// Preview actions without applying changes
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Opt-in deletion of unlisted user topics
+    #[serde(default)]
+    pub prune: bool,
+    /// Allow pruning non-empty or active topics
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn apply_desired_state(
+    client: &Arc<AdminGrpcClient>,
+    params: ApplyDesiredStateParams,
+) -> String {
+    let req = danube_core::admin_proto::DesiredStateRequest {
+        manifest: params.manifest,
+        prune: params.prune,
+        force_delete_non_empty: params.force,
+    };
+    if params.dry_run {
+        match client.plan_desired_state(req).await {
+            Ok(plan) => {
+                if plan.actions.is_empty() {
+                    "Plan: no changes required.".to_string()
+                } else {
+                    let lines: Vec<String> = plan
+                        .actions
+                        .iter()
+                        .map(|a| format!("- [{}] {} ({})", a.kind, a.resource, a.details))
+                        .collect();
+                    format!("Planned actions (dry-run):\n{}", lines.join("\n"))
+                }
+            }
+            Err(e) => format!("Error planning desired state: {}", e),
+        }
+    } else {
+        match client.apply_desired_state(req).await {
+            Ok(res) => res.message,
+            Err(e) => format!("Error applying desired state: {}", e),
+        }
+    }
+}

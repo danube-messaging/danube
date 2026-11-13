@@ -5,7 +5,6 @@ on:
     paths:
       - 'danube-broker/**'
       - 'danube-persistent-storage/**'
-      - 'config/for_tests/danube_broker_shared_fs.yml'
       - '.github/workflows/broker-reliable-move-shared-fs-e2e.yml'
   workflow_dispatch:
 
@@ -27,21 +26,23 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Create certificate files
-        run: |
-          mkdir -p ./cert
-          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
-
-      - name: Build broker and admin binaries
-        run: cargo build --release -p danube-broker -p danube-admin
+      - name: Build unified danube binary
+        run: cargo build --release -p danube-broker
 
       - name: Start 3 brokers
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
-          mkdir -p temp danube-data
+          mkdir -p temp danube-data/shared-fs
+          cat > temp/shared_fs_override.yaml <<EOF
+          storage:
+            mode: shared_fs
+            metadata_prefix: "/danube"
+            durable:
+              root: "./danube-data/shared-fs"
+          EOF
+          sed -i 's/^          //' temp/shared_fs_override.yaml
+
           SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 
           for i in 0 1 2; do
@@ -50,12 +51,12 @@ jobs:
             raft_port=$((7650 + i))
             prom_port=$((9040 + i))
 
-            nohup ./target/release/danube-broker \
-              --config-file ./config/for_tests/danube_broker_shared_fs.yml \
+            nohup ./target/release/danube up \
+              --recovery-config temp/shared_fs_override.yaml \
               --broker-addr 0.0.0.0:$broker_port \
               --admin-addr 0.0.0.0:$admin_port \
               --raft-addr 0.0.0.0:$raft_port \
-              --data-dir ./danube-data/broker-$i/raft \
+              --data-dir ./danube-data/broker-$i \
               --seed-nodes "$SEED_NODES" \
               --prom-exporter 0.0.0.0:$prom_port \
               > temp/broker-$i.log 2>&1 &
@@ -87,7 +88,7 @@ jobs:
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          ADMIN_BIN=./target/release/danube-admin
+          ADMIN_BIN="./target/release/danube ctl"
 
           # Get all broker IDs and activate any that are drained
           BROKERS_JSON=$($ADMIN_BIN brokers list --output json)
@@ -112,7 +113,7 @@ jobs:
       - name: Run shared_fs reliable move integration tests
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
-          DANUBE_ADMIN_BIN: ./target/release/danube-admin
+          DANUBE_BIN: ./target/release/danube
           RUST_BACKTRACE: 1
         run: |
           cargo test --release -p danube-broker --test reliable_topic_move_shared_fs -- --ignored --test-threads=1 --nocapture
@@ -130,4 +131,4 @@ jobs:
       - name: Stop brokers
         if: always()
         run: |
-          pkill -f danube-broker || true
+          pkill -x danube || true

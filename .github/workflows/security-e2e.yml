@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - 'danube-broker/src/**'
-      - 'config/danube_broker_secure.yml'
       - '.github/workflows/security-e2e.yml'
   workflow_dispatch:
 
@@ -33,8 +32,8 @@ jobs:
           printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
           printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
-      - name: Build broker and admin binaries
-        run: cargo build --release -p danube-broker -p danube-admin
+      - name: Build unified danube binary
+        run: cargo build --release -p danube-broker
 
       # =====================================================================
       # Start broker with full security enabled
@@ -44,12 +43,17 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p temp danube-data
-          nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker_secure.yml \
+          nohup ./target/release/danube up \
+            --auth-mode tls \
+            --tls-cert ./cert/server-cert.pem \
+            --tls-key ./cert/server-key.pem \
+            --ca-cert ./cert/ca-cert.pem \
+            --jwt-secret your-secret-key \
+            --super-admins admin \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/raft-1 \
+            --data-dir ./danube-data/broker-1 \
             --prom-exporter 0.0.0.0:9040 \
             > temp/broker.log 2>&1 &
 
@@ -75,17 +79,17 @@ jobs:
           SECRET_KEY="your-secret-key"
 
           # Super-admin token (subject "admin" is in super_admins config)
-          ADMIN_TOKEN=$(./target/release/danube-admin security tokens create \
+          ADMIN_TOKEN=$(./target/release/danube ctl security tokens create \
             --subject admin --type user --secret-key "$SECRET_KEY")
           echo "ADMIN_TOKEN=$ADMIN_TOKEN" >> $GITHUB_ENV
 
           # Authorized service account token
-          AUTHORIZED_TOKEN=$(./target/release/danube-admin security tokens create \
+          AUTHORIZED_TOKEN=$(./target/release/danube ctl security tokens create \
             --subject test-app --type service_account --secret-key "$SECRET_KEY")
           echo "AUTHORIZED_TOKEN=$AUTHORIZED_TOKEN" >> $GITHUB_ENV
 
           # Unprivileged token (no bindings will be created for this principal)
-          DENIED_TOKEN=$(./target/release/danube-admin security tokens create \
+          DENIED_TOKEN=$(./target/release/danube ctl security tokens create \
             --subject unprivileged-app --type service_account --secret-key "$SECRET_KEY")
           echo "DENIED_TOKEN=$DENIED_TOKEN" >> $GITHUB_ENV
 
@@ -100,7 +104,7 @@ jobs:
           DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           set -e
-          ADMIN_BIN=./target/release/danube-admin
+          ADMIN_BIN="./target/release/danube ctl"
 
           echo "Token present: $([ -n "$DANUBE_ADMIN_TOKEN" ] && echo 'yes' || echo 'NO')"
 
@@ -155,6 +159,75 @@ jobs:
         run: |
           cargo test --release -p danube-broker --test security_e2e -- --ignored --test-threads=1 --nocapture
 
+      - name: Test online token issue/revoke and last-admin lockout protection
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+        run: |
+          set -e
+          ADMIN_BIN="./target/release/danube ctl"
+
+          # 1. Online token issuance + revocation
+          ISSUED_TOKEN=$($ADMIN_BIN security tokens issue --subject temp-agent --type service_account --ttl 1h)
+          if [ -z "$ISSUED_TOKEN" ]; then
+            echo "FAIL: issued token was empty"
+            exit 1
+          fi
+          $ADMIN_BIN security tokens revoke --subject temp-agent
+          echo "✅ Online token issue and revoke verified"
+
+          # 2. Last-admin lockout protection: revoking the sole active super-admin must fail
+          if $ADMIN_BIN security tokens revoke --subject admin; then
+            echo "FAIL: revoking last cluster admin should have been rejected"
+            exit 1
+          fi
+          echo "✅ Last-admin lockout protection verified"
+
+      # =====================================================================
+      # Phase 2: Standalone --auth-mode auto-tls zero-secret bootstrap E2E
+      # =====================================================================
+      - name: "Phase 2: Stop Phase 1 broker and test --auth-mode auto-tls"
+        run: |
+          pkill -x danube || true
+          sleep 2
+
+          mkdir -p danube-data/auto-tls temp
+          ./target/release/danube up \
+            --mode standalone \
+            --data-dir ./danube-data/auto-tls \
+            --broker-addr 127.0.0.1:6655 \
+            --raft-addr 127.0.0.1:7655 \
+            --auth-mode auto-tls \
+            > temp/broker-auto-tls.log 2>&1 &
+
+          for i in {1..15}; do
+            if nc -zv 127.0.0.1 6655 2>/dev/null; then
+              echo "✅ Auto-TLS broker is ready on port 6655."
+              break
+            elif [ $i -eq 15 ]; then
+              echo "❌ Auto-TLS broker failed to start."
+              cat temp/broker-auto-tls.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          test -f ./danube-data/auto-tls/tls/ca.pem
+          test -f ./danube-data/auto-tls/bootstrap_admin.token
+          PERMS=$(stat -c "%a" ./danube-data/auto-tls/bootstrap_admin.token)
+          if [ "$PERMS" != "600" ]; then
+            echo "FAIL: expected 0600 permissions on bootstrap_admin.token, got $PERMS"
+            exit 1
+          fi
+
+          BOOTSTRAP_TOKEN=$(cat ./danube-data/auto-tls/bootstrap_admin.token)
+          DANUBE_ADMIN_ENDPOINT=https://127.0.0.1:6655 \
+          DANUBE_ADMIN_TLS=true \
+          DANUBE_ADMIN_CA=./danube-data/auto-tls/tls/ca.pem \
+          DANUBE_ADMIN_TOKEN="$BOOTSTRAP_TOKEN" \
+            ./target/release/danube ctl brokers list
+          echo "✅ Auto-TLS single-port admin connection with bootstrap_admin.token verified"
+
       # =====================================================================
       # Cleanup
       # =====================================================================
@@ -163,8 +236,10 @@ jobs:
         run: |
           echo '--- broker.log ---'
           cat temp/broker.log || true
+          echo '--- broker-auto-tls.log ---'
+          cat temp/broker-auto-tls.log || true
 
       - name: Stop broker
         if: always()
         run: |
-          pkill -f danube-broker || true
+          pkill -x danube || true

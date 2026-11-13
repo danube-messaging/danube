@@ -262,6 +262,28 @@ impl DanubeMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    /// Live-register or update the cluster object store (S3/GCS/Azblob/Filesystem) after
+    /// running a write/read/delete connectivity probe.
+    #[tool]
+    async fn configure_object_store(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureObjectStoreParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_object_store(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Plan or apply a declarative YAML/JSON desired-state manifest cleanly (additive by default;
+    /// prune only with prune=true).
+    #[tool]
+    async fn apply_desired_state(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ApplyDesiredStateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::apply_desired_state(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     // ===== TOPIC MANAGEMENT TOOLS =====
 
     /// List all topics in a specific namespace or for a specific broker.
@@ -423,6 +445,46 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::GetSchemaConfigParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::get_topic_schema_config(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Peek raw messages from a topic without consuming them (requires ReadPayload permission).
+    #[tool]
+    async fn peek_messages(
+        &self,
+        Parameters(params): Parameters<tools::topics::PeekMessagesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::peek_messages(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Diagnose why a subscription is stalled or building backlog.
+    #[tool]
+    async fn explain_consumer_stall(
+        &self,
+        Parameters(params): Parameters<tools::topics::ExplainConsumerStallParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::explain_consumer_stall(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Sample recent JSON messages from a topic and infer a Draft-07 JSON Schema (requires ReadPayload).
+    #[tool]
+    async fn infer_topic_schema(
+        &self,
+        Parameters(params): Parameters<tools::topics::InferTopicSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::infer_topic_schema(&self.client, params).await;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Zero-copy branch a source topic into a new target topic at an optional offset or timestamp.
+    #[tool]
+    async fn branch_topic(
+        &self,
+        Parameters(params): Parameters<tools::topics::BranchTopicParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::branch_topic(&self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 

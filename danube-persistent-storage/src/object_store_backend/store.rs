@@ -151,8 +151,7 @@ impl ObjStore {
         })
     }
 
-    /// Read an object in full (used in tests).
-    #[cfg(test)]
+    /// Read an object in full.
     pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, PersistentStorageError> {
         let key = self.join(path);
         let location = Path::from(key.as_str());
@@ -164,6 +163,24 @@ impl ObjStore {
         })?;
         Ok(bytes.to_vec())
     }
+}
+
+/// Pre-flight probe to verify read/write/delete connectivity against an object store.
+pub async fn probe_object_store(
+    cfg: &crate::storage_factory::ObjectStoreConfig,
+) -> Result<(), PersistentStorageError> {
+    let store = ObjStore::new(cfg.durable_backend())?;
+    let probe_key = ".danube_probe";
+    let payload = b"danube-probe";
+    store.put_object_meta(probe_key, payload).await?;
+    let read_back = store.get_object(probe_key).await?;
+    if read_back != payload {
+        return Err(PersistentStorageError::Other(
+            "object store probe payload mismatch".to_string(),
+        ));
+    }
+    store.delete_object(probe_key).await?;
+    Ok(())
 }
 
 /// Streaming ranged reader backed by a single `get_opts().into_stream()` connection.

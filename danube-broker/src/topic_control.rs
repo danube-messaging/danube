@@ -305,10 +305,10 @@ impl TopicManager {
                 .get_subscription_for_topic(topic_name)
                 .await;
             // Build correct path: /topics/<ns>/<topic>/subscriptions/<sub>/cursor
-            let trimmed = topic_name.trim_start_matches('/');
-            let mut parts = trimmed.split('/');
-            let ns = parts.next().unwrap_or("");
-            let topic = parts.next().unwrap_or("");
+            let tp = danube_core::topic_path::TopicPath::parse(topic_name)
+                .map_err(|e| anyhow!("invalid topic path: {}", e))?;
+            let ns = tp.namespace();
+            let topic = tp.topic();
             for sub in subs {
                 let cursor_path =
                     join_path(&[BASE_TOPICS_PATH, ns, topic, "subscriptions", &sub, "cursor"]);

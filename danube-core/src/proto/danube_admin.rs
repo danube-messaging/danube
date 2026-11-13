@@ -136,6 +136,9 @@ pub struct NewTopicRequest {
     pub schema_subject: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration = "DispatchStrategy", tag = "3")]
     pub dispatch_strategy: i32,
+    /// Optional StreamIntent profile (e.g., agent_event_mesh)
+    #[prost(string, optional, tag = "4")]
+    pub intent: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TopicRequest {
@@ -160,6 +163,9 @@ pub struct PartitionedTopicRequest {
     pub schema_subject: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration = "DispatchStrategy", tag = "4")]
     pub dispatch_strategy: i32,
+    /// Optional StreamIntent profile
+    #[prost(string, optional, tag = "5")]
+    pub intent: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscriptionRequest {
@@ -548,6 +554,346 @@ pub struct RemoveNodeResponse {
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetBrokerLogsRequest {
+    #[prost(string, tag = "1")]
+    pub level: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub target: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub contains: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub since_ms: u64,
+    #[prost(uint32, tag = "5")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BrokerLogEntry {
+    #[prost(uint64, tag = "1")]
+    pub timestamp_ms: u64,
+    #[prost(string, tag = "2")]
+    pub level: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub target: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(map = "string, string", tag = "5")]
+    pub fields: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetBrokerLogsResponse {
+    #[prost(uint64, tag = "1")]
+    pub broker_id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub entries: ::prost::alloc::vec::Vec<BrokerLogEntry>,
+    #[prost(uint64, tag = "3")]
+    pub total_buffered: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetMetricsSnapshotRequest {
+    #[prost(string, repeated, tag = "1")]
+    pub metric_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint32, tag = "2")]
+    pub window_seconds: u32,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct MetricSample {
+    #[prost(uint64, tag = "1")]
+    pub timestamp_ms: u64,
+    #[prost(double, tag = "2")]
+    pub value: f64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MetricSeries {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(map = "string, string", tag = "3")]
+    pub labels: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(double, tag = "4")]
+    pub current_value: f64,
+    #[prost(message, repeated, tag = "5")]
+    pub history: ::prost::alloc::vec::Vec<MetricSample>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetMetricsSnapshotResponse {
+    #[prost(uint64, tag = "1")]
+    pub broker_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub collected_at_ms: u64,
+    #[prost(message, repeated, tag = "3")]
+    pub series: ::prost::alloc::vec::Vec<MetricSeries>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConfigureObjectStoreRequest {
+    #[prost(string, tag = "1")]
+    pub backend: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub root: ::prost::alloc::string::String,
+    #[prost(map = "string, string", tag = "3")]
+    pub options: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(bool, tag = "4")]
+    pub force: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureObjectStoreResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ObjectStoreConfigResponse {
+    #[prost(bool, tag = "1")]
+    pub configured: bool,
+    #[prost(string, tag = "2")]
+    pub backend: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub root: ::prost::alloc::string::String,
+    #[prost(map = "string, string", tag = "4")]
+    pub options: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(uint32, tag = "5")]
+    pub cloud_tiered_topics: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateTopicStorageModeRequest {
+    #[prost(string, tag = "1")]
+    pub topic_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub storage_mode: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub force: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DesiredStateRequest {
+    #[prost(string, tag = "1")]
+    pub manifest: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub prune: bool,
+    #[prost(bool, tag = "3")]
+    pub force_delete_non_empty: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlannedAction {
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub resource: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub details: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DesiredStatePlanResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub actions: ::prost::alloc::vec::Vec<PlannedAction>,
+    #[prost(bool, tag = "2")]
+    pub has_destructive_changes: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DesiredStateApplyResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(message, repeated, tag = "2")]
+    pub applied: ::prost::alloc::vec::Vec<PlannedAction>,
+    #[prost(string, tag = "3")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct JoinClusterRequest {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+    #[prost(string, tag = "2")]
+    pub raft_addr: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub target_voter_count: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct JoinClusterResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(bool, tag = "2")]
+    pub promoted_to_voter: bool,
+    #[prost(string, tag = "3")]
+    pub role: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IssueTokenRequest {
+    #[prost(string, tag = "1")]
+    pub subject: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub principal_type: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub ttl_seconds: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IssueTokenResponse {
+    #[prost(string, tag = "1")]
+    pub token: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub expires_at: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevokeTokenRequest {
+    #[prost(string, tag = "1")]
+    pub subject: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevokeTokenResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PeekMessagesRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub start_offset: u64,
+    #[prost(uint32, tag = "3")]
+    pub count: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeekedMessage {
+    #[prost(uint64, tag = "1")]
+    pub offset: u64,
+    #[prost(uint64, tag = "2")]
+    pub publish_time: u64,
+    #[prost(string, tag = "3")]
+    pub producer_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(map = "string, string", tag = "5")]
+    pub attributes: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(string, tag = "6")]
+    pub routing_key: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeekMessagesResponse {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub messages: ::prost::alloc::vec::Vec<PeekedMessage>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTopicTimeRangeResponse {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub has_messages: bool,
+    #[prost(uint64, tag = "3")]
+    pub min_offset: u64,
+    #[prost(uint64, tag = "4")]
+    pub max_offset: u64,
+    #[prost(uint64, tag = "5")]
+    pub earliest_publish_time: u64,
+    #[prost(uint64, tag = "6")]
+    pub latest_publish_time: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SampleTopicJsonRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub count: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SampleTopicJsonResponse {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub json_samples: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExplainConsumerStallRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExplainConsumerStallResponse {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub consumer_count: u64,
+    #[prost(uint64, tag = "5")]
+    pub backlog: u64,
+    #[prost(uint64, tag = "6")]
+    pub in_flight_count: u64,
+    #[prost(bool, tag = "7")]
+    pub ack_timeout_pending: bool,
+    #[prost(string, tag = "8")]
+    pub diagnosis: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "9")]
+    pub suggestions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InferTopicSchemaRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub sample_size: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InferTopicSchemaResponse {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub json_schema: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub sampled_count: u32,
+    #[prost(uint32, tag = "4")]
+    pub valid_json_count: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BranchTopicRequest {
+    #[prost(string, tag = "1")]
+    pub source_topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub target_topic: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "3")]
+    pub at_offset: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub at_timestamp_ns: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BranchTopicResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub source_topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub target_topic: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub branched_up_to_offset: u64,
+    #[prost(uint32, tag = "5")]
+    pub copied_segments: u32,
+    #[prost(uint64, tag = "6")]
+    pub copied_local_messages: u64,
+}
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -890,6 +1236,57 @@ pub mod broker_admin_client {
                 .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "TriggerRebalance"));
             self.inner.unary(req, path, codec).await
         }
+        /// In-memory diagnostics (logs and metrics ring buffers)
+        pub async fn get_broker_logs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetBrokerLogsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetBrokerLogsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/GetBrokerLogs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.BrokerAdmin", "GetBrokerLogs"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_metrics_snapshot(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetMetricsSnapshotRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetMetricsSnapshotResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.BrokerAdmin/GetMetricsSnapshot",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.BrokerAdmin", "GetMetricsSnapshot"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -951,6 +1348,21 @@ pub mod broker_admin_server {
             request: tonic::Request<super::RebalanceRequest>,
         ) -> std::result::Result<
             tonic::Response<super::RebalanceResponse>,
+            tonic::Status,
+        >;
+        /// In-memory diagnostics (logs and metrics ring buffers)
+        async fn get_broker_logs(
+            &self,
+            request: tonic::Request<super::GetBrokerLogsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetBrokerLogsResponse>,
+            tonic::Status,
+        >;
+        async fn get_metrics_snapshot(
+            &self,
+            request: tonic::Request<super::GetMetricsSnapshotRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetMetricsSnapshotResponse>,
             tonic::Status,
         >;
     }
@@ -1340,6 +1752,97 @@ pub mod broker_admin_server {
                     };
                     Box::pin(fut)
                 }
+                "/danube_admin.BrokerAdmin/GetBrokerLogs" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetBrokerLogsSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::GetBrokerLogsRequest>
+                    for GetBrokerLogsSvc<T> {
+                        type Response = super::GetBrokerLogsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetBrokerLogsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::get_broker_logs(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetBrokerLogsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.BrokerAdmin/GetMetricsSnapshot" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetMetricsSnapshotSvc<T: BrokerAdmin>(pub Arc<T>);
+                    impl<
+                        T: BrokerAdmin,
+                    > tonic::server::UnaryService<super::GetMetricsSnapshotRequest>
+                    for GetMetricsSnapshotSvc<T> {
+                        type Response = super::GetMetricsSnapshotResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetMetricsSnapshotRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as BrokerAdmin>::get_metrics_snapshot(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetMetricsSnapshotSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 _ => {
                     Box::pin(async move {
                         let mut response = http::Response::new(
@@ -1573,6 +2076,139 @@ pub mod cluster_admin_client {
                 .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "RemoveNode"));
             self.inner.unary(req, path, codec).await
         }
+        /// Configure or swap cluster object store after pre-flight probe.
+        pub async fn configure_object_store(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureObjectStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureObjectStoreResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ConfigureObjectStore",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ConfigureObjectStore"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Inspect active cluster object store configuration.
+        pub async fn get_object_store_config(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::ObjectStoreConfigResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/GetObjectStoreConfig",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "GetObjectStoreConfig"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Plan declarative desired-state changes (dry-run diff).
+        pub async fn plan_desired_state(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DesiredStateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DesiredStatePlanResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/PlanDesiredState",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "PlanDesiredState"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Apply declarative desired-state manifest safely.
+        pub async fn apply_desired_state(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DesiredStateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DesiredStateApplyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ApplyDesiredState",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ApplyDesiredState"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Self-join an existing cluster with automatic voter target cap.
+        pub async fn join_cluster(
+            &mut self,
+            request: impl tonic::IntoRequest<super::JoinClusterRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::JoinClusterResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/JoinCluster",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "JoinCluster"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1615,6 +2251,46 @@ pub mod cluster_admin_server {
             request: tonic::Request<super::RemoveNodeRequest>,
         ) -> std::result::Result<
             tonic::Response<super::RemoveNodeResponse>,
+            tonic::Status,
+        >;
+        /// Configure or swap cluster object store after pre-flight probe.
+        async fn configure_object_store(
+            &self,
+            request: tonic::Request<super::ConfigureObjectStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureObjectStoreResponse>,
+            tonic::Status,
+        >;
+        /// Inspect active cluster object store configuration.
+        async fn get_object_store_config(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::ObjectStoreConfigResponse>,
+            tonic::Status,
+        >;
+        /// Plan declarative desired-state changes (dry-run diff).
+        async fn plan_desired_state(
+            &self,
+            request: tonic::Request<super::DesiredStateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DesiredStatePlanResponse>,
+            tonic::Status,
+        >;
+        /// Apply declarative desired-state manifest safely.
+        async fn apply_desired_state(
+            &self,
+            request: tonic::Request<super::DesiredStateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DesiredStateApplyResponse>,
+            tonic::Status,
+        >;
+        /// Self-join an existing cluster with automatic voter target cap.
+        async fn join_cluster(
+            &self,
+            request: tonic::Request<super::JoinClusterRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::JoinClusterResponse>,
             tonic::Status,
         >;
     }
@@ -1859,6 +2535,236 @@ pub mod cluster_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = RemoveNodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ConfigureObjectStore" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureObjectStoreSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ConfigureObjectStoreRequest>
+                    for ConfigureObjectStoreSvc<T> {
+                        type Response = super::ConfigureObjectStoreResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureObjectStoreRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::configure_object_store(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureObjectStoreSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/GetObjectStoreConfig" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetObjectStoreConfigSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<T: ClusterAdmin> tonic::server::UnaryService<super::Empty>
+                    for GetObjectStoreConfigSvc<T> {
+                        type Response = super::ObjectStoreConfigResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::get_object_store_config(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetObjectStoreConfigSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/PlanDesiredState" => {
+                    #[allow(non_camel_case_types)]
+                    struct PlanDesiredStateSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::DesiredStateRequest>
+                    for PlanDesiredStateSvc<T> {
+                        type Response = super::DesiredStatePlanResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DesiredStateRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::plan_desired_state(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PlanDesiredStateSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ApplyDesiredState" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApplyDesiredStateSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::DesiredStateRequest>
+                    for ApplyDesiredStateSvc<T> {
+                        type Response = super::DesiredStateApplyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DesiredStateRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::apply_desired_state(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApplyDesiredStateSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/JoinCluster" => {
+                    #[allow(non_camel_case_types)]
+                    struct JoinClusterSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::JoinClusterRequest>
+                    for JoinClusterSvc<T> {
+                        type Response = super::JoinClusterResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::JoinClusterRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::join_cluster(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = JoinClusterSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -2871,6 +3777,176 @@ pub mod topic_admin_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn update_topic_storage_mode(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateTopicStorageModeRequest>,
+        ) -> std::result::Result<tonic::Response<super::TopicResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/UpdateTopicStorageMode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.TopicAdmin", "UpdateTopicStorageMode"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Diagnostic & schema inference RPCs
+        pub async fn peek_messages(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PeekMessagesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PeekMessagesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/PeekMessages",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "PeekMessages"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_topic_time_range(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTopicTimeRangeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/GetTopicTimeRange",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "GetTopicTimeRange"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn sample_topic_json(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SampleTopicJsonRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SampleTopicJsonResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/SampleTopicJson",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "SampleTopicJson"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn explain_consumer_stall(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExplainConsumerStallRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExplainConsumerStallResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/ExplainConsumerStall",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.TopicAdmin", "ExplainConsumerStall"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn infer_topic_schema(
+            &mut self,
+            request: impl tonic::IntoRequest<super::InferTopicSchemaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::InferTopicSchemaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/InferTopicSchema",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "InferTopicSchema"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn branch_topic(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BranchTopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BranchTopicResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/BranchTopic",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "BranchTopic"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2964,6 +4040,53 @@ pub mod topic_admin_server {
             request: tonic::Request<super::GetSubscriptionDispatchConfigRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetSubscriptionDispatchConfigResponse>,
+            tonic::Status,
+        >;
+        async fn update_topic_storage_mode(
+            &self,
+            request: tonic::Request<super::UpdateTopicStorageModeRequest>,
+        ) -> std::result::Result<tonic::Response<super::TopicResponse>, tonic::Status>;
+        /// Diagnostic & schema inference RPCs
+        async fn peek_messages(
+            &self,
+            request: tonic::Request<super::PeekMessagesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PeekMessagesResponse>,
+            tonic::Status,
+        >;
+        async fn get_topic_time_range(
+            &self,
+            request: tonic::Request<super::TopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTopicTimeRangeResponse>,
+            tonic::Status,
+        >;
+        async fn sample_topic_json(
+            &self,
+            request: tonic::Request<super::SampleTopicJsonRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SampleTopicJsonResponse>,
+            tonic::Status,
+        >;
+        async fn explain_consumer_stall(
+            &self,
+            request: tonic::Request<super::ExplainConsumerStallRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExplainConsumerStallResponse>,
+            tonic::Status,
+        >;
+        async fn infer_topic_schema(
+            &self,
+            request: tonic::Request<super::InferTopicSchemaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::InferTopicSchemaResponse>,
+            tonic::Status,
+        >;
+        async fn branch_topic(
+            &self,
+            request: tonic::Request<super::BranchTopicRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BranchTopicResponse>,
             tonic::Status,
         >;
     }
@@ -3650,6 +4773,325 @@ pub mod topic_admin_server {
                     };
                     Box::pin(fut)
                 }
+                "/danube_admin.TopicAdmin/UpdateTopicStorageMode" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateTopicStorageModeSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::UpdateTopicStorageModeRequest>
+                    for UpdateTopicStorageModeSvc<T> {
+                        type Response = super::TopicResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateTopicStorageModeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::update_topic_storage_mode(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateTopicStorageModeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/PeekMessages" => {
+                    #[allow(non_camel_case_types)]
+                    struct PeekMessagesSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::PeekMessagesRequest>
+                    for PeekMessagesSvc<T> {
+                        type Response = super::PeekMessagesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PeekMessagesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::peek_messages(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PeekMessagesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/GetTopicTimeRange" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetTopicTimeRangeSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<T: TopicAdmin> tonic::server::UnaryService<super::TopicRequest>
+                    for GetTopicTimeRangeSvc<T> {
+                        type Response = super::GetTopicTimeRangeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TopicRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::get_topic_time_range(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetTopicTimeRangeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/SampleTopicJson" => {
+                    #[allow(non_camel_case_types)]
+                    struct SampleTopicJsonSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::SampleTopicJsonRequest>
+                    for SampleTopicJsonSvc<T> {
+                        type Response = super::SampleTopicJsonResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SampleTopicJsonRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::sample_topic_json(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SampleTopicJsonSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/ExplainConsumerStall" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExplainConsumerStallSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::ExplainConsumerStallRequest>
+                    for ExplainConsumerStallSvc<T> {
+                        type Response = super::ExplainConsumerStallResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExplainConsumerStallRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::explain_consumer_stall(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExplainConsumerStallSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/InferTopicSchema" => {
+                    #[allow(non_camel_case_types)]
+                    struct InferTopicSchemaSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::InferTopicSchemaRequest>
+                    for InferTopicSchemaSvc<T> {
+                        type Response = super::InferTopicSchemaResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::InferTopicSchemaRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::infer_topic_schema(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = InferTopicSchemaSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/BranchTopic" => {
+                    #[allow(non_camel_case_types)]
+                    struct BranchTopicSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::BranchTopicRequest>
+                    for BranchTopicSvc<T> {
+                        type Response = super::BranchTopicResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BranchTopicRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::branch_topic(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BranchTopicSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 _ => {
                     Box::pin(async move {
                         let mut response = http::Response::new(
@@ -4001,6 +5443,55 @@ pub mod security_admin_client {
                 .insert(GrpcMethod::new("danube_admin.SecurityAdmin", "DeleteBinding"));
             self.inner.unary(req, path, codec).await
         }
+        /// Tokens
+        pub async fn issue_token(
+            &mut self,
+            request: impl tonic::IntoRequest<super::IssueTokenRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::IssueTokenResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.SecurityAdmin/IssueToken",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.SecurityAdmin", "IssueToken"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn revoke_token(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RevokeTokenRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevokeTokenResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.SecurityAdmin/RevokeToken",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.SecurityAdmin", "RevokeToken"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -4076,6 +5567,21 @@ pub mod security_admin_server {
             request: tonic::Request<super::DeleteBindingRequest>,
         ) -> std::result::Result<
             tonic::Response<super::DeleteBindingResponse>,
+            tonic::Status,
+        >;
+        /// Tokens
+        async fn issue_token(
+            &self,
+            request: tonic::Request<super::IssueTokenRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::IssueTokenResponse>,
+            tonic::Status,
+        >;
+        async fn revoke_token(
+            &self,
+            request: tonic::Request<super::RevokeTokenRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevokeTokenResponse>,
             tonic::Status,
         >;
     }
@@ -4542,6 +6048,96 @@ pub mod security_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeleteBindingSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.SecurityAdmin/IssueToken" => {
+                    #[allow(non_camel_case_types)]
+                    struct IssueTokenSvc<T: SecurityAdmin>(pub Arc<T>);
+                    impl<
+                        T: SecurityAdmin,
+                    > tonic::server::UnaryService<super::IssueTokenRequest>
+                    for IssueTokenSvc<T> {
+                        type Response = super::IssueTokenResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::IssueTokenRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecurityAdmin>::issue_token(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = IssueTokenSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.SecurityAdmin/RevokeToken" => {
+                    #[allow(non_camel_case_types)]
+                    struct RevokeTokenSvc<T: SecurityAdmin>(pub Arc<T>);
+                    impl<
+                        T: SecurityAdmin,
+                    > tonic::server::UnaryService<super::RevokeTokenRequest>
+                    for RevokeTokenSvc<T> {
+                        type Response = super::RevokeTokenResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RevokeTokenRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecurityAdmin>::revoke_token(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RevokeTokenSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

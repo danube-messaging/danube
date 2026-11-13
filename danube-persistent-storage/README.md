@@ -2,13 +2,13 @@
 
 `danube-persistent-storage` is the storage engine behind reliable topics in Danube.
 
-At a high level, it gives Danube three things:
+At a high level, it gives Danube:
 
-- a **local per-topic WAL** for fast writes and recent reads
-- a **durable segment history** for recovery, replay, and topic moves
+- a **local per-topic WAL** with configurable group-commit sync levels (`Async`, `OsCacheFlush`, `FsyncBatch`)
+- a **durable segment history** with reference-counted segments for recovery, replay, topic moves, and Copy-on-Write stream branching
 - **metadata-backed recovery** so offsets remain continuous across restarts and broker transfers
 
-If you are operating Danube, you will usually use this crate indirectly through the broker `storage:` configuration rather than by embedding it yourself.
+If you are operating Danube, storage defaults are derived automatically from `--data-dir` (or managed via Raft cluster configuration and `--recovery-config` overrides) rather than a standalone broker YAML file.
 
 ## What this crate provides
 
@@ -88,18 +88,19 @@ This preserves a single continuous offset space for the topic.
 
 ## Using it in Danube
 
-Most users should configure persistence through the broker YAML.
+By default, Danube v2 starts in `local` mode rooted under `--data-dir` (default `./danube-data`), with object-store and cluster storage settings managed via Raft metadata (or `--recovery-config` during break-glass recovery).
 
-Typical usage looks like:
+Storage modes map cleanly to:
 
-- choose `storage.mode`
-  - `local`
-  - `shared_fs`
-  - `object_store`
-- set WAL options under `storage.wal`
-- set `cache_root`, `root`, or `object_store` fields depending on the selected mode
+- `local` — local WAL + durable segments under `--data-dir`
+- `shared_fs` — local WAL + durable segments exported to a shared filesystem
+- `object_store` — local WAL + durable segments exported via OpenDAL (S3/GCS/Azure)
 
-For configuration guidance, examples, and operational trade-offs, use the documentation links below.
+WAL durability exposes three explicit `WalSyncMode` levels:
+
+- `Async` — periodic background buffer flush
+- `OsCacheFlush` — group-commit `BufWriter::flush()` to OS page cache (survives process crashes)
+- `FsyncBatch` — group-commit flush + `fdatasync` (`sync_data()`) before ACK (survives power loss)
 
 ## Using it programmatically
 

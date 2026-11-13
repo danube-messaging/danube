@@ -400,5 +400,5 @@ impl TopicCluster {
 fn get_nsname_from_topic(topic_name: &str) -> &str {
     // assuming validated format
     let parts: Vec<&str> = topic_name.split('/').collect();
-    parts.get(1).unwrap()
+    parts.get(1).copied().unwrap_or("default")
 }

@@ -5,9 +5,8 @@ use std::path::Path;
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub(crate) enum StorageConfig {
     Local {
-        #[serde(alias = "root")]
         local_wal_root: String,
-        #[serde(default, alias = "metadata_root")]
+        #[serde(default)]
         metadata_prefix: Option<String>,
         #[serde(default)]
         local_retention: Option<LocalRetentionNode>,
@@ -17,14 +16,12 @@ pub(crate) enum StorageConfig {
         write_buffer: Option<WriteBufferNode>,
     },
     SharedFs {
-        #[serde(default, alias = "cache_root")]
+        #[serde(default)]
         local_wal_root: Option<String>,
-        #[serde(default, alias = "metadata_root")]
+        #[serde(default)]
         metadata_prefix: Option<String>,
         #[serde(default)]
         durable: Option<SharedFsDurableNode>,
-        #[serde(default, rename = "root")]
-        legacy_root: Option<String>,
         #[serde(default)]
         local_retention: Option<LocalRetentionNode>,
         #[serde(default)]
@@ -33,14 +30,12 @@ pub(crate) enum StorageConfig {
         write_buffer: Option<WriteBufferNode>,
     },
     ObjectStore {
-        #[serde(default, alias = "cache_root")]
+        #[serde(default)]
         local_wal_root: Option<String>,
-        #[serde(default, alias = "metadata_root")]
+        #[serde(default)]
         metadata_prefix: Option<String>,
         #[serde(default)]
         durable: Option<ObjectStoreNode>,
-        #[serde(default, rename = "object_store")]
-        legacy_object_store: Option<ObjectStoreNode>,
         #[serde(default)]
         local_retention: Option<LocalRetentionNode>,
         #[serde(default)]
@@ -197,8 +192,6 @@ pub(crate) struct WalNode {
     pub(crate) cache_capacity: Option<usize>,
     #[serde(default)]
     pub(crate) file_sync: Option<WalFlushNode>,
-    #[serde(default)]
-    pub(crate) retention: Option<LocalRetentionNode>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -264,10 +257,6 @@ impl WalNode {
                     .as_ref()
                     .and_then(|rotation| rotation.max_hours)
             })
-    }
-
-    pub(crate) fn legacy_local_retention(&self) -> Option<&LocalRetentionNode> {
-        self.retention.as_ref()
     }
 }
 

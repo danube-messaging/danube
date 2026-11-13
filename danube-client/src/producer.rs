@@ -64,15 +64,46 @@ impl Producer {
     pub async fn create(&mut self) -> Result<()> {
         let mut topic_producers: Vec<_> = match self.partitions {
             None => {
-                // Create a single TopicProducer for non-partitioned topic
-                vec![TopicProducer::new(
-                    self.client.clone(),
-                    self.topic_name.clone(),
-                    self.producer_name.clone(),
-                    self.schema_ref.clone(),
-                    self.dispatch_strategy.clone(),
-                    self.producer_options.clone(),
-                )]
+                // Auto-discover existing partitions from broker lookup before falling back to single topic
+                let discovered = self
+                    .client
+                    .lookup_service
+                    .topic_partitions(&self.client.uri, &self.topic_name)
+                    .await
+                    .unwrap_or_default();
+
+                if discovered.len() > 1
+                    || (discovered.len() == 1 && discovered[0].contains("-part-"))
+                {
+                    let count = discovered.len();
+                    self.partitions = Some(count);
+                    if self.message_router.is_none() {
+                        self.message_router = Some(MessageRouter::new(count));
+                    }
+                    discovered
+                        .into_iter()
+                        .enumerate()
+                        .map(|(partition_id, topic)| {
+                            TopicProducer::new(
+                                self.client.clone(),
+                                topic,
+                                format!("{}-{}", self.producer_name, partition_id),
+                                self.schema_ref.clone(),
+                                self.dispatch_strategy.clone(),
+                                self.producer_options.clone(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    vec![TopicProducer::new(
+                        self.client.clone(),
+                        self.topic_name.clone(),
+                        self.producer_name.clone(),
+                        self.schema_ref.clone(),
+                        self.dispatch_strategy.clone(),
+                        self.producer_options.clone(),
+                    )]
+                }
             }
             Some(partitions) => {
                 if self.message_router.is_none() {

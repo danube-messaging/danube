@@ -7,12 +7,10 @@ description = "Unified CLI and HTTP server for managing Danube clusters"
 license = "Apache-2.0"
 repository = "https://github.com/danube-messaging/danube"
 
-[[bin]]
-name = "danube-admin"
-path = "src/main.rs"
-
 [dependencies]
+danube-client = { path = "../danube-client" }
 danube-core = { path = "../danube-core" }
+jsonschema = { workspace = true }
 
 # Shared dependencies
 tokio = { workspace = true }
@@ -40,7 +38,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # MCP support
-rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = { version = "1.0" }
 serde_yaml = "0.9"
 

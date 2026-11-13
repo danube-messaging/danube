@@ -7,6 +7,7 @@ mod storage_handler;
 
 pub(crate) use schema_registry_handler::SchemaRegistryService;
 
+use crate::admin::DanubeAdminImpl;
 use crate::broker_service::BrokerService;
 use crate::security::authn::authenticate_request;
 use crate::security::config::{AuthConfig, AuthMode};
@@ -40,9 +41,12 @@ pub(crate) struct DanubeServerImpl {
     auth: AuthConfig,
     /// Edge replicator service (only for Cluster/Standalone — edge brokers are the client).
     edge_service: Option<EdgeReplicatorServiceImpl>,
+    /// Multiplexed admin services served on the single gRPC port.
+    admin_impl: Option<DanubeAdminImpl>,
 }
 
 impl DanubeServerImpl {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         service: Arc<BrokerService>,
         schema_registry: Arc<SchemaRegistryService>,
@@ -52,6 +56,7 @@ impl DanubeServerImpl {
         proxy_enabled: bool,
         auth: AuthConfig,
         edge_service: Option<EdgeReplicatorServiceImpl>,
+        admin_impl: Option<DanubeAdminImpl>,
     ) -> Self {
         DanubeServerImpl {
             service,
@@ -62,6 +67,7 @@ impl DanubeServerImpl {
             proxy_enabled,
             auth,
             edge_service,
+            admin_impl,
         }
     }
 
@@ -85,7 +91,9 @@ impl DanubeServerImpl {
         // contexts that the authorization engine allows unconditionally.
         // The JWT validation cache avoids HMAC re-computation on hot paths.
         let auth = self.auth.clone();
-        let jwt_cache = crate::security::authn::JwtValidationCache::new();
+        let jwt_cache = crate::security::authn::JwtValidationCache::with_revoked(
+            self.service.resources.security.revoked_subjects(),
+        );
         let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
         let server_builder = server_builder
@@ -123,8 +131,40 @@ impl DanubeServerImpl {
                 EdgeReplicatorServiceServer::new(edge_svc.clone());
             server_builder = server_builder.add_service(InterceptedService::new(
                 edge_replicator_service,
-                interceptor,
+                interceptor.clone(),
             ));
+        }
+
+        // Multiplex Admin gRPC services on the main broker listener (single port 6650)
+        if let Some(ref admin) = self.admin_impl {
+            let (
+                broker_admin_service,
+                cluster_admin_service,
+                namespace_admin_service,
+                security_admin_service,
+                topic_admin_service,
+            ) = admin.admin_services();
+            server_builder = server_builder
+                .add_service(InterceptedService::new(
+                    broker_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    cluster_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    namespace_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    security_admin_service,
+                    interceptor.clone(),
+                ))
+                .add_service(InterceptedService::new(
+                    topic_admin_service,
+                    interceptor,
+                ));
         }
 
         let server = server_builder.serve(socket_addr);

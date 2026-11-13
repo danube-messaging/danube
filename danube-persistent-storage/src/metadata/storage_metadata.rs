@@ -18,6 +18,10 @@ impl std::fmt::Debug for StorageMetadata {
     }
 }
 
+fn default_ref_count() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SegmentDescriptor {
     pub segment_id: String,
@@ -31,6 +35,12 @@ pub struct SegmentDescriptor {
     /// Each entry is (offset, byte_pos).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset_index: Option<Vec<(u64, u64)>>,
+    /// Number of topics referencing this underlying segment object (>= 1).
+    #[serde(default = "default_ref_count")]
+    pub ref_count: u32,
+    /// Originating topic path where the physical object is stored when branched (None = current topic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,5 +276,50 @@ impl StorageMetadata {
                 .map_err(|e| PersistentStorageError::Metadata(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Zero-copy branch sealed segment descriptors from `source_topic` to `target_topic`
+    /// up to optional `max_offset` (inclusive on `start_offset`), incrementing `ref_count`.
+    pub async fn branch_topic_segments(
+        &self,
+        source_topic: &str,
+        target_topic: &str,
+        max_offset: Option<u64>,
+    ) -> Result<usize, PersistentStorageError> {
+        let descriptors = self.get_segment_descriptors(source_topic).await?;
+        let mut copied = 0usize;
+        let mut last_padded: Option<String> = None;
+
+        for mut desc in descriptors {
+            if let Some(limit) = max_offset {
+                if desc.start_offset > limit {
+                    continue;
+                }
+            }
+            let next_rc = desc.ref_count.max(1).saturating_add(1);
+            desc.ref_count = next_rc;
+            let start_padded = format!("{:020}", desc.start_offset);
+
+            // Persist incremented ref_count on source topic descriptor
+            self.put_segment_descriptor(source_topic, &start_padded, &desc)
+                .await?;
+
+            // Write branched descriptor under target_topic pointing to the physical object topic
+            let mut branched = desc.clone();
+            if branched.object_topic.is_none() {
+                branched.object_topic = Some(source_topic.to_string());
+            }
+            self.put_segment_descriptor(target_topic, &start_padded, &branched)
+                .await?;
+
+            last_padded = Some(start_padded);
+            copied += 1;
+        }
+
+        if let Some(cur) = last_padded {
+            self.put_current_segment(target_topic, &cur).await?;
+        }
+
+        Ok(copied)
     }
 }

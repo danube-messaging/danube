@@ -17,7 +17,7 @@ mod wal_storage;
 pub use wal_storage::WalStorage;
 
 mod object_store_backend;
-pub use object_store_backend::{ObjectStoreBackend, ObjStoreDurable};
+pub use object_store_backend::{probe_object_store, ObjectStoreBackend, ObjStoreDurable};
 
 pub mod valkey;
 

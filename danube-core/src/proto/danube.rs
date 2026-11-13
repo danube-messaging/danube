@@ -233,6 +233,66 @@ pub struct NackResponse {
     pub request_id: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtendVisibilityRequest {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(message, optional, tag = "2")]
+    pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(string, tag = "3")]
+    pub subscription_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub extension_ms: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtendVisibilityResponse {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+    #[prost(uint64, tag = "3")]
+    pub new_deadline_ms: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReportProgressRequest {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(message, optional, tag = "2")]
+    pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(string, tag = "3")]
+    pub subscription_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub checkpoint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub extension_ms: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReportProgressResponse {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(bool, tag = "2")]
+    pub accepted: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelTaskTreeRequest {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(string, tag = "2")]
+    pub topic_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub root_msg_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelTaskTreeResponse {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(bool, tag = "2")]
+    pub cancelled: bool,
+    #[prost(uint32, tag = "3")]
+    pub evicted_in_flight: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TopicLookupRequest {
     #[prost(uint64, tag = "1")]
     pub request_id: u64,
@@ -1038,6 +1098,81 @@ pub mod consumer_service_client {
                 .insert(GrpcMethod::new("danube.ConsumerService", "Nack"));
             self.inner.unary(req, path, codec).await
         }
+        /// Extend the ack visibility deadline for a long-running task
+        pub async fn extend_visibility(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExtendVisibilityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExtendVisibilityResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.ConsumerService/ExtendVisibility",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.ConsumerService", "ExtendVisibility"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Report incremental progress checkpoint (\<= 64 KiB) and extend visibility
+        pub async fn report_progress(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReportProgressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReportProgressResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.ConsumerService/ReportProgress",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.ConsumerService", "ReportProgress"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Cancel all in-flight and queued tasks under a root_msg_id
+        pub async fn cancel_task_tree(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CancelTaskTreeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CancelTaskTreeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube.ConsumerService/CancelTaskTree",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube.ConsumerService", "CancelTaskTree"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1085,6 +1220,30 @@ pub mod consumer_service_server {
             &self,
             request: tonic::Request<super::NackRequest>,
         ) -> std::result::Result<tonic::Response<super::NackResponse>, tonic::Status>;
+        /// Extend the ack visibility deadline for a long-running task
+        async fn extend_visibility(
+            &self,
+            request: tonic::Request<super::ExtendVisibilityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExtendVisibilityResponse>,
+            tonic::Status,
+        >;
+        /// Report incremental progress checkpoint (\<= 64 KiB) and extend visibility
+        async fn report_progress(
+            &self,
+            request: tonic::Request<super::ReportProgressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReportProgressResponse>,
+            tonic::Status,
+        >;
+        /// Cancel all in-flight and queued tasks under a root_msg_id
+        async fn cancel_task_tree(
+            &self,
+            request: tonic::Request<super::CancelTaskTreeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CancelTaskTreeResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ConsumerServiceServer<T> {
@@ -1327,6 +1486,144 @@ pub mod consumer_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = NackSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.ConsumerService/ExtendVisibility" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExtendVisibilitySvc<T: ConsumerService>(pub Arc<T>);
+                    impl<
+                        T: ConsumerService,
+                    > tonic::server::UnaryService<super::ExtendVisibilityRequest>
+                    for ExtendVisibilitySvc<T> {
+                        type Response = super::ExtendVisibilityResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExtendVisibilityRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ConsumerService>::extend_visibility(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExtendVisibilitySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.ConsumerService/ReportProgress" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReportProgressSvc<T: ConsumerService>(pub Arc<T>);
+                    impl<
+                        T: ConsumerService,
+                    > tonic::server::UnaryService<super::ReportProgressRequest>
+                    for ReportProgressSvc<T> {
+                        type Response = super::ReportProgressResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReportProgressRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ConsumerService>::report_progress(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReportProgressSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube.ConsumerService/CancelTaskTree" => {
+                    #[allow(non_camel_case_types)]
+                    struct CancelTaskTreeSvc<T: ConsumerService>(pub Arc<T>);
+                    impl<
+                        T: ConsumerService,
+                    > tonic::server::UnaryService<super::CancelTaskTreeRequest>
+                    for CancelTaskTreeSvc<T> {
+                        type Response = super::CancelTaskTreeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CancelTaskTreeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ConsumerService>::cancel_task_tree(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CancelTaskTreeSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

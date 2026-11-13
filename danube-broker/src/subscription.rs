@@ -203,6 +203,7 @@ impl Subscription {
         topic_resources: Option<TopicResources>,
         replicator: Option<Arc<Replicator>>,
         sub_progress_flush_interval: Option<Duration>,
+        cancelled_roots: Option<Arc<crate::dispatcher::pending_delivery::CancelledRootsCache>>,
     ) -> Result<()> {
         let new_dispatcher = match dispatch_strategy {
             DispatchStrategy::NonReliable => match options.subscription_type {
@@ -232,7 +233,7 @@ impl Subscription {
                         let tr = topic_resources
                             .clone()
                             .expect("progress resources must be provided for reliable dispatcher");
-                        let engine = SubscriptionEngine::new_with_progress(
+                        let mut engine = SubscriptionEngine::new_with_progress(
                             options.subscription_name.clone(),
                             self.topic_name.clone(),
                             Arc::new(ts.clone()),
@@ -242,6 +243,9 @@ impl Subscription {
                             self.failure_policy.clone(),
                             self.max_unacked_messages,
                         );
+                        if let Some(ref c) = cancelled_roots {
+                            engine = engine.with_cancelled_roots(Arc::clone(c));
+                        }
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             replicator.clone(),
@@ -255,7 +259,7 @@ impl Subscription {
                         let tr = topic_resources
                             .clone()
                             .expect("progress resources must be provided for reliable dispatcher");
-                        let engine = SubscriptionEngine::new_with_progress(
+                        let mut engine = SubscriptionEngine::new_with_progress(
                             options.subscription_name.clone(),
                             self.topic_name.clone(),
                             Arc::new(ts.clone()),
@@ -265,6 +269,9 @@ impl Subscription {
                             self.failure_policy.clone(),
                             self.max_unacked_messages,
                         );
+                        if let Some(ref c) = cancelled_roots {
+                            engine = engine.with_cancelled_roots(Arc::clone(c));
+                        }
                         let dispatcher = Dispatcher::reliable_shared(
                             engine,
                             replicator.clone(),
@@ -278,7 +285,7 @@ impl Subscription {
                         let tr = topic_resources
                             .clone()
                             .expect("progress resources must be provided for reliable dispatcher");
-                        let engine = SubscriptionEngine::new_with_progress(
+                        let mut engine = SubscriptionEngine::new_with_progress(
                             options.subscription_name.clone(),
                             self.topic_name.clone(),
                             Arc::new(ts.clone()),
@@ -288,6 +295,9 @@ impl Subscription {
                             self.failure_policy.clone(),
                             self.max_unacked_messages,
                         );
+                        if let Some(ref c) = cancelled_roots {
+                            engine = engine.with_cancelled_roots(Arc::clone(c));
+                        }
                         let dispatcher = Dispatcher::reliable_exclusive(
                             engine,
                             replicator.clone(),
@@ -300,7 +310,7 @@ impl Subscription {
                         let tr = topic_resources
                             .clone()
                             .expect("progress resources must be provided for reliable dispatcher");
-                        let engine = SubscriptionEngine::new_with_progress(
+                        let mut engine = SubscriptionEngine::new_with_progress(
                             options.subscription_name.clone(),
                             self.topic_name.clone(),
                             Arc::new(ts.clone()),
@@ -310,6 +320,9 @@ impl Subscription {
                             self.failure_policy.clone(),
                             self.max_unacked_messages,
                         );
+                        if let Some(ref c) = cancelled_roots {
+                            engine = engine.with_cancelled_roots(Arc::clone(c));
+                        }
                         let dispatcher = Dispatcher::reliable_key_shared(
                             engine,
                             replicator.clone(),
@@ -346,6 +359,41 @@ impl Subscription {
             return Err(anyhow!("Dispatcher not initialized"));
         }
         Ok(())
+    }
+
+    pub(crate) async fn extend_visibility(
+        &self,
+        offset: u64,
+        extension_ms: u64,
+    ) -> Result<Option<u64>> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or_else(|| anyhow!("Dispatcher not initialized"))?;
+        dispatcher.extend_visibility(offset, extension_ms).await
+    }
+
+    pub(crate) async fn report_progress(
+        &self,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<bool> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or_else(|| anyhow!("Dispatcher not initialized"))?;
+        dispatcher
+            .report_progress(offset, checkpoint, extension_ms)
+            .await
+    }
+
+    pub(crate) async fn cancel_root(&self, root_msg_id: String) -> Result<u32> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or_else(|| anyhow!("Dispatcher not initialized"))?;
+        dispatcher.cancel_root(root_msg_id).await
     }
 
     pub(crate) fn get_consumer(&self, consumer_id: u64) -> Option<Consumer> {

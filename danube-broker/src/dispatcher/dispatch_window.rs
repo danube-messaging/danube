@@ -107,6 +107,58 @@ impl DispatchWindow {
         self.in_flight.get_mut(&offset)
     }
 
+    pub(crate) fn extend_lease(&mut self, offset: u64, extension_ms: u64) -> Option<u64> {
+        let entry = self.in_flight.get_mut(&offset)?;
+        entry.extend_lease(extension_ms);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Some(now_ms.saturating_add(extension_ms))
+    }
+
+    pub(crate) fn set_checkpoint(
+        &mut self,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.in_flight.get_mut(&offset) else {
+            return false;
+        };
+        entry.set_checkpoint(checkpoint, extension_ms).is_ok()
+    }
+
+    pub(crate) fn collect_checkpoints(&self) -> std::collections::BTreeMap<u64, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for (offset, entry) in &self.in_flight {
+            if let Some(b64) = entry.checkpoint_b64() {
+                out.insert(*offset, b64);
+            }
+        }
+        out
+    }
+
+    pub(crate) fn evict_cancelled_roots(
+        &mut self,
+        cache: &super::pending_delivery::CancelledRootsCache,
+    ) -> (u32, Option<u64>) {
+        let cancelled_offsets: Vec<u64> = self
+            .in_flight
+            .iter()
+            .filter(|(_, d)| cache.is_cancelled(&d.message))
+            .map(|(off, _)| *off)
+            .collect();
+        let count = cancelled_offsets.len() as u32;
+        let mut latest_safe = None;
+        for off in cancelled_offsets {
+            if let Some(safe) = self.on_skipped(off) {
+                latest_safe = Some(safe);
+            }
+        }
+        (count, latest_safe)
+    }
+
     /// Get the safe cursor for metadata persistence.
     pub(crate) fn safe_cursor(&self) -> Option<u64> {
         self.safe_cursor

@@ -73,33 +73,35 @@ fn resolve_existing_path(path: impl AsRef<Path>) -> Option<PathBuf> {
 fn admin_cli() -> (Command, String) {
     let mut resolved_program = None;
 
-    if let Ok(bin) = std::env::var("DANUBE_ADMIN_BIN") {
+    if let Ok(bin) = std::env::var("DANUBE_BIN") {
         resolved_program = resolve_existing_path(&bin).or_else(|| Some(PathBuf::from(bin)));
     }
 
     if resolved_program.is_none() {
-        resolved_program = resolve_existing_path("./target/release/danube-admin");
+        resolved_program = resolve_existing_path("./target/release/danube");
     }
     if resolved_program.is_none() {
-        resolved_program = resolve_existing_path("./target/debug/danube-admin");
+        resolved_program = resolve_existing_path("./target/debug/danube");
     }
 
     let (mut cmd, program_description) = if let Some(program) = resolved_program {
-        let description = program.display().to_string();
-        (Command::new(&program), description)
+        let description = format!("{} ctl", program.display());
+        let mut c = Command::new(&program);
+        c.arg("ctl");
+        (c, description)
     } else {
         let mut cargo = Command::new("cargo");
         cargo.current_dir(workspace_root());
-        cargo.args(["run", "-p", "danube-admin", "--bin", "danube-admin", "--"]);
+        cargo.args(["run", "-p", "danube-broker", "--bin", "danube", "--", "ctl"]);
         (
             cargo,
-            "cargo run -p danube-admin --bin danube-admin --".to_string(),
+            "cargo run -p danube-broker --bin danube -- ctl".to_string(),
         )
     };
 
     cmd.env(
         "DANUBE_ADMIN_ENDPOINT",
-        std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:50051".into()),
+        std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".into()),
     );
     (cmd, program_description)
 }

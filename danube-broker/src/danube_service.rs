@@ -137,7 +137,7 @@ impl DanubeService {
             raft_addr: c.raft_addr.clone(),
         });
 
-        let admin_handle = DanubeAdminImpl::new(
+        let admin_impl = DanubeAdminImpl::new(
             self.service_config.admin_addr.clone(),
             Arc::clone(&self.broker),
             self.resources.clone(),
@@ -145,15 +145,24 @@ impl DanubeService {
             self.service_config.admin_tls,
             schema_registry.clone(),
             cluster_admin,
-        )
-        .start()
-        .await;
-
-        info!(
-            admin_addr = %self.service_config.admin_addr,
-            broker_id = %self.broker_id,
-            "admin gRPC server listening"
         );
+
+        let admin_handle = if self.service_config.admin_addr != self.service_config.broker_addr {
+            let handle = admin_impl.clone().start().await;
+            info!(
+                admin_addr = %self.service_config.admin_addr,
+                broker_id = %self.broker_id,
+                "dedicated admin gRPC server listening"
+            );
+            Some(handle)
+        } else {
+            info!(
+                admin_addr = %self.service_config.broker_addr,
+                broker_id = %self.broker_id,
+                "admin gRPC multiplexed on broker listener"
+            );
+            None
+        };
 
         // ----- Build edge replicator gRPC service (only for Cluster/Standalone).
         // Edge brokers are the *client* side — they don't host this service.
@@ -182,11 +191,12 @@ impl DanubeService {
                     cluster.expect("ClusterServices required for cluster mode"),
                     schema_registry,
                     edge_service,
+                    admin_impl,
                 )
                 .await?;
             }
             BrokerMode::Standalone => {
-                self.start_standalone_mode(schema_registry, edge_service)
+                self.start_standalone_mode(schema_registry, edge_service, admin_impl)
                     .await?;
             }
             BrokerMode::Edge => {
@@ -196,14 +206,17 @@ impl DanubeService {
                     self.edge_service
                         .clone()
                         .expect("edge_service must be set for Edge mode"),
+                    admin_impl,
                 )
                 .await?;
             }
         }
 
-        // ----- Wait for admin server to complete
-        if let Err(e) = admin_handle.await {
-            eprintln!("Danube Admin failed: {:?}", e);
+        // ----- Wait for dedicated admin server to complete (if started)
+        if let Some(handle) = admin_handle {
+            if let Err(e) = handle.await {
+                eprintln!("Danube Admin failed: {:?}", e);
+            }
         }
 
         Ok(())
@@ -229,6 +242,7 @@ impl DanubeService {
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -256,11 +270,19 @@ impl DanubeService {
 
         // 8. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         // 9. Start cluster orchestration services
         self.start_orchestration_services(&mut cluster).await?;
+
+        spawn_graceful_sigterm_drain(self.broker_id, self.resources.clone());
+        spawn_dead_node_reaper(
+            cluster.raft.clone(),
+            cluster.leadership.clone(),
+            self.meta_store.clone(),
+        );
+        spawn_object_store_credential_refresher(self.broker.storage_factory().clone());
 
         // Block until broker gRPC shuts down
         if let Err(e) = server_handle.await {
@@ -285,6 +307,7 @@ impl DanubeService {
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -310,7 +333,7 @@ impl DanubeService {
 
         // 5. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         info!(
@@ -343,6 +366,7 @@ impl DanubeService {
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
         edge_svc: Arc<EdgeService>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -368,7 +392,7 @@ impl DanubeService {
 
         // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         // 6. Ensure MQTT-mapped topics exist locally in the broker
@@ -488,6 +512,7 @@ impl DanubeService {
         &self,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
+        admin_impl: Option<DanubeAdminImpl>,
     ) -> Result<tokio::task::JoinHandle<()>> {
         let grpc_server = broker_server::DanubeServerImpl::new(
             self.broker.clone(),
@@ -498,6 +523,7 @@ impl DanubeService {
             self.service_config.proxy_enabled,
             self.service_config.auth.clone(),
             edge_service,
+            admin_impl,
         );
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -686,11 +712,11 @@ impl DanubeService {
         let mut reconciled = 0u32;
         for full_path in &children {
             let parts: Vec<&str> = full_path.split('/').collect();
-            // Expected: /cluster/brokers/{id}/{ns}/{topic}
+            // Expected: /cluster/brokers/{id}/{ns}/{topic...}
             if parts.len() < 6 || parts[4] == "state" {
                 continue;
             }
-            let topic_name = format!("/{}/{}", parts[4], parts[5]);
+            let topic_name = format!("/{}/{}", parts[4], parts[5..].join("/"));
             match self.broker.topic_manager.ensure_local(&topic_name).await {
                 Ok(_) => {
                     reconciled += 1;
@@ -839,5 +865,168 @@ async fn post_broker_load_report(
                 ),
             }
         }
+    }
+}
+
+const DEFAULT_DEAD_NODE_GRACE_PERIOD_SECS: u64 = 3600;
+const MIN_QUORUM_VOTERS_FLOOR: usize = 3;
+
+/// Returns `true` when an absent Raft node has exceeded the grace period and
+/// removing it does not drop the cluster voter count below `MIN_QUORUM_VOTERS_FLOOR`.
+pub(crate) fn should_reap_dead_node(
+    missing_for_secs: u64,
+    grace_period_secs: u64,
+    is_voter: bool,
+    current_voter_count: usize,
+) -> bool {
+    if missing_for_secs < grace_period_secs {
+        return false;
+    }
+    if is_voter && current_voter_count <= MIN_QUORUM_VOTERS_FLOOR {
+        return false;
+    }
+    true
+}
+
+/// On SIGTERM / SIGINT, drain this broker gracefully (mark `"draining"` and schedule
+/// hosted topics for unload) WITHOUT removing the node from Raft membership.
+fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources) {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                tokio::select! {
+                    _ = sigterm.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+            } else {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+
+        info!(
+            broker_id,
+            "shutdown signal received: draining broker topics gracefully without removing Raft member"
+        );
+        let broker_key = broker_id.to_string();
+        if let Err(err) = resources
+            .cluster
+            .set_broker_state(&broker_key, "draining", Some("sigterm_drain"))
+            .await
+        {
+            warn!(broker_id, error = %err, "failed to mark broker draining on SIGTERM");
+        }
+        let topics = resources.cluster.get_topics_for_broker(&broker_key).await;
+        for topic in topics {
+            if let Err(err) = resources.cluster.mark_topic_for_unload(&topic, broker_id).await {
+                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic unload on SIGTERM");
+            }
+        }
+    });
+}
+
+/// Leader background loop that tracks missing registrations and only reaps dead
+/// nodes from Raft membership after `DEFAULT_DEAD_NODE_GRACE_PERIOD_SECS` (3600s),
+/// while never dropping below 3 voters.
+fn spawn_dead_node_reaper(
+    raft: Raft<danube_raft::typ::TypeConfig>,
+    leadership: LeadershipHandle,
+    meta_store: MetadataStorage,
+) {
+    tokio::spawn(async move {
+        let mut missing_since: std::collections::HashMap<u64, std::time::Instant> =
+            std::collections::HashMap::new();
+        let mut interval = time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if !leadership.is_leader() {
+                missing_since.clear();
+                continue;
+            }
+            let registered: std::collections::HashSet<u64> = meta_store
+                .get_childrens(crate::resources::BASE_REGISTER_PATH)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| p.rsplit('/').next().and_then(|s| s.parse::<u64>().ok()))
+                .collect();
+
+            let metrics = raft.metrics().borrow().clone();
+            let voters: std::collections::BTreeSet<u64> = metrics
+                .membership_config
+                .membership()
+                .get_joint_config()
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            let all_nodes: Vec<u64> = metrics
+                .membership_config
+                .membership()
+                .nodes()
+                .map(|(id, _)| *id)
+                .collect();
+
+            missing_since.retain(|id, _| all_nodes.contains(id) && !registered.contains(id));
+
+            let now = std::time::Instant::now();
+            for node_id in all_nodes {
+                if registered.contains(&node_id) {
+                    continue;
+                }
+                let first_seen = *missing_since.entry(node_id).or_insert(now);
+                let elapsed = now.duration_since(first_seen).as_secs();
+                let is_voter = voters.contains(&node_id);
+                if should_reap_dead_node(
+                    elapsed,
+                    DEFAULT_DEAD_NODE_GRACE_PERIOD_SECS,
+                    is_voter,
+                    voters.len(),
+                ) {
+                    let mut next_voters = voters.clone();
+                    next_voters.remove(&node_id);
+                    if !next_voters.is_empty() {
+                        if let Err(err) = raft.change_membership(next_voters, false).await {
+                            warn!(node_id, error = %err, "failed to reap dead Raft node");
+                        } else {
+                            warn!(node_id, missing_secs = elapsed, "reaped dead Raft node after grace period");
+                            missing_since.remove(&node_id);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn spawn_object_store_credential_refresher(
+    storage_factory: danube_persistent_storage::StorageFactory,
+) {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(1800));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(err) = storage_factory.refresh_object_store_credentials() {
+                warn!(error = %err, "proactive object store credential refresh failed");
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod dead_node_reap_tests {
+    use super::should_reap_dead_node;
+
+    #[test]
+    fn dead_node_reap_respects_grace_period_and_quorum_floor() {
+        assert!(!should_reap_dead_node(120, 3600, false, 5));
+        assert!(should_reap_dead_node(3600, 3600, false, 3));
+        assert!(!should_reap_dead_node(4000, 3600, true, 3));
+        assert!(should_reap_dead_node(4000, 3600, true, 5));
     }
 }

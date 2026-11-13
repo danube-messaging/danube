@@ -3,6 +3,7 @@ pub mod jwt;
 pub mod message;
 pub mod metadata;
 pub mod storage;
+pub mod topic_path;
 
 pub mod proto {
     include!("proto/danube.rs");

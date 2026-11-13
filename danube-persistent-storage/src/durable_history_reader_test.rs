@@ -71,6 +71,8 @@ mod tests {
             created_at: 1,
             completed: true,
             offset_index: Some(index),
+            ref_count: 1,
+            object_topic: None,
         };
         let start_padded = format!("{:020}", start_offset);
         meta.put_segment_descriptor(topic_path, &start_padded, &desc)

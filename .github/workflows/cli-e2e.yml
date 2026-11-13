@@ -4,10 +4,11 @@ on:
   pull_request:
     paths:
       - "danube-admin/**"
-      - "danube-cli/**"
       - "danube-broker/**"
       - "danube-schema/**"
       - "danube-core/proto/DanubeAdmin.proto"
+      - ".github/workflows/cli-e2e.yml"
+  workflow_dispatch:
 
 jobs:
   build_and_test:
@@ -26,13 +27,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Create certificate files
-        run: |
-          mkdir -p ./cert
-          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
-
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
@@ -41,12 +35,11 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p danube-data
-          nohup ./target/release/danube-broker \
-            --config-file ./config/danube_broker.yml \
+          nohup ./target/release/danube up \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/raft-1 \
+            --data-dir ./danube-data/broker-1 \
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
 
@@ -88,10 +81,40 @@ jobs:
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
         run: cargo test -p danube-admin --tests -- --nocapture
 
-      - name: Run CLI E2E tests
-        env:
-          DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
-        run: cargo test -p danube-cli --tests -- --nocapture
+      - name: Test v2 single-port admin multiplexing, declarative apply, and stream branching
+        run: |
+          set -e
+          ADMIN_BIN="./target/release/danube ctl"
+          mkdir -p temp
+
+          # 1. Verify admin gRPC is multiplexed on the main broker port (6650)
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN brokers list
+          echo "✅ Single-port admin multiplexing on 6650 verified"
+
+          # 2. Verify declarative desired-state dry-run & apply with stream intents
+          cat > temp/desired_state.yaml <<EOF
+          namespaces:
+            - agentic-e2e
+          topics:
+            - name: /agentic-e2e/tasks
+              intent: agent_task_queue
+              partitions: 2
+            - name: /agentic-e2e/events
+              intent: agent_event_mesh
+          EOF
+
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN apply -f temp/desired_state.yaml --dry-run
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN apply -f temp/desired_state.yaml
+          TOPICS_OUT=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics list --namespace agentic-e2e --output json)
+          echo "$TOPICS_OUT" | grep -q "/agentic-e2e/tasks"
+          echo "$TOPICS_OUT" | grep -q "/agentic-e2e/events"
+          echo "✅ Declarative apply with stream intents verified"
+
+          # 3. Verify zero-copy topic branching via CLI
+          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/branch-src -m "branch-msg" -c 5 -i 50 --reliable
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics branch /default/branch-src /default/branch-dst --at-offset 2
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics describe /default/branch-dst
+          echo "✅ Topic branching verified"
 
       - name: Upload broker logs on failure
         if: failure()

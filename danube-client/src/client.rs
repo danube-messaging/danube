@@ -1,17 +1,20 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::transport::{Certificate, ClientTlsConfig, Identity, Uri};
 
 use crate::{
     auth_service::AuthService,
     connection_manager::{BrokerAddress, ConnectionManager, ConnectionOptions},
-    consumer::ConsumerBuilder,
-    errors::Result,
+    consumer::{ConsumerBuilder, SubType},
+    errors::{DanubeError, Result},
     health_check::HealthCheckService,
     lookup_service::{LookupResult, LookupService},
     producer::ProducerBuilder,
     schema_registry_client::SchemaRegistryClient,
 };
+use danube_core::message::{StreamMessage, ATTR_CORRELATION_ID, ATTR_REPLY_TO};
 
 /// The main client for interacting with the Danube messaging system.
 ///
@@ -132,6 +135,76 @@ impl DanubeClient {
             .await?;
         Ok(cnx.grpc_cnx.clone())
     }
+
+    /// Publish a request to `request_topic` and wait on a standard `Non-Reliable` `reply_topic`
+    /// for a response carrying a matching `x-danube-correlation-id`.
+    pub async fn request_reply(
+        &self,
+        request_topic: &str,
+        reply_topic: &str,
+        payload: Vec<u8>,
+        attributes: Option<HashMap<String, String>>,
+        timeout: Duration,
+    ) -> Result<StreamMessage> {
+        let correlation_id = format!("req-{:016x}", rand::random::<u64>());
+        let attrs =
+            build_request_reply_attributes(attributes, &correlation_id, reply_topic);
+
+        let mut reply_consumer = self
+            .new_consumer()
+            .with_topic(reply_topic)
+            .with_consumer_name(format!("rr-consumer-{correlation_id}"))
+            .with_subscription(format!("rr-sub-{correlation_id}"))
+            .with_subscription_type(SubType::Exclusive)
+            .build()?;
+        reply_consumer.subscribe().await?;
+        let mut rx = reply_consumer.receive().await?;
+
+        let mut producer = self
+            .new_producer()
+            .with_topic(request_topic)
+            .with_name(format!("rr-producer-{correlation_id}"))
+            .build()?;
+        producer.create().await?;
+        producer.send(payload, Some(attrs)).await?;
+
+        let result = tokio::time::timeout(timeout, async {
+            while let Some(msg) = rx.recv().await {
+                if matches_correlation_id(&msg, &correlation_id) {
+                    return Ok(msg);
+                }
+            }
+            Err(DanubeError::Unrecoverable(
+                "request_reply: reply stream closed before matching response arrived".into(),
+            ))
+        })
+        .await;
+
+        reply_consumer.close().await;
+
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(DanubeError::Unrecoverable(format!(
+                "request_reply timed out after {:?} waiting for correlation_id {}",
+                timeout, correlation_id
+            ))),
+        }
+    }
+}
+
+pub(crate) fn build_request_reply_attributes(
+    attributes: Option<HashMap<String, String>>,
+    correlation_id: &str,
+    reply_topic: &str,
+) -> HashMap<String, String> {
+    let mut attrs = attributes.unwrap_or_default();
+    attrs.insert(ATTR_CORRELATION_ID.to_string(), correlation_id.to_string());
+    attrs.insert(ATTR_REPLY_TO.to_string(), reply_topic.to_string());
+    attrs
+}
+
+pub(crate) fn matches_correlation_id(msg: &StreamMessage, expected: &str) -> bool {
+    msg.correlation_id() == Some(expected)
 }
 
 /// A builder for configuring and creating a `DanubeClient` instance.
@@ -300,5 +373,50 @@ impl DanubeClientBuilder {
             health_check_service,
             auth_service,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_request_reply_attributes, matches_correlation_id};
+    use danube_core::message::{MessageID, StreamMessage, ATTR_CORRELATION_ID, ATTR_REPLY_TO};
+    use std::collections::HashMap;
+
+    #[test]
+    fn request_reply_attributes_and_correlation_matching() {
+        let mut custom = HashMap::new();
+        custom.insert("trace".to_string(), "t-1".to_string());
+        let attrs = build_request_reply_attributes(Some(custom), "corr-123", "/default/replies");
+
+        assert_eq!(attrs.get("trace").map(String::as_str), Some("t-1"));
+        assert_eq!(
+            attrs.get(ATTR_CORRELATION_ID).map(String::as_str),
+            Some("corr-123")
+        );
+        assert_eq!(
+            attrs.get(ATTR_REPLY_TO).map(String::as_str),
+            Some("/default/replies")
+        );
+
+        let reply_msg = StreamMessage {
+            request_id: 1,
+            msg_id: MessageID {
+                producer_id: 1,
+                topic_name: "/default/replies".to_string(),
+                broker_addr: "127.0.0.1:6650".to_string(),
+                topic_offset: 0,
+            },
+            payload: b"ok".to_vec().into(),
+            publish_time: 0,
+            producer_name: "worker".to_string(),
+            subscription_name: None,
+            attributes: attrs,
+            schema_id: None,
+            schema_version: None,
+            routing_key: None,
+        };
+
+        assert!(matches_correlation_id(&reply_msg, "corr-123"));
+        assert!(!matches_correlation_id(&reply_msg, "corr-other"));
     }
 }

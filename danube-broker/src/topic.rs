@@ -20,7 +20,9 @@ use crate::{
         TOPIC_MESSAGE_SIZE_BYTES,
     },
     danube_service::metrics_collector::{MetricsCollector, TopicMetricsSnapshot},
-    dispatcher::{DispatchStrategy, Dispatcher},
+    dispatcher::{
+        pending_delivery::CancelledRootsCache, DispatchStrategy, Dispatcher,
+    },
     message::{AckMessage, NackMessage},
     policies::Policies,
     producer::Producer,
@@ -85,6 +87,7 @@ pub(crate) struct Topic {
     // Pre-registered ingress counters for zero-allocation hot path
     messages_in_counter: metrics::Counter,
     bytes_in_counter: metrics::Counter,
+    cancelled_roots: Arc<CancelledRootsCache>,
 }
 
 impl Topic {
@@ -131,6 +134,7 @@ impl Topic {
             default_max_unacked_messages,
             messages_in_counter,
             bytes_in_counter,
+            cancelled_roots: Arc::new(CancelledRootsCache::new()),
         }
     }
 
@@ -145,6 +149,38 @@ impl Topic {
         subscriptions.values().map(|sub| sub.consumer_count()).sum()
     }
 
+    /// Access the underlying `TopicStore` if persistent storage is attached.
+    pub(crate) fn topic_store(&self) -> Option<&TopicStore> {
+        self.topic_store.as_ref()
+    }
+
+    /// Inspect live subscription diagnostics on this topic.
+    /// Returns `(active_consumer_count, max_unacked_messages, wal_head, failure_policy)`.
+    pub(crate) async fn inspect_subscription(
+        &self,
+        sub_name: &str,
+    ) -> Option<(usize, usize, u64, SubscriptionFailurePolicy)> {
+        let subs = self.subscriptions.read().await;
+        let sub = subs.get(sub_name)?;
+        let mut active_consumers = 0usize;
+        for consumer in sub.consumers.values() {
+            if consumer.get_status().await {
+                active_consumers += 1;
+            }
+        }
+        let wal_head = self
+            .topic_store
+            .as_ref()
+            .map(|s| s.current_offset())
+            .unwrap_or(0);
+        Some((
+            active_consumers,
+            sub.max_unacked_messages,
+            wal_head,
+            sub.failure_policy.clone(),
+        ))
+    }
+
     /// Get subscription count for metrics
     #[allow(dead_code)]
     pub(crate) async fn get_subscription_count(&self) -> usize {
@@ -153,14 +189,48 @@ impl Topic {
 
     /// Returns a snapshot of topic metrics for LoadReport generation
     pub(crate) async fn metrics_snapshot(&self) -> TopicMetricsSnapshot {
+        let total_backlog_messages = self.compute_total_backlog().await;
         TopicMetricsSnapshot {
             messages_in_total: self.messages_in.load(Ordering::Relaxed),
             bytes_in_total: self.bytes_in.load(Ordering::Relaxed),
             active_producers: self.producers.len(),
             active_consumers: self.get_consumer_count().await,
             active_subscriptions: self.subscriptions.read().await.len(),
-            total_backlog_messages: 0,
+            total_backlog_messages,
         }
+    }
+
+    /// Compute total unacknowledged backlog messages summed across reliable subscriptions.
+    pub(crate) async fn compute_total_backlog(&self) -> u64 {
+        let Some(ref store) = self.topic_store else {
+            return 0;
+        };
+        let wal_head = store.current_offset();
+        if wal_head == 0 {
+            return 0;
+        }
+        let sub_names: Vec<String> = {
+            let subs = self.subscriptions.read().await;
+            subs.keys().cloned().collect()
+        };
+        let mut total_lag = 0u64;
+        for sub_name in sub_names {
+            match self
+                .resources_topic
+                .get_subscription_cursor(&sub_name, &self.topic_name)
+                .await
+            {
+                Ok(Some(cursor)) => {
+                    let lag = wal_head.saturating_sub(1).saturating_sub(cursor);
+                    total_lag = total_lag.saturating_add(lag);
+                }
+                Ok(None) => {
+                    total_lag = total_lag.saturating_add(wal_head);
+                }
+                Err(_) => {}
+            }
+        }
+        total_lag
     }
 
     #[allow(unused_assignments)]
@@ -409,6 +479,47 @@ impl Topic {
         Ok(())
     }
 
+    pub(crate) async fn extend_visibility(
+        &self,
+        subscription_name: &str,
+        offset: u64,
+        extension_ms: u64,
+    ) -> Result<Option<u64>> {
+        let subscriptions = self.subscriptions.read().await;
+        let subscription = subscriptions
+            .get(subscription_name)
+            .ok_or_else(|| anyhow!("Subscription not found"))?;
+        subscription.extend_visibility(offset, extension_ms).await
+    }
+
+    pub(crate) async fn report_progress(
+        &self,
+        subscription_name: &str,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<bool> {
+        let subscriptions = self.subscriptions.read().await;
+        let subscription = subscriptions
+            .get(subscription_name)
+            .ok_or_else(|| anyhow!("Subscription not found"))?;
+        subscription
+            .report_progress(offset, checkpoint, extension_ms)
+            .await
+    }
+
+    pub(crate) async fn cancel_task_tree(&self, root_msg_id: String) -> Result<u32> {
+        self.cancelled_roots.insert(root_msg_id.clone());
+        let subscriptions = self.subscriptions.read().await;
+        let mut evicted_total = 0u32;
+        for subscription in subscriptions.values() {
+            if let Ok(evicted) = subscription.cancel_root(root_msg_id.clone()).await {
+                evicted_total = evicted_total.saturating_add(evicted);
+            }
+        }
+        Ok(evicted_total)
+    }
+
     pub(crate) async fn get_producer_status(&self, producer_id: u64) -> bool {
         self.producers.get(&producer_id).map_or(false, |p| p.status)
     }
@@ -468,6 +579,7 @@ impl Topic {
                         Some(self.resources_topic.clone()),
                         Some(self.replicator.clone()),
                         Some(Duration::from_secs(10)),
+                        Some(self.cancelled_roots.clone()),
                     )
                     .await?;
             } else {
@@ -475,6 +587,7 @@ impl Topic {
                     .create_new_dispatcher(
                         options.clone(),
                         &self.dispatch_strategy,
+                        None,
                         None,
                         None,
                         None,

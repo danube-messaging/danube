@@ -25,6 +25,7 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
     );
 
     let catalog: Arc<dyn Catalog> = match config.type_.as_str() {
+        #[cfg(feature = "rest")]
         "rest" => {
             use iceberg::CatalogBuilder;
             use iceberg_catalog_rest::RestCatalogBuilder;
@@ -41,6 +42,7 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
                 .map_err(|e| anyhow::anyhow!("failed to build REST catalog: {}", e))?;
             Arc::new(cat)
         }
+        #[cfg(feature = "aws")]
         "glue" => {
             use iceberg::CatalogBuilder;
             use iceberg_catalog_glue::GlueCatalogBuilder;
@@ -50,6 +52,7 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
                 .map_err(|e| anyhow::anyhow!("failed to build Glue catalog: {}", e))?;
             Arc::new(cat)
         }
+        #[cfg(feature = "aws")]
         "s3tables" => {
             use iceberg::CatalogBuilder;
             use iceberg_catalog_s3tables::S3TablesCatalogBuilder;
@@ -59,17 +62,8 @@ pub async fn build_catalog(config: &CatalogConfig) -> anyhow::Result<Arc<dyn Cat
                 .map_err(|e| anyhow::anyhow!("failed to build S3Tables catalog: {}", e))?;
             Arc::new(cat)
         }
-        "sql" => {
-            use iceberg::CatalogBuilder;
-            use iceberg_catalog_sql::SqlCatalogBuilder;
-            let cat = SqlCatalogBuilder::default()
-                .load(&config.name, config.properties.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to build SQL catalog: {}", e))?;
-            Arc::new(cat)
-        }
         other => anyhow::bail!(
-            "unsupported catalog type: '{}' (supported: rest, glue, s3tables, sql)",
+            "unsupported or disabled catalog type: '{}' (enable 'rest' or 'aws' features)",
             other
         ),
     };

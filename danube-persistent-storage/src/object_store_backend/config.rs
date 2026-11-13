@@ -7,6 +7,7 @@ use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::ObjectStore;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -67,6 +68,29 @@ impl BackendConfig {
                     if let Some(sk) = options.get("secret_key") {
                         builder = builder.with_secret_access_key(sk);
                     }
+                    if let Some(token) = options.get("session_token") {
+                        builder = builder.with_token(token);
+                    }
+                    if options
+                        .get("anonymous")
+                        .map_or(false, |v| matches!(v.as_str(), "true" | "1" | "yes"))
+                    {
+                        builder = builder.with_skip_signature(true);
+                    }
+                    if let Some(profile) = options.get("profile") {
+                        builder = builder.with_config(
+                            object_store::aws::AmazonS3ConfigKey::from_str("aws_profile")
+                                .unwrap_or(object_store::aws::AmazonS3ConfigKey::Region),
+                            profile,
+                        );
+                    }
+                    if let Some(role_arn) = options.get("role_arn") {
+                        warn!(
+                            target = "object_store_backend",
+                            role_arn = %role_arn,
+                            "S3 role_arn option configured; ensure STS / web-identity env vars are set if needed"
+                        );
+                    }
 
                     // Addressing mode: default to path-style for custom endpoints (e.g., MinIO)
                     let vhost_opt = options.get("virtual_host_style");
@@ -95,6 +119,10 @@ impl BackendConfig {
                             "region",
                             "access_key",
                             "secret_key",
+                            "session_token",
+                            "anonymous",
+                            "profile",
+                            "role_arn",
                             "virtual_host_style",
                         ],
                     );
@@ -108,12 +136,28 @@ impl BackendConfig {
                     let (bucket, prefix) =
                         split_bucket_prefix(root).map_err(PersistentStorageError::Other)?;
 
-                    warn_unknown_options("gcs", options, &["endpoint", "credential_file"]);
+                    warn_unknown_options(
+                        "gcs",
+                        options,
+                        &[
+                            "endpoint",
+                            "credential_file",
+                            "credentials_path",
+                            "credentials_json",
+                            "project",
+                        ],
+                    );
 
                     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&bucket);
 
-                    if let Some(cred_file) = options.get("credential_file") {
+                    if let Some(cred_file) = options
+                        .get("credential_file")
+                        .or_else(|| options.get("credentials_path"))
+                    {
                         builder = builder.with_service_account_path(cred_file);
+                    }
+                    if let Some(cred_json) = options.get("credentials_json") {
+                        builder = builder.with_service_account_key(cred_json);
                     }
                     if let Some(endpoint) = options.get("endpoint") {
                         builder = builder.with_base_url(endpoint);

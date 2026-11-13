@@ -227,6 +227,63 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn join_cluster(
+        &self,
+        req: admin::JoinClusterRequest,
+    ) -> Result<admin::JoinClusterResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.join_cluster(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn configure_object_store(
+        &self,
+        req: admin::ConfigureObjectStoreRequest,
+    ) -> Result<admin::ConfigureObjectStoreResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.configure_object_store(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_object_store_config(&self) -> Result<admin::ObjectStoreConfigResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_object_store_config(admin::Empty {}).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn plan_desired_state(
+        &self,
+        req: admin::DesiredStateRequest,
+    ) -> Result<admin::DesiredStatePlanResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.plan_desired_state(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn apply_desired_state(
+        &self,
+        req: admin::DesiredStateRequest,
+    ) -> Result<admin::DesiredStateApplyResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.apply_desired_state(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     // ===== NAMESPACE ADMIN METHODS =====
 
     pub async fn list_namespaces(&self) -> Result<admin::NamespaceListResponse> {
@@ -339,6 +396,18 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn update_topic_storage_mode(
+        &self,
+        req: admin::UpdateTopicStorageModeRequest,
+    ) -> Result<admin::TopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.update_topic_storage_mode(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     pub async fn describe_topic(
         &self,
         req: admin::DescribeTopicRequest,
@@ -396,6 +465,78 @@ impl AdminGrpcClient {
             self.auth_interceptor(),
         );
         let fut = async move { client.get_subscription_failure_policy(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn peek_messages(
+        &self,
+        req: admin::PeekMessagesRequest,
+    ) -> Result<admin::PeekMessagesResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.peek_messages(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_topic_time_range(
+        &self,
+        req: admin::TopicRequest,
+    ) -> Result<admin::GetTopicTimeRangeResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_topic_time_range(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn sample_topic_json(
+        &self,
+        req: admin::SampleTopicJsonRequest,
+    ) -> Result<admin::SampleTopicJsonResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.sample_topic_json(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn explain_consumer_stall(
+        &self,
+        req: admin::ExplainConsumerStallRequest,
+    ) -> Result<admin::ExplainConsumerStallResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.explain_consumer_stall(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn infer_topic_schema(
+        &self,
+        req: admin::InferTopicSchemaRequest,
+    ) -> Result<admin::InferTopicSchemaResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.infer_topic_schema(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn branch_topic(
+        &self,
+        req: admin::BranchTopicRequest,
+    ) -> Result<admin::BranchTopicResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.branch_topic(req).await };
         self.execute_with_timeout(fut).await
     }
 
@@ -545,6 +686,30 @@ impl AdminGrpcClient {
     }
 
     // ===== SECURITY ADMIN METHODS =====
+
+    pub async fn issue_token(
+        &self,
+        req: admin::IssueTokenRequest,
+    ) -> Result<admin::IssueTokenResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.issue_token(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn revoke_token(
+        &self,
+        req: admin::RevokeTokenRequest,
+    ) -> Result<admin::RevokeTokenResponse> {
+        let mut client = admin::security_admin_client::SecurityAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.revoke_token(req).await };
+        self.execute_with_timeout(fut).await
+    }
 
     pub async fn create_role(
         &self,

@@ -1,5 +1,6 @@
 mod admin;
 mod args_parse;
+mod audit;
 mod broker_metrics;
 mod broker_server;
 mod broker_service;
@@ -8,6 +9,7 @@ mod danube_service;
 mod dispatch_config;
 mod dispatcher;
 mod edge_service;
+mod log_ring;
 mod message;
 mod metadata_storage;
 mod policies;
@@ -18,14 +20,16 @@ mod resources;
 mod security;
 mod service_configuration;
 mod storage_configuration;
+mod stream_intent;
 mod subscription;
+mod telemetry_ring;
 mod topic;
 mod topic_cluster;
 mod topic_control;
 mod topic_registry;
 mod utils;
 
-use std::{fs::read_to_string, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use crate::{
     args_parse::{Args, BrokerMode},
@@ -33,7 +37,7 @@ use crate::{
     broker_service::BrokerService,
     danube_service::{ClusterServices, DanubeService, LeaderElection, LoadManager},
     resources::{Resources, LEADER_ELECTION_PATH},
-    service_configuration::{LoadConfiguration, ServiceConfiguration},
+    service_configuration::ServiceConfiguration,
     storage_configuration::{
         LocalRetentionNode, ObjectStoreNode, SharedFsDurableNode, StorageConfig, WalNode,
         WriteBufferNode,
@@ -60,54 +64,173 @@ use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(
-                        "warn,danube_broker=info,danube_raft=info,danube_persistent_storage=info,danube_client=info",
-                    )
-                }),
+    // Initialize logging with both stderr formatting and in-memory ring buffer capture
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "warn,danube_broker=info,danube_raft=info,danube_persistent_storage=info,danube_client=info",
+        )
+    });
+    let log_ring = log_ring::LogRingHandle::global();
+    tracing_subscriber::registry()
+        .with(log_ring.layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(env_filter),
         )
         .init();
 
-    // Parse command line arguments
-    let args = Args::parse()?;
-
-    // Build ServiceConfiguration based on mode
-    let mut service_config: ServiceConfiguration = match &args.mode {
-        BrokerMode::Standalone => ServiceConfiguration::standalone(Path::new(
-            args.data_dir
-                .as_deref()
-                .expect("standalone mode requires data-dir"),
-        ))?,
-        BrokerMode::Cluster => {
-            let config_file = args
-                .config_file
-                .as_deref()
-                .expect("cluster mode requires config file");
-            let config_content = read_to_string(Path::new(config_file))?;
-            let load_config: LoadConfiguration = serde_yaml::from_str(&config_content)?;
-            load_config.try_into()?
+    // Route top-level `danube` subcommands (`up`, `ctl`, `mcp`); bare flags default to `up`
+    let raw_args: Vec<String> = std::env::args().collect();
+    let args = match raw_args.get(1).map(String::as_str) {
+        Some("ctl") => {
+            let mut forwarded = Vec::with_capacity(raw_args.len());
+            forwarded.push("danube ctl".to_string());
+            forwarded.extend(raw_args.into_iter().skip(2));
+            return danube_admin::run_cli_from_args(forwarded).await;
         }
-        BrokerMode::Edge => {
-            let data_dir = args
-                .data_dir
-                .as_deref()
-                .expect("edge mode requires data-dir");
-            let edge_config_path = args
-                .edge_config
-                .clone()
-                .expect("edge mode requires edge-config");
-            ServiceConfiguration::edge(
-                Path::new(data_dir),
-                edge_config_path,
-                args.edge_token.clone(),
-            )?
+        Some("mcp") => {
+            let mut forwarded = Vec::with_capacity(raw_args.len());
+            forwarded.push("danube mcp".to_string());
+            forwarded.extend(raw_args.into_iter().skip(2));
+            return danube_admin::run_mcp_from_args(forwarded).await;
         }
+        Some("up") => {
+            let mut forwarded = Vec::with_capacity(raw_args.len());
+            forwarded.push("danube up".to_string());
+            forwarded.extend(raw_args.into_iter().skip(2));
+            Args::parse_from(forwarded)?
+        }
+        _ => Args::parse_from(raw_args)?,
     };
+
+    // Build ServiceConfiguration based on mode (zero-YAML by default)
+    let data_dir = args.data_dir.as_deref().unwrap_or("./danube-data");
+    let mut service_config: ServiceConfiguration = match &args.mode {
+        BrokerMode::Standalone => ServiceConfiguration::standalone(Path::new(data_dir))?,
+        BrokerMode::Cluster => ServiceConfiguration::cluster_zero_yaml(Path::new(data_dir))?,
+        BrokerMode::Edge => ServiceConfiguration::edge_zero_yaml(
+            Path::new(data_dir),
+            args.edge_name.clone(),
+            args.cloud_endpoint
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:6650".to_string()),
+            args.mqtt_addr.clone(),
+            args.edge_token.clone(),
+        )?,
+    };
+
+    service_config.node_role = args.node_role;
+
+    if let Some(ref recovery_path) = args.recovery_config {
+        service_config.apply_recovery_config(Path::new(recovery_path))?;
+        tracing::warn!(recovery_config = %recovery_path, "applied local break-glass recovery configuration override");
+    }
+
+    if args.tls_cert.is_some() || args.tls_key.is_some() || args.ca_cert.is_some() {
+        let cert_file = args.tls_cert.clone().ok_or_else(|| {
+            anyhow::anyhow!("--tls-cert is required when configuring TLS via CLI flags")
+        })?;
+        let key_file = args.tls_key.clone().ok_or_else(|| {
+            anyhow::anyhow!("--tls-key is required when configuring TLS via CLI flags")
+        })?;
+        let ca_file = args.ca_cert.clone().ok_or_else(|| {
+            anyhow::anyhow!("--ca-cert is required when configuring TLS via CLI flags")
+        })?;
+        service_config.auth.tls = Some(crate::security::config::TlsConfig {
+            cert_file,
+            key_file,
+            ca_file,
+        });
+    }
+
+    if let Some(ref secret_key) = args.jwt_secret {
+        service_config.auth.jwt = Some(crate::security::config::JwtConfig {
+            secret_key: secret_key.clone(),
+            issuer: "danube-auth".to_string(),
+            expiration_time: 3600,
+        });
+    }
+
+    if let Some(ref super_admins_csv) = args.super_admins {
+        service_config.auth.super_admins = super_admins_csv
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+
+    let mut auto_tls_provisioned = None;
+    if let Some(ref auth_mode_str) = args.auth_mode {
+        match auth_mode_str.to_ascii_lowercase().as_str() {
+            "none" => {
+                service_config.auth.mode = crate::security::config::AuthMode::None;
+                service_config.broker_url = service_config.broker_url.replace("https://", "http://");
+                service_config.connect_url = service_config.connect_url.replace("https://", "http://");
+            }
+            "tls" => {
+                service_config.auth.mode = crate::security::config::AuthMode::Tls;
+                service_config.broker_url = service_config.broker_url.replace("http://", "https://");
+                service_config.connect_url = service_config.connect_url.replace("http://", "https://");
+            }
+            "auto-tls" => {
+                let mut san_hosts = Vec::new();
+                for candidate in [
+                    args.advertised_addr.as_deref(),
+                    args.connect_url.as_deref(),
+                    args.broker_addr.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let stripped = candidate
+                        .trim_start_matches("http://")
+                        .trim_start_matches("https://");
+                    if let Some(host) = stripped.split(':').next() {
+                        if !host.is_empty() {
+                            san_hosts.push(host.to_string());
+                        }
+                    }
+                }
+                san_hosts.push(service_config.broker_addr.ip().to_string());
+
+                let provisioned = crate::security::auto_tls::provision_local_auto_tls(
+                    Path::new(&service_config.meta_store.data_dir),
+                    &san_hosts,
+                )?;
+                tracing::info!(
+                    bootstrap_token = %provisioned.bootstrap_token_path.display(),
+                    "provisioned auto-TLS Cluster CA, node cert, and bootstrap_admin.token"
+                );
+                service_config.auth.mode = crate::security::config::AuthMode::Tls;
+                service_config.auth.tls = Some(provisioned.tls.clone());
+                if service_config.auth.jwt.is_none() {
+                    service_config.auth.jwt = Some(provisioned.jwt.clone());
+                }
+                if !service_config
+                    .auth
+                    .super_admins
+                    .iter()
+                    .any(|s| s == crate::security::auto_tls::BOOTSTRAP_ADMIN_SUBJECT)
+                {
+                    service_config
+                        .auth
+                        .super_admins
+                        .push(crate::security::auto_tls::BOOTSTRAP_ADMIN_SUBJECT.to_string());
+                }
+                service_config.broker_url = service_config.broker_url.replace("http://", "https://");
+                service_config.connect_url = service_config.connect_url.replace("http://", "https://");
+                auto_tls_provisioned = Some((provisioned, san_hosts));
+            }
+            other => {
+                anyhow::bail!("invalid --auth-mode '{}': expected none, tls, or auto-tls", other);
+            }
+        }
+    }
 
     // If `broker_addr` is provided via command-line args, override the value from the config file
     if let Some(broker_addr) = args.broker_addr {
@@ -181,14 +304,6 @@ async fn main() -> Result<()> {
             prom_exporter
         ))?;
         service_config.prom_exporter = Some(prom_address);
-    }
-
-    // If `data_dir` is provided via command-line args, override meta_store.data_dir
-    // (but not in standalone mode where it's already set via ServiceConfiguration::standalone)
-    if args.mode != BrokerMode::Standalone {
-        if let Some(data_dir) = args.data_dir {
-            service_config.meta_store.data_dir = data_dir;
-        }
     }
 
     // If `seed_nodes` is provided via command-line args, override meta_store.seed_nodes
@@ -303,6 +418,39 @@ async fn main() -> Result<()> {
     let metadata_store = MetadataStorage::Raft(std::sync::Arc::new(raft_node.store));
 
     let store_arc: Arc<dyn danube_core::metadata::MetadataStore> = Arc::new(metadata_store.clone());
+    if let Some((ref provisioned, ref san_hosts)) = auto_tls_provisioned {
+        if let Some(cluster_jwt_secret) = crate::security::auto_tls::sync_cluster_ca_with_raft(
+            store_arc.as_ref(),
+            Path::new(&service_config.meta_store.data_dir),
+            provisioned,
+            san_hosts,
+        )
+        .await?
+        {
+            if let Some(ref mut jwt_cfg) = service_config.auth.jwt {
+                jwt_cfg.secret_key = cluster_jwt_secret;
+            }
+        }
+    }
+    if args.mode == BrokerMode::Cluster && !was_restart && !join_cluster {
+        let bootstrap_doc = serde_json::json!({
+            "cluster_name": service_config.cluster_name,
+            "bootstrap_namespaces": service_config.bootstrap_namespaces,
+            "auto_create_topics": service_config.auto_create_topics,
+            "policies": service_config.policies,
+            "zero_yaml": true,
+        });
+        if let Err(err) = danube_core::metadata::MetadataStore::put(
+            &metadata_store,
+            "/cluster/config/bootstrap",
+            bootstrap_doc,
+            danube_core::metadata::MetaOptions::None,
+        )
+        .await
+        {
+            tracing::debug!(error = %err, "deferred /cluster/config/bootstrap write (not leader)");
+        }
+    }
     let storage_factory_config =
         build_storage_factory_config(&service_config.storage, &service_config.meta_store.data_dir);
     let storage_factory = StorageFactory::new(storage_factory_config, store_arc);
@@ -328,11 +476,8 @@ async fn main() -> Result<()> {
             .as_ref()
             .expect("edge_config required in edge mode");
 
-        let edge_cfg = danube_edge::config::EdgeConfig::from_file(&edge_config.config_path)
-            .context("failed to load edge config")?;
-
         let edge_svc = EdgeService::new(
-            edge_cfg,
+            edge_config.inline.clone(),
             storage_factory.clone(),
             Arc::new(metadata_store.clone()),
             edge_config.token_override.clone(),
@@ -366,6 +511,16 @@ async fn main() -> Result<()> {
     } else {
         init_metrics(None, broker_id);
     }
+
+    // Periodically snapshot metrics every 10s into the 1-hour in-memory telemetry ring buffer
+    let telemetry_store = telemetry_ring::BrokerTelemetryStore::global();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            telemetry_store.record_sample();
+        }
+    });
 
     let broker: Arc<BrokerService> = Arc::new(broker_service);
 
@@ -464,13 +619,12 @@ fn build_storage_factory_config(
             metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            build_local_retention_config(local_retention.as_ref(), wal),
+            build_local_retention_config(local_retention.as_ref()),
         ),
         StorageConfig::SharedFs {
             local_wal_root,
             metadata_prefix,
             durable,
-            legacy_root,
             local_retention,
             wal,
             ..
@@ -486,14 +640,13 @@ fn build_storage_factory_config(
             metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            resolve_shared_fs_durable_root(durable.as_ref(), legacy_root.as_ref()),
-            build_local_retention_config(local_retention.as_ref(), wal),
+            resolve_shared_fs_durable_root(durable.as_ref()),
+            build_local_retention_config(local_retention.as_ref()),
         ),
         StorageConfig::ObjectStore {
             local_wal_root,
             metadata_prefix,
             durable,
-            legacy_object_store,
             local_retention,
             wal,
             ..
@@ -509,8 +662,8 @@ fn build_storage_factory_config(
             metadata_prefix
                 .clone()
                 .unwrap_or_else(|| "/danube".to_string()),
-            resolve_object_store_config(durable.as_ref(), legacy_object_store.as_ref()),
-            build_local_retention_config(local_retention.as_ref(), wal),
+            resolve_object_store_config(durable.as_ref()),
+            build_local_retention_config(local_retention.as_ref()),
         ),
     };
 
@@ -543,15 +696,12 @@ fn build_wal_config(root: Option<String>, wal: &WalNode) -> WalConfig {
 
 fn build_local_retention_config(
     local_retention: Option<&LocalRetentionNode>,
-    wal: &WalNode,
 ) -> Option<RetentionConfig> {
-    local_retention
-        .or_else(|| wal.legacy_local_retention())
-        .map(|ret| RetentionConfig {
-            check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
-            time_minutes: ret.time_minutes,
-            size_mb: ret.size_mb,
-        })
+    local_retention.map(|ret| RetentionConfig {
+        check_interval_minutes: ret.check_interval_minutes.unwrap_or(5),
+        time_minutes: ret.time_minutes,
+        size_mb: ret.size_mb,
+    })
 }
 
 fn resolve_local_wal_root(
@@ -570,25 +720,14 @@ fn resolve_local_wal_root(
     base.to_string_lossy().into_owned()
 }
 
-fn resolve_shared_fs_durable_root(
-    durable: Option<&SharedFsDurableNode>,
-    legacy_root: Option<&String>,
-) -> String {
+fn resolve_shared_fs_durable_root(durable: Option<&SharedFsDurableNode>) -> String {
     durable
         .map(|cfg| cfg.root.clone())
-        .or_else(|| legacy_root.cloned())
-        .expect("shared_fs storage requires durable.root or legacy root")
+        .expect("shared_fs storage requires durable.root")
 }
 
-fn resolve_object_store_config(
-    durable: Option<&ObjectStoreNode>,
-    legacy_object_store: Option<&ObjectStoreNode>,
-) -> ObjectStoreConfig {
-    object_store_node_to_config(
-        durable
-            .or(legacy_object_store)
-            .expect("object_store storage requires durable backend or legacy object_store"),
-    )
+fn resolve_object_store_config(durable: Option<&ObjectStoreNode>) -> ObjectStoreConfig {
+    object_store_node_to_config(durable.expect("object_store storage requires durable backend"))
 }
 
 fn object_store_node_to_config(cfg: &ObjectStoreNode) -> ObjectStoreConfig {

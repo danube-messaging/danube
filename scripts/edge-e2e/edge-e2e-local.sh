@@ -33,12 +33,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-BIN="./target/${BUILD_MODE}/danube-broker"
-ADMIN_BIN="./target/${BUILD_MODE}/danube-admin"
+BIN="./target/${BUILD_MODE}/danube"
 LOG_LEVEL="${RUST_LOG:-info,openraft::replication=off,openraft=error}"
 
 SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
-CONFIG_FILE="./config/danube_broker.yml"
 TEMP_DIR="./temp"
 DATA_DIR="./danube-data"
 
@@ -50,7 +48,7 @@ NC='\033[0m' # No Color
 
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up...${NC}"
-    pkill -f "danube-broker" 2>/dev/null || true
+    pkill -x "danube" 2>/dev/null || true
     sleep 1
     echo -e "${GREEN}All brokers stopped.${NC}"
 }
@@ -60,8 +58,8 @@ trap cleanup EXIT
 # =============================================================================
 # Step 0: Kill any existing brokers
 # =============================================================================
-echo -e "${YELLOW}Stopping any existing danube-broker instances...${NC}"
-pkill -f "danube-broker" 2>/dev/null || true
+echo -e "${YELLOW}Stopping any existing danube instances...${NC}"
+pkill -x "danube" 2>/dev/null || true
 sleep 1
 
 # =============================================================================
@@ -97,11 +95,10 @@ for i in 0 1 2; do
     admin_port=$((50051 + i))
     raft_port=$((7650 + i))
     prom_port=$((9040 + i))
-    data_dir="${DATA_DIR}/raft-$((i + 1))"
+    data_dir="${DATA_DIR}/broker-$((i + 1))"
     log_file="${TEMP_DIR}/broker_${broker_port}.log"
 
-    RUST_LOG="$LOG_LEVEL" "$BIN" \
-        --config-file "$CONFIG_FILE" \
+    RUST_LOG="$LOG_LEVEL" "$BIN" up \
         --broker-addr "0.0.0.0:${broker_port}" \
         --admin-addr "0.0.0.0:${admin_port}" \
         --raft-addr "0.0.0.0:${raft_port}" \
@@ -134,14 +131,14 @@ done
 # Step 4: Provision edge namespace
 # =============================================================================
 echo -e "${YELLOW}Provisioning edge1 namespace on cluster...${NC}"
-DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$ADMIN_BIN" namespaces create edge1 2>/dev/null || true
+DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$BIN" ctl namespaces create edge1 2>/dev/null || true
 echo -e "${GREEN}✅ Namespace 'edge1' provisioned.${NC}"
 
 # =============================================================================
 # Step 5: Register schema on cluster
 # =============================================================================
 echo -e "${YELLOW}Registering 'telemetry-events' schema on cluster...${NC}"
-DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$ADMIN_BIN" schemas register \
+DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$BIN" ctl schemas register \
     telemetry-events \
     --schema-type json_schema \
     --schema '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
@@ -153,41 +150,40 @@ echo -e "${GREEN}✅ Schema 'telemetry-events' registered.${NC}"
 # =============================================================================
 echo -e "${YELLOW}Starting edge broker...${NC}"
 
-# Generate edge config for the test
-cat > "${TEMP_DIR}/edge.yaml" <<EOF
+# Generate edge override config for custom topic mappings in the test
+cat > "${TEMP_DIR}/edge_override.yaml" <<EOF
 edge:
-  edge_name: "edge1"
-  cluster_url: "http://127.0.0.1:6650"
-  token: ""
-  heartbeat_interval_ms: 10000
-
-replicator:
-  batch_size: 100
-  batch_timeout_ms: 1000
-
-mqtt:
-  listener: "0.0.0.0:1883"
-  topic_mappings:
-    - mqtt_pattern: "device/+/telemetry"
-      danube_topic: "/edge1/telemetry"
-      schema_subject: "telemetry-events"
-      validation_policy: "enforce"
-      extract_attributes:
-        device_id: "\$1"
-    - mqtt_pattern: "#"
-      danube_topic: "/edge1/raw"
-  ingestion:
+  edge:
+    edge_name: "edge1"
+    cluster_url: "http://127.0.0.1:6650"
+    token: ""
+    heartbeat_interval_ms: 10000
+  replicator:
     batch_size: 100
-    batch_timeout_ms: 500
+    batch_timeout_ms: 1000
+  mqtt:
+    listener: "0.0.0.0:1883"
+    topic_mappings:
+      - mqtt_pattern: "device/+/telemetry"
+        danube_topic: "/edge1/telemetry"
+        schema_subject: "telemetry-events"
+        validation_policy: "enforce"
+        extract_attributes:
+          device_id: "\$1"
+      - mqtt_pattern: "device/+/raw"
+        danube_topic: "/edge1/raw"
+    ingestion:
+      batch_size: 100
+      batch_timeout_ms: 500
 EOF
 
-RUST_LOG="$LOG_LEVEL" "$BIN" \
+RUST_LOG="$LOG_LEVEL" "$BIN" up \
     --mode edge \
     --broker-addr 0.0.0.0:6653 \
     --admin-addr 0.0.0.0:50054 \
     --raft-addr 0.0.0.0:7653 \
     --data-dir "${DATA_DIR}/edge-1" \
-    --edge-config "${TEMP_DIR}/edge.yaml" \
+    --recovery-config "${TEMP_DIR}/edge_override.yaml" \
     > "${TEMP_DIR}/edge_broker.log" 2>&1 &
 
 echo "  Edge broker: client=6653 admin=50054 mqtt=1883 cluster=6650 (log: ${TEMP_DIR}/edge_broker.log)"

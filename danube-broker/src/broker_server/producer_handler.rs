@@ -26,7 +26,8 @@ impl ProducerService for DanubeServerImpl {
         request: Request<ProducerRequest>,
     ) -> Result<Response<ProducerResponse>, tonic::Status> {
         let security_context = get_security_context(&request)?;
-        let req = request.into_inner();
+        let mut req = request.into_inner();
+        req.topic_name = crate::broker_service::normalize_topic_path(&req.topic_name)?;
 
         enforce_authorization(
             &security_context,

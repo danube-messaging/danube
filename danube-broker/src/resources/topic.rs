@@ -64,6 +64,25 @@ impl TopicResources {
         Ok(())
     }
 
+    pub(crate) async fn set_topic_intent(&self, topic_name: &str, intent: Value) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "intent"]);
+        self.create(&path, intent).await
+    }
+
+    pub(crate) async fn set_topic_storage_mode(&self, topic_name: &str, mode: &str) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "storage_mode"]);
+        self.create(&path, serde_json::json!({ "mode": mode }))
+            .await
+    }
+
+    pub(crate) async fn get_topic_producers(&self, topic_name: &str) -> Vec<String> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "producers"]);
+        self.store
+            .get_childrens(&path)
+            .await
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn delete_topic_schema(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
         self.delete(&path).await?;
@@ -212,10 +231,10 @@ impl TopicResources {
 
         let paths = self.store.get_childrens(&path).await.unwrap_or_default();
 
-        for path in paths {
-            let parts: Vec<&str> = path.split('/').collect();
-
-            if let Some(subscription) = parts.get(5) {
+        for key in paths {
+            let suffix = key.strip_prefix(&path).unwrap_or(&key);
+            let sub = suffix.trim_start_matches('/').split('/').next();
+            if let Some(subscription) = sub.filter(|s| !s.is_empty()) {
                 subscriptions.push(subscription.to_string());
             }
         }
@@ -260,6 +279,60 @@ impl TopicResources {
             }
         }
         Ok(None)
+    }
+
+    pub(crate) async fn set_subscription_checkpoints(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        checkpoints: &std::collections::HashMap<u64, String>,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "checkpoints",
+        ]);
+        if checkpoints.is_empty() {
+            let _ = self.store.delete(&path).await;
+            return Ok(());
+        }
+        let string_map: std::collections::HashMap<String, &String> = checkpoints
+            .iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let data = serde_json::to_value(string_map)?;
+        self.store.put(&path, data, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_subscription_checkpoints(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<std::collections::HashMap<u64, String>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "checkpoints",
+        ]);
+        match self.store.get(&path, MetaOptions::None).await? {
+            Some(value) => {
+                let raw: std::collections::HashMap<String, String> =
+                    serde_json::from_value(value).unwrap_or_default();
+                let mut parsed = std::collections::HashMap::with_capacity(raw.len());
+                for (k, v) in raw {
+                    if let Ok(off) = k.parse::<u64>() {
+                        parsed.insert(off, v);
+                    }
+                }
+                Ok(parsed)
+            }
+            None => Ok(std::collections::HashMap::new()),
+        }
     }
 
     pub(crate) async fn set_subscription_failure_policy(

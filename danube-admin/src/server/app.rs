@@ -6,9 +6,15 @@ use std::{
 
 use anyhow::Result;
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
+};
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -28,6 +34,8 @@ use super::ui::{
 };
 use super::ServerArgs;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::mcp::config::McpConfig;
+use crate::mcp::server::DanubeMcpServer;
 use crate::metrics::{MetricsClient, MetricsConfig};
 
 #[derive(Clone)]
@@ -40,6 +48,9 @@ pub struct AppState {
     pub client: AdminGrpcClient,
     pub ttl: Duration,
     pub metrics: MetricsClient,
+    pub mcp_config: McpConfig,
+    pub auth_token: Option<String>,
+    pub require_auth: bool,
     pub cluster_page_cache: Mutex<Option<CacheEntry<ClusterPage>>>,
     pub broker_page_cache: Mutex<HashMap<String, CacheEntry<BrokerPage>>>,
     pub topic_page_cache: Mutex<HashMap<String, CacheEntry<TopicPage>>>,
@@ -57,6 +68,20 @@ struct HealthDto {
 
 pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
     tracing::info!("Connecting to broker at {}", args.broker_endpoint);
+
+    let configured_token = std::env::var("DANUBE_HTTP_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("DANUBE_ADMIN_TOKEN").ok())
+        .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok());
+    let require_auth = std::env::var("DANUBE_HTTP_REQUIRE_AUTH")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+
+    let mcp_config = if let Some(ref config_path) = args.config {
+        McpConfig::from_file(config_path)?
+    } else {
+        McpConfig::minimal(args.broker_endpoint.clone())
+    };
 
     let grpc_config = GrpcClientConfig {
         endpoint: args.broker_endpoint.clone(),
@@ -86,6 +111,9 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
         client,
         ttl,
         metrics,
+        mcp_config,
+        auth_token: configured_token,
+        require_auth,
         cluster_page_cache: Mutex::new(None),
         broker_page_cache: Mutex::new(HashMap::new()),
         topic_page_cache: Mutex::new(HashMap::new()),
@@ -134,6 +162,19 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
 pub fn build_router(app_state: Arc<AppState>) -> Router {
     let cors = CorsLayer::permissive();
 
+    let mcp_state = Arc::clone(&app_state);
+    let mcp_service = StreamableHttpService::new(
+        move || {
+            Ok(DanubeMcpServer::new(
+                Arc::new(mcp_state.client.clone()),
+                mcp_state.mcp_config.clone(),
+                mcp_state.metrics.clone(),
+            ))
+        },
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+
     Router::new()
         .route("/ui/v1/health", get(health))
         .route("/ui/v1/cluster", get(cluster_page))
@@ -155,9 +196,48 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/ui/v1/security/bindings", get(security::list_bindings))
         .route("/ui/v1/security/roles/actions", post(security::role_actions))
         .route("/ui/v1/security/bindings/actions", post(security::binding_actions))
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&app_state),
+            http_auth_middleware,
+        ))
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn http_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> std::result::Result<Response, StatusCode> {
+    if request.uri().path() == "/ui/v1/health" {
+        return Ok(next.run(request).await);
+    }
+
+    if state.auth_token.is_none() && !state.require_auth {
+        return Ok(next.run(request).await);
+    }
+
+    let provided = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
+        .or_else(|| {
+            request
+                .headers()
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match (&state.auth_token, provided) {
+        (Some(expected), Some(actual)) if actual == expected => Ok(next.run(request).await),
+        (None, Some(_)) if state.require_auth => Ok(next.run(request).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthDto> {

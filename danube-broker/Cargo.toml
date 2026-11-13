@@ -5,6 +5,15 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "danube"
+path = "src/main.rs"
+
+[features]
+default = []
+lakehouse = ["dep:danube-iceberg"]
+lakehouse-aws = ["lakehouse", "danube-iceberg/aws"]
+
 [dependencies]
 danube-core = {path = "../danube-core"}
 danube-client = {path = "../danube-client"}
@@ -12,6 +21,8 @@ danube-persistent-storage = {path = "../danube-persistent-storage"}
 danube-raft = {path = "../danube-raft"}
 danube-schema = {path = "../danube-schema"}
 danube-edge = {path = "../danube-edge"}
+danube-admin = {path = "../danube-admin"}
+danube-iceberg = {path = "../danube-iceberg", optional = true}
 
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -32,6 +43,7 @@ base64 = { workspace = true }
 metrics = { workspace = true }
 rustls = { workspace = true }
 jsonwebtoken = { workspace = true }
+ring = "0.17"
 metrics-exporter-prometheus = "0.17"
 serde_yaml = "0.9.34"
 flume = "0.11.1"

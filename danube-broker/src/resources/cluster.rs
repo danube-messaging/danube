@@ -153,9 +153,9 @@ impl ClusterResources {
         for key in keys {
             let parts: Vec<&str> = key.split('/').collect();
             if parts.len() >= 6 {
-                // /cluster/brokers/{broker_id}/{ns}/{topic}
+                // /cluster/brokers/{broker_id}/{ns}/{topic...}
                 let ns = parts[4];
-                let topic = parts[5];
+                let topic = parts[5..].join("/");
                 topics.push(format!("/{}/{}", ns, topic));
             }
         }

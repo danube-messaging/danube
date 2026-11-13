@@ -66,6 +66,15 @@ service ConsumerService {
 
     // Negative acknowledgment for a message from the Consumer
     rpc Nack(NackRequest) returns (NackResponse);
+
+    // Extend the ack visibility deadline for a long-running task
+    rpc ExtendVisibility(ExtendVisibilityRequest) returns (ExtendVisibilityResponse);
+
+    // Report incremental progress checkpoint (<= 64 KiB) and extend visibility
+    rpc ReportProgress(ReportProgressRequest) returns (ReportProgressResponse);
+
+    // Cancel all in-flight and queued tasks under a root_msg_id
+    rpc CancelTaskTree(CancelTaskTreeRequest) returns (CancelTaskTreeResponse);
 }
 
 // Create Consumer request
@@ -159,6 +168,45 @@ message NackRequest {
 
 message NackResponse {
     uint64 request_id = 1;
+}
+
+message ExtendVisibilityRequest {
+    uint64 request_id = 1;
+    MsgID msg_id = 2;
+    string subscription_name = 3;
+    uint64 extension_ms = 4;
+}
+
+message ExtendVisibilityResponse {
+    uint64 request_id = 1;
+    bool success = 2;
+    uint64 new_deadline_ms = 3;
+}
+
+message ReportProgressRequest {
+    uint64 request_id = 1;
+    MsgID msg_id = 2;
+    string subscription_name = 3;
+    bytes checkpoint = 4;
+    uint64 extension_ms = 5;
+}
+
+message ReportProgressResponse {
+    uint64 request_id = 1;
+    bool accepted = 2;
+}
+
+message CancelTaskTreeRequest {
+    uint64 request_id = 1;
+    string topic_name = 2;
+    string root_msg_id = 3;
+    string reason = 4;
+}
+
+message CancelTaskTreeResponse {
+    uint64 request_id = 1;
+    bool cancelled = 2;
+    uint32 evicted_in_flight = 3;
 }
 
 // ============================================================================================

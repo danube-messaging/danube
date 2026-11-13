@@ -5,7 +5,7 @@
 //! Core invariant: at most ONE message per routing key is in-flight at any time.
 //! Additional messages for the same key are queued in `blocked_queue`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use danube_core::message::StreamMessage;
 
@@ -37,6 +37,9 @@ pub(crate) struct InFlightWindow {
     /// The first offset we've seen (for contiguous cursor initialization).
     first_offset: Option<u64>,
 
+    /// Highest WAL offset polled so far (used by `SubscriptionEngine::has_unpolled_messages`).
+    highest_polled_offset: Option<u64>,
+
     /// Maximum number of in-flight + blocked messages.
     max_window_size: usize,
 
@@ -45,6 +48,18 @@ pub(crate) struct InFlightWindow {
 
     /// Maximum in-flight messages per consumer before backpressure kicks in.
     max_per_consumer: usize,
+
+    /// Per-key count of currently in-flight entries.
+    key_in_flight_counts: HashMap<String, usize>,
+
+    /// Per-key sum of compute_cost_units for currently in-flight entries.
+    key_in_flight_cost: HashMap<String, u64>,
+
+    /// Sum of compute_cost_units across all currently in-flight entries.
+    total_in_flight_cost: u64,
+
+    /// Total in-flight compute cost budget shared fairly across competing keys.
+    max_cost_budget: u64,
 }
 
 /// An in-flight message entry.
@@ -53,10 +68,12 @@ pub(crate) struct InFlightEntry {
     pub(crate) delivery: PendingDelivery,
     pub(crate) routing_key: String,
     pub(crate) consumer_id: u64,
+    pub(crate) cost_units: u64,
 }
 
 impl InFlightWindow {
     pub(crate) fn new(max_window_size: usize) -> Self {
+        let max_cost_budget = (max_window_size as u64).saturating_mul(10).max(10);
         Self {
             in_flight: BTreeMap::new(),
             active_keys: HashMap::new(),
@@ -64,9 +81,14 @@ impl InFlightWindow {
             acked_offsets: BTreeSet::new(),
             safe_cursor: None,
             first_offset: None,
+            highest_polled_offset: None,
             max_window_size,
             per_consumer_in_flight: HashMap::new(),
             max_per_consumer: 1_000,
+            key_in_flight_counts: HashMap::new(),
+            key_in_flight_cost: HashMap::new(),
+            total_in_flight_cost: 0,
+            max_cost_budget,
         }
     }
 
@@ -93,19 +115,79 @@ impl InFlightWindow {
         consumer_id: u64,
         delivery: PendingDelivery,
     ) {
+        let cost_units = u64::from(delivery.message.compute_cost_units().unwrap_or(1).max(1));
         self.active_keys.insert(routing_key.clone(), offset);
+        *self
+            .key_in_flight_counts
+            .entry(routing_key.clone())
+            .or_insert(0) += 1;
+        *self
+            .key_in_flight_cost
+            .entry(routing_key.clone())
+            .or_insert(0) += cost_units;
+        self.total_in_flight_cost = self.total_in_flight_cost.saturating_add(cost_units);
         self.in_flight.insert(
             offset,
             InFlightEntry {
                 delivery,
                 routing_key,
                 consumer_id,
+                cost_units,
             },
         );
         *self.per_consumer_in_flight.entry(consumer_id).or_insert(0) += 1;
         if self.first_offset.is_none() {
             self.first_offset = Some(offset);
         }
+    }
+
+    fn decrement_entry_tracking(&mut self, entry: &InFlightEntry) {
+        if let Some(count) = self.per_consumer_in_flight.get_mut(&entry.consumer_id) {
+            *count = count.saturating_sub(1);
+        }
+        if let Some(kc) = self.key_in_flight_counts.get_mut(&entry.routing_key) {
+            *kc = kc.saturating_sub(1);
+            if *kc == 0 {
+                self.key_in_flight_counts.remove(&entry.routing_key);
+            }
+        }
+        if let Some(cost) = self.key_in_flight_cost.get_mut(&entry.routing_key) {
+            *cost = cost.saturating_sub(entry.cost_units);
+            if *cost == 0 {
+                self.key_in_flight_cost.remove(&entry.routing_key);
+            }
+        }
+        self.total_in_flight_cost = self.total_in_flight_cost.saturating_sub(entry.cost_units);
+    }
+
+    /// Returns whether `key` may dispatch a message of `msg_cost` without exceeding its
+    /// fair share of compute cost while other keys are active or waiting.
+    pub(crate) fn can_dispatch_key_fair(&self, key: &str, msg_cost: u64) -> bool {
+        let mut distinct: HashSet<&str> =
+            self.key_in_flight_counts.keys().map(String::as_str).collect();
+        for msg in &self.blocked_queue {
+            distinct.insert(msg.effective_routing_key());
+        }
+        distinct.insert(key);
+        if distinct.len() < 2 {
+            return true;
+        }
+        let key_cost = self.key_in_flight_cost.get(key).copied().unwrap_or(0);
+        if key_cost == 0 {
+            return true;
+        }
+        let fair_share = (self.max_cost_budget / distinct.len() as u64).max(1);
+        key_cost.saturating_add(msg_cost.max(1)) <= fair_share
+    }
+
+    #[cfg(test)]
+    pub(crate) fn total_in_flight_cost(&self) -> u64 {
+        self.total_in_flight_cost
+    }
+
+    #[cfg(test)]
+    pub(crate) fn key_in_flight_cost(&self, key: &str) -> u64 {
+        self.key_in_flight_cost.get(key).copied().unwrap_or(0)
     }
 
     /// Push a blocked message (key is currently in-flight).
@@ -118,6 +200,13 @@ impl InFlightWindow {
         if self.first_offset.is_none() {
             self.first_offset = Some(offset);
         }
+        self.highest_polled_offset =
+            Some(self.highest_polled_offset.map_or(offset, |h| h.max(offset)));
+    }
+
+    /// Return the highest WAL offset polled into this window (if any).
+    pub(crate) fn highest_polled_offset(&self) -> Option<u64> {
+        self.highest_polled_offset
     }
 
     /// Process an ACK. Returns:
@@ -130,10 +219,7 @@ impl InFlightWindow {
             if self.active_keys.get(&key) == Some(&offset) {
                 self.active_keys.remove(&key);
             }
-            // Decrement per-consumer count
-            if let Some(count) = self.per_consumer_in_flight.get_mut(&entry.consumer_id) {
-                *count = count.saturating_sub(1);
-            }
+            self.decrement_entry_tracking(&entry);
             Some(key)
         } else {
             None
@@ -144,6 +230,63 @@ impl InFlightWindow {
         let new_cursor = self.advance_safe_cursor();
 
         (unblocked_key, new_cursor)
+    }
+
+    pub(crate) fn extend_lease(&mut self, offset: u64, extension_ms: u64) -> Option<u64> {
+        let entry = self.in_flight.get_mut(&offset)?;
+        entry.delivery.extend_lease(extension_ms);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Some(now_ms.saturating_add(extension_ms))
+    }
+
+    pub(crate) fn set_checkpoint(
+        &mut self,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.in_flight.get_mut(&offset) else {
+            return false;
+        };
+        entry.delivery.set_checkpoint(checkpoint, extension_ms).is_ok()
+    }
+
+    pub(crate) fn collect_checkpoints(&self) -> std::collections::BTreeMap<u64, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for (offset, entry) in &self.in_flight {
+            if let Some(b64) = entry.delivery.checkpoint_b64() {
+                out.insert(*offset, b64);
+            }
+        }
+        out
+    }
+
+    pub(crate) fn evict_cancelled_roots(
+        &mut self,
+        cache: &crate::dispatcher::pending_delivery::CancelledRootsCache,
+    ) -> (u32, Vec<String>, Option<u64>) {
+        let cancelled_offsets: Vec<u64> = self
+            .in_flight
+            .iter()
+            .filter(|(_, e)| cache.is_cancelled(&e.delivery.message))
+            .map(|(off, _)| *off)
+            .collect();
+        let count = cancelled_offsets.len() as u32;
+        let mut unblocked = Vec::new();
+        let mut latest_safe = None;
+        for off in cancelled_offsets {
+            let (key_opt, safe_opt) = self.on_ack(off);
+            if let Some(k) = key_opt {
+                unblocked.push(k);
+            }
+            if let Some(s) = safe_opt {
+                latest_safe = Some(s);
+            }
+        }
+        (count, unblocked, latest_safe)
     }
 
     /// Process a skipped message (filtered out — no consumer wants it).
@@ -204,9 +347,7 @@ impl InFlightWindow {
             if self.active_keys.get(&entry.routing_key) == Some(&offset) {
                 self.active_keys.remove(&entry.routing_key);
             }
-            if let Some(count) = self.per_consumer_in_flight.get_mut(&entry.consumer_id) {
-                *count = count.saturating_sub(1);
-            }
+            self.decrement_entry_tracking(&entry);
             Some(entry)
         } else {
             None
@@ -255,8 +396,9 @@ impl InFlightWindow {
             if let Some(entry) = self.in_flight.remove(offset) {
                 if self.active_keys.get(&entry.routing_key) == Some(offset) {
                     self.active_keys.remove(&entry.routing_key);
-                    freed_keys.push(entry.routing_key);
+                    freed_keys.push(entry.routing_key.clone());
                 }
+                self.decrement_entry_tracking(&entry);
                 // Mark as acked so safe_cursor can advance past this offset.
                 // The message is lost (consumer is gone), but the cursor must not stall.
                 self.acked_offsets.insert(*offset);
@@ -437,5 +579,33 @@ mod tests {
         let d2 = PendingDelivery::new(msg2.clone());
         window.mark_dispatched(2, "key-2".to_string(), 100, d2);
         assert!(!window.has_capacity()); // 2 in-flight, limit 2
+    }
+
+    #[test]
+    fn fair_key_cost_tracking_and_throttling() {
+        let mut window = InFlightWindow::new(4); // max_cost_budget = 40
+        let mut heavy = make_msg(1, "heavy-key");
+        heavy
+            .attributes
+            .insert(danube_core::message::ATTR_COMPUTE_COST_UNITS.to_string(), "25".to_string());
+        let mut light = make_msg(2, "light-key");
+        light
+            .attributes
+            .insert(danube_core::message::ATTR_COMPUTE_COST_UNITS.to_string(), "1".to_string());
+
+        window.mark_dispatched(1, "heavy-key".to_string(), 100, PendingDelivery::new(heavy));
+        assert_eq!(window.total_in_flight_cost(), 25);
+        assert_eq!(window.key_in_flight_cost("heavy-key"), 25);
+
+        // With light-key waiting in blocked_queue, competing keys = 2 -> fair share = 20.
+        // light-key has 0 active cost so it MUST be allowed (starvation-free),
+        // while heavy-key already exceeds fair share and is throttled for additional work.
+        window.push_blocked(light);
+        assert!(window.can_dispatch_key_fair("light-key", 1));
+        assert!(!window.can_dispatch_key_fair("heavy-key", 5));
+
+        window.on_ack(1);
+        assert_eq!(window.total_in_flight_cost(), 0);
+        assert_eq!(window.key_in_flight_cost("heavy-key"), 0);
     }
 }

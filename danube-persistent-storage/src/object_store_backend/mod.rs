@@ -5,6 +5,7 @@ mod store;
 pub use config::ObjectStoreBackend;
 pub(crate) use config::BackendConfig;
 pub use durable_store::ObjStoreDurable;
+pub use store::probe_object_store;
 pub(crate) use store::ObjStore;
 
 #[cfg(test)]

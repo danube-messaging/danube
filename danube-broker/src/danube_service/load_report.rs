@@ -256,7 +256,7 @@ pub(crate) async fn generate_load_report(
                 producer_count: snapshot.map(|s| s.active_producers).unwrap_or(0),
                 consumer_count: snapshot.map(|s| s.active_consumers).unwrap_or(0),
                 subscription_count: snapshot.map(|s| s.active_subscriptions).unwrap_or(0),
-                backlog_messages: 0, // Skipped for now (not needed for ranking)
+                backlog_messages: snapshot.map(|s| s.total_backlog_messages).unwrap_or(0),
             }
         })
         .collect();

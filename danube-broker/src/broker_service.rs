@@ -128,6 +128,11 @@ impl BrokerService {
         &self.metrics_collector
     }
 
+    /// Access the storage factory for dynamic tiering / live object store reconfiguration.
+    pub(crate) fn storage_factory(&self) -> &StorageFactory {
+        &self.topic_manager.storage_factory
+    }
+
     // =====================================================================
     // Client lookup and topic access
     // =====================================================================
@@ -612,6 +617,41 @@ impl BrokerService {
         self.topic_registry.nack_message_async(nack_msg).await
     }
 
+    pub(crate) async fn extend_visibility_async(
+        &self,
+        topic_name: &str,
+        subscription_name: &str,
+        offset: u64,
+        extension_ms: u64,
+    ) -> Result<Option<u64>> {
+        self.topic_registry
+            .extend_visibility_async(topic_name, subscription_name, offset, extension_ms)
+            .await
+    }
+
+    pub(crate) async fn report_progress_async(
+        &self,
+        topic_name: &str,
+        subscription_name: &str,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<bool> {
+        self.topic_registry
+            .report_progress_async(topic_name, subscription_name, offset, checkpoint, extension_ms)
+            .await
+    }
+
+    pub(crate) async fn cancel_task_tree_async(
+        &self,
+        topic_name: &str,
+        root_msg_id: String,
+    ) -> Result<u32> {
+        self.topic_registry
+            .cancel_task_tree_async(topic_name, root_msg_id)
+            .await
+    }
+
     // unsubscribe subscription from topic
     // only if subscription is empty, so no consumers attached
     /// Unsubscribes a subscription from a topic if safe (no active consumers).
@@ -684,33 +724,28 @@ impl BrokerService {
 // =====================================================================
 // Utilities
 // =====================================================================
-/// Validates that the topic string has the required format `/namespace/topic-name`.
+/// Validates that the topic string has the required canonical format `/{namespace}/{topic-name}`.
+/// Allows `.` in segment names (e.g., `/default/orders.v1`) and hierarchical `/` paths
+/// (e.g., `/iot/sensors/temp`).
 pub(crate) fn validate_topic_format(input: &str) -> bool {
-    let parts: Vec<&str> = input.split('/').collect();
-
-    if parts.len() != 3 {
-        return false;
-    }
-
-    for part in parts.iter() {
-        if !part
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            return false;
-        }
-    }
-
-    true
+    danube_core::topic_path::TopicPath::is_valid_canonical(input)
 }
 
-// extract the namespace from a topic
-// example from topic /ns_name/topic_name returns the  ns_name
+/// Parse and normalize a topic path (accepts `orders.v1`, `iot/sensors/temp`, or `/ns/topic`).
+pub(crate) fn normalize_topic_path(input: &str) -> Result<String, Status> {
+    danube_core::topic_path::TopicPath::parse(input)
+        .map(|tp| tp.full_path().to_string())
+        .map_err(|_| {
+            Status::invalid_argument(format!(
+                "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
+                input
+            ))
+        })
+}
+
 /// Extracts the namespace component from a validated topic string.
 fn get_nsname_from_topic(topic_name: &str) -> &str {
     // assuming that the topic name has already been validated.
     let parts: Vec<&str> = topic_name.split('/').collect();
-    let ns_name = parts.get(1).unwrap();
-
-    ns_name
+    parts.get(1).copied().unwrap_or("default")
 }

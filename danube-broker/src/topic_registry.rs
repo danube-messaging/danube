@@ -86,6 +86,51 @@ impl TopicRegistry {
         }
     }
 
+    pub async fn extend_visibility_async(
+        &self,
+        topic_name: &str,
+        subscription_name: &str,
+        offset: u64,
+        extension_ms: u64,
+    ) -> Result<Option<u64>> {
+        if let Some(topic) = self.get_topic(topic_name) {
+            topic
+                .extend_visibility(subscription_name, offset, extension_ms)
+                .await
+        } else {
+            Err(anyhow::anyhow!("Topic {} not found in registry", topic_name))
+        }
+    }
+
+    pub async fn report_progress_async(
+        &self,
+        topic_name: &str,
+        subscription_name: &str,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<bool> {
+        if let Some(topic) = self.get_topic(topic_name) {
+            topic
+                .report_progress(subscription_name, offset, checkpoint, extension_ms)
+                .await
+        } else {
+            Err(anyhow::anyhow!("Topic {} not found in registry", topic_name))
+        }
+    }
+
+    pub async fn cancel_task_tree_async(
+        &self,
+        topic_name: &str,
+        root_msg_id: String,
+    ) -> Result<u32> {
+        if let Some(topic) = self.get_topic(topic_name) {
+            topic.cancel_task_tree(root_msg_id).await
+        } else {
+            Err(anyhow::anyhow!("Topic {} not found in registry", topic_name))
+        }
+    }
+
     /// Get a topic from the registry
     pub fn get_topic(&self, topic_name: &str) -> Option<Arc<Topic>> {
         self.topics

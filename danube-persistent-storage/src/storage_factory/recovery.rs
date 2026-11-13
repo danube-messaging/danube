@@ -82,7 +82,7 @@ impl StorageFactory {
                 warn!(target = "storage_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
-        } else if self.mode.requires_local_wal_staging() {
+        } else if self.current_mode().requires_local_wal_staging() {
             return Err(PersistentStorageError::Other(
                 "export-later durable mode requires wal.dir for durable WAL state".to_string(),
             ));
@@ -201,9 +201,9 @@ impl StorageFactory {
     }
 
     pub(super) fn durable_store_for_topic(&self) -> Result<Option<Arc<dyn DurableStore>>, PersistentStorageError> {
-        match self.durable_store.clone() {
+        match self.current_durable_store() {
             Some(store) => Ok(Some(store)),
-            None if self.mode.requires_separate_durable_backend() => Err(
+            None if self.current_mode().requires_separate_durable_backend() => Err(
                 PersistentStorageError::Other(
                     "storage mode requires separate durable backend".to_string(),
                 ),
@@ -280,7 +280,8 @@ impl StorageFactory {
         // Download un-exported messages from Valkey's stream and replay
         // them into the fresh WAL so consumers, segment exporter, and
         // subscription cursors all work normally.
-        let valkey_start_offset = if self.mode.requires_separate_durable_backend() {
+        let mode = self.current_mode();
+        let valkey_start_offset = if mode.requires_separate_durable_backend() {
             catalog_current_segment.as_ref().map(|s| s.end_offset.saturating_add(1)).unwrap_or(0)
         } else {
             0
@@ -289,7 +290,7 @@ impl StorageFactory {
         if let Some((min_offset, messages)) =
             self.download_valkey_unexported_stream(topic_path, valkey_start_offset).await
         {
-            let has_durable_backend = self.mode.requires_separate_durable_backend();
+            let has_durable_backend = mode.requires_separate_durable_backend();
             return RecoveryStartDecision {
                 initial_offset: Some(min_offset),
                 resumed_from_sealed: has_durable_backend,
@@ -302,7 +303,7 @@ impl StorageFactory {
         // Only applicable when the storage mode has a separate durable backend
         // (shared_fs, object_store). Resume from the end of the last exported
         // segment.
-        if self.mode.requires_separate_durable_backend() {
+        if mode.requires_separate_durable_backend() {
             if let Some(segment) = catalog_current_segment {
                 return RecoveryStartDecision {
                     initial_offset: Some(segment.end_offset.saturating_add(1)),

@@ -2,8 +2,10 @@ use crate::broker_server::DanubeServerImpl;
 use crate::message::{AckMessage, NackMessage};
 use crate::subscription::SubscriptionOptions;
 use danube_core::proto::{
-    consumer_service_server::ConsumerService, AckRequest, AckResponse, ConsumerRequest,
-    ConsumerResponse, NackRequest, NackResponse, ReceiveRequest, StreamMessage,
+    consumer_service_server::ConsumerService, AckRequest, AckResponse, CancelTaskTreeRequest,
+    CancelTaskTreeResponse, ConsumerRequest, ConsumerResponse, ExtendVisibilityRequest,
+    ExtendVisibilityResponse, NackRequest, NackResponse, ReceiveRequest, ReportProgressRequest,
+    ReportProgressResponse, StreamMessage,
 };
 
 use crate::broker_metrics::BROKER_RPC_TOTAL;
@@ -25,7 +27,8 @@ impl ConsumerService for DanubeServerImpl {
         request: Request<ConsumerRequest>,
     ) -> Result<Response<ConsumerResponse>, tonic::Status> {
         let security_context = get_security_context(&request)?;
-        let req = request.into_inner();
+        let mut req = request.into_inner();
+        req.topic_name = crate::broker_service::normalize_topic_path(&req.topic_name)?;
 
         enforce_authorization(
             &security_context,
@@ -290,5 +293,108 @@ impl ConsumerService for DanubeServerImpl {
                 Err(status)
             }
         }
+    }
+
+    async fn extend_visibility(
+        &self,
+        request: tonic::Request<ExtendVisibilityRequest>,
+    ) -> std::result::Result<tonic::Response<ExtendVisibilityResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+        let msg_id = req
+            .msg_id
+            .ok_or_else(|| Status::invalid_argument("missing msg_id"))?;
+        let topic_name = crate::broker_service::normalize_topic_path(&msg_id.topic_name)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
+
+        let new_deadline = self
+            .service
+            .extend_visibility_async(
+                &topic_name,
+                &req.subscription_name,
+                msg_id.topic_offset,
+                req.extension_ms,
+            )
+            .await
+            .map_err(|e| Status::internal(format!("Error extending visibility: {}", e)))?;
+
+        Ok(Response::new(ExtendVisibilityResponse {
+            request_id: req.request_id,
+            success: new_deadline.is_some(),
+            new_deadline_ms: new_deadline.unwrap_or(0),
+        }))
+    }
+
+    async fn report_progress(
+        &self,
+        request: tonic::Request<ReportProgressRequest>,
+    ) -> std::result::Result<tonic::Response<ReportProgressResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+        if req.checkpoint.len() > crate::dispatcher::pending_delivery::MAX_CHECKPOINT_BYTES {
+            return Err(Status::invalid_argument("checkpoint exceeds 64 KiB limit"));
+        }
+        let msg_id = req
+            .msg_id
+            .ok_or_else(|| Status::invalid_argument("missing msg_id"))?;
+        let topic_name = crate::broker_service::normalize_topic_path(&msg_id.topic_name)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
+
+        let accepted = self
+            .service
+            .report_progress_async(
+                &topic_name,
+                &req.subscription_name,
+                msg_id.topic_offset,
+                req.checkpoint,
+                req.extension_ms,
+            )
+            .await
+            .map_err(|e| Status::internal(format!("Error reporting progress: {}", e)))?;
+
+        Ok(Response::new(ReportProgressResponse {
+            request_id: req.request_id,
+            accepted,
+        }))
+    }
+
+    async fn cancel_task_tree(
+        &self,
+        request: tonic::Request<CancelTaskTreeRequest>,
+    ) -> std::result::Result<tonic::Response<CancelTaskTreeResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+        let topic_name = crate::broker_service::normalize_topic_path(&req.topic_name)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
+
+        let evicted = self
+            .service
+            .cancel_task_tree_async(&topic_name, req.root_msg_id)
+            .await
+            .map_err(|e| Status::internal(format!("Error cancelling task tree: {}", e)))?;
+
+        Ok(Response::new(CancelTaskTreeResponse {
+            request_id: req.request_id,
+            cancelled: true,
+            evicted_in_flight: evicted,
+        }))
     }
 }
