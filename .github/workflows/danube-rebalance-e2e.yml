@@ -34,7 +34,7 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p danube-data temp
-          cat > temp/rebalance_override.yaml <<EOF
+          cat > temp/rebalance_override.yaml <<'EOF'
           load_manager:
             assignment_strategy: "fair"
             load_report_interval_seconds: 5
@@ -48,7 +48,6 @@ jobs:
               min_topic_age_seconds: 30
               blacklist_topics: []
           EOF
-          sed -i 's/^          //' temp/rebalance_override.yaml
 
           nohup ./target/release/danube up \
             --recovery-config temp/rebalance_override.yaml \

@@ -173,6 +173,13 @@ async fn agentic_request_reply_roundtrip() -> Result<()> {
     let reply_topic = test_utils::unique_topic("/default/agentic_rpc_reply");
 
     // Pre-create topics so both sides resolve ownership cleanly
+    let mut req_init = client
+        .new_producer()
+        .with_topic(&req_topic)
+        .with_name("agentic_req_init")
+        .build()?;
+    req_init.create().await?;
+
     let mut req_consumer = client
         .new_consumer()
         .with_topic(req_topic.clone())

@@ -131,7 +131,7 @@ jobs:
           mkdir -p danube-data/edge-1
 
           # Generate edge recovery config for custom topic mappings in the test
-          cat > temp/edge_override.yaml <<EOF
+          cat > temp/edge_override.yaml <<'EOF'
           edge:
             edge:
               edge_name: "edge1"
@@ -153,9 +153,6 @@ jobs:
                 - mqtt_pattern: "device/+/raw"
                   danube_topic: "/edge1/raw"
           EOF
-
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' temp/edge_override.yaml
 
           ./target/release/danube up \
             --mode edge \

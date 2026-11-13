@@ -150,6 +150,23 @@ impl DanubeClient {
         let attrs =
             build_request_reply_attributes(attributes, &correlation_id, reply_topic);
 
+        let reply_topic_missing = match self
+            .lookup_service
+            .topic_partitions(&self.uri, reply_topic)
+            .await
+        {
+            Ok(partitions) => partitions.is_empty(),
+            Err(_) => true,
+        };
+        if reply_topic_missing {
+            let mut reply_init = self
+                .new_producer()
+                .with_topic(reply_topic)
+                .with_name(format!("rr-reply-init-{correlation_id}"))
+                .build()?;
+            reply_init.create().await?;
+        }
+
         let mut reply_consumer = self
             .new_consumer()
             .with_topic(reply_topic)

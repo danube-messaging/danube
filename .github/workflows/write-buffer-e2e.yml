@@ -80,7 +80,7 @@ jobs:
         run: |
           mkdir -p temp danube-data
 
-          cat > temp/write_buffer_override.yaml <<EOF
+          cat > temp/write_buffer_override.yaml <<'EOF'
           storage:
             mode: local
             local_wal_root: "./danube-data/broker-1/wal"
@@ -94,7 +94,6 @@ jobs:
               on_wait_timeout: fail
               max_cached_closed_segments: 5
           EOF
-          sed -i 's/^          //' temp/write_buffer_override.yaml
 
           ./target/release/danube up \
             --recovery-config temp/write_buffer_override.yaml \

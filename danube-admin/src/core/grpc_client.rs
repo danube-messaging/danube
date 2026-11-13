@@ -26,14 +26,12 @@ impl AdminGrpcClient {
             .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()); // backward compat
 
         // Accept either full URL (http/https) or host:port; default to http if no scheme
-        let endpoint_url =
+        let mut endpoint_url =
             if config.endpoint.starts_with("http://") || config.endpoint.starts_with("https://") {
                 config.endpoint.clone()
             } else {
                 format!("http://{}", config.endpoint)
             };
-
-        let mut endpoint = Endpoint::from_shared(endpoint_url.clone())?.tcp_nodelay(true);
 
         // TLS enablement: https scheme OR enable_tls=true OR DANUBE_ADMIN_TLS=true
         let enable_tls = config.enable_tls.unwrap_or_else(|| {
@@ -42,6 +40,12 @@ impl AdminGrpcClient {
                     .map(|v| v == "true")
                     .unwrap_or(false)
         });
+
+        if enable_tls && endpoint_url.starts_with("http://") {
+            endpoint_url = endpoint_url.replacen("http://", "https://", 1);
+        }
+
+        let mut endpoint = Endpoint::from_shared(endpoint_url.clone())?.tcp_nodelay(true);
 
         if enable_tls {
             let domain = config

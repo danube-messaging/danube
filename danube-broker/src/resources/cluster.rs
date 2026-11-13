@@ -89,18 +89,19 @@ impl ClusterResources {
     // search for /{namespace}/{topic} as part of the  /cluster/brokers/*
     // example /cluster/brokers/{broker_id}/{namespace}/{topic})
     pub(crate) async fn get_broker_for_topic(&self, topic_name: &str) -> Option<String> {
+        let normalized = if topic_name.starts_with('/') {
+            topic_name.to_string()
+        } else {
+            format!("/{}", topic_name)
+        };
         let keys = self
             .store
             .get_childrens(BASE_BROKER_PATH)
             .await
             .unwrap_or_default();
         for path in keys {
-            if let Some(pos) = path.find(topic_name) {
-                let parts: Vec<&str> = path[..pos].split('/').collect();
-                if parts.len() > 3 {
-                    let broker_id = parts[3];
-                    return Some(broker_id.to_string());
-                }
+            if let Some(broker_id) = match_broker_for_topic_path(&path, &normalized) {
+                return Some(broker_id.to_string());
             }
         }
         None
@@ -295,5 +296,45 @@ impl ClusterResources {
             out.insert(broker_id.clone(), mode);
         }
         out
+    }
+}
+
+fn match_broker_for_topic_path<'a>(path: &'a str, normalized_topic: &str) -> Option<&'a str> {
+    let prefix = path.strip_suffix(normalized_topic)?;
+    let parts: Vec<&str> = prefix.split('/').collect();
+    if parts.len() == 4 && parts[1] == "cluster" && parts[2] == "brokers" && !parts[3].is_empty() {
+        Some(parts[3])
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_broker_for_topic_path;
+
+    #[test]
+    fn matches_exact_topic_suffix_without_prefix_collision() {
+        assert_eq!(
+            match_broker_for_topic_path(
+                "/cluster/brokers/100/default/test-topic-12",
+                "/default/test-topic-1"
+            ),
+            None
+        );
+        assert_eq!(
+            match_broker_for_topic_path(
+                "/cluster/brokers/200/default/test-topic-1",
+                "/default/test-topic-1"
+            ),
+            Some("200")
+        );
+        assert_eq!(
+            match_broker_for_topic_path(
+                "/cluster/brokers/300/iot/sensors/temp",
+                "/iot/sensors/temp"
+            ),
+            Some("300")
+        );
     }
 }
