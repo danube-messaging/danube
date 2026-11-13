@@ -540,6 +540,30 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn seek_subscription(
+        &self,
+        req: admin::SeekSubscriptionRequest,
+    ) -> Result<admin::SeekSubscriptionResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.seek_subscription(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn replay_dlq(
+        &self,
+        req: admin::ReplayDlqRequest,
+    ) -> Result<admin::ReplayDlqResponse> {
+        let mut client = admin::topic_admin_client::TopicAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.replay_dlq(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     // ===== SCHEMA REGISTRY METHODS =====
 
     pub async fn list_subjects(

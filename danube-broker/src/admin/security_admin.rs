@@ -123,6 +123,14 @@ impl SecurityAdmin for DanubeAdminImpl {
             .map_err(|e| Status::internal(format!("failed to store role: {e}")))?;
 
         info!(role = %def.name, "created role");
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "create_role",
+            &def.name,
+            serde_json::json!({ "permissions": def.permissions, "system": def.system }),
+        )
+        .await;
         Ok(Response::new(CreateRoleResponse { success: true }))
     }
 
@@ -236,6 +244,14 @@ impl SecurityAdmin for DanubeAdminImpl {
             .map_err(|e| Status::internal(format!("failed to delete role: {e}")))?;
 
         info!(role = %req.name, "deleted role");
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "delete_role",
+            &req.name,
+            serde_json::json!({}),
+        )
+        .await;
         Ok(Response::new(DeleteRoleResponse { success: true }))
     }
 
@@ -291,6 +307,19 @@ impl SecurityAdmin for DanubeAdminImpl {
             .map_err(|e| Status::internal(format!("failed to store binding: {e}")))?;
 
         info!(binding_id = %def.id, "created binding");
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "create_binding",
+            &def.id,
+            serde_json::json!({
+                "principal": binding.principal_name,
+                "roles": binding.role_names,
+                "scope": binding.scope,
+                "resource_name": binding.resource_name,
+            }),
+        )
+        .await;
         Ok(Response::new(CreateBindingResponse { success: true }))
     }
 
@@ -427,6 +456,14 @@ impl SecurityAdmin for DanubeAdminImpl {
             .map_err(|e| Status::internal(format!("failed to delete binding: {e}")))?;
 
         info!(binding_id = %req.binding_id, "deleted binding");
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "delete_binding",
+            &req.binding_id,
+            serde_json::json!({ "scope": req.scope, "resource_name": req.resource_name }),
+        )
+        .await;
         Ok(Response::new(DeleteBindingResponse { success: true }))
     }
 

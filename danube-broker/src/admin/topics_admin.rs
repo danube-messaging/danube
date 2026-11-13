@@ -13,8 +13,9 @@ use danube_core::admin_proto::{
     GetSubscriptionDispatchConfigResponse, GetSubscriptionFailurePolicyRequest,
     GetSubscriptionFailurePolicyResponse, GetTopicTimeRangeResponse, InferTopicSchemaRequest,
     InferTopicSchemaResponse, NamespaceRequest, NewTopicRequest, PartitionedTopicRequest,
-    PeekMessagesRequest, PeekMessagesResponse, PeekedMessage, SampleTopicJsonRequest,
-    SampleTopicJsonResponse, SetSubscriptionDispatchConfigRequest,
+    PeekMessagesRequest, PeekMessagesResponse, PeekedMessage, ReplayDlqRequest,
+    ReplayDlqResponse, SampleTopicJsonRequest, SampleTopicJsonResponse, SeekSubscriptionRequest,
+    SeekSubscriptionResponse, SetSubscriptionDispatchConfigRequest,
     SetSubscriptionFailurePolicyRequest,
     SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
     SubscriptionDispatchConfig as AdminSubscriptionDispatchConfig,
@@ -248,6 +249,15 @@ impl TopicAdmin for DanubeAdminImpl {
             }
         }
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "create_partitioned_topic",
+            &req.base_name,
+            serde_json::json!({ "partitions": req.partitions, "intent": req.intent }),
+        )
+        .await;
+
         Ok(tonic::Response::new(TopicResponse { success: true }))
     }
 
@@ -358,7 +368,17 @@ impl TopicAdmin for DanubeAdminImpl {
         let service = self.broker_service.as_ref();
 
         let success = match service.unsubscribe(&req.subscription, &req.topic).await {
-            Ok(()) => true,
+            Ok(()) => {
+                let _ = crate::audit::record_audit_event(
+                    &self.resources.store,
+                    security_context.principal.principal_name(),
+                    "unsubscribe",
+                    &req.topic,
+                    serde_json::json!({ "subscription": req.subscription }),
+                )
+                .await;
+                true
+            }
             Err(err) => {
                 let status = Status::not_found(format!(
                     "Unable to unsubscribe the subscription {} due to error: {}",
@@ -442,6 +462,19 @@ impl TopicAdmin for DanubeAdminImpl {
             .set_subscription_failure_policy(&req.subscription, &req.topic, &failure_policy)
             .await
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "set_subscription_failure_policy",
+            &req.topic,
+            serde_json::json!({
+                "subscription": req.subscription,
+                "max_redelivery_count": failure_policy.max_redelivery_count,
+                "poison_policy": format!("{:?}", failure_policy.poison_policy),
+            }),
+        )
+        .await;
 
         Ok(Response::new(SubscriptionResponse { success: true }))
     }
@@ -660,6 +693,18 @@ impl TopicAdmin for DanubeAdminImpl {
             max_unacked_messages = max_unacked,
             "set subscription dispatch config"
         );
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "set_subscription_dispatch_config",
+            &req.topic,
+            serde_json::json!({
+                "subscription": req.subscription,
+                "max_unacked_messages": max_unacked,
+            }),
+        )
+        .await;
 
         Ok(Response::new(SubscriptionResponse { success: true }))
     }
@@ -1239,6 +1284,230 @@ impl TopicAdmin for DanubeAdminImpl {
             branched_up_to_offset: target_max_offset.unwrap_or(0),
             copied_segments: copied_segments as u32,
             copied_local_messages,
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn seek_subscription(
+        &self,
+        request: Request<SeekSubscriptionRequest>,
+    ) -> std::result::Result<Response<SeekSubscriptionResponse>, Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        )
+        .await?;
+
+        if req.subscription.trim().is_empty() {
+            return Err(Status::invalid_argument("subscription must be provided"));
+        }
+
+        let resolved_offset = if let Some(to_offset) = req.to_offset {
+            to_offset
+        } else if let Some(to_ts_ns) = req.to_timestamp_ns {
+            let store = self.resolve_topic_store(&req.topic).await?;
+            let head = store.current_offset();
+            if head == 0 {
+                0
+            } else {
+                let mut found: Option<u64> = None;
+                let mut cursor = 0u64;
+                while cursor < head {
+                    let chunk = collect_topic_messages(&store, cursor, 1_000).await?;
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    let last_off = chunk.last().map(|m| m.msg_id.topic_offset).unwrap_or(cursor);
+                    if let Some(m) = chunk.iter().find(|m| m.publish_time >= to_ts_ns) {
+                        found = Some(m.msg_id.topic_offset);
+                        break;
+                    }
+                    cursor = last_off.saturating_add(1);
+                }
+                found.unwrap_or(head)
+            }
+        } else {
+            return Err(Status::invalid_argument(
+                "must specify either to_offset or to_timestamp_ns",
+            ));
+        };
+
+        self.resources
+            .topic
+            .set_subscription_next_offset(&req.subscription, &req.topic, resolved_offset)
+            .await
+            .map_err(|e| Status::internal(format!("failed to persist subscription seek: {e}")))?;
+
+        let trimmed = req.topic.trim_start_matches('/');
+        if let Some(topic) = self
+            .broker_service
+            .topic_registry
+            .get_topic(&req.topic)
+            .or_else(|| self.broker_service.topic_registry.get_topic(trimmed))
+        {
+            topic.unsubscribe(&req.subscription).await;
+        }
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "seek_subscription",
+            &req.topic,
+            serde_json::json!({
+                "subscription": req.subscription,
+                "to_offset": req.to_offset,
+                "to_timestamp_ns": req.to_timestamp_ns,
+                "resolved_offset": resolved_offset,
+            }),
+        )
+        .await;
+
+        Ok(Response::new(SeekSubscriptionResponse {
+            success: true,
+            topic: req.topic,
+            subscription: req.subscription.clone(),
+            resolved_offset,
+            message: format!(
+                "Subscription '{}' cursor reset to deliver starting at offset {}",
+                req.subscription, resolved_offset
+            ),
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn replay_dlq(
+        &self,
+        request: Request<ReplayDlqRequest>,
+    ) -> std::result::Result<Response<ReplayDlqResponse>, Status> {
+        let security_context = get_security_context(&request)?;
+        let req = request.into_inner();
+
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(req.topic.clone()),
+            Permission::ManageTopic,
+            &self.resources.security,
+        )
+        .await?;
+
+        if req.subscription.trim().is_empty() {
+            return Err(Status::invalid_argument("subscription must be provided"));
+        }
+
+        let source_dlq_topic = if let Some(explicit) = req
+            .dlq_topic
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            explicit.to_string()
+        } else if let Ok(Some(policy)) = self
+            .resources
+            .topic
+            .get_subscription_failure_policy(&req.subscription, &req.topic)
+            .await
+        {
+            policy.dead_letter_topic.unwrap_or_else(|| {
+                format!("{}/{}-dlq", req.topic.trim_end_matches('/'), req.subscription)
+            })
+        } else {
+            format!("{}/{}-dlq", req.topic.trim_end_matches('/'), req.subscription)
+        };
+
+        let max_messages = if req.max_messages == 0 {
+            100
+        } else {
+            req.max_messages.min(1_000)
+        };
+
+        let dlq_store = self.resolve_topic_store(&source_dlq_topic).await?;
+        let msgs = collect_topic_messages(&dlq_store, req.start_offset, max_messages).await?;
+
+        let mut replayed_count = 0u32;
+        let mut last_replayed_offset = req.start_offset;
+
+        for mut msg in msgs {
+            let source_offset = msg.msg_id.topic_offset;
+            msg.attributes.retain(|k, _| {
+                !matches!(
+                    k.as_str(),
+                    "x-original-topic"
+                        | "x-original-subscription"
+                        | "x-original-topic-offset"
+                        | "x-original-producer-id"
+                        | "x-original-broker-addr"
+                        | "x-poison-policy"
+                        | "x-delivery-attempt"
+                        | "x-failure-reason"
+                )
+            });
+            msg.attributes
+                .insert("x-danube-replayed-from-dlq".to_string(), source_dlq_topic.clone());
+            msg.attributes
+                .insert("x-danube-replayed-subscription".to_string(), req.subscription.clone());
+            msg.msg_id.producer_id = 0;
+            msg.msg_id.topic_name = req.topic.clone();
+            msg.msg_id.topic_offset = 0;
+            msg.subscription_name = None;
+
+            if let Err(err) = self
+                .broker_service
+                .replicator
+                .publish_message_async(&req.topic, msg.clone())
+                .await
+            {
+                let trimmed = req.topic.trim_start_matches('/');
+                if let Some(topic) = self
+                    .broker_service
+                    .topic_registry
+                    .get_topic(&req.topic)
+                    .or_else(|| self.broker_service.topic_registry.get_topic(trimmed))
+                {
+                    if let Some(store) = topic.topic_store() {
+                        store.store_message(msg).await.map_err(|e| {
+                            Status::internal(format!("failed replaying DLQ message: {e}"))
+                        })?;
+                    } else {
+                        return Err(Status::internal(format!(
+                            "failed replaying DLQ message via replicator: {err}"
+                        )));
+                    }
+                } else {
+                    return Err(Status::internal(format!(
+                        "failed replaying DLQ message via replicator: {err}"
+                    )));
+                }
+            }
+
+            replayed_count += 1;
+            last_replayed_offset = source_offset;
+        }
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "replay_dlq",
+            &req.topic,
+            serde_json::json!({
+                "subscription": req.subscription,
+                "source_dlq_topic": source_dlq_topic,
+                "replayed_count": replayed_count,
+                "last_replayed_offset": last_replayed_offset,
+            }),
+        )
+        .await;
+
+        Ok(Response::new(ReplayDlqResponse {
+            success: true,
+            source_dlq_topic,
+            target_topic: req.topic,
+            replayed_count,
+            last_replayed_offset,
         }))
     }
 }

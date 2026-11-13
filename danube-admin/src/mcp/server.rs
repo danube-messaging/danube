@@ -45,7 +45,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_brokers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::list_brokers(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get the current leader broker in the cluster.
@@ -58,7 +58,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn get_leader(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::get_leader(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get load balance metrics for the cluster.
@@ -72,7 +72,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn get_cluster_balance(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::get_cluster_balance(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Trigger cluster rebalancing to distribute topics evenly across brokers.
@@ -89,7 +89,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::RebalanceParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::trigger_rebalance(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Unload all topics from a broker to prepare for maintenance or removal.
@@ -106,7 +106,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::UnloadBrokerParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::unload_broker(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all namespaces in the cluster.
@@ -119,7 +119,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_namespaces(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::list_namespaces(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Activate a broker to bring it back into service after maintenance.
@@ -135,7 +135,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::ActivateBrokerParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::activate_broker(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get configuration policies for a specific namespace.
@@ -151,7 +151,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::NamespaceParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::get_namespace_policies(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Create a new namespace for logical isolation of topics.
@@ -167,7 +167,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::NamespaceParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::create_namespace(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete an empty namespace.
@@ -184,7 +184,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::NamespaceParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::delete_namespace(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== RAFT CLUSTER TOOLS =====
@@ -200,7 +200,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn cluster_status(&self) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::cluster_status(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Add a new broker to the Raft cluster as a non-voting learner.
@@ -220,7 +220,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::AddClusterNodeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::add_cluster_node(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Promote a Raft learner to a full voting member.
@@ -239,7 +239,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::PromoteClusterNodeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::promote_cluster_node(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Remove a node from the Raft cluster (voter or learner).
@@ -259,7 +259,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::RemoveClusterNodeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::remove_cluster_node(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Live-register or update the cluster object store (S3/GCS/Azblob/Filesystem) after
@@ -270,7 +270,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::ConfigureObjectStoreParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::configure_object_store(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Plan or apply a declarative YAML/JSON desired-state manifest cleanly (additive by default;
@@ -281,7 +281,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::cluster::ApplyDesiredStateParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::cluster::apply_desired_state(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== TOPIC MANAGEMENT TOOLS =====
@@ -299,7 +299,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::ListTopicsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::list_topics(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get detailed information about a specific topic.
@@ -315,7 +315,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::DescribeTopicParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::describe_topic(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Create a new topic with optional partitioning and schema validation.
@@ -332,7 +332,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::CreateTopicParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::create_topic(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete a topic and all its data permanently.
@@ -348,7 +348,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::DeleteTopicParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::delete_topic(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all active subscriptions on a topic.
@@ -364,7 +364,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::ListSubscriptionsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::list_subscriptions(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete a subscription from a topic.
@@ -380,7 +380,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::UnsubscribeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::unsubscribe(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Unload a topic from its current broker for reassignment.
@@ -396,7 +396,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::UnloadTopicParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::unload_topic(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Configure schema validation for a topic.
@@ -413,7 +413,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::ConfigureTopicSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::configure_topic_schema(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Update the schema validation policy for a topic.
@@ -429,7 +429,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::SetValidationPolicyParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::set_validation_policy(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get the current schema validation configuration for a topic.
@@ -445,7 +445,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::GetSchemaConfigParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::get_topic_schema_config(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Peek raw messages from a topic without consuming them (requires ReadPayload permission).
@@ -455,7 +455,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::PeekMessagesParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::peek_messages(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Diagnose why a subscription is stalled or building backlog.
@@ -465,7 +465,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::ExplainConsumerStallParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::explain_consumer_stall(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Sample recent JSON messages from a topic and infer a Draft-07 JSON Schema (requires ReadPayload).
@@ -475,7 +475,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::InferTopicSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::infer_topic_schema(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Zero-copy branch a source topic into a new target topic at an optional offset or timestamp.
@@ -485,7 +485,27 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::BranchTopicParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::branch_topic(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
+    }
+
+    /// Seek a subscription cursor to a specific offset or timestamp (requires confirm_destructive=true).
+    #[tool]
+    async fn seek_subscription(
+        &self,
+        Parameters(params): Parameters<tools::topics::SeekSubscriptionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::seek_subscription(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Replay messages from a dead-letter topic back to its source topic (requires confirm_destructive=true).
+    #[tool]
+    async fn replay_dlq(
+        &self,
+        Parameters(params): Parameters<tools::topics::ReplayDlqParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::topics::replay_dlq(&self.client, params).await;
+        Ok(Self::tool_result(output))
     }
 
     // ===== SCHEMA REGISTRY TOOLS =====
@@ -504,7 +524,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::RegisterSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::register_schema(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get the latest version of a schema by subject name.
@@ -520,7 +540,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::GetSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::get_schema(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all versions of a schema subject.
@@ -536,7 +556,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::ListVersionsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::list_schema_versions(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Check if a new schema is compatible with existing versions.
@@ -552,7 +572,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::CheckCompatibilityParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::check_compatibility(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get the current compatibility mode for a schema subject.
@@ -567,7 +587,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::CompatibilityModeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::get_compatibility_mode(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Set the compatibility mode for a schema subject.
@@ -583,7 +603,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::SetCompatibilityModeParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::set_compatibility_mode(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete a specific version of a schema.
@@ -599,7 +619,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::DeleteSchemaVersionParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::delete_schema_version(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all registered schema subjects.
@@ -612,7 +632,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_subjects(&self) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::list_subjects(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get a schema by its numeric ID and optional version.
@@ -628,7 +648,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::schemas::GetSchemaByIdParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::schemas::get_schema_by_id(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== SUBSCRIPTION FAILURE POLICY TOOLS =====
@@ -647,7 +667,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::SetFailurePolicyParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::set_subscription_failure_policy(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get the current failure policy for a topic subscription.
@@ -663,7 +683,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::topics::GetFailurePolicyParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::topics::get_subscription_failure_policy(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== SECURITY MANAGEMENT TOOLS =====
@@ -682,7 +702,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::CreateRoleParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::create_role(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get details of an authorization role.
@@ -697,7 +717,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::GetRoleParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::get_role(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all authorization roles in the cluster.
@@ -707,7 +727,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_roles(&self) -> Result<CallToolResult, McpError> {
         let output = tools::security::list_roles(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete an authorization role.
@@ -722,7 +742,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::DeleteRoleParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::delete_role(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Create an authorization binding granting roles to a principal.
@@ -738,7 +758,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::CreateBindingParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::create_binding(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get details of an authorization binding.
@@ -752,7 +772,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::GetBindingParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::get_binding(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all authorization bindings at a given scope.
@@ -765,7 +785,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::ListBindingsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::list_bindings(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Delete an authorization binding.
@@ -778,7 +798,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::DeleteBindingParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::delete_binding(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Create a signed JWT token (offline — no broker connection needed).
@@ -794,7 +814,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::CreateTokenParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::create_token(params);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Validate a JWT token and display its claims (offline — no broker connection needed).
@@ -809,7 +829,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::security::ValidateTokenParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::security::validate_token(params);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== DIAGNOSTIC TOOLS =====
@@ -827,7 +847,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::diagnostics::ConsumerLagParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::diagnostics::analyze_consumer_lag(&self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Perform a comprehensive cluster health check.
@@ -840,7 +860,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn health_check(&self) -> Result<CallToolResult, McpError> {
         let output = tools::diagnostics::health_check(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get optimization recommendations based on current cluster state.
@@ -854,7 +874,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn get_recommendations(&self) -> Result<CallToolResult, McpError> {
         let output = tools::diagnostics::get_recommendations(&self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== LOG ACCESS TOOLS =====
@@ -877,7 +897,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::logs::BrokerLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::logs::get_broker_logs(&self.config, &self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all brokers configured in the MCP config file.
@@ -891,7 +911,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_configured_brokers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::logs::list_configured_brokers(&self.config);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all running Docker containers on the host.
@@ -905,7 +925,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn list_docker_containers(&self) -> Result<CallToolResult, McpError> {
         let output = tools::logs::list_docker_containers();
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// List all Kubernetes pods in a specific namespace.
@@ -921,7 +941,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::logs::ListPodsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::logs::list_k8s_pods(&params.namespace);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Fetch logs directly from any Docker container.
@@ -937,7 +957,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::logs::ContainerLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::logs::fetch_docker_logs(&params.container_name, params.lines);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Fetch logs directly from a Kubernetes pod.
@@ -953,7 +973,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::logs::PodLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::logs::fetch_k8s_logs(&params.namespace, &params.pod_name, params.lines);
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     // ===== METRICS TOOLS =====
@@ -972,7 +992,7 @@ impl DanubeMcpServer {
     #[tool]
     async fn get_cluster_metrics(&self) -> Result<CallToolResult, McpError> {
         let output = tools::metrics::get_cluster_metrics(&self.metrics, &self.client).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get metrics for a specific broker from Prometheus (or gRPC snapshot fallback).
@@ -990,7 +1010,7 @@ impl DanubeMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let output =
             tools::metrics::get_broker_metrics(&self.metrics, &self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Get comprehensive metrics for a specific topic from Prometheus (or gRPC snapshot fallback).
@@ -1009,7 +1029,7 @@ impl DanubeMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let output =
             tools::metrics::get_topic_metrics(&self.metrics, &self.client, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 
     /// Execute a raw PromQL query against Prometheus.
@@ -1029,7 +1049,7 @@ impl DanubeMcpServer {
         Parameters(params): Parameters<tools::metrics::RawQueryParams>,
     ) -> Result<CallToolResult, McpError> {
         let output = tools::metrics::query_prometheus(&self.metrics, params).await;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(Self::tool_result(output))
     }
 }
 
@@ -1079,5 +1099,40 @@ impl ServerHandler for DanubeMcpServer {
         prompts::get_prompt(&request).ok_or_else(|| {
             McpError::invalid_params(format!("Unknown prompt: {}", request.name), None)
         })
+    }
+}
+
+impl DanubeMcpServer {
+    fn tool_result(output: String) -> CallToolResult {
+        if output.starts_with("Error")
+            || output.starts_with("Refused:")
+            || output.starts_with("Failed ")
+            || output.starts_with("✗ ")
+            || output.starts_with("Query failed:")
+        {
+            CallToolResult::error(vec![Content::text(output)])
+        } else {
+            CallToolResult::success(vec![Content::text(output)])
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DanubeMcpServer;
+
+    #[test]
+    fn tool_result_marks_errors_and_refusals() {
+        let refused = DanubeMcpServer::tool_result(
+            "Refused: destructive operation 'delete_topic' requires confirm_destructive=true"
+                .to_string(),
+        );
+        assert_eq!(refused.is_error, Some(true));
+
+        let err = DanubeMcpServer::tool_result("Error deleting topic: nope".to_string());
+        assert_eq!(err.is_error, Some(true));
+
+        let ok = DanubeMcpServer::tool_result("✓ Topic created".to_string());
+        assert_ne!(ok.is_error, Some(true));
     }
 }

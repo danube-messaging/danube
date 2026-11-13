@@ -894,6 +894,56 @@ pub struct BranchTopicResponse {
     #[prost(uint64, tag = "6")]
     pub copied_local_messages: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeekSubscriptionRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "3")]
+    pub to_offset: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub to_timestamp_ns: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeekSubscriptionResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub resolved_offset: u64,
+    #[prost(string, tag = "5")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplayDlqRequest {
+    #[prost(string, tag = "1")]
+    pub topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub subscription: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "3")]
+    pub dlq_topic: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, tag = "4")]
+    pub max_messages: u32,
+    #[prost(uint64, tag = "5")]
+    pub start_offset: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplayDlqResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub source_dlq_topic: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub target_topic: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "4")]
+    pub replayed_count: u32,
+    #[prost(uint64, tag = "5")]
+    pub last_replayed_offset: u64,
+}
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3947,6 +3997,54 @@ pub mod topic_admin_client {
                 .insert(GrpcMethod::new("danube_admin.TopicAdmin", "BranchTopic"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn seek_subscription(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SeekSubscriptionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SeekSubscriptionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/SeekSubscription",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "SeekSubscription"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn replay_dlq(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReplayDlqRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReplayDlqResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.TopicAdmin/ReplayDlq",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("danube_admin.TopicAdmin", "ReplayDlq"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -4087,6 +4185,20 @@ pub mod topic_admin_server {
             request: tonic::Request<super::BranchTopicRequest>,
         ) -> std::result::Result<
             tonic::Response<super::BranchTopicResponse>,
+            tonic::Status,
+        >;
+        async fn seek_subscription(
+            &self,
+            request: tonic::Request<super::SeekSubscriptionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SeekSubscriptionResponse>,
+            tonic::Status,
+        >;
+        async fn replay_dlq(
+            &self,
+            request: tonic::Request<super::ReplayDlqRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReplayDlqResponse>,
             tonic::Status,
         >;
     }
@@ -5077,6 +5189,96 @@ pub mod topic_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BranchTopicSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/SeekSubscription" => {
+                    #[allow(non_camel_case_types)]
+                    struct SeekSubscriptionSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::SeekSubscriptionRequest>
+                    for SeekSubscriptionSvc<T> {
+                        type Response = super::SeekSubscriptionResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SeekSubscriptionRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::seek_subscription(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SeekSubscriptionSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.TopicAdmin/ReplayDlq" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReplayDlqSvc<T: TopicAdmin>(pub Arc<T>);
+                    impl<
+                        T: TopicAdmin,
+                    > tonic::server::UnaryService<super::ReplayDlqRequest>
+                    for ReplayDlqSvc<T> {
+                        type Response = super::ReplayDlqResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReplayDlqRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as TopicAdmin>::replay_dlq(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReplayDlqSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

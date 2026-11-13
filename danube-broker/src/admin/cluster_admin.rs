@@ -101,6 +101,15 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         info!(node_id = req.node_id, "learner added successfully");
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "add_node",
+            &req.node_id.to_string(),
+            serde_json::json!({ "addr": req.addr }),
+        )
+        .await;
+
         Ok(Response::new(AddNodeResponse {
             success: true,
             node_id: req.node_id,
@@ -163,6 +172,15 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         info!(node_id = req.node_id, "node promoted to voter");
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "promote_node",
+            &req.node_id.to_string(),
+            serde_json::json!({}),
+        )
+        .await;
+
         Ok(Response::new(PromoteNodeResponse {
             success: true,
             message: format!("Node {} promoted to voter", req.node_id),
@@ -220,6 +238,15 @@ impl ClusterAdmin for DanubeAdminImpl {
 
         info!(node_id = req.node_id, "node removed from cluster");
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "remove_node",
+            &req.node_id.to_string(),
+            serde_json::json!({}),
+        )
+        .await;
+
         Ok(Response::new(RemoveNodeResponse {
             success: true,
             message: format!("Node {} removed from cluster", req.node_id),
@@ -247,6 +274,15 @@ impl ClusterAdmin for DanubeAdminImpl {
             force: req.force,
         })
         .await?;
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "configure_object_store",
+            &req.root,
+            serde_json::json!({ "backend": req.backend, "force": req.force }),
+        )
+        .await;
 
         Ok(Response::new(ConfigureObjectStoreResponse {
             success: true,
@@ -550,6 +586,14 @@ impl ClusterAdmin for DanubeAdminImpl {
                 .change_membership(voters, false)
                 .await
                 .map_err(|e| Status::internal(format!("failed to promote voter: {}", e)))?;
+            let _ = crate::audit::record_audit_event(
+                &self.resources.store,
+                security_context.principal.principal_name(),
+                "join_cluster",
+                &req.node_id.to_string(),
+                serde_json::json!({ "raft_addr": req.raft_addr, "role": "voter" }),
+            )
+            .await;
             Ok(Response::new(JoinClusterResponse {
                 success: true,
                 promoted_to_voter: true,
@@ -557,6 +601,14 @@ impl ClusterAdmin for DanubeAdminImpl {
                 message: format!("Node {} joined as voter (voter cap={})", req.node_id, target_cap),
             }))
         } else {
+            let _ = crate::audit::record_audit_event(
+                &self.resources.store,
+                security_context.principal.principal_name(),
+                "join_cluster",
+                &req.node_id.to_string(),
+                serde_json::json!({ "raft_addr": req.raft_addr, "role": "learner" }),
+            )
+            .await;
             Ok(Response::new(JoinClusterResponse {
                 success: true,
                 promoted_to_voter: false,

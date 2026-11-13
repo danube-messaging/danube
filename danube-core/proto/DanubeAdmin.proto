@@ -101,6 +101,8 @@ service TopicAdmin {
   rpc ExplainConsumerStall(ExplainConsumerStallRequest) returns (ExplainConsumerStallResponse);
   rpc InferTopicSchema(InferTopicSchemaRequest) returns (InferTopicSchemaResponse);
   rpc BranchTopic(BranchTopicRequest) returns (BranchTopicResponse);
+  rpc SeekSubscription(SeekSubscriptionRequest) returns (SeekSubscriptionResponse);
+  rpc ReplayDlq(ReplayDlqRequest) returns (ReplayDlqResponse);
 }
 
 // ─── Security / Authorization Admin ──────────────────────────────────────────
@@ -732,4 +734,35 @@ message BranchTopicResponse {
   uint64 branched_up_to_offset = 4;
   uint32 copied_segments = 5;
   uint64 copied_local_messages = 6;
+}
+
+message SeekSubscriptionRequest {
+  string topic = 1;
+  string subscription = 2;
+  optional uint64 to_offset = 3;
+  optional uint64 to_timestamp_ns = 4;
+}
+
+message SeekSubscriptionResponse {
+  bool success = 1;
+  string topic = 2;
+  string subscription = 3;
+  uint64 resolved_offset = 4;
+  string message = 5;
+}
+
+message ReplayDlqRequest {
+  string topic = 1;
+  string subscription = 2;
+  optional string dlq_topic = 3;
+  uint32 max_messages = 4;
+  uint64 start_offset = 5;
+}
+
+message ReplayDlqResponse {
+  bool success = 1;
+  string source_dlq_topic = 2;
+  string target_topic = 3;
+  uint32 replayed_count = 4;
+  uint64 last_replayed_offset = 5;
 }

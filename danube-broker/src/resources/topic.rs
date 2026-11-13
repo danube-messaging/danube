@@ -278,6 +278,33 @@ impl TopicResources {
         self.create(&path, value).await
     }
 
+    pub(crate) async fn set_subscription_next_offset(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        next_offset: u64,
+    ) -> Result<()> {
+        self.set_subscription_checkpoints(
+            subscription_name,
+            topic_name,
+            &std::collections::HashMap::new(),
+        )
+        .await?;
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let value = if next_offset > 0 {
+            Value::from(next_offset - 1)
+        } else {
+            serde_json::json!({ "next_offset": 0 })
+        };
+        self.create(&path, value).await
+    }
+
     pub(crate) async fn get_subscription_cursor(
         &self,
         subscription_name: &str,
@@ -294,6 +321,33 @@ impl TopicResources {
         if let Some(val) = maybe {
             if let Some(off) = val.as_u64() {
                 return Ok(Some(off));
+            }
+            if let Some(next) = val.get("next_offset").and_then(|v| v.as_u64()) {
+                return Ok(Some(next.saturating_sub(1)));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) async fn get_subscription_start_offset(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<u64>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let maybe = self.store.get(&path, MetaOptions::None).await?;
+        if let Some(val) = maybe {
+            if let Some(off) = val.as_u64() {
+                return Ok(Some(off.saturating_add(1)));
+            }
+            if let Some(next) = val.get("next_offset").and_then(|v| v.as_u64()) {
+                return Ok(Some(next));
             }
         }
         Ok(None)

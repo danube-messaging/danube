@@ -288,12 +288,22 @@ pub struct DeleteSchemaVersionParams {
     /// WARNING: Deleting versions may break topics using this schema.
     /// Example: 2, 5
     pub version: u32,
+
+    /// Must be true to permanently delete the schema version.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn delete_schema_version(
     client: &Arc<AdminGrpcClient>,
     params: DeleteSchemaVersionParams,
 ) -> String {
+    if let Some(refused) = super::require_destructive_confirmation(
+        params.confirm_destructive,
+        "delete_schema_version",
+    ) {
+        return refused;
+    }
     let req = danube_core::proto::danube_schema::DeleteSchemaVersionRequest {
         subject: params.subject.clone(),
         version: params.version,

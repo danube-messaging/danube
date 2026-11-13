@@ -121,6 +121,15 @@ impl BrokerAdmin for DanubeAdminImpl {
             )));
         }
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "activate_broker",
+            &req.broker_id,
+            serde_json::json!({ "reason": reason }),
+        )
+        .await;
+
         Ok(Response::new(ActivateBrokerResponse { success: true }))
     }
 
@@ -265,6 +274,14 @@ impl BrokerAdmin for DanubeAdminImpl {
         // For now, report summary.
         let total = topics.len() as u32;
         let pending = total.saturating_sub(succeeded + failed);
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "unload_broker",
+            &target_broker,
+            serde_json::json!({ "total": total, "succeeded": succeeded, "failed": failed }),
+        )
+        .await;
         let response = UnloadBrokerResponse {
             started: true,
             total,
@@ -508,6 +525,15 @@ impl BrokerAdmin for DanubeAdminImpl {
         });
 
         info!("rebalancing started in background (will continue until balanced)");
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "trigger_rebalance",
+            "cluster",
+            serde_json::json!({ "max_moves": req.max_moves }),
+        )
+        .await;
 
         Ok(Response::new(RebalanceResponse {
             success: true,

@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
     BranchTopicRequest, BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
-    GetSubscriptionFailurePolicyRequest, NamespaceRequest, NewTopicRequest,
-    PartitionedTopicRequest, SetSubscriptionFailurePolicyRequest,
+    GetSubscriptionFailurePolicyRequest, InferTopicSchemaRequest, NamespaceRequest, NewTopicRequest,
+    PartitionedTopicRequest, PeekMessagesRequest, ReplayDlqRequest, SeekSubscriptionRequest,
+    SetSubscriptionFailurePolicyRequest,
     SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
     SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy,
     SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest, TopicRequest,
@@ -295,6 +296,66 @@ enum TopicsCommands {
         at_offset: Option<u64>,
         #[arg(long, help = "Optional publish timestamp (ns since epoch) to branch up to")]
         at_timestamp_ns: Option<u64>,
+    },
+    #[command(
+        about = "Seek a subscription cursor to a specific offset or publish timestamp",
+        arg_required_else_help = true
+    )]
+    Seek {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, help = "Subscription name to seek")]
+        subscription: String,
+        #[arg(long, help = "Target offset to resume delivery from")]
+        to_offset: Option<u64>,
+        #[arg(long, help = "Target publish timestamp (ns since epoch) to resume delivery from")]
+        to_timestamp_ns: Option<u64>,
+    },
+    #[command(
+        about = "Replay messages from a dead-letter topic back to the source topic",
+        arg_required_else_help = true
+    )]
+    ReplayDlq {
+        #[arg(help = "Target topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, help = "Subscription name whose DLQ should be replayed")]
+        subscription: String,
+        #[arg(long, help = "Explicit DLQ topic path (defaults to subscription's configured DLQ)")]
+        dlq_topic: Option<String>,
+        #[arg(long, default_value_t = 100, help = "Maximum number of messages to replay")]
+        max_messages: u32,
+        #[arg(long, default_value_t = 0, help = "Starting offset in the DLQ topic")]
+        start_offset: u64,
+    },
+    #[command(
+        about = "Peek raw messages from a topic without advancing consumer cursors",
+        arg_required_else_help = true
+    )]
+    Peek {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, default_value_t = 0, help = "Starting topic offset")]
+        start_offset: u64,
+        #[arg(long, default_value_t = 10, help = "Number of messages to inspect (1..=100)")]
+        count: u32,
+    },
+    #[command(
+        about = "Sample recent JSON messages and infer a Draft-07 JSON Schema",
+        arg_required_else_help = true
+    )]
+    InferSchema {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, default_value_t = 100, help = "Number of recent messages to sample")]
+        sample_size: u32,
     },
 }
 
@@ -786,6 +847,97 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 resp.branched_up_to_offset,
                 resp.copied_segments,
                 resp.copied_local_messages
+            );
+        }
+        TopicsCommands::Seek {
+            topic,
+            namespace,
+            subscription,
+            to_offset,
+            to_timestamp_ns,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .seek_subscription(SeekSubscriptionRequest {
+                    topic: topic_name,
+                    subscription,
+                    to_offset,
+                    to_timestamp_ns,
+                })
+                .await?;
+            println!(
+                "Sought {} ({}) -> offset {}: {}",
+                resp.topic, resp.subscription, resp.resolved_offset, resp.message
+            );
+        }
+        TopicsCommands::ReplayDlq {
+            topic,
+            namespace,
+            subscription,
+            dlq_topic,
+            max_messages,
+            start_offset,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .replay_dlq(ReplayDlqRequest {
+                    topic: topic_name,
+                    subscription,
+                    dlq_topic,
+                    max_messages,
+                    start_offset,
+                })
+                .await?;
+            println!(
+                "Replayed {} message(s) from {} -> {} (last_replayed_offset={})",
+                resp.replayed_count,
+                resp.source_dlq_topic,
+                resp.target_topic,
+                resp.last_replayed_offset
+            );
+        }
+        TopicsCommands::Peek {
+            topic,
+            namespace,
+            start_offset,
+            count,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .peek_messages(PeekMessagesRequest {
+                    topic: topic_name,
+                    start_offset,
+                    count,
+                })
+                .await?;
+            println!(
+                "Peeked {} message(s) from {}:",
+                resp.messages.len(),
+                resp.topic
+            );
+            for msg in resp.messages {
+                let preview = String::from_utf8_lossy(&msg.payload);
+                println!(
+                    "  [offset={}] producer={} time={} routing_key='{}' payload={}",
+                    msg.offset, msg.producer_name, msg.publish_time, msg.routing_key, preview
+                );
+            }
+        }
+        TopicsCommands::InferSchema {
+            topic,
+            namespace,
+            sample_size,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .infer_topic_schema(InferTopicSchemaRequest {
+                    topic: topic_name,
+                    sample_size,
+                })
+                .await?;
+            println!(
+                "Inferred schema for {} (sampled={}, valid_json={}):\n{}",
+                resp.topic, resp.sampled_count, resp.valid_json_count, resp.json_schema
             );
         }
     }

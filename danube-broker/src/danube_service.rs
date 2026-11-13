@@ -251,10 +251,13 @@ impl DanubeService {
         edge_service: Option<EdgeReplicatorServiceImpl>,
         admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
-        // 1. Wait for Raft membership (--join only)
-        if cluster.join_cluster {
-            self.wait_for_cluster_membership(&cluster.raft).await;
-        }
+        // 1. Wait for Raft membership (--join or scale-up JoinExisting)
+        let auto_joined = if cluster.join_cluster {
+            self.wait_for_cluster_membership(&cluster.raft, &cluster.raft_addr)
+                .await
+        } else {
+            false
+        };
 
         // 2. Create cluster record
         let _ = self
@@ -267,7 +270,7 @@ impl DanubeService {
         self.register_broker(32).await?; // TTL = 32s for cluster
 
         // 4. Determine and set initial broker state
-        self.determine_initial_state(&cluster).await;
+        self.determine_initial_state(&cluster, auto_joined).await;
 
         // 4b. Reconcile cluster object store configuration before loading topics
         self.reconcile_cluster_storage_config().await;
@@ -602,39 +605,156 @@ impl DanubeService {
     // Cluster-only helpers
     // =========================================================================
 
-    /// Blocks until this node detects a Raft leader (meaning it has been added
-    /// to the cluster via `danube-admin cluster add-node`).
-    async fn wait_for_cluster_membership(&self, raft: &Raft<danube_raft::typ::TypeConfig>) {
+    /// Attempts `JoinCluster` against seed admin endpoints (when `seed_nodes` are configured)
+    /// and waits until this node detects a Raft leader.
+    ///
+    /// Returns `true` if `JoinCluster` succeeded or seed discovery auto-joined the node.
+    async fn wait_for_cluster_membership(
+        &self,
+        raft: &Raft<danube_raft::typ::TypeConfig>,
+        raft_addr: &str,
+    ) -> bool {
         info!(
             broker_id = %self.broker_id,
-            "waiting for cluster membership (use `danube-admin cluster add-node`)..."
+            seeds = ?self.service_config.meta_store.seed_nodes,
+            "waiting for cluster membership..."
         );
+        let mut auto_joined = false;
+        let mut attempt = 0u64;
         loop {
             let metrics = raft.metrics().borrow().clone();
             if metrics.current_leader.is_some() {
                 info!(
                     broker_id = %self.broker_id,
                     leader = ?metrics.current_leader,
+                    auto_joined,
                     "cluster membership detected — node has joined the cluster"
                 );
-                return;
+                return auto_joined;
             }
+
+            if !auto_joined && !self.service_config.meta_store.seed_nodes.is_empty() && attempt % 4 == 0
+            {
+                if self.try_join_cluster_via_seeds(raft_addr).await {
+                    auto_joined = true;
+                }
+            }
+
+            attempt = attempt.wrapping_add(1);
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
+    async fn try_join_cluster_via_seeds(&self, raft_addr: &str) -> bool {
+        use danube_core::admin_proto::cluster_admin_client::ClusterAdminClient;
+        use danube_core::admin_proto::JoinClusterRequest;
+
+        let scheme = if self.service_config.admin_tls {
+            "https"
+        } else {
+            "http"
+        };
+        let local_admin_port = self.service_config.admin_addr.port();
+        let mut candidates: Vec<String> = Vec::new();
+        for seed in &self.service_config.meta_store.seed_nodes {
+            let trimmed = seed.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                trimmed.to_string()
+            } else {
+                format!("{scheme}://{trimmed}")
+            };
+            candidates.push(normalized);
+
+            let host_port = trimmed
+                .strip_prefix("http://")
+                .or_else(|| trimmed.strip_prefix("https://"))
+                .unwrap_or(trimmed);
+            if let Some((host, _port)) = host_port.rsplit_once(':') {
+                for port in [local_admin_port, 50051] {
+                    let alt = format!("{scheme}://{host}:{port}");
+                    if !candidates.contains(&alt) {
+                        candidates.push(alt);
+                    }
+                }
+            }
+        }
+
+        for endpoint_url in candidates {
+            let Ok(mut ep) = tonic::transport::Endpoint::from_shared(endpoint_url.clone()) else {
+                continue;
+            };
+            ep = ep.connect_timeout(Duration::from_secs(3));
+            if endpoint_url.starts_with("https://") {
+                if let Some(ref tls_cfg) = self.service_config.auth.tls {
+                    if let (Ok(ca), Ok(cert), Ok(key)) = (
+                        std::fs::read(&tls_cfg.ca_file),
+                        std::fs::read(&tls_cfg.cert_file),
+                        std::fs::read(&tls_cfg.key_file),
+                    ) {
+                        let tls = tonic::transport::ClientTlsConfig::new()
+                            .ca_certificate(tonic::transport::Certificate::from_pem(ca))
+                            .identity(tonic::transport::Identity::from_pem(cert, key));
+                        if let Ok(configured) = ep.clone().tls_config(tls) {
+                            ep = configured;
+                        }
+                    }
+                }
+            }
+
+            let Ok(channel) = ep.connect().await else {
+                continue;
+            };
+
+            let mut client = ClusterAdminClient::new(channel);
+            let mut req = tonic::Request::new(JoinClusterRequest {
+                node_id: self.broker_id,
+                raft_addr: raft_addr.to_string(),
+                target_voter_count: 0,
+            });
+            if let Ok(val) = format!("broker/{}", self.broker_id).parse() {
+                req.metadata_mut().insert("x-danube-internal-broker", val);
+            }
+
+            match client.join_cluster(req).await {
+                Ok(resp) => {
+                    let inner = resp.into_inner();
+                    info!(
+                        endpoint = %endpoint_url,
+                        role = %inner.role,
+                        promoted = inner.promoted_to_voter,
+                        message = %inner.message,
+                        "auto-joined cluster via JoinCluster"
+                    );
+                    return true;
+                }
+                Err(status) => {
+                    debug!(
+                        endpoint = %endpoint_url,
+                        error = %status,
+                        "JoinCluster attempt on candidate endpoint failed"
+                    );
+                }
+            }
+        }
+        false
+    }
+
     /// Determines the initial broker state based on how it was started:
     ///
-    /// - `--join` mode       → **drained** (wait for admin to activate)
+    /// - `--join` mode       → **active** (reason `"joined"`) once Raft membership is established
+    /// - `--node-role lakehouse` → **drained** (does not serve client topics)
     /// - restart < TTL       → **active** (fast restart, still registered)
     /// - full cluster restart → **active** (all registrations expired, safe)
     /// - restart > TTL       → **drained** (registration expired, admin must investigate)
     /// - first boot          → **active**
-    async fn determine_initial_state(&self, cluster: &ClusterServices) {
-        let (initial_state, state_reason) = if cluster.join_cluster {
-            ("drained", "join")
-        } else if self.service_config.node_role == NodeRole::Lakehouse {
+    async fn determine_initial_state(&self, cluster: &ClusterServices, _auto_joined: bool) {
+        let (initial_state, state_reason) = if self.service_config.node_role == NodeRole::Lakehouse {
             ("drained", "lakehouse_only")
+        } else if cluster.join_cluster {
+            ("active", "joined")
         } else if cluster.was_restart {
             let my_reg_path = join_path(&[
                 crate::resources::BASE_REGISTER_PATH,

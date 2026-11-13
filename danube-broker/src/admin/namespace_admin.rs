@@ -115,6 +115,14 @@ impl NamespaceAdmin for DanubeAdminImpl {
         };
 
         let response = NamespaceResponse { success };
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "create_namespace",
+            &req.name,
+            serde_json::json!({}),
+        )
+        .await;
         Ok(tonic::Response::new(response))
     }
 
@@ -146,6 +154,15 @@ impl NamespaceAdmin for DanubeAdminImpl {
                 return Err(status);
             }
         };
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "delete_namespace",
+            &req.name,
+            serde_json::json!({}),
+        )
+        .await;
 
         let response = NamespaceResponse { success };
         Ok(tonic::Response::new(response))

@@ -213,9 +213,17 @@ pub struct DeleteTopicParams {
     /// WARNING: This operation cannot be undone. All data will be permanently lost.
     /// Example: "/default/user-events"
     pub topic: String,
+    /// Must be true to execute permanent deletion.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn delete_topic(client: &Arc<AdminGrpcClient>, params: DeleteTopicParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "delete_topic")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::TopicRequest {
         name: params.topic.clone(),
     };
@@ -277,9 +285,18 @@ pub struct UnsubscribeParams {
     /// Use list_subscriptions to discover existing subscription names.
     /// Example: "my-consumer-group", "analytics-processor"
     pub subscription: String,
+
+    /// Must be true to delete the subscription and its cursor.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn unsubscribe(client: &Arc<AdminGrpcClient>, params: UnsubscribeParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "unsubscribe")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::SubscriptionRequest {
         topic: params.topic.clone(),
         subscription: params.subscription.clone(),
@@ -310,9 +327,18 @@ pub struct UnloadTopicParams {
     /// The topic will be reassigned to a different broker automatically.
     /// Example: "/default/user-events"
     pub topic: String,
+
+    /// Must be true to unload the topic and disconnect active clients during reassignment.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn unload_topic(client: &Arc<AdminGrpcClient>, params: UnloadTopicParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "unload_topic")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::TopicRequest {
         name: params.topic.clone(),
     };
@@ -803,5 +829,88 @@ pub async fn branch_topic(
             resp.copied_local_messages
         ),
         Err(e) => format!("Error branching topic: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SeekSubscriptionParams {
+    /// Full topic path, e.g. "/default/orders"
+    pub topic: String,
+    /// Subscription name whose cursor will be reset
+    pub subscription: String,
+    /// Explicit offset to seek to
+    pub to_offset: Option<u64>,
+    /// Publish timestamp in nanoseconds since epoch to seek to
+    pub to_timestamp_ns: Option<u64>,
+    /// Must be true to reset the subscription cursor
+    #[serde(default)]
+    pub confirm_destructive: bool,
+}
+
+pub async fn seek_subscription(
+    client: &Arc<AdminGrpcClient>,
+    params: SeekSubscriptionParams,
+) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "seek_subscription")
+    {
+        return refused;
+    }
+    let req = danube_core::admin_proto::SeekSubscriptionRequest {
+        topic: params.topic,
+        subscription: params.subscription,
+        to_offset: params.to_offset,
+        to_timestamp_ns: params.to_timestamp_ns,
+    };
+    match client.seek_subscription(req).await {
+        Ok(resp) => format!(
+            "Sought '{}' subscription '{}' -> offset {}: {}",
+            resp.topic, resp.subscription, resp.resolved_offset, resp.message
+        ),
+        Err(e) => format!("Error seeking subscription: {}", e),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ReplayDlqParams {
+    /// Target topic path to republish dead-lettered messages into, e.g. "/default/orders"
+    pub topic: String,
+    /// Subscription name associated with the dead-letter queue
+    pub subscription: String,
+    /// Optional explicit DLQ topic path (defaults to subscription failure policy's DLQ)
+    pub dlq_topic: Option<String>,
+    /// Maximum number of messages to replay (default: 100)
+    #[serde(default = "default_sample_size")]
+    pub max_messages: u32,
+    /// Starting offset in the DLQ topic (default: 0)
+    #[serde(default)]
+    pub start_offset: u64,
+    /// Must be true to republish DLQ messages onto the live topic
+    #[serde(default)]
+    pub confirm_destructive: bool,
+}
+
+pub async fn replay_dlq(client: &Arc<AdminGrpcClient>, params: ReplayDlqParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "replay_dlq")
+    {
+        return refused;
+    }
+    let req = danube_core::admin_proto::ReplayDlqRequest {
+        topic: params.topic,
+        subscription: params.subscription,
+        dlq_topic: params.dlq_topic,
+        max_messages: params.max_messages,
+        start_offset: params.start_offset,
+    };
+    match client.replay_dlq(req).await {
+        Ok(resp) => format!(
+            "Replayed {} message(s) from '{}' -> '{}' (last_replayed_offset={})",
+            resp.replayed_count,
+            resp.source_dlq_topic,
+            resp.target_topic,
+            resp.last_replayed_offset
+        ),
+        Err(e) => format!("Error replaying DLQ: {}", e),
     }
 }

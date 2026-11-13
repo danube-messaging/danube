@@ -281,13 +281,13 @@ impl SubscriptionEngine {
         if let (Some(topic), Some(res)) =
             (self.topic_name.as_deref(), self.progress_resources.as_ref())
         {
-            if let Ok(Some(cursor)) = res
-                .get_subscription_cursor(&self._subscription_name, topic)
+            if let Ok(Some(start_offset)) = res
+                .get_subscription_start_offset(&self._subscription_name, topic)
                 .await
             {
                 let stream = self
                     .topic_store
-                    .create_reader(StartPosition::Offset(cursor.saturating_add(1)))
+                    .create_reader(StartPosition::Offset(start_offset))
                     .await?;
                 self.stream = Some(stream);
                 return Ok(());

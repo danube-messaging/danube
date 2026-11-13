@@ -199,6 +199,10 @@ pub struct UnloadBrokerParams {
     /// Default: false (execute unload)
     #[serde(default)]
     pub dry_run: bool,
+
+    /// Must be true to execute broker unload when dry_run is false.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 fn default_max_parallel() -> u32 {
@@ -206,6 +210,13 @@ fn default_max_parallel() -> u32 {
 }
 
 pub async fn unload_broker(client: &Arc<AdminGrpcClient>, params: UnloadBrokerParams) -> String {
+    if !params.dry_run {
+        if let Some(refused) =
+            super::require_destructive_confirmation(params.confirm_destructive, "unload_broker")
+        {
+            return refused;
+        }
+    }
     let req = danube_core::admin_proto::UnloadBrokerRequest {
         broker_id: params.broker_id.clone(),
         max_parallel: params.max_parallel,
@@ -315,6 +326,9 @@ pub struct NamespaceParams {
     /// The "default" namespace is always present.
     /// Example: "production", "staging", "team-analytics"
     pub namespace: String,
+    /// Must be true when calling delete_namespace.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn get_namespace_policies(
@@ -354,6 +368,11 @@ pub async fn create_namespace(client: &Arc<AdminGrpcClient>, params: NamespacePa
 }
 
 pub async fn delete_namespace(client: &Arc<AdminGrpcClient>, params: NamespaceParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "delete_namespace")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::NamespaceRequest {
         name: params.namespace.clone(),
     };
@@ -499,12 +518,21 @@ pub struct PromoteClusterNodeParams {
     /// Use cluster_status to discover current learners.
     /// Example: 12345678
     pub node_id: u64,
+    /// Must be true to mutate Raft voter quorum.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn promote_cluster_node(
     client: &Arc<AdminGrpcClient>,
     params: PromoteClusterNodeParams,
 ) -> String {
+    if let Some(refused) = super::require_destructive_confirmation(
+        params.confirm_destructive,
+        "promote_cluster_node",
+    ) {
+        return refused;
+    }
     let req = danube_core::admin_proto::PromoteNodeRequest {
         node_id: params.node_id,
     };
@@ -530,12 +558,20 @@ pub struct RemoveClusterNodeParams {
     /// Use cluster_status to discover current voters and learners.
     /// Example: 12345678
     pub node_id: u64,
+    /// Must be true to remove the node from Raft membership.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn remove_cluster_node(
     client: &Arc<AdminGrpcClient>,
     params: RemoveClusterNodeParams,
 ) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "remove_cluster_node")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::RemoveNodeRequest {
         node_id: params.node_id,
     };
@@ -604,12 +640,23 @@ pub struct ApplyDesiredStateParams {
     /// Allow pruning non-empty or active topics
     #[serde(default)]
     pub force: bool,
+    /// Must be true when executing with prune=true and dry_run=false.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn apply_desired_state(
     client: &Arc<AdminGrpcClient>,
     params: ApplyDesiredStateParams,
 ) -> String {
+    if !params.dry_run && params.prune {
+        if let Some(refused) = super::require_destructive_confirmation(
+            params.confirm_destructive,
+            "apply_desired_state (prune=true)",
+        ) {
+            return refused;
+        }
+    }
     let req = danube_core::admin_proto::DesiredStateRequest {
         manifest: params.manifest,
         prune: params.prune,

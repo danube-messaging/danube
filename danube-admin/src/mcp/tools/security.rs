@@ -104,9 +104,17 @@ pub struct DeleteRoleParams {
     /// WARNING: Deleting a role will remove it from all bindings that reference it.
     /// Example: "producer-role"
     pub name: String,
+    /// Must be true to permanently delete the role.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn delete_role(client: &Arc<AdminGrpcClient>, params: DeleteRoleParams) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "delete_role")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::DeleteRoleRequest {
         name: params.name.clone(),
     };
@@ -298,12 +306,21 @@ pub struct DeleteBindingParams {
     /// Resource name (empty for cluster scope).
     /// Example: "default", "/default/my-topic"
     pub resource: Option<String>,
+
+    /// Must be true to permanently delete the binding.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 pub async fn delete_binding(
     client: &Arc<AdminGrpcClient>,
     params: DeleteBindingParams,
 ) -> String {
+    if let Some(refused) =
+        super::require_destructive_confirmation(params.confirm_destructive, "delete_binding")
+    {
+        return refused;
+    }
     let req = danube_core::admin_proto::DeleteBindingRequest {
         binding_id: params.id.clone(),
         scope: params.scope,
