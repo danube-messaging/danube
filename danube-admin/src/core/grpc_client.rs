@@ -809,4 +809,30 @@ impl AdminGrpcClient {
         let fut = async move { client.delete_binding(req).await };
         self.execute_with_timeout(fut).await
     }
+
+    // ---- Broker Telemetry & Logs ----
+
+    pub async fn get_broker_logs(
+        &self,
+        req: admin::GetBrokerLogsRequest,
+    ) -> Result<admin::GetBrokerLogsResponse> {
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_broker_logs(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn get_metrics_snapshot(
+        &self,
+        req: admin::GetMetricsSnapshotRequest,
+    ) -> Result<admin::GetMetricsSnapshotResponse> {
+        let mut client = admin::broker_admin_client::BrokerAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.get_metrics_snapshot(req).await };
+        self.execute_with_timeout(fut).await
+    }
 }

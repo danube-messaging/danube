@@ -134,6 +134,12 @@ impl StorageFactory {
         Ok(())
     }
 
+    /// Disable dynamic cloud tiering for a topic when downgraded to `local`.
+    pub fn disable_cloud_tiering_for_topic(&self, topic_name: &str) {
+        let topic_path = normalize_topic_path(topic_name);
+        self.cloud_tiered_topics.remove(&topic_path);
+    }
+
     pub(super) fn spawn_segment_exporter_if_needed(
         &self,
         topic_path: &str,
@@ -354,10 +360,23 @@ impl StorageFactory {
     ///   history for the already-sealed prefix and use the hot WAL only for new local progress.
     /// - Export/deleter tasks are started once per topic and reused across repeated `for_topic()`
     ///   calls in the same process.
-    pub async fn for_topic(&self, topic_name: &str) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
+    pub async fn for_topic(
+        &self,
+        topic_name: &str,
+    ) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
+        self.for_topic_with_sync_mode(topic_name, None).await
+    }
+
+    /// Build or retrieve per-topic storage with an optional per-topic `WalSyncMode` override.
+    pub async fn for_topic_with_sync_mode(
+        &self,
+        topic_name: &str,
+        wal_sync_mode: Option<crate::WalSyncMode>,
+    ) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed, rotation_rx) =
-            self.get_or_create_wal(&topic_path).await?;
+        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed, rotation_rx) = self
+            .get_or_create_wal_with_sync_mode(&topic_path, wal_sync_mode)
+            .await?;
         let durable_store = self.durable_store_for_topic()?;
 
         if let Some(ref dir) = resolved_dir {

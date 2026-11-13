@@ -46,9 +46,10 @@ impl StorageFactory {
     ///   history and local staged WAL state is unavailable.
     /// - A sealed mobility marker takes precedence over both and resumes from the stored committed
     ///   offset + 1.
-    pub(super) async fn get_or_create_wal(
+    pub(super) async fn get_or_create_wal_with_sync_mode(
         &self,
         topic_path: &str,
+        wal_sync_mode: Option<crate::WalSyncMode>,
     ) -> Result<
         (
             Wal,
@@ -64,6 +65,9 @@ impl StorageFactory {
         }
 
         let mut cfg = self.base_cfg.clone();
+        if let Some(sync_mode) = wal_sync_mode {
+            cfg.sync_mode = Some(sync_mode);
+        }
         let mut root_path: Option<PathBuf> = None;
         let mut ckpt_store: Option<Arc<CheckpointStore>> = None;
         if let Some(root) = cfg.dir.clone() {

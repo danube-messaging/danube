@@ -658,14 +658,7 @@ impl DanubeAdminImpl {
                         Status::internal(format!("failed to create topic '{}': {}", concrete, e))
                     })?;
                 if let Some(ref settings) = expanded_intent {
-                    let val = serde_json::to_value(settings).map_err(|e| {
-                        Status::internal(format!("failed to serialize intent: {}", e))
-                    })?;
-                    self.resources
-                        .topic
-                        .set_topic_intent(&concrete, val)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?;
+                    self.persist_expanded_intent(&concrete, settings).await?;
                 }
             }
         } else {
@@ -676,13 +669,7 @@ impl DanubeAdminImpl {
                     Status::internal(format!("failed to create topic '{}': {}", spec.name, e))
                 })?;
             if let Some(ref settings) = expanded_intent {
-                let val = serde_json::to_value(settings)
-                    .map_err(|e| Status::internal(format!("failed to serialize intent: {}", e)))?;
-                self.resources
-                    .topic
-                    .set_topic_intent(&spec.name, val)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?;
+                self.persist_expanded_intent(&spec.name, settings).await?;
             }
         }
         Ok(())

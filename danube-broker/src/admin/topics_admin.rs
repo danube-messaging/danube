@@ -170,15 +170,8 @@ impl TopicAdmin for DanubeAdminImpl {
             .await
         {
             Ok(_) => {
-                if let Some(settings) = expanded_intent {
-                    let val = serde_json::to_value(&settings).map_err(|e| {
-                        Status::internal(format!("failed to serialize expanded intent: {}", e))
-                    })?;
-                    self.resources
-                        .topic
-                        .set_topic_intent(&req.name, val)
-                        .await
-                        .map_err(|e| Status::internal(format!("failed to persist topic intent: {}", e)))?;
+                if let Some(ref settings) = expanded_intent {
+                    self.persist_expanded_intent(&req.name, settings).await?;
                 }
                 let _ = crate::audit::record_audit_event(
                     &self.resources.store,
@@ -251,14 +244,7 @@ impl TopicAdmin for DanubeAdminImpl {
                 return Err(status);
             }
             if let Some(ref settings) = expanded_intent {
-                let val = serde_json::to_value(settings).map_err(|e| {
-                    Status::internal(format!("failed to serialize expanded intent: {}", e))
-                })?;
-                self.resources
-                    .topic
-                    .set_topic_intent(&topic, val)
-                    .await
-                    .map_err(|e| Status::internal(format!("failed to persist topic intent: {}", e)))?;
+                self.persist_expanded_intent(&topic, settings).await?;
             }
         }
 
@@ -775,6 +761,9 @@ impl TopicAdmin for DanubeAdminImpl {
                         "downgrading a topic from cloud_tiered to local requires draining first or force=true",
                     ));
                 }
+                self.broker_service
+                    .storage_factory()
+                    .disable_cloud_tiering_for_topic(&req.topic_name);
                 self.resources
                     .topic
                     .set_topic_storage_mode(&req.topic_name, "local")
@@ -1153,12 +1142,6 @@ impl TopicAdmin for DanubeAdminImpl {
         )
         .await?;
 
-        let storage_factory = self.broker_service.storage_factory();
-        storage_factory
-            .flush_topic(&source_topic)
-            .await
-            .map_err(|e| Status::internal(format!("failed to flush source topic before branch: {e}")))?;
-
         let source_store = self.resolve_topic_store(&source_topic).await?;
         let head = source_store.current_offset();
 
@@ -1169,34 +1152,17 @@ impl TopicAdmin for DanubeAdminImpl {
                 Some(at_off)
             }
         } else if let Some(at_ts_ns) = req.at_timestamp_ns {
-            let mut max_matching: Option<u64> = None;
-            let mut cursor = 0u64;
-            while cursor < head {
-                let batch = (head - cursor).min(1_000) as u32;
-                let msgs = collect_topic_messages(&source_store, cursor, batch).await?;
-                if msgs.is_empty() {
-                    break;
-                }
-                let mut next_cursor = cursor;
-                for m in msgs {
-                    let off = m.msg_id.topic_offset;
-                    if off >= next_cursor {
-                        next_cursor = off.saturating_add(1);
-                    }
-                    if m.publish_time <= at_ts_ns {
-                        max_matching = Some(max_matching.map_or(off, |prev| prev.max(off)));
-                    }
-                }
-                if next_cursor <= cursor {
-                    break;
-                }
-                cursor = next_cursor;
-            }
-            max_matching
+            let scan_limit = head.min(5_000) as u32;
+            let msgs = collect_topic_messages(&source_store, 0, scan_limit).await?;
+            msgs.into_iter()
+                .filter(|m| m.publish_time <= at_ts_ns)
+                .map(|m| m.msg_id.topic_offset)
+                .max()
         } else {
             head.checked_sub(1)
         };
 
+        let storage_factory = self.broker_service.storage_factory();
         let copied_segments = storage_factory
             .branch_topic_segments(&source_topic, &target_topic, target_max_offset)
             .await
@@ -1204,9 +1170,12 @@ impl TopicAdmin for DanubeAdminImpl {
 
         let durable_end = if copied_segments > 0 {
             storage_factory
-                .max_durable_offset(&target_topic)
+                .list_segment_descriptors(&target_topic, 0)
                 .await
-                .unwrap_or(None)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.end_offset)
+                .max()
         } else {
             None
         };
@@ -1233,35 +1202,18 @@ impl TopicAdmin for DanubeAdminImpl {
             let local_start = durable_end.map(|e| e.saturating_add(1)).unwrap_or(0);
             if local_start <= limit_off && local_start < head {
                 let target_store = self.resolve_topic_store(&target_topic).await?;
-                let mut cur = local_start;
-                while cur <= limit_off && cur < head {
-                    let batch = (limit_off - cur + 1).min(1_000) as u32;
-                    let msgs = collect_topic_messages(&source_store, cur, batch).await?;
-                    if msgs.is_empty() {
+                let count = (limit_off - local_start + 1).min(5_000) as u32;
+                let msgs = collect_topic_messages(&source_store, local_start, count).await?;
+                for mut msg in msgs {
+                    if msg.msg_id.topic_offset > limit_off {
                         break;
                     }
-                    let mut next_cur = cur;
-                    let mut hit_limit = false;
-                    for mut msg in msgs {
-                        let off = msg.msg_id.topic_offset;
-                        if off >= next_cur {
-                            next_cur = off.saturating_add(1);
-                        }
-                        if off > limit_off {
-                            hit_limit = true;
-                            break;
-                        }
-                        msg.msg_id.topic_name = target_topic.clone();
-                        target_store
-                            .store_message(msg)
-                            .await
-                            .map_err(|e| Status::internal(format!("failed copying message: {e}")))?;
-                        copied_local_messages += 1;
-                    }
-                    if hit_limit || next_cur <= cur {
-                        break;
-                    }
-                    cur = next_cur;
+                    msg.msg_id.topic_name = target_topic.clone();
+                    target_store
+                        .store_message(msg)
+                        .await
+                        .map_err(|e| Status::internal(format!("failed copying message: {e}")))?;
+                    copied_local_messages += 1;
                 }
             }
         }
@@ -1523,6 +1475,41 @@ fn broker_failure_policy_to_admin(
 }
 
 impl DanubeAdminImpl {
+    pub(crate) async fn persist_expanded_intent(
+        &self,
+        topic_name: &str,
+        settings: &ExpandedStreamSettings,
+    ) -> Result<(), Status> {
+        let val = serde_json::to_value(settings)
+            .map_err(|e| Status::internal(format!("failed to serialize expanded intent: {}", e)))?;
+        self.resources
+            .topic
+            .set_topic_intent(topic_name, val)
+            .await
+            .map_err(|e| Status::internal(format!("failed to persist topic intent: {}", e)))?;
+
+        if settings.storage_tier == "cloud_tiered" {
+            self.resources
+                .topic
+                .set_topic_storage_mode(topic_name, "cloud_tiered")
+                .await
+                .map_err(|e| Status::internal(format!("failed to persist topic storage mode: {}", e)))?;
+            if let Err(err) = self
+                .broker_service
+                .storage_factory()
+                .enable_cloud_tiering_for_topic(topic_name)
+                .await
+            {
+                tracing::warn!(
+                    topic = %topic_name,
+                    error = %err,
+                    "cloud_tiered intent recorded but cluster object store is not configured yet"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Get schema registry information for a topic
     ///
     /// Returns: (schema_subject, schema_id, schema_version, schema_type, compatibility_mode)
@@ -1594,20 +1581,13 @@ impl DanubeAdminImpl {
         } else {
             format!("/{topic_name}")
         };
-        match self
+        let storage = self
             .broker_service
             .storage_factory()
-            .open_read_only_durable(&normalized)
+            .for_topic(&normalized)
             .await
-        {
-            Ok(Some(storage)) => Ok(TopicStore::new(normalized, storage)),
-            Ok(None) => Err(Status::failed_precondition(format!(
-                "topic {normalized} is not hosted on this broker and has no durable segments"
-            ))),
-            Err(e) => Err(Status::internal(format!(
-                "failed to open read-only durable topic storage: {e}"
-            ))),
-        }
+            .map_err(|e| Status::not_found(format!("topic storage unavailable: {e}")))?;
+        Ok(TopicStore::new(normalized, storage))
     }
 }
 

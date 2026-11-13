@@ -13,14 +13,16 @@ pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
 
-use crate::args_parse::BrokerMode;
+use crate::args_parse::{BrokerMode, NodeRole};
 
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
-use danube_core::metadata::{MetaOptions, MetadataStore};
+use danube_core::metadata::{MetaOptions, MetadataStore, WatchEvent};
 use danube_edge::edge_service::EdgeService;
 use danube_raft::leadership::LeadershipHandle;
 use danube_raft::Raft;
+use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::time::{self, Duration};
@@ -184,24 +186,22 @@ impl DanubeService {
             None
         };
 
+        let lakehouse_runtime =
+            start_lakehouse_runtime_if_enabled(self.service_config.node_role).await?;
+
         // ----- Mode-specific startup
-        let broker_admin = if admin_handle.is_none() {
-            Some(admin_impl)
-        } else {
-            None
-        };
         match self.mode {
             BrokerMode::Cluster => {
                 self.start_cluster_mode(
                     cluster.expect("ClusterServices required for cluster mode"),
                     schema_registry,
                     edge_service,
-                    broker_admin,
+                    admin_impl,
                 )
                 .await?;
             }
             BrokerMode::Standalone => {
-                self.start_standalone_mode(schema_registry, edge_service, broker_admin)
+                self.start_standalone_mode(schema_registry, edge_service, admin_impl)
                     .await?;
             }
             BrokerMode::Edge => {
@@ -211,11 +211,13 @@ impl DanubeService {
                     self.edge_service
                         .clone()
                         .expect("edge_service must be set for Edge mode"),
-                    broker_admin,
+                    admin_impl,
                 )
                 .await?;
             }
         }
+
+        shutdown_lakehouse_runtime(lakehouse_runtime).await;
 
         // ----- Wait for dedicated admin server to complete (if started)
         if let Some(handle) = admin_handle {
@@ -247,7 +249,7 @@ impl DanubeService {
         mut cluster: ClusterServices,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
-        broker_admin: Option<DanubeAdminImpl>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1. Wait for Raft membership (--join only)
         if cluster.join_cluster {
@@ -267,6 +269,9 @@ impl DanubeService {
         // 4. Determine and set initial broker state
         self.determine_initial_state(&cluster).await;
 
+        // 4b. Reconcile cluster object store configuration before loading topics
+        self.reconcile_cluster_storage_config().await;
+
         // 5. Reconcile pre-existing topic assignments
         self.reconcile_topic_assignments().await;
 
@@ -275,22 +280,23 @@ impl DanubeService {
 
         // 8. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, broker_admin)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         // 9. Start cluster orchestration services
         self.start_orchestration_services(&mut cluster).await?;
 
-        spawn_graceful_sigterm_drain(
-            self.broker_id,
-            self.resources.clone(),
-            Arc::clone(&self.broker),
-        );
+        spawn_graceful_sigterm_drain(self.broker_id, self.resources.clone());
         spawn_dead_node_reaper(
             cluster.raft.clone(),
             cluster.leadership.clone(),
             self.meta_store.clone(),
         );
+        spawn_cluster_storage_config_watcher(
+            self.meta_store.clone(),
+            self.broker.storage_factory().clone(),
+        )
+        .await;
         spawn_object_store_credential_refresher(self.broker.storage_factory().clone());
 
         // Block until broker gRPC shuts down
@@ -316,7 +322,7 @@ impl DanubeService {
         &mut self,
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
-        broker_admin: Option<DanubeAdminImpl>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state
         self.register_broker(0).await?; // TTL = 0 for standalone (no renewal)
@@ -340,9 +346,12 @@ impl DanubeService {
         // 3–4. Namespaces + auth cache
         self.initialize_metadata_and_auth().await?;
 
+        // 4b. Reconcile cluster object store configuration if already persisted
+        self.reconcile_cluster_storage_config().await;
+
         // 5. Broker gRPC + replicator
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, broker_admin)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         info!(
@@ -375,7 +384,7 @@ impl DanubeService {
         schema_registry: Arc<SchemaRegistryService>,
         edge_service: Option<EdgeReplicatorServiceImpl>,
         edge_svc: Arc<EdgeService>,
-        broker_admin: Option<DanubeAdminImpl>,
+        admin_impl: DanubeAdminImpl,
     ) -> Result<()> {
         // 1–2. Register + immediate active state (same as standalone)
         self.register_broker(0).await?;
@@ -401,7 +410,7 @@ impl DanubeService {
 
         // 5. Broker gRPC (local producers/consumers for edge MQTT/client usage)
         let server_handle = self
-            .start_broker_grpc(schema_registry, edge_service, broker_admin)
+            .start_broker_grpc(schema_registry, edge_service, Some(admin_impl))
             .await?;
 
         // 6. Ensure MQTT-mapped topics exist locally in the broker
@@ -624,6 +633,8 @@ impl DanubeService {
     async fn determine_initial_state(&self, cluster: &ClusterServices) {
         let (initial_state, state_reason) = if cluster.join_cluster {
             ("drained", "join")
+        } else if self.service_config.node_role == NodeRole::Lakehouse {
+            ("drained", "lakehouse_only")
         } else if cluster.was_restart {
             let my_reg_path = join_path(&[
                 crate::resources::BASE_REGISTER_PATH,
@@ -693,6 +704,24 @@ impl DanubeService {
                 reason = state_reason,
                 "broker registered as drained (use `danube-admin brokers activate` to enable topic assignment)"
             );
+        }
+    }
+
+    /// Reads `/cluster/config/storage` from the metadata store and configures the
+    /// broker's `StorageFactory` before assigned topics are loaded.
+    async fn reconcile_cluster_storage_config(&self) {
+        match self
+            .meta_store
+            .get("/cluster/config/storage", MetaOptions::None)
+            .await
+        {
+            Ok(Some(val)) => {
+                apply_stored_cluster_storage_config(&self.broker.storage_factory(), &val).await;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(error = %err, "failed to read /cluster/config/storage on startup");
+            }
         }
     }
 
@@ -897,10 +926,9 @@ pub(crate) fn should_reap_dead_node(
     true
 }
 
-/// On SIGTERM / SIGINT, drain this broker gracefully (mark `"draining"`, unload hosted
-/// topics locally so cursors/WAL are flushed and sealed, mark them ready for reassignment,
-/// and exit cleanly) WITHOUT removing the node from Raft membership.
-fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources, broker: Arc<BrokerService>) {
+/// On SIGTERM / SIGINT, drain this broker gracefully (mark `"draining"` and schedule
+/// hosted topics for unload) WITHOUT removing the node from Raft membership.
+fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources) {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -934,28 +962,9 @@ fn spawn_graceful_sigterm_drain(broker_id: u64, resources: Resources, broker: Ar
         let topics = resources.cluster.get_topics_for_broker(&broker_key).await;
         for topic in topics {
             if let Err(err) = resources.cluster.mark_topic_for_unload(&topic, broker_id).await {
-                warn!(broker_id, topic = %topic, error = %err, "failed to mark topic for unload on SIGTERM");
-            }
-            if let Err(err) = resources
-                .cluster
-                .schedule_topic_deletion(&broker_key, &topic)
-                .await
-            {
-                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic deletion on SIGTERM");
-            }
-            if let Err(err) = broker.topic_manager.unload_topic(&topic).await {
-                warn!(broker_id, topic = %topic, error = %err, "failed to unload topic locally on SIGTERM");
-            }
-            if let Err(err) = resources
-                .cluster
-                .mark_topic_unload_ready(&topic, broker_id)
-                .await
-            {
-                warn!(broker_id, topic = %topic, error = %err, "failed to mark topic unload ready on SIGTERM");
+                warn!(broker_id, topic = %topic, error = %err, "failed to schedule topic unload on SIGTERM");
             }
         }
-        info!(broker_id, "graceful drain complete; exiting");
-        std::process::exit(0);
     });
 }
 
@@ -1046,6 +1055,128 @@ fn spawn_object_store_credential_refresher(
         }
     });
 }
+
+async fn apply_stored_cluster_storage_config(
+    storage_factory: &danube_persistent_storage::StorageFactory,
+    val: &serde_json::Value,
+) {
+    let Some(backend) = val.get("backend").and_then(|v| v.as_str()) else {
+        warn!("ignoring /cluster/config/storage without 'backend' field");
+        return;
+    };
+    let Some(root) = val.get("root").and_then(|v| v.as_str()) else {
+        warn!("ignoring /cluster/config/storage without 'root' field");
+        return;
+    };
+    let options: HashMap<String, String> = val
+        .get("options")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let cfg = match crate::admin::desired_state::build_object_store_config(
+        backend,
+        root.to_string(),
+        options,
+    ) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            warn!(error = %err, "failed to parse /cluster/config/storage");
+            return;
+        }
+    };
+
+    if let Err(err) = storage_factory.configure_object_store(cfg, true).await {
+        warn!(error = %err, backend, root, "failed to apply cluster object store config");
+    } else {
+        info!(backend, root, "reconciled cluster object store configuration");
+    }
+}
+
+async fn spawn_cluster_storage_config_watcher(
+    meta_store: MetadataStorage,
+    storage_factory: danube_persistent_storage::StorageFactory,
+) {
+    match meta_store.watch("/cluster/config/storage").await {
+        Ok(mut watch_stream) => {
+            tokio::spawn(async move {
+                while let Some(result) = watch_stream.next().await {
+                    match result {
+                        Ok(WatchEvent::Put { value, .. }) => {
+                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
+                                apply_stored_cluster_storage_config(&storage_factory, &val).await;
+                            }
+                        }
+                        Ok(WatchEvent::Delete { .. }) => {}
+                        Err(err) => {
+                            warn!(error = %err, "cluster storage config watch error");
+                        }
+                    }
+                }
+            });
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to watch /cluster/config/storage");
+        }
+    }
+}
+
+#[cfg(feature = "lakehouse")]
+async fn start_lakehouse_runtime_if_enabled(
+    node_role: NodeRole,
+) -> Result<Option<danube_iceberg::LakehouseRuntime>> {
+    if node_role == NodeRole::Broker {
+        debug!("skipping embedded lakehouse runtime (--node-role broker)");
+        return Ok(None);
+    }
+
+    if let Ok(path) = std::env::var("DANUBE_LAKEHOUSE_CONFIG") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            let cfg = danube_iceberg::config::Config::load(trimmed)
+                .with_context(|| format!("failed to load lakehouse config '{}'", trimmed))?;
+            let runtime = danube_iceberg::LakehouseRuntime::start(cfg)
+                .context("failed to start embedded LakehouseRuntime")?;
+            info!(config = trimmed, role = ?node_role, "embedded lakehouse runtime started");
+            return Ok(Some(runtime));
+        }
+    }
+
+    let runtime = danube_iceberg::LakehouseRuntime::new_idle(
+        danube_iceberg::DEFAULT_LAKEHOUSE_WORKER_THREADS,
+        danube_iceberg::DEFAULT_LAKEHOUSE_MEMORY_CAP_BYTES,
+    )
+    .context("failed to initialize idle embedded LakehouseRuntime")?;
+    info!(
+        role = ?node_role,
+        "embedded lakehouse runtime initialized in idle standby (set DANUBE_LAKEHOUSE_CONFIG to enable pipelines)"
+    );
+    Ok(Some(runtime))
+}
+
+#[cfg(not(feature = "lakehouse"))]
+async fn start_lakehouse_runtime_if_enabled(node_role: NodeRole) -> Result<Option<()>> {
+    if node_role == NodeRole::Lakehouse {
+        warn!(
+            "--node-role lakehouse requested, but danube-broker was compiled without the 'lakehouse' feature"
+        );
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "lakehouse")]
+async fn shutdown_lakehouse_runtime(runtime: Option<danube_iceberg::LakehouseRuntime>) {
+    if let Some(rt) = runtime {
+        rt.shutdown();
+    }
+}
+
+#[cfg(not(feature = "lakehouse"))]
+async fn shutdown_lakehouse_runtime(_runtime: Option<()>) {}
 
 #[cfg(test)]
 mod dead_node_reap_tests {

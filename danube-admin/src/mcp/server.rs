@@ -876,7 +876,7 @@ impl DanubeMcpServer {
         &self,
         Parameters(params): Parameters<tools::logs::BrokerLogsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let output = tools::logs::get_broker_logs(&self.config, params).await;
+        let output = tools::logs::get_broker_logs(&self.config, &self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
@@ -971,11 +971,11 @@ impl DanubeMcpServer {
     /// Use this for high-level cluster health overview and capacity planning.
     #[tool]
     async fn get_cluster_metrics(&self) -> Result<CallToolResult, McpError> {
-        let output = tools::metrics::get_cluster_metrics(&self.metrics).await;
+        let output = tools::metrics::get_cluster_metrics(&self.metrics, &self.client).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    /// Get metrics for a specific broker from Prometheus.
+    /// Get metrics for a specific broker from Prometheus (or gRPC snapshot fallback).
     ///
     /// **Prometheus Required**: Queries Prometheus for broker-specific metrics.
     ///
@@ -988,11 +988,12 @@ impl DanubeMcpServer {
         &self,
         Parameters(params): Parameters<tools::metrics::BrokerMetricsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let output = tools::metrics::get_broker_metrics(&self.metrics, params).await;
+        let output =
+            tools::metrics::get_broker_metrics(&self.metrics, &self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    /// Get comprehensive metrics for a specific topic from Prometheus.
+    /// Get comprehensive metrics for a specific topic from Prometheus (or gRPC snapshot fallback).
     ///
     /// **Prometheus Required**: Queries Prometheus for topic-specific metrics.
     ///
@@ -1006,7 +1007,8 @@ impl DanubeMcpServer {
         &self,
         Parameters(params): Parameters<tools::metrics::TopicMetricsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let output = tools::metrics::get_topic_metrics(&self.metrics, params).await;
+        let output =
+            tools::metrics::get_topic_metrics(&self.metrics, &self.client, params).await;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 

@@ -1,6 +1,8 @@
 //! Log fetching tools for Docker, Kubernetes, and local file deployments
 
+use crate::core::grpc_client::AdminGrpcClient;
 use crate::mcp::config::{DeploymentConfig, DeploymentType, McpConfig};
+use danube_core::admin_proto::GetBrokerLogsRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::process::Command;
@@ -8,10 +10,10 @@ use std::process::Command;
 /// Parameters for fetching broker logs
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BrokerLogsParams {
-    /// Broker identifier as configured in mcp-config.yml.
-    /// Must match an ID from the deployment configuration (Docker, K8s, or local).
-    /// Use list_configured_brokers to discover available IDs.
+    /// Broker identifier as configured in mcp-config.yml (optional when using gRPC ring-buffer fallback).
+    /// When deployment config is present, must match an ID from mcp-config.yml.
     /// Example: "broker1", "broker-0", "danube-broker-2"
+    #[serde(default)]
     pub broker_id: String,
 
     /// Number of log lines to fetch from the end of the log.
@@ -20,6 +22,18 @@ pub struct BrokerLogsParams {
     /// Range: 1-10000 (implementation may cap at reasonable limits)
     #[serde(default = "default_lines")]
     pub lines: u32,
+
+    /// Optional minimum log level filter for gRPC ring-buffer logs (e.g. "INFO", "WARN", "ERROR").
+    #[serde(default)]
+    pub level: Option<String>,
+
+    /// Optional module target substring filter for gRPC ring-buffer logs.
+    #[serde(default)]
+    pub target: Option<String>,
+
+    /// Optional text substring filter for log messages.
+    #[serde(default)]
+    pub contains: Option<String>,
 }
 
 fn default_lines() -> u32 {
@@ -67,18 +81,66 @@ pub struct ListPodsParams {
     pub namespace: String,
 }
 
-/// Get logs for a specific broker based on deployment configuration
-pub async fn get_broker_logs(config: &McpConfig, params: BrokerLogsParams) -> String {
-    let Some(deployment) = &config.deployment else {
-        return "Error: No deployment configuration provided. Log fetching is not available.\n\
-                Hint: Start danube-admin with --config to enable log access."
-            .to_string();
+/// Get logs for a specific broker using deployment config when available,
+/// falling back to the broker admin gRPC `GetBrokerLogs` ring buffer.
+pub async fn get_broker_logs(
+    config: &McpConfig,
+    client: &AdminGrpcClient,
+    params: BrokerLogsParams,
+) -> String {
+    if let Some(deployment) = &config.deployment {
+        return match deployment.deployment_type {
+            DeploymentType::Docker => get_docker_broker_logs(deployment, &params),
+            DeploymentType::Kubernetes => get_k8s_broker_logs(deployment, &params).await,
+            DeploymentType::Local => get_local_broker_logs(deployment, &params),
+        };
+    }
+
+    let req = GetBrokerLogsRequest {
+        level: params.level.unwrap_or_default(),
+        target: params.target.unwrap_or_default(),
+        contains: params.contains.unwrap_or_default(),
+        since_ms: 0,
+        limit: params.lines.clamp(1, 2000),
     };
 
-    match deployment.deployment_type {
-        DeploymentType::Docker => get_docker_broker_logs(deployment, &params),
-        DeploymentType::Kubernetes => get_k8s_broker_logs(deployment, &params).await,
-        DeploymentType::Local => get_local_broker_logs(deployment, &params),
+    match client.get_broker_logs(req).await {
+        Ok(resp) => {
+            let mut out = format!(
+                "=== Broker {} Logs (gRPC Ring Buffer: {} returned, {} buffered) ===\n\n",
+                resp.broker_id,
+                resp.entries.len(),
+                resp.total_buffered
+            );
+            if !params.broker_id.is_empty() && params.broker_id != resp.broker_id.to_string() {
+                out.push_str(&format!(
+                    "Note: Returned logs from connected admin endpoint (broker_id={}); requested '{}'.\n\n",
+                    resp.broker_id, params.broker_id
+                ));
+            }
+            if resp.entries.is_empty() {
+                out.push_str("(No matching log entries in ring buffer.)\n");
+            } else {
+                for entry in resp.entries {
+                    let fields = if entry.fields.is_empty() {
+                        String::new()
+                    } else {
+                        let pairs: Vec<String> = entry
+                            .fields
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect();
+                        format!(" {{{}}}", pairs.join(", "))
+                    };
+                    out.push_str(&format!(
+                        "[{}ms] {:5} {} - {}{}\n",
+                        entry.timestamp_ms, entry.level, entry.target, entry.message, fields
+                    ));
+                }
+            }
+            out
+        }
+        Err(e) => format!("Error fetching broker logs via gRPC ring buffer: {}", e),
     }
 }
 

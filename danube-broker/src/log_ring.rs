@@ -141,10 +141,17 @@ pub(crate) struct RingBufferLogLayer {
 
 impl<S: Subscriber> Layer<S> for RingBufferLogLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        let metadata = event.metadata();
+        if !matches!(
+            *metadata.level(),
+            tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
+        ) {
+            return;
+        }
+
         let mut visitor = FieldExtractor::default();
         event.record(&mut visitor);
 
-        let metadata = event.metadata();
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)

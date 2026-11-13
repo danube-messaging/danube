@@ -69,10 +69,28 @@ impl TopicResources {
         self.create(&path, intent).await
     }
 
+    pub(crate) async fn get_topic_intent(
+        &self,
+        topic_name: &str,
+    ) -> Option<crate::stream_intent::ExpandedStreamSettings> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "intent"]);
+        let value = self.store.get(&path, MetaOptions::None).await.ok().flatten()?;
+        serde_json::from_value::<crate::stream_intent::ExpandedStreamSettings>(value).ok()
+    }
+
     pub(crate) async fn set_topic_storage_mode(&self, topic_name: &str, mode: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "storage_mode"]);
         self.create(&path, serde_json::json!({ "mode": mode }))
             .await
+    }
+
+    pub(crate) async fn get_topic_storage_mode(&self, topic_name: &str) -> Option<String> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "storage_mode"]);
+        let value = self.store.get(&path, MetaOptions::None).await.ok().flatten()?;
+        value
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     pub(crate) async fn get_topic_producers(&self, topic_name: &str) -> Vec<String> {
@@ -410,7 +428,18 @@ impl TopicResources {
                 Ok(policy)
             }
             None => {
-                let policy = SubscriptionFailurePolicy::new(topic_name);
+                let mut policy = SubscriptionFailurePolicy::new(topic_name);
+                if let Some(intent) = self.get_topic_intent(topic_name).await {
+                    policy.max_redelivery_count = intent.max_retries;
+                    policy.base_redelivery_delay_ms = intent.backoff_ms;
+                    if let Some(ref suffix) = intent.dlq_suffix {
+                        if !suffix.trim().is_empty() {
+                            policy.poison_policy =
+                                crate::subscription::SubscriptionPoisonPolicy::DeadLetter;
+                            policy.dead_letter_topic = Some(format!("{}{}", topic_name, suffix));
+                        }
+                    }
+                }
                 policy.validate()?;
                 self.set_subscription_failure_policy(subscription_name, topic_name, &policy)
                     .await?;

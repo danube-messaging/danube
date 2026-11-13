@@ -1,6 +1,8 @@
-//! MCP tools for querying Prometheus metrics
+//! MCP tools for querying Prometheus metrics with broker gRPC snapshot fallback
 
+use crate::core::grpc_client::AdminGrpcClient;
 use crate::metrics::{queries, MetricsClient};
+use danube_core::admin_proto::GetMetricsSnapshotRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -36,9 +38,80 @@ pub struct RawQueryParams {
     pub query: String,
 }
 
+async fn format_grpc_snapshot_fallback(
+    grpc: &AdminGrpcClient,
+    title: &str,
+    topic_filter: Option<&str>,
+    prom_errors: &[String],
+) -> String {
+    let mut output = format!("=== {} (gRPC Telemetry Snapshot Fallback) ===\n", title);
+    output.push_str("Prometheus was unreachable or returned errors:\n");
+    for e in prom_errors {
+        output.push_str(&format!("  - {}\n", e));
+    }
+
+    match grpc
+        .get_metrics_snapshot(GetMetricsSnapshotRequest {
+            metric_names: Vec::new(),
+            window_seconds: 300,
+        })
+        .await
+    {
+        Ok(resp) => {
+            output.push_str(&format!(
+                "\nConnected Broker: {} | Collected At: {}ms\n\n",
+                resp.broker_id, resp.collected_at_ms
+            ));
+            let mut matched = 0usize;
+            for series in resp.series {
+                if let Some(topic) = topic_filter {
+                    let topic_label = series.labels.get("topic").map(String::as_str);
+                    if topic_label != Some(topic)
+                        && topic_label != Some(topic.trim_start_matches('/'))
+                    {
+                        continue;
+                    }
+                }
+                matched += 1;
+                let labels = if series.labels.is_empty() {
+                    String::new()
+                } else {
+                    let pairs: Vec<String> = series
+                        .labels
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    format!(" {{{}}}", pairs.join(", "))
+                };
+                output.push_str(&format!(
+                    "- {}{} [{}]: {} ({} samples in window)\n",
+                    series.name,
+                    labels,
+                    series.kind,
+                    series.current_value,
+                    series.history.len()
+                ));
+            }
+            if matched == 0 {
+                output.push_str("(No matching metrics in broker telemetry ring buffer.)\n");
+            }
+        }
+        Err(err) => {
+            output.push_str(&format!(
+                "\ngRPC GetMetricsSnapshot fallback also failed: {}\n",
+                err
+            ));
+        }
+    }
+    output
+}
+
 /// Get cluster-wide metrics summary
-pub async fn get_cluster_metrics(client: &MetricsClient) -> String {
+pub async fn get_cluster_metrics(client: &MetricsClient, grpc: &AdminGrpcClient) -> String {
     let result = queries::fetch_cluster_metrics(client).await;
+    if !result.errors.is_empty() {
+        return format_grpc_snapshot_fallback(grpc, "Cluster Metrics", None, &result.errors).await;
+    }
     let m = &result.data;
 
     let mut output = String::from("=== Cluster Metrics ===\n\n");
@@ -64,19 +137,25 @@ pub async fn get_cluster_metrics(client: &MetricsClient) -> String {
         m.imbalance_cv
     ));
 
-    if !result.errors.is_empty() {
-        output.push_str("\n--- Errors ---\n");
-        for e in &result.errors {
-            output.push_str(&format!("  - {}\n", e));
-        }
-    }
-
     output
 }
 
 /// Get metrics for a specific broker
-pub async fn get_broker_metrics(client: &MetricsClient, params: BrokerMetricsParams) -> String {
+pub async fn get_broker_metrics(
+    client: &MetricsClient,
+    grpc: &AdminGrpcClient,
+    params: BrokerMetricsParams,
+) -> String {
     let result = queries::fetch_broker_metrics(client, &params.broker_id).await;
+    if !result.errors.is_empty() {
+        return format_grpc_snapshot_fallback(
+            grpc,
+            &format!("Broker {} Metrics", params.broker_id),
+            None,
+            &result.errors,
+        )
+        .await;
+    }
     let m = &result.data;
 
     let mut output = format!("=== Broker {} Metrics ===\n\n", params.broker_id);
@@ -87,19 +166,25 @@ pub async fn get_broker_metrics(client: &MetricsClient, params: BrokerMetricsPar
     output.push_str(&format!("Bytes In:       {} bytes\n", m.bytes_in_total));
     output.push_str(&format!("Bytes Out:      {} bytes\n", m.bytes_out_total));
 
-    if !result.errors.is_empty() {
-        output.push_str("\n--- Errors ---\n");
-        for e in &result.errors {
-            output.push_str(&format!("  - {}\n", e));
-        }
-    }
-
     output
 }
 
 /// Get metrics for a specific topic
-pub async fn get_topic_metrics(client: &MetricsClient, params: TopicMetricsParams) -> String {
+pub async fn get_topic_metrics(
+    client: &MetricsClient,
+    grpc: &AdminGrpcClient,
+    params: TopicMetricsParams,
+) -> String {
     let result = queries::fetch_topic_metrics(client, &params.topic).await;
+    if !result.errors.is_empty() {
+        return format_grpc_snapshot_fallback(
+            grpc,
+            &format!("Topic {} Metrics", params.topic),
+            Some(&params.topic),
+            &result.errors,
+        )
+        .await;
+    }
     let m = &result.data;
 
     let mut output = format!("=== Topic {} Metrics ===\n\n", params.topic);
@@ -133,13 +218,6 @@ pub async fn get_topic_metrics(client: &MetricsClient, params: TopicMetricsParam
         "Send Latency:   {:.2} / {:.2} / {:.2} ms\n",
         m.latency_p50_ms, m.latency_p95_ms, m.latency_p99_ms
     ));
-
-    if !result.errors.is_empty() {
-        output.push_str("\n--- Errors ---\n");
-        for e in &result.errors {
-            output.push_str(&format!("  - {}\n", e));
-        }
-    }
 
     output
 }

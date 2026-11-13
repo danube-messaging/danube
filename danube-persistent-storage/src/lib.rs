@@ -1,7 +1,7 @@
 mod errors;
 
 pub mod wal;
-pub use wal::Wal;
+pub use wal::{Wal, WalSyncMode};
 
 pub mod checkpoint;
 

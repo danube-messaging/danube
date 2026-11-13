@@ -1,6 +1,6 @@
 mod brokers_admin;
 mod cluster_admin;
-mod desired_state;
+pub(crate) mod desired_state;
 mod namespace_admin;
 mod security_admin;
 mod topics_admin;
