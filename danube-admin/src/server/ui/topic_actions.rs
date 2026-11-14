@@ -123,6 +123,7 @@ pub async fn topic_actions(
                     // schema_subject: req.schema_subject,
                     schema_subject: if schema_data.is_empty() { None } else { Some(schema_type.clone()) },
                     dispatch_strategy: ds,
+                    intent: None,
                 };
                 state.client.create_partitioned_topic(request).await.map(|r| r.success)
             } else {
@@ -133,6 +134,7 @@ pub async fn topic_actions(
                     // schema_subject: req.schema_subject,
                     schema_subject: if schema_data.is_empty() { None } else { Some(schema_type.clone()) },
                     dispatch_strategy: ds,
+                    intent: None,
                 };
                 state.client.create_topic(request).await.map(|r| r.success)
             }

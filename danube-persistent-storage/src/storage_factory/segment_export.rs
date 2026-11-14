@@ -17,7 +17,9 @@ impl StorageFactory {
         topic_path: &str,
         wal: &Wal,
     ) -> Result<(), PersistentStorageError> {
-        if !self.should_start_background_export() {
+        if !self.should_start_background_export()
+            && !self.cloud_tiered_topics.contains(topic_path)
+        {
             return Ok(());
         }
         wal.rotate().await?;
@@ -48,9 +50,9 @@ impl StorageFactory {
         if !self.uses_sealed_segment_export() {
             return Ok(());
         }
-        let durable_store = match self.durable_store.clone() {
+        let durable_store = match self.current_durable_store() {
             Some(store) => store,
-            None if self.mode.requires_separate_durable_backend() => {
+            None if self.current_mode().requires_separate_durable_backend() => {
                 return Err(PersistentStorageError::Other(
                     "storage mode requires separate durable backend for segment export".to_string(),
                 ))
@@ -150,20 +152,21 @@ impl StorageFactory {
         &self,
         topic_path: &str,
     ) -> Result<(), PersistentStorageError> {
-        let durable_store = match self.durable_store.clone() {
+        let durable_store = match self.current_durable_store() {
             Some(store) => store,
-            None if self.mode.requires_separate_durable_backend() => {
+            None if self.current_mode().requires_separate_durable_backend() => {
                 return Err(PersistentStorageError::Other(
                     "storage mode requires separate durable backend for segment deletion".to_string(),
                 ))
             }
             None => return Ok(()),
         };
-        let segments = self.segment_catalog.list_segments(topic_path).await?;
-        for segment in segments {
-            let object_path = segment_object_path(topic_path, &segment.segment_id);
-            durable_store.delete_segment(&object_path).await?;
-        }
+        delete_topic_segments_with_refcount(
+            &self.segment_catalog,
+            durable_store.as_ref(),
+            topic_path,
+        )
+        .await?;
 
         // Clean up Valkey keys for this topic (best-effort)
         self.clear_valkey_topic_keys(topic_path).await;
@@ -198,7 +201,7 @@ impl StorageFactory {
     }
 
     pub(super) fn uses_sealed_segment_export(&self) -> bool {
-        self.mode.requires_separate_durable_backend()
+        self.current_mode().requires_separate_durable_backend()
     }
 
     /// Persist one sealed WAL byte range as a durable segment object and construct its descriptor.
@@ -232,6 +235,9 @@ impl StorageFactory {
             created_at: chrono::Utc::now().timestamp() as u64,
             completed: true,
             offset_index: build_offset_index(bytes),
+            ref_count: 1,
+            object_topic: None,
+            max_valid_offset: None,
         })
     }
 
@@ -277,5 +283,202 @@ fn build_offset_index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
         None
     } else {
         Some(offsets)
+    }
+}
+
+pub(crate) async fn delete_topic_segments_with_refcount(
+    segment_catalog: &crate::metadata::SegmentCatalog,
+    durable_store: &dyn crate::durable_store::DurableStore,
+    topic_path: &str,
+) -> Result<(), PersistentStorageError> {
+    let segments = segment_catalog.list_segments(topic_path).await?;
+    let meta = segment_catalog.metadata();
+    for segment in segments {
+        let effective_topic = segment.object_topic.as_deref().unwrap_or(topic_path);
+        let remaining_refs = meta
+            .list_other_segment_references(effective_topic, &segment.segment_id, topic_path)
+            .await?;
+
+        if remaining_refs.is_empty() {
+            let object_path = segment_object_path(effective_topic, &segment.segment_id);
+            durable_store.delete_segment(&object_path).await?;
+        } else {
+            let next_rc = remaining_refs.len() as u32;
+            for (other_topic, start_padded, mut other_desc) in remaining_refs {
+                if other_desc.ref_count != next_rc {
+                    other_desc.ref_count = next_rc;
+                    let _ = segment_catalog
+                        .put_segment(&other_topic, &start_padded, &other_desc)
+                        .await;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delete_topic_segments_with_refcount;
+    use crate::durable_store::{segment_object_path, DurableStore};
+    use crate::metadata::{SegmentCatalog, SegmentDescriptor, StorageMetadata};
+    use crate::object_store_backend::{BackendConfig, ObjStore};
+    use crate::ObjStoreDurable;
+    use danube_core::metadata::{MemoryStore, MetadataStore};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn branched_segment_refcount_preserves_object_until_last_topic_deleted() {
+        let mem_meta: Arc<dyn MetadataStore> =
+            Arc::new(MemoryStore::new().await.expect("memory store"));
+        let storage_meta = StorageMetadata::new(mem_meta, "/danube".to_string());
+        let catalog = SegmentCatalog::new(storage_meta.clone());
+
+        let obj_store = ObjStore::new(BackendConfig::Memory {
+            root: "mem-branch-test".to_string(),
+        })
+        .expect("mem obj store");
+        let durable = ObjStoreDurable::new(obj_store);
+
+        let seg_id = "data-0-100.dnb1".to_string();
+        let obj_path = segment_object_path("ns/src", &seg_id);
+        durable
+            .put_segment(&obj_path, b"segment-payload")
+            .await
+            .expect("put segment");
+
+        let desc = SegmentDescriptor {
+            segment_id: seg_id,
+            start_offset: 0,
+            end_offset: 9,
+            size: 15,
+            etag: None,
+            created_at: 1,
+            completed: true,
+            offset_index: None,
+            ref_count: 1,
+            object_topic: None,
+            max_valid_offset: None,
+        };
+        let start_padded = format!("{:020}", 0);
+        catalog
+            .put_segment("ns/src", &start_padded, &desc)
+            .await
+            .expect("put descriptor");
+
+        let copied = storage_meta
+            .branch_topic_segments("ns/src", "ns/branch", None)
+            .await
+            .expect("branch segments");
+        assert_eq!(copied, 1);
+
+        let src_desc = storage_meta
+            .get_segment_descriptor("ns/src", &start_padded)
+            .await
+            .expect("get src")
+            .expect("src exists");
+        let br_desc = storage_meta
+            .get_segment_descriptor("ns/branch", &start_padded)
+            .await
+            .expect("get branch")
+            .expect("branch exists");
+        assert_eq!(src_desc.ref_count, 2);
+        assert_eq!(br_desc.ref_count, 2);
+        assert_eq!(br_desc.object_topic.as_deref(), Some("ns/src"));
+
+        // Deleting the branch while source still holds a reference skips physical deletion
+        // and decrements source ref_count back to 1.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/branch")
+            .await
+            .expect("delete branch segments");
+        catalog.delete_topic("ns/branch").await.expect("delete branch meta");
+
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_ok());
+
+        let updated_src = storage_meta
+            .get_segment_descriptor("ns/src", &start_padded)
+            .await
+            .expect("get src after branch delete")
+            .expect("src still exists");
+        assert_eq!(updated_src.ref_count, 1);
+
+        // Now deleting source (ref_count == 1) physically deletes the durable object.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/src")
+            .await
+            .expect("delete source segments");
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_parent_before_branch_preserves_object_until_branch_deleted() {
+        let mem_meta: Arc<dyn MetadataStore> =
+            Arc::new(MemoryStore::new().await.expect("memory store"));
+        let storage_meta = StorageMetadata::new(mem_meta, "/danube".to_string());
+        let catalog = SegmentCatalog::new(storage_meta.clone());
+
+        let obj_store = ObjStore::new(BackendConfig::Memory {
+            root: "mem-parent-first-test".to_string(),
+        })
+        .expect("mem obj store");
+        let durable = ObjStoreDurable::new(obj_store);
+
+        let seg_id = "data-0-parent-first.dnb1".to_string();
+        let obj_path = segment_object_path("ns/parent", &seg_id);
+        durable
+            .put_segment(&obj_path, b"parent-payload")
+            .await
+            .expect("put segment");
+
+        let desc = SegmentDescriptor {
+            segment_id: seg_id,
+            start_offset: 0,
+            end_offset: 9,
+            size: 14,
+            etag: None,
+            created_at: 1,
+            completed: true,
+            offset_index: None,
+            ref_count: 1,
+            object_topic: None,
+            max_valid_offset: None,
+        };
+        let start_padded = format!("{:020}", 0);
+        catalog
+            .put_segment("ns/parent", &start_padded, &desc)
+            .await
+            .expect("put parent descriptor");
+
+        let copied = storage_meta
+            .branch_topic_segments("ns/parent", "ns/child", Some(4))
+            .await
+            .expect("branch segments");
+        assert_eq!(copied, 1);
+
+        let child_desc = storage_meta
+            .get_segment_descriptor("ns/child", &start_padded)
+            .await
+            .expect("get child")
+            .expect("child exists");
+        assert_eq!(child_desc.max_valid_offset, Some(4));
+
+        // Delete parent FIRST: object must stay intact and child ref_count must drop to 1.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/parent")
+            .await
+            .expect("delete parent segments");
+        catalog.delete_topic("ns/parent").await.expect("delete parent meta");
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_ok());
+
+        let updated_child = storage_meta
+            .get_segment_descriptor("ns/child", &start_padded)
+            .await
+            .expect("get child after parent delete")
+            .expect("child still exists");
+        assert_eq!(updated_child.ref_count, 1);
+
+        // Deleting child last physically removes the shared segment object.
+        delete_topic_segments_with_refcount(&catalog, &durable, "ns/child")
+            .await
+            .expect("delete child segments");
+        assert!(durable.open_segment_reader(&obj_path, 0).await.is_err());
     }
 }

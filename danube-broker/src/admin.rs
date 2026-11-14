@@ -1,5 +1,6 @@
 mod brokers_admin;
 mod cluster_admin;
+pub(crate) mod desired_state;
 mod namespace_admin;
 mod security_admin;
 mod topics_admin;
@@ -96,16 +97,20 @@ impl DanubeAdminImpl {
         let schema_registry_service =
             SchemaRegistryServer::new((*self.schema_registry.as_ref()).clone());
 
-        let broker_admin_service = BrokerAdminServer::new(self.clone());
-        let cluster_admin_service = ClusterAdminServer::new(self.clone());
-        let namespace_admin_service = NamespaceAdminServer::new(self.clone());
-        let security_admin_service = SecurityAdminServer::new(self.clone());
-        let topic_admin_service = TopicAdminServer::new(self.clone());
+        let (
+            broker_admin_service,
+            cluster_admin_service,
+            namespace_admin_service,
+            security_admin_service,
+            topic_admin_service,
+        ) = self.admin_services();
 
         // Always attach the auth interceptor. When mode=none it creates Anonymous
         // contexts that the authorization engine allows unconditionally.
         let auth = self.auth.clone();
-        let jwt_cache = crate::security::authn::JwtValidationCache::new();
+        let jwt_cache = crate::security::authn::JwtValidationCache::with_revoked(
+            self.resources.security.revoked_subjects(),
+        );
         let interceptor = move |request| authenticate_request(request, &auth, &jwt_cache);
 
         let server_builder = server_builder
@@ -146,6 +151,25 @@ impl DanubeAdminImpl {
 
         handle
     }
+
+    pub(crate) fn admin_services(
+        &self,
+    ) -> (
+        BrokerAdminServer<Self>,
+        ClusterAdminServer<Self>,
+        NamespaceAdminServer<Self>,
+        SecurityAdminServer<Self>,
+        TopicAdminServer<Self>,
+    ) {
+        (
+            BrokerAdminServer::new(self.clone()),
+            ClusterAdminServer::new(self.clone()),
+            NamespaceAdminServer::new(self.clone()),
+            SecurityAdminServer::new(self.clone()),
+            TopicAdminServer::new(self.clone()),
+        )
+    }
+
     async fn configure_tls(&self, server: Server) -> Server {
         // Install crypto provider if not already installed (ignore AlreadyInstalled errors)
         let _ = rustls::crypto::ring::default_provider().install_default();

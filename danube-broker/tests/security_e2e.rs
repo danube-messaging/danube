@@ -1,7 +1,7 @@
 //! Security E2E integration test.
 //!
-//! Requires a broker running with `config/danube_broker_secure.yml` (auth.mode: tls).
-//! The security-e2e CI workflow provisions RBAC via danube-admin before running these tests.
+//! Requires a broker started with TLS + JWT auth (`danube up --auth-mode tls ...`).
+//! The security-e2e CI workflow provisions RBAC via `danube ctl security` before running these tests.
 //!
 //! Environment variables (set by the workflow):
 //!   DANUBE_BROKER_ENDPOINT  — e.g. "https://127.0.0.1:6650"

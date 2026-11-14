@@ -109,7 +109,9 @@ impl EdgeService {
                 readiness.clone(),
             ));
 
-            let router = Arc::new(TopicRouter::new(&mqtt.topic_mappings));
+            let router = Arc::new(
+                TopicRouter::new(&mqtt.topic_mappings).with_edge_node_id(&config.edge.edge_name),
+            );
 
             (Some(ingester), Some(router))
         } else {

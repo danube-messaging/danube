@@ -50,7 +50,7 @@ pub(crate) static SYSTEM_NAMESPACE: &str = "system";
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct Resources {
-    store: MetadataStorage,
+    pub(crate) store: MetadataStorage,
     pub(crate) cluster: ClusterResources,
     pub(crate) namespace: NamespaceResources,
     pub(crate) topic: TopicResources,

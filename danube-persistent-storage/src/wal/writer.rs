@@ -16,17 +16,30 @@ use crate::persistent_metrics::{
 };
 use std::time::Instant;
 
+/// Controls fsync / flush guarantees on `Wal::append` and `Wal::append_batch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WalSyncMode {
+    /// Enqueue writes to the background writer buffer and flush periodically.
+    Async,
+    /// Group-commit flush to the OS page cache (`BufWriter::flush()`) before acking writes.
+    #[default]
+    OsCacheFlush,
+    /// Group-commit flush + `file.sync_data()` (`fdatasync`) before acking writes.
+    FsyncBatch,
+}
+
 /// Commands sent from `Wal::append()` (and friends) to the background writer task.
 ///
 /// Rationale
-/// - Keep the hot path (`append`) non-blocking by enqueueing a lightweight command.
-/// - The writer task owns all I/O state and applies batching, flush, rotation, and checkpoints.
+/// - Keep the hot path (`append`) responsive while coordinating all disk I/O in a single task.
+/// - Batching in `writer::run` groups concurrent `Write`s into one flush/fdatasync syscall.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum LogCommand {
     Write {
         offset: u64,
         bytes: Vec<u8>,
+        ack_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Batch write: pre-encoded frames for efficient replication ingestion.
     /// The `frames` buffer contains already-framed data (header + payload for each message).
@@ -34,6 +47,14 @@ pub(crate) enum LogCommand {
         first_offset: u64,
         last_offset: u64,
         frames: Vec<u8>,
+        ack_tx: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    /// Remove pruned rotated WAL files and advance `start_offset` atomically under writer ownership
+    /// so subsequent writer checkpoints never resurrect deleted files or reset `start_offset`.
+    PruneRotatedFiles {
+        pruned_seqs: Vec<u64>,
+        new_start_offset: u64,
+        reply_tx: oneshot::Sender<Result<(), String>>,
     },
     /// Set the topic name used for labeling writer metrics (optional).
     SetTopic(String),
@@ -66,6 +87,7 @@ pub(crate) struct WriterInit {
     pub flush_max_batch_bytes: usize,
     pub rotate_max_bytes: Option<u64>,
     pub rotate_max_seconds: Option<u64>,
+    pub sync_mode: WalSyncMode,
     pub ckpt_store: Option<Arc<CheckpointStore>>,
     /// Optional channel to notify external systems when the active WAL file rotates.
     pub rotation_tx: Option<mpsc::UnboundedSender<RotationEvent>>,
@@ -75,6 +97,7 @@ pub(crate) struct WriterInit {
 ///
 /// Responsibilities
 /// - Buffer frames and periodically flush to disk according to `flush_interval_ms` and `flush_max_batch_bytes`.
+/// - Perform group-commit `flush` / `sync_data` for writers waiting on `ack_tx`.
 /// - Rotate WAL files based on size thresholds and time thresholds checked on writes.
 /// - Persist `WalCheckpoint` atomically on flush to record `last_offset`, `file_seq`, and current file path.
 struct WriterState {
@@ -84,11 +107,13 @@ struct WriterState {
     bytes_in_file: u64,
     file_started: std::time::Instant,
     file_seq: u64,
+    start_offset: u64,
     wal_path: Option<PathBuf>,
     checkpoint_path: Option<PathBuf>,
     flush_max_batch_bytes: usize,
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
+    sync_mode: WalSyncMode,
     rotated_files: Vec<(u64, PathBuf, u64)>,
     ckpt_store: Option<Arc<CheckpointStore>>,
     // Track the last offset written since last checkpoint
@@ -102,44 +127,25 @@ struct WriterState {
 }
 
 impl WriterState {
-    /// Handle a single `Write` command by framing and appending into the in-memory buffer;
-    /// flush buffered writes if batch thresholds are exceeded and write a checkpoint.
-    async fn process_write(
+    /// Handle a `Write` command by framing and appending into the in-memory buffer.
+    /// Does not immediately flush on its own so the batch loop in `run()` can group writes.
+    async fn buffer_write(
         &mut self,
         offset: u64,
         bytes: &[u8],
     ) -> Result<(), PersistentStorageError> {
         self.rotate_if_needed().await?;
-        // Record first offset for the current active file if not recorded yet
         if self.current_file_first_offset.is_none() {
             self.current_file_first_offset = Some(offset);
         }
-        // Frame and buffer the entry. We avoid borrowing the writer here so we can call
-        // `process_flush()` (which accesses `self.writer`) without overlapping borrows.
         append_encoded_frame(&mut self.write_buf, offset, bytes);
         self.bytes_in_file += (crate::frames::FRAME_HEADER_SIZE + bytes.len()) as u64;
-        // Remember last offset appended
         self.last_offset_written = Some(offset);
-
-        // Time-based flushing is handled by the periodic ticker in run(); only enforce byte threshold here
-        let should_flush_by_bytes = self.write_buf.len() >= self.flush_max_batch_bytes;
-        if should_flush_by_bytes {
-            // This will write the buffer, flush it, clear it, update timers, and persist a checkpoint
-            // using `last_offset_written`.
-            self.process_flush().await?;
-        }
         Ok(())
     }
 
     /// Handle a `WriteBatch` command by appending pre-encoded frames into the buffer.
-    ///
-    /// Unlike `process_write`, the frames are already serialized and framed by the caller
-    /// (`Wal::append_batch`), so this method only needs to:
-    /// 1. Check rotation thresholds
-    /// 2. Append raw bytes to the write buffer
-    /// 3. Update offset tracking and byte counters
-    /// 4. Flush if the batch-size threshold is exceeded
-    async fn process_write_batch(
+    async fn buffer_write_batch(
         &mut self,
         first_offset: u64,
         last_offset: u64,
@@ -149,18 +155,13 @@ impl WriterState {
         if self.current_file_first_offset.is_none() {
             self.current_file_first_offset = Some(first_offset);
         }
-        // Append pre-encoded frames directly — no per-message framing overhead
         self.write_buf.extend_from_slice(frames);
         self.bytes_in_file += frames.len() as u64;
         self.last_offset_written = Some(last_offset);
-
-        if self.write_buf.len() >= self.flush_max_batch_bytes {
-            self.process_flush().await?;
-        }
         Ok(())
     }
 
-    /// Force a flush of any buffered frames to disk and update internal timers.
+    /// Force a flush of any buffered frames to disk (and `sync_data` when configured) and update internal timers.
     async fn process_flush(&mut self) -> Result<(), PersistentStorageError> {
         if let Some(writer) = self.writer.as_mut() {
             if !self.write_buf.is_empty() {
@@ -173,6 +174,11 @@ impl WriterState {
                     .flush()
                     .await
                     .map_err(|e| PersistentStorageError::Io(format!("wal flush failed: {}", e)))?;
+                if self.sync_mode == WalSyncMode::FsyncBatch {
+                    writer.get_ref().sync_data().await.map_err(|e| {
+                        PersistentStorageError::Io(format!("wal sync_data failed: {}", e))
+                    })?;
+                }
                 self.write_buf.clear();
                 self.last_flush = std::time::Instant::now();
                 // Metrics: flush latency and flush count
@@ -188,6 +194,29 @@ impl WriterState {
                 if let Some(off) = self.last_offset_written {
                     self.write_checkpoint(off).await.ok();
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove pruned rotated files from writer state and advance `start_offset` atomically.
+    async fn prune_rotated_files(
+        &mut self,
+        pruned_seqs: &[u64],
+        new_start_offset: u64,
+    ) -> Result<(), PersistentStorageError> {
+        if !pruned_seqs.is_empty() {
+            self.rotated_files
+                .retain(|(seq, _path, _first)| !pruned_seqs.contains(seq));
+        }
+        self.start_offset = self.start_offset.max(new_start_offset);
+        if let Some(off) = self.last_offset_written {
+            self.write_checkpoint(off).await?;
+        } else if let Some(store) = &self.ckpt_store {
+            if let Some(mut ckpt) = store.get_wal().await {
+                ckpt.rotated_files = self.rotated_files.clone();
+                ckpt.start_offset = self.start_offset;
+                store.update_wal(&ckpt).await?;
             }
         }
         Ok(())
@@ -320,7 +349,7 @@ impl WriterState {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let ckpt = WalCheckpoint {
-            start_offset: 0, // TODO: This should be updated when pruning is implemented
+            start_offset: self.start_offset,
             last_offset,
             file_seq: self.file_seq,
             file_path,
@@ -379,6 +408,14 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
     // Capture fields that may be moved so we can still log derived values
     let has_file = init.wal_path.is_some();
 
+    let (initial_start_offset, initial_rotated_files) = match &init.ckpt_store {
+        Some(store) => match store.get_wal().await {
+            Some(ckpt) => (ckpt.start_offset, ckpt.rotated_files),
+            None => (0, Vec::new()),
+        },
+        None => (0, Vec::new()),
+    };
+
     let mut state = WriterState {
         writer,
         write_buf: Vec::with_capacity(init.flush_max_batch_bytes),
@@ -386,12 +423,14 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         bytes_in_file: 0,
         file_started: std::time::Instant::now(),
         file_seq: 0,
+        start_offset: initial_start_offset,
         wal_path: init.wal_path,
         checkpoint_path: init.checkpoint_path,
         flush_max_batch_bytes: init.flush_max_batch_bytes,
         rotate_max_bytes: init.rotate_max_bytes,
         rotate_max_seconds: init.rotate_max_seconds,
-        rotated_files: Vec::new(),
+        sync_mode: init.sync_mode,
+        rotated_files: initial_rotated_files,
         ckpt_store: init.ckpt_store,
         last_offset_written: None,
         current_file_first_offset: None,
@@ -406,45 +445,108 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         tokio::select! {
             maybe_cmd = rx.recv() => {
                 match maybe_cmd {
-                    Some(cmd) => {
-                        let res = match cmd {
-                            LogCommand::Write { offset, bytes } => state.process_write(offset, &bytes).await,
-                            LogCommand::WriteBatch { first_offset, last_offset, frames } => state.process_write_batch(first_offset, last_offset, &frames).await,
-                            LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) },
-                            LogCommand::Flush(ack_tx) => {
-                                let res = state.process_flush().await;
-                                let ack_res = res
-                                    .as_ref()
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string());
-                                let _ = ack_tx.send(ack_res);
-                                res
+                    Some(first_cmd) => {
+                        let mut pending_acks: Vec<oneshot::Sender<Result<(), String>>> = Vec::new();
+                        let mut deferred_cmds: Vec<LogCommand> = Vec::new();
+
+                        // Handle first command; if it's a write, greedily batch subsequent queued writes
+                        let mut shutdown_requested = false;
+                        let mut batch_cmds = vec![first_cmd];
+                        while batch_cmds.len() < 256 {
+                            match rx.try_recv() {
+                                Ok(next_cmd) => batch_cmds.push(next_cmd),
+                                Err(_) => break,
                             }
-                            LogCommand::Rotate(ack_tx) => {
-                                let res = state.force_rotate().await;
-                                let ack_res = res
-                                    .as_ref()
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string());
-                                let _ = ack_tx.send(ack_res);
-                                res
-                            }
-                            LogCommand::Shutdown(ack_tx) => {
-                                let res = state.process_flush().await;
-                                if let Err(e) = &res {
-                                    warn!(target = "wal", error = ?e, "flush on shutdown failed");
+                        }
+
+                        for cmd in batch_cmds {
+                            match cmd {
+                                LogCommand::Write { offset, bytes, ack_tx } => {
+                                    if let Err(e) = state.buffer_write(offset, &bytes).await {
+                                        if let Some(tx) = ack_tx {
+                                            let _ = tx.send(Err(e.to_string()));
+                                        }
+                                        warn!(target = "wal", error = %e, "background writer write failed");
+                                    } else if let Some(tx) = ack_tx {
+                                        pending_acks.push(tx);
+                                    }
                                 }
-                                let ack_res = res
-                                    .as_ref()
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string());
-                                let _ = ack_tx.send(ack_res);
-                                debug!(target = "wal", "writer task shutting down");
+                                LogCommand::WriteBatch { first_offset, last_offset, frames, ack_tx } => {
+                                    if let Err(e) = state.buffer_write_batch(first_offset, last_offset, &frames).await {
+                                        if let Some(tx) = ack_tx {
+                                            let _ = tx.send(Err(e.to_string()));
+                                        }
+                                        warn!(target = "wal", error = %e, "background writer write_batch failed");
+                                    } else if let Some(tx) = ack_tx {
+                                        pending_acks.push(tx);
+                                    }
+                                }
+                                other => deferred_cmds.push(other),
+                            }
+                        }
+
+                        // Group-commit flush if any caller awaits durability OR batch threshold reached
+                        if !pending_acks.is_empty() || state.write_buf.len() >= state.flush_max_batch_bytes {
+                            let flush_res = state.process_flush().await;
+                            match flush_res {
+                                Ok(()) => {
+                                    for tx in pending_acks.drain(..) {
+                                        let _ = tx.send(Ok(()));
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(target = "wal", error = %e, "group commit flush failed");
+                                    let msg = e.to_string();
+                                    for tx in pending_acks.drain(..) {
+                                        let _ = tx.send(Err(msg.clone()));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Process non-write control commands in order
+                        for cmd in deferred_cmds {
+                            let res = match cmd {
+                                LogCommand::SetTopic(topic) => { state.topic_name = Some(topic); Ok(()) }
+                                LogCommand::PruneRotatedFiles { pruned_seqs, new_start_offset, reply_tx } => {
+                                    let res = state.prune_rotated_files(&pruned_seqs, new_start_offset).await;
+                                    let _ = reply_tx.send(res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                                    res
+                                }
+                                LogCommand::Flush(ack_tx) => {
+                                    let res = state.process_flush().await;
+                                    let ack_res = res.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                                    let _ = ack_tx.send(ack_res);
+                                    res
+                                }
+                                LogCommand::Rotate(ack_tx) => {
+                                    let res = state.force_rotate().await;
+                                    let ack_res = res.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                                    let _ = ack_tx.send(ack_res);
+                                    res
+                                }
+                                LogCommand::Shutdown(ack_tx) => {
+                                    let res = state.process_flush().await;
+                                    if let Err(e) = &res {
+                                        warn!(target = "wal", error = ?e, "flush on shutdown failed");
+                                    }
+                                    let ack_res = res.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                                    let _ = ack_tx.send(ack_res);
+                                    debug!(target = "wal", "writer task shutting down");
+                                    shutdown_requested = true;
+                                    res
+                                }
+                                LogCommand::Write { .. } | LogCommand::WriteBatch { .. } => Ok(()),
+                            };
+                            if let Err(e) = res {
+                                warn!(target = "wal", error = ?e, "background writer command failed");
+                            }
+                            if shutdown_requested {
                                 break;
                             }
-                        };
-                        if let Err(e) = res {
-                            warn!(target = "wal", error = ?e, "background writer command failed");
+                        }
+                        if shutdown_requested {
+                            break;
                         }
                     }
                     None => {

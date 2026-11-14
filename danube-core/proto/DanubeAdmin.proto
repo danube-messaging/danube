@@ -32,6 +32,10 @@ service BrokerAdmin {
   // Load Balancing & Rebalancing RPCs (Phase 3)
   rpc GetClusterBalance(ClusterBalanceRequest) returns (ClusterBalanceResponse);
   rpc TriggerRebalance(RebalanceRequest) returns (RebalanceResponse);
+
+  // In-memory diagnostics (logs and metrics ring buffers)
+  rpc GetBrokerLogs(GetBrokerLogsRequest) returns (GetBrokerLogsResponse);
+  rpc GetMetricsSnapshot(GetMetricsSnapshotRequest) returns (GetMetricsSnapshotResponse);
 }
 
 // Raft cluster membership management.
@@ -48,6 +52,21 @@ service ClusterAdmin {
 
   // Remove a node from the Raft voter/learner set.
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+
+  // Configure or swap cluster object store after pre-flight probe.
+  rpc ConfigureObjectStore(ConfigureObjectStoreRequest) returns (ConfigureObjectStoreResponse);
+
+  // Inspect active cluster object store configuration.
+  rpc GetObjectStoreConfig(Empty) returns (ObjectStoreConfigResponse);
+
+  // Plan declarative desired-state changes (dry-run diff).
+  rpc PlanDesiredState(DesiredStateRequest) returns (DesiredStatePlanResponse);
+
+  // Apply declarative desired-state manifest safely.
+  rpc ApplyDesiredState(DesiredStateRequest) returns (DesiredStateApplyResponse);
+
+  // Self-join an existing cluster with automatic voter target cap.
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
 }
 
 service NamespaceAdmin {
@@ -73,6 +92,17 @@ service TopicAdmin {
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
   rpc SetSubscriptionDispatchConfig(SetSubscriptionDispatchConfigRequest) returns (SubscriptionResponse);
   rpc GetSubscriptionDispatchConfig(GetSubscriptionDispatchConfigRequest) returns (GetSubscriptionDispatchConfigResponse);
+  rpc UpdateTopicStorageMode(UpdateTopicStorageModeRequest) returns (TopicResponse);
+
+  // Diagnostic & schema inference RPCs
+  rpc PeekMessages(PeekMessagesRequest) returns (PeekMessagesResponse);
+  rpc GetTopicTimeRange(TopicRequest) returns (GetTopicTimeRangeResponse);
+  rpc SampleTopicJson(SampleTopicJsonRequest) returns (SampleTopicJsonResponse);
+  rpc ExplainConsumerStall(ExplainConsumerStallRequest) returns (ExplainConsumerStallResponse);
+  rpc InferTopicSchema(InferTopicSchemaRequest) returns (InferTopicSchemaResponse);
+  rpc BranchTopic(BranchTopicRequest) returns (BranchTopicResponse);
+  rpc SeekSubscription(SeekSubscriptionRequest) returns (SeekSubscriptionResponse);
+  rpc ReplayDlq(ReplayDlqRequest) returns (ReplayDlqResponse);
 }
 
 // ─── Security / Authorization Admin ──────────────────────────────────────────
@@ -90,6 +120,10 @@ service SecurityAdmin {
   rpc ListBindings(ListBindingsRequest)   returns (ListBindingsResponse);
   rpc ListAllBindings(Empty)              returns (ListBindingsResponse);
   rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
+
+  // Tokens
+  rpc IssueToken(IssueTokenRequest)       returns (IssueTokenResponse);
+  rpc RevokeToken(RevokeTokenRequest)     returns (RevokeTokenResponse);
 }
 
 // ─── Security messages ──────────────────────────────────────────────────────
@@ -193,6 +227,7 @@ message NewTopicRequest {
   string name = 1;
   optional string schema_subject = 2;  // Schema subject from Schema Registry (optional: topics can have no schema)
   DispatchStrategy dispatch_strategy = 3;
+  optional string intent = 4;          // Optional StreamIntent profile (e.g., agent_event_mesh)
 }
 
 message TopicRequest {
@@ -208,6 +243,7 @@ message PartitionedTopicRequest {
   uint32 partitions = 2;                   // number of partitions
   optional string schema_subject = 3;      // Schema subject from Schema Registry (optional)
   DispatchStrategy dispatch_strategy = 4;
+  optional string intent = 5;              // Optional StreamIntent profile
 }
 
 message SubscriptionRequest {
@@ -480,4 +516,253 @@ message RemoveNodeRequest {
 message RemoveNodeResponse {
   bool success = 1;
   string message = 2;
+}
+
+// ─── Broker Telemetry & Logs messages ──────────────────────────────────────
+
+message GetBrokerLogsRequest {
+  string level = 1;
+  string target = 2;
+  string contains = 3;
+  uint64 since_ms = 4;
+  uint32 limit = 5;
+}
+
+message BrokerLogEntry {
+  uint64 timestamp_ms = 1;
+  string level = 2;
+  string target = 3;
+  string message = 4;
+  map<string, string> fields = 5;
+}
+
+message GetBrokerLogsResponse {
+  uint64 broker_id = 1;
+  repeated BrokerLogEntry entries = 2;
+  uint64 total_buffered = 3;
+}
+
+message GetMetricsSnapshotRequest {
+  repeated string metric_names = 1;
+  uint32 window_seconds = 2;
+}
+
+message MetricSample {
+  uint64 timestamp_ms = 1;
+  double value = 2;
+}
+
+message MetricSeries {
+  string name = 1;
+  string kind = 2;
+  map<string, string> labels = 3;
+  double current_value = 4;
+  repeated MetricSample history = 5;
+}
+
+message GetMetricsSnapshotResponse {
+  uint64 broker_id = 1;
+  uint64 collected_at_ms = 2;
+  repeated MetricSeries series = 3;
+}
+
+// ─── Object Store & Declarative Desired State messages ─────────────────────
+
+message ConfigureObjectStoreRequest {
+  string backend = 1;
+  string root = 2;
+  map<string, string> options = 3;
+  bool force = 4;
+}
+
+message ConfigureObjectStoreResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ObjectStoreConfigResponse {
+  bool configured = 1;
+  string backend = 2;
+  string root = 3;
+  map<string, string> options = 4;
+  uint32 cloud_tiered_topics = 5;
+}
+
+message UpdateTopicStorageModeRequest {
+  string topic_name = 1;
+  string storage_mode = 2;
+  bool force = 3;
+}
+
+message DesiredStateRequest {
+  string manifest = 1;
+  bool prune = 2;
+  bool force_delete_non_empty = 3;
+}
+
+message PlannedAction {
+  string kind = 1;
+  string resource = 2;
+  string details = 3;
+}
+
+message DesiredStatePlanResponse {
+  repeated PlannedAction actions = 1;
+  bool has_destructive_changes = 2;
+}
+
+message DesiredStateApplyResponse {
+  bool success = 1;
+  repeated PlannedAction applied = 2;
+  string message = 3;
+}
+
+// ─── Elastic Membership, Token & Diagnostic messages ────────────────────────
+
+message JoinClusterRequest {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  uint32 target_voter_count = 3;
+}
+
+message JoinClusterResponse {
+  bool success = 1;
+  bool promoted_to_voter = 2;
+  string role = 3;
+  string message = 4;
+}
+
+message IssueTokenRequest {
+  string subject = 1;
+  string principal_type = 2;
+  uint64 ttl_seconds = 3;
+}
+
+message IssueTokenResponse {
+  string token = 1;
+  uint64 expires_at = 2;
+}
+
+message RevokeTokenRequest {
+  string subject = 1;
+}
+
+message RevokeTokenResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message PeekMessagesRequest {
+  string topic = 1;
+  uint64 start_offset = 2;
+  uint32 count = 3;
+}
+
+message PeekedMessage {
+  uint64 offset = 1;
+  uint64 publish_time = 2;
+  string producer_name = 3;
+  bytes payload = 4;
+  map<string, string> attributes = 5;
+  string routing_key = 6;
+}
+
+message PeekMessagesResponse {
+  string topic = 1;
+  repeated PeekedMessage messages = 2;
+}
+
+message GetTopicTimeRangeResponse {
+  string topic = 1;
+  bool has_messages = 2;
+  uint64 min_offset = 3;
+  uint64 max_offset = 4;
+  uint64 earliest_publish_time = 5;
+  uint64 latest_publish_time = 6;
+}
+
+message SampleTopicJsonRequest {
+  string topic = 1;
+  uint32 count = 2;
+}
+
+message SampleTopicJsonResponse {
+  string topic = 1;
+  repeated string json_samples = 2;
+}
+
+message ExplainConsumerStallRequest {
+  string topic = 1;
+  string subscription = 2;
+}
+
+message ExplainConsumerStallResponse {
+  string topic = 1;
+  string subscription = 2;
+  string status = 3;
+  uint64 consumer_count = 4;
+  uint64 backlog = 5;
+  uint64 in_flight_count = 6;
+  bool ack_timeout_pending = 7;
+  string diagnosis = 8;
+  repeated string suggestions = 9;
+}
+
+message InferTopicSchemaRequest {
+  string topic = 1;
+  uint32 sample_size = 2;
+}
+
+message InferTopicSchemaResponse {
+  string topic = 1;
+  string json_schema = 2;
+  uint32 sampled_count = 3;
+  uint32 valid_json_count = 4;
+}
+
+message BranchTopicRequest {
+  string source_topic = 1;
+  string target_topic = 2;
+  optional uint64 at_offset = 3;
+  optional uint64 at_timestamp_ns = 4;
+}
+
+message BranchTopicResponse {
+  bool success = 1;
+  string source_topic = 2;
+  string target_topic = 3;
+  uint64 branched_up_to_offset = 4;
+  uint32 copied_segments = 5;
+  uint64 copied_local_messages = 6;
+}
+
+message SeekSubscriptionRequest {
+  string topic = 1;
+  string subscription = 2;
+  optional uint64 to_offset = 3;
+  optional uint64 to_timestamp_ns = 4;
+}
+
+message SeekSubscriptionResponse {
+  bool success = 1;
+  string topic = 2;
+  string subscription = 3;
+  uint64 resolved_offset = 4;
+  string message = 5;
+}
+
+message ReplayDlqRequest {
+  string topic = 1;
+  string subscription = 2;
+  optional string dlq_topic = 3;
+  uint32 max_messages = 4;
+  uint64 start_offset = 5;
+}
+
+message ReplayDlqResponse {
+  bool success = 1;
+  string source_dlq_topic = 2;
+  string target_topic = 3;
+  uint32 replayed_count = 4;
+  uint64 last_replayed_offset = 5;
 }

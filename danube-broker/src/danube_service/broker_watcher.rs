@@ -109,7 +109,7 @@ async fn handle_put_event(
         trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
-    let topic_name = format!("/{}/{}", parts[4], parts[5]);
+    let topic_name = format!("/{}/{}", parts[4], parts[5..].join("/"));
 
     if bounce_if_not_active(meta_store, broker_id, key_str, &topic_name).await {
         return;
@@ -185,7 +185,7 @@ async fn handle_delete_event(
         trace!(path = %key_str, "ignoring non-topic key under broker path");
         return;
     }
-    let topic_name = format!("/{}/{}", parts[4], parts[5]);
+    let topic_name = format!("/{}/{}", parts[4], parts[5..].join("/"));
     let manager = broker_service.topic_manager.clone();
 
     // Determine if this Delete is part of an unload by inspecting unassigned marker

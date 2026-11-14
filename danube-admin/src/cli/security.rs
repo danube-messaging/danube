@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
     BindingDefinition, CreateBindingRequest, CreateRoleRequest, DeleteBindingRequest,
-    DeleteRoleRequest, GetBindingRequest, GetRoleRequest, ListBindingsRequest, RoleDefinition,
+    DeleteRoleRequest, GetBindingRequest, GetRoleRequest, IssueTokenRequest, ListBindingsRequest,
+    RevokeTokenRequest, RoleDefinition,
 };
 use danube_core::jwt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -194,15 +195,39 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
         #[arg(long, env = "DANUBE_JWT_SECRET_KEY")]
         secret_key: String,
     },
+
+    /// Issue a signed JWT token via the cluster admin API (requires ManageCluster)
+    Issue {
+        /// Principal subject name
+        #[arg(long)]
+        subject: String,
+
+        /// Principal type: service_account or user
+        #[arg(long, default_value = "service_account")]
+        r#type: String,
+
+        /// Token time-to-live (e.g. 24h, 30d). Default: 24h
+        #[arg(long, default_value = "24h")]
+        ttl: String,
+    },
+
+    /// Revoke all tokens for a subject cluster-wide (requires ManageCluster)
+    Revoke {
+        /// Principal subject name to revoke
+        #[arg(long)]
+        subject: String,
+    },
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────
 
 pub async fn handle(security: Security, endpoint: &str) -> Result<()> {
     match security.command {
-        SecurityCommands::Tokens(cmd) => {
-            // Tokens are purely local/offline — no broker connection needed
-            handle_tokens(cmd)
+        SecurityCommands::Tokens(
+            cmd @ (TokensCommands::Create { .. } | TokensCommands::Validate { .. }),
+        ) => {
+            // Offline JWT helpers — no broker connection needed
+            handle_tokens_offline(cmd)
         }
         _ => {
             let config = GrpcClientConfig {
@@ -213,7 +238,7 @@ pub async fn handle(security: Security, endpoint: &str) -> Result<()> {
             match security.command {
                 SecurityCommands::Roles(cmd) => handle_roles(cmd, &client).await,
                 SecurityCommands::Bindings(cmd) => handle_bindings(cmd, &client).await,
-                SecurityCommands::Tokens(_) => unreachable!(),
+                SecurityCommands::Tokens(cmd) => handle_tokens_online(cmd, &client).await,
             }
         }
     }
@@ -416,7 +441,7 @@ fn binding_to_json(b: &BindingDefinition) -> serde_json::Value {
 
 // ── Token helpers ──────────────────────────────────────────────────────────
 
-fn handle_tokens(cmd: TokensCommands) -> Result<()> {
+fn handle_tokens_offline(cmd: TokensCommands) -> Result<()> {
     match cmd {
         TokensCommands::Create {
             subject,
@@ -485,6 +510,33 @@ fn handle_tokens(cmd: TokensCommands) -> Result<()> {
                 }
             }
         }
+        TokensCommands::Issue { .. } | TokensCommands::Revoke { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn handle_tokens_online(cmd: TokensCommands, client: &AdminGrpcClient) -> Result<()> {
+    match cmd {
+        TokensCommands::Issue {
+            subject,
+            r#type,
+            ttl,
+        } => {
+            let ttl_seconds = parse_ttl(&ttl)?;
+            let resp = client
+                .issue_token(IssueTokenRequest {
+                    subject,
+                    principal_type: r#type,
+                    ttl_seconds,
+                })
+                .await?;
+            println!("{}", resp.token);
+        }
+        TokensCommands::Revoke { subject } => {
+            let resp = client.revoke_token(RevokeTokenRequest { subject }).await?;
+            println!("Revoked: {} ({})", resp.success, resp.message);
+        }
+        TokensCommands::Create { .. } | TokensCommands::Validate { .. } => unreachable!(),
     }
     Ok(())
 }

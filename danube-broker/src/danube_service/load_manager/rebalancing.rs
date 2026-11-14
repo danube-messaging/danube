@@ -633,9 +633,12 @@ where
         }
 
         // Filter recently moved topics to prevent oscillations
-        // Use min_topic_age_seconds as cooldown duration
+        let effective_cooldown = config
+            .min_topic_age_seconds
+            .max(config.min_topic_age_before_move_secs)
+            .max(config.topic_move_cooldown_secs);
         candidates.retain(|(topic, _)| {
-            !history.was_topic_recently_moved(&topic.topic_name, config.min_topic_age_seconds)
+            !history.was_topic_recently_moved(&topic.topic_name, effective_cooldown)
         });
 
         // Sort by load (ascending - lightest first)

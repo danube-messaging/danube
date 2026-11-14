@@ -107,6 +107,7 @@ pub struct TopicWorker {
     topic_config: TopicConfig,
     compaction: CompactionConfig,
     storage: Arc<StorageHandle>,
+    output_prefix: String,
     checkpoint_store: CheckpointStore,
     /// Danube client — provides connection pool (with TLS/mTLS) and schema registry.
     danube_client: DanubeClient,
@@ -134,6 +135,7 @@ impl TopicWorker {
             compaction,
             storage,
             checkpoint_store: CheckpointStore::new(&output_prefix),
+            output_prefix,
             danube_client,
             poll_interval: Duration::from_secs(poll_interval_seconds),
             table_manager,
@@ -644,11 +646,37 @@ impl TopicWorker {
 
         let num_rows = batch.num_rows();
         let target_size = self.compaction.target_parquet_size_mb * 1024 * 1024;
+        let max_offset = buffer.iter().map(|m| m.offset).max().unwrap_or(0);
 
-        // Get or create the Iceberg table
-        let tm = self.table_manager.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("table_manager is required — danube-iceberg must be configured with an Iceberg catalog")
-        })?;
+        let Some(tm) = self.table_manager.as_ref() else {
+            // Parquet-only mode (`catalog.type == "none"`): write Arrow batch directly to object storage.
+            let relative_path = parquet_only_relative_path(
+                &self.output_prefix,
+                &self.topic_config.namespace,
+                &self.topic_config.topic,
+            );
+            write_parquet_only(&self.storage, &relative_path, &batch).await?;
+
+            checkpoint.advance(max_offset, num_rows);
+            self.checkpoint_store
+                .save(
+                    &self.storage,
+                    &self.topic_config.namespace,
+                    &self.topic_config.topic,
+                    checkpoint,
+                )
+                .await?;
+
+            info!(
+                topic = %fq_topic,
+                path = %relative_path,
+                rows = num_rows,
+                last_offset = checkpoint.last_offset,
+                "flushed parquet file (parquet-only mode)"
+            );
+            buffer.clear();
+            return Ok(());
+        };
 
         let mut table = tm
             .get_or_create_table(
@@ -746,5 +774,92 @@ impl TopicWorker {
 
         buffer.clear();
         Ok(())
+    }
+}
+
+pub(crate) fn parquet_only_relative_path(
+    output_prefix: &str,
+    namespace: &str,
+    topic: &str,
+) -> String {
+    let date_partition = chrono::Utc::now().format("%Y-%m-%d");
+    let clean_prefix = output_prefix.trim_matches('/');
+    let clean_topic = topic.trim_start_matches('/');
+    if clean_prefix.is_empty() {
+        format!(
+            "{}/{}/date={}/part-{}.parquet",
+            namespace,
+            clean_topic,
+            date_partition,
+            uuid::Uuid::new_v4()
+        )
+    } else {
+        format!(
+            "{}/{}/{}/date={}/part-{}.parquet",
+            clean_prefix,
+            namespace,
+            clean_topic,
+            date_partition,
+            uuid::Uuid::new_v4()
+        )
+    }
+}
+
+pub(crate) async fn write_parquet_only(
+    storage: &StorageHandle,
+    relative_path: &str,
+    batch: &arrow_array::RecordBatch,
+) -> anyhow::Result<()> {
+    use parquet::arrow::async_writer::ParquetObjectWriter;
+    use parquet::arrow::AsyncArrowWriter;
+    use parquet::basic::Compression;
+    use parquet::file::properties::WriterProperties;
+
+    let obj_path = storage.path(relative_path);
+    let writer = ParquetObjectWriter::new(Arc::clone(&storage.store), obj_path);
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(Default::default()))
+        .build();
+    let mut arrow_writer = AsyncArrowWriter::try_new(writer, batch.schema(), Some(props))?;
+    arrow_writer.write(batch).await?;
+    arrow_writer.close().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod parquet_only_tests {
+    use super::*;
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use object_store::ObjectStoreExt;
+
+    #[tokio::test]
+    async fn writes_parquet_directly_in_parquet_only_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = crate::config::StorageConfig {
+            backend: "fs".to_string(),
+            root: tmp.path().to_string_lossy().into_owned(),
+            output_prefix: "warehouse".to_string(),
+            options: std::collections::HashMap::new(),
+        };
+        let storage = Arc::new(crate::storage::build_storage(&cfg).unwrap());
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("msg", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let rel = parquet_only_relative_path(&cfg.output_prefix, "default", "events");
+        write_parquet_only(&storage, &rel, &batch).await.unwrap();
+
+        let meta = storage.store.head(&storage.path(&rel)).await.unwrap();
+        assert!(meta.size > 0);
     }
 }

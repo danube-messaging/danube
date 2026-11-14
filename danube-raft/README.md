@@ -60,19 +60,17 @@ On restart, persisted log entries are replayed through `apply()` to reconstruct 
 
 ## Cluster Formation
 
-Cluster formation is config-driven via `seed_nodes`:
+Cluster formation is driven zero-YAML via CLI flags (`--data-dir`, `--raft-addr`, `--seed-nodes`, `--join`):
 
-```yaml
-meta_store:
-  data_dir: "./danube-data/raft"
-  seed_nodes:
-    - "0.0.0.0:7650"
-    - "0.0.0.0:7651"
-    - "0.0.0.0:7652"
+```bash
+danube up \
+  --data-dir ./danube-data \
+  --raft-addr 0.0.0.0:7650 \
+  --seed-nodes "node1:7650,node2:7650,node3:7650"
 ```
 
-- **Single-node** (empty/omitted `seed_nodes`): auto-initializes with zero config.
-- **Multi-node**: all peers listed in `seed_nodes`. On first boot, nodes discover each other via `GetNodeInfo`, the lowest `node_id` initializes the cluster, and all nodes wait for leader election before proceeding.
+- **Single-node** (omitted `--seed-nodes`): auto-initializes with zero configuration.
+- **Multi-node**: peers listed in `--seed-nodes` discover each other via `GetNodeInfo`, the lowest `node_id` initializes the cluster, and nodes wait for leader election before proceeding.
 
 ## Node Lifecycle
 
@@ -80,9 +78,11 @@ Each broker persists its `node_id` in `{data_dir}/node_id` on first boot. The bo
 
 | Scenario | Detection | BootstrapResult | Broker behavior |
 |---|---|---|---|
-| **Fresh node, no peers** | No `node_id` file, empty `seed_nodes` | `Initialized` | Auto-inits single-node cluster |
+| **Fresh node, no peers** | No `node_id` file, empty `--seed-nodes` | `Initialized` | Auto-inits single-node cluster |
 | **Fresh node, first boot** | No `node_id` file, seed peers have no leader | `Initialized` | Lowest `node_id` bootstraps; others become followers |
-| **Fresh node, existing cluster** | No `node_id` file, a seed peer reports `has_leader = true` | `JoinExisting` | Starts in "drained" state; must be added via `danube-admin cluster add-node` then activated |
+| **Fresh node, existing cluster** | No `node_id` file, a seed peer reports `has_leader = true` | `JoinExisting` | Joins as non-voting learner; promotes to voter up to `target_voter_count` via `danube ctl cluster` |
 | **Restart** | `node_id` file exists | `Restart` | Waits for leader election then resumes; membership is already persisted |
+
+Voting membership is bounded by `target_voter_count` (keeping surplus brokers as non-voting learners so large clusters do not slow Raft commits), and `SIGTERM` drains node workloads without churning Raft cluster membership.
 
 The `has_leader` flag is served by the `GetNodeInfo` gRPC RPC so that fresh nodes can distinguish between "cluster doesn't exist yet" and "cluster is already running". This eliminates the need for shell wrappers or init-containers in Kubernetes, the broker detects the right action automatically.

@@ -91,11 +91,11 @@ impl RetryManager {
         }
     }
 
-    /// Calculate linear backoff with jitter
+    /// Calculate exponential backoff with full jitter
     pub fn calculate_backoff(&self, attempt: usize) -> Duration {
-        // Linear backoff: base * (attempt + 1), capped at max
-        let linear = self.base_backoff_ms.saturating_mul(attempt as u64 + 1);
-        let backoff = linear.min(self.max_backoff_ms);
+        let shift = (attempt as u32).min(16);
+        let exp = self.base_backoff_ms.saturating_mul(1u64 << shift);
+        let backoff = exp.min(self.max_backoff_ms);
         let jitter = rng().random_range(backoff / 2..=backoff); // 50-100% jitter
         Duration::from_millis(jitter)
     }

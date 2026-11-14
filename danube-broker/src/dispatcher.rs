@@ -363,4 +363,67 @@ impl Dispatcher {
             _ => Ok(()),
         }
     }
+
+    pub(crate) async fn extend_visibility(
+        &self,
+        offset: u64,
+        extension_ms: u64,
+    ) -> Result<Option<u64>> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                control_tx
+                    .send(DispatcherCommand::ExtendVisibility {
+                        offset,
+                        extension_ms,
+                        reply: Some(tx),
+                    })
+                    .await
+                    .map_err(|_| anyhow!("Failed to send extend visibility command"))?;
+                Ok(rx.await.unwrap_or(None))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) async fn report_progress(
+        &self,
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<bool> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                control_tx
+                    .send(DispatcherCommand::ReportProgress {
+                        offset,
+                        checkpoint,
+                        extension_ms,
+                        reply: Some(tx),
+                    })
+                    .await
+                    .map_err(|_| anyhow!("Failed to send report progress command"))?;
+                Ok(rx.await.unwrap_or(false))
+            }
+            _ => Ok(false),
+        }
+    }
+
+    pub(crate) async fn cancel_root(&self, root_msg_id: String) -> Result<u32> {
+        match &self.handle {
+            DispatcherHandle::Reliable { control_tx, .. } => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                control_tx
+                    .send(DispatcherCommand::CancelRoot {
+                        root_msg_id,
+                        reply: Some(tx),
+                    })
+                    .await
+                    .map_err(|_| anyhow!("Failed to send cancel root command"))?;
+                Ok(rx.await.unwrap_or(0))
+            }
+            _ => Ok(0),
+        }
+    }
 }

@@ -64,6 +64,43 @@ impl TopicResources {
         Ok(())
     }
 
+    pub(crate) async fn set_topic_intent(&self, topic_name: &str, intent: Value) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "intent"]);
+        self.create(&path, intent).await
+    }
+
+    pub(crate) async fn get_topic_intent(
+        &self,
+        topic_name: &str,
+    ) -> Option<crate::stream_intent::ExpandedStreamSettings> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "intent"]);
+        let value = self.store.get(&path, MetaOptions::None).await.ok().flatten()?;
+        serde_json::from_value::<crate::stream_intent::ExpandedStreamSettings>(value).ok()
+    }
+
+    pub(crate) async fn set_topic_storage_mode(&self, topic_name: &str, mode: &str) -> Result<()> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "storage_mode"]);
+        self.create(&path, serde_json::json!({ "mode": mode }))
+            .await
+    }
+
+    pub(crate) async fn get_topic_storage_mode(&self, topic_name: &str) -> Option<String> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "storage_mode"]);
+        let value = self.store.get(&path, MetaOptions::None).await.ok().flatten()?;
+        value
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    pub(crate) async fn get_topic_producers(&self, topic_name: &str) -> Vec<String> {
+        let path = join_path(&[BASE_TOPICS_PATH, topic_name, "producers"]);
+        self.store
+            .get_childrens(&path)
+            .await
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn delete_topic_schema(&self, topic_name: &str) -> Result<()> {
         let path = join_path(&[BASE_TOPICS_PATH, topic_name, "schema"]);
         self.delete(&path).await?;
@@ -212,10 +249,10 @@ impl TopicResources {
 
         let paths = self.store.get_childrens(&path).await.unwrap_or_default();
 
-        for path in paths {
-            let parts: Vec<&str> = path.split('/').collect();
-
-            if let Some(subscription) = parts.get(5) {
+        for key in paths {
+            let suffix = key.strip_prefix(&path).unwrap_or(&key);
+            let sub = suffix.trim_start_matches('/').split('/').next();
+            if let Some(subscription) = sub.filter(|s| !s.is_empty()) {
                 subscriptions.push(subscription.to_string());
             }
         }
@@ -241,6 +278,33 @@ impl TopicResources {
         self.create(&path, value).await
     }
 
+    pub(crate) async fn set_subscription_next_offset(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        next_offset: u64,
+    ) -> Result<()> {
+        self.set_subscription_checkpoints(
+            subscription_name,
+            topic_name,
+            &std::collections::HashMap::new(),
+        )
+        .await?;
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let value = if next_offset > 0 {
+            Value::from(next_offset - 1)
+        } else {
+            serde_json::json!({ "next_offset": 0 })
+        };
+        self.create(&path, value).await
+    }
+
     pub(crate) async fn get_subscription_cursor(
         &self,
         subscription_name: &str,
@@ -258,8 +322,89 @@ impl TopicResources {
             if let Some(off) = val.as_u64() {
                 return Ok(Some(off));
             }
+            if let Some(next) = val.get("next_offset").and_then(|v| v.as_u64()) {
+                return Ok(Some(next.saturating_sub(1)));
+            }
         }
         Ok(None)
+    }
+
+    pub(crate) async fn get_subscription_start_offset(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<Option<u64>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "cursor",
+        ]);
+        let maybe = self.store.get(&path, MetaOptions::None).await?;
+        if let Some(val) = maybe {
+            if let Some(off) = val.as_u64() {
+                return Ok(Some(off.saturating_add(1)));
+            }
+            if let Some(next) = val.get("next_offset").and_then(|v| v.as_u64()) {
+                return Ok(Some(next));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) async fn set_subscription_checkpoints(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        checkpoints: &std::collections::HashMap<u64, String>,
+    ) -> Result<()> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "checkpoints",
+        ]);
+        if checkpoints.is_empty() {
+            let _ = self.store.delete(&path).await;
+            return Ok(());
+        }
+        let string_map: std::collections::HashMap<String, &String> = checkpoints
+            .iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let data = serde_json::to_value(string_map)?;
+        self.store.put(&path, data, MetaOptions::None).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_subscription_checkpoints(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+    ) -> Result<std::collections::HashMap<u64, String>> {
+        let path = join_path(&[
+            BASE_TOPICS_PATH,
+            topic_name,
+            "subscriptions",
+            subscription_name,
+            "checkpoints",
+        ]);
+        match self.store.get(&path, MetaOptions::None).await? {
+            Some(value) => {
+                let raw: std::collections::HashMap<String, String> =
+                    serde_json::from_value(value).unwrap_or_default();
+                let mut parsed = std::collections::HashMap::with_capacity(raw.len());
+                for (k, v) in raw {
+                    if let Ok(off) = k.parse::<u64>() {
+                        parsed.insert(off, v);
+                    }
+                }
+                Ok(parsed)
+            }
+            None => Ok(std::collections::HashMap::new()),
+        }
     }
 
     pub(crate) async fn set_subscription_failure_policy(
@@ -337,7 +482,18 @@ impl TopicResources {
                 Ok(policy)
             }
             None => {
-                let policy = SubscriptionFailurePolicy::new(topic_name);
+                let mut policy = SubscriptionFailurePolicy::new(topic_name);
+                if let Some(intent) = self.get_topic_intent(topic_name).await {
+                    policy.max_redelivery_count = intent.max_retries;
+                    policy.base_redelivery_delay_ms = intent.backoff_ms;
+                    if let Some(ref suffix) = intent.dlq_suffix {
+                        if !suffix.trim().is_empty() {
+                            policy.poison_policy =
+                                crate::subscription::SubscriptionPoisonPolicy::DeadLetter;
+                            policy.dead_letter_topic = Some(format!("{}{}", topic_name, suffix));
+                        }
+                    }
+                }
                 policy.validate()?;
                 self.set_subscription_failure_policy(subscription_name, topic_name, &policy)
                     .await?;

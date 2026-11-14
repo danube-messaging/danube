@@ -1,7 +1,8 @@
 use anyhow::Result;
-use danube_core::message::{MessageID, StreamMessage};
+use danube_core::message::{MessageID, StreamMessage, ATTR_CHECKPOINT_B64};
 use danube_core::storage::{StartPosition, TopicStream};
 use futures::StreamExt;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::select;
 use tokio::time::{Duration, Instant};
@@ -11,7 +12,7 @@ use crate::resources::TopicResources;
 use crate::subscription::SubscriptionFailurePolicy;
 use crate::topic::TopicStore;
 
-use super::pending_delivery::PendingDelivery;
+use super::pending_delivery::{CancelledRootsCache, PendingDelivery};
 
 /// # SubscriptionEngine
 ///
@@ -128,6 +129,12 @@ pub(crate) struct SubscriptionEngine {
     /// Maximum unacked messages in the dispatch window (pipelining depth).
     /// Stored separately from failure_policy; set from Subscription.max_unacked_messages.
     pub(crate) max_unacked_messages: usize,
+
+    /// Shared per-topic cache of cancelled root/parent task IDs.
+    pub(crate) cancelled_roots: Arc<CancelledRootsCache>,
+
+    /// Checkpoints restored from metadata storage on stream initialization, keyed by offset.
+    pub(crate) restored_checkpoints: HashMap<u64, String>,
 }
 
 impl SubscriptionEngine {
@@ -153,6 +160,45 @@ impl SubscriptionEngine {
             dispatch_rate_limiter: None,
             failure_policy: SubscriptionFailurePolicy::default(),
             max_unacked_messages: 10,
+            cancelled_roots: Arc::new(CancelledRootsCache::new()),
+            restored_checkpoints: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn with_cancelled_roots(
+        mut self,
+        cancelled_roots: Arc<CancelledRootsCache>,
+    ) -> Self {
+        self.cancelled_roots = cancelled_roots;
+        self
+    }
+
+    pub(crate) fn should_skip_message(&self, msg: &StreamMessage) -> bool {
+        self.cancelled_roots.is_cancelled(msg)
+    }
+
+    pub(crate) async fn load_restored_checkpoints(&mut self) {
+        if let (Some(topic), Some(res)) =
+            (self.topic_name.as_deref(), self.progress_resources.as_ref())
+        {
+            if let Ok(checkpoints) = res
+                .get_subscription_checkpoints(&self._subscription_name, topic)
+                .await
+            {
+                self.restored_checkpoints = checkpoints;
+            }
+        }
+    }
+
+    pub(crate) async fn save_checkpoints(&mut self, active: BTreeMap<u64, String>) {
+        if let (Some(topic), Some(res)) =
+            (self.topic_name.clone(), self.progress_resources.as_ref())
+        {
+            let mut merged = self.restored_checkpoints.clone();
+            merged.extend(active);
+            let _ = res
+                .set_subscription_checkpoints(&self._subscription_name, &topic, &merged)
+                .await;
         }
     }
 
@@ -231,16 +277,17 @@ impl SubscriptionEngine {
     ///
     /// `Ok(())` on successful stream creation, `Err` if TopicStore or metadata access fails.
     pub(crate) async fn init_stream_from_progress_or_latest(&mut self) -> Result<()> {
+        self.load_restored_checkpoints().await;
         if let (Some(topic), Some(res)) =
             (self.topic_name.as_deref(), self.progress_resources.as_ref())
         {
-            if let Ok(Some(cursor)) = res
-                .get_subscription_cursor(&self._subscription_name, topic)
+            if let Ok(Some(start_offset)) = res
+                .get_subscription_start_offset(&self._subscription_name, topic)
                 .await
             {
                 let stream = self
                     .topic_store
-                    .create_reader(StartPosition::Offset(cursor.saturating_add(1)))
+                    .create_reader(StartPosition::Offset(start_offset))
                     .await?;
                 self.stream = Some(stream);
                 return Ok(());
@@ -286,11 +333,16 @@ impl SubscriptionEngine {
         };
         let mut backoff = Duration::from_millis(10);
         loop {
-            let msg_opt = select! {
+            let mut msg_opt = select! {
                 maybe_msg = stream.next() => {
                     maybe_msg.transpose()?
                 }
             };
+            if let Some(msg) = msg_opt.as_mut() {
+                if let Some(b64) = self.restored_checkpoints.remove(&msg.msg_id.topic_offset) {
+                    msg.attributes.insert(ATTR_CHECKPOINT_B64.to_string(), b64);
+                }
+            }
             if let Some(_msg) = &msg_opt {
                 if let Some(lim) = &self.dispatch_rate_limiter {
                     if !lim.try_acquire(1).await {

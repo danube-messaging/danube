@@ -52,4 +52,22 @@ pub(super) enum DispatcherCommand {
     PollAndDispatch,
 
     FlushProgressNow,
+
+    ExtendVisibility {
+        offset: u64,
+        extension_ms: u64,
+        reply: Option<tokio::sync::oneshot::Sender<Option<u64>>>,
+    },
+
+    ReportProgress {
+        offset: u64,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+        reply: Option<tokio::sync::oneshot::Sender<bool>>,
+    },
+
+    CancelRoot {
+        root_msg_id: String,
+        reply: Option<tokio::sync::oneshot::Sender<u32>>,
+    },
 }

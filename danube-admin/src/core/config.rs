@@ -17,7 +17,7 @@ impl Default for GrpcClientConfig {
     fn default() -> Self {
         Self {
             endpoint: std::env::var("DANUBE_ADMIN_ENDPOINT")
-                .unwrap_or_else(|_| "http://127.0.0.1:50051".to_string()),
+                .unwrap_or_else(|_| "http://127.0.0.1:6650".to_string()),
             request_timeout_ms: 5000,
             enable_tls: None,
             domain: None,

@@ -132,9 +132,49 @@ impl TopicManager {
 
         let dispatch_strategy = dispatch_strategy.unwrap();
 
+        // Apply persisted intent + storage_mode settings before initializing local storage
+        let topic_intent = self.resources.topic.get_topic_intent(topic_name).await;
+        let persisted_storage_mode = self.resources.topic.get_topic_storage_mode(topic_name).await;
+
+        let effective_tier = persisted_storage_mode
+            .as_deref()
+            .or_else(|| topic_intent.as_ref().map(|i| i.storage_tier.as_str()));
+        match effective_tier {
+            Some("cloud_tiered") | Some("cloud-tiered") | Some("object_store") => {
+                if let Err(err) = self
+                    .storage_factory
+                    .enable_cloud_tiering_for_topic(topic_name)
+                    .await
+                {
+                    warn!(
+                        topic = %topic_name,
+                        error = %err,
+                        "cloud_tiered requested for topic but cluster object store is not ready yet"
+                    );
+                }
+            }
+            Some("local") => {
+                self.storage_factory.disable_cloud_tiering_for_topic(topic_name);
+            }
+            _ => {}
+        }
+
+        let wal_sync_mode = topic_intent
+            .as_ref()
+            .and_then(|intent| match intent.wal_sync_mode.trim().to_ascii_lowercase().as_str() {
+                "async" => Some(danube_persistent_storage::WalSyncMode::Async),
+                "os_cache_flush" => Some(danube_persistent_storage::WalSyncMode::OsCacheFlush),
+                "fsync_batch" => Some(danube_persistent_storage::WalSyncMode::FsyncBatch),
+                _ => None,
+            });
+
         // Build per-topic storage via the factory
         let storage = if dispatch_strategy == ConfigDispatchStrategy::Reliable {
-            Some(self.storage_factory.for_topic(topic_name).await?)
+            Some(
+                self.storage_factory
+                    .for_topic_with_sync_mode(topic_name, wal_sync_mode)
+                    .await?,
+            )
         } else {
             None
         };
@@ -305,10 +345,10 @@ impl TopicManager {
                 .get_subscription_for_topic(topic_name)
                 .await;
             // Build correct path: /topics/<ns>/<topic>/subscriptions/<sub>/cursor
-            let trimmed = topic_name.trim_start_matches('/');
-            let mut parts = trimmed.split('/');
-            let ns = parts.next().unwrap_or("");
-            let topic = parts.next().unwrap_or("");
+            let tp = danube_core::topic_path::TopicPath::parse(topic_name)
+                .map_err(|e| anyhow!("invalid topic path: {}", e))?;
+            let ns = tp.namespace();
+            let topic = tp.topic();
             for sub in subs {
                 let cursor_path =
                     join_path(&[BASE_TOPICS_PATH, ns, topic, "subscriptions", &sub, "cursor"]);
@@ -368,14 +408,14 @@ impl TopicManager {
 
         if is_reliable {
             self.unload_reliable_topic(topic_name).await?;
-            self.resources
-                .cluster
-                .mark_topic_unload_ready(topic_name, self.broker_id)
-                .await?;
-            Ok(())
         } else {
-            self.unload_non_reliable_topic(topic_name).await
+            self.unload_non_reliable_topic(topic_name).await?;
         }
+        self.resources
+            .cluster
+            .mark_topic_unload_ready(topic_name, self.broker_id)
+            .await?;
+        Ok(())
     }
 
     async fn unload_non_reliable_topic(&self, topic_name: &str) -> Result<()> {

@@ -6,6 +6,9 @@ use crate::{
 };
 
 use danube_core::message::StreamMessage;
+use danube_core::proto::{
+    CancelTaskTreeResponse, ExtendVisibilityResponse, ReportProgressResponse,
+};
 use futures::{future::join_all, StreamExt};
 use std::collections::HashMap;
 use std::sync::{
@@ -233,6 +236,75 @@ impl Consumer {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Extend the ack lease deadline for an in-flight message on the broker.
+    pub async fn extend_lease(
+        &mut self,
+        message: &StreamMessage,
+        extension_ms: u64,
+    ) -> Result<ExtendVisibilityResponse> {
+        let topic_name = message.msg_id.topic_name.clone();
+        let topic_consumer = self.consumers.get_mut(&topic_name).ok_or_else(|| {
+            DanubeError::Unrecoverable(format!(
+                "TopicConsumer not found for topic {}",
+                topic_name
+            ))
+        })?;
+        let mut topic_consumer = topic_consumer.lock().await;
+        topic_consumer
+            .send_extend_visibility(
+                message.request_id,
+                message.msg_id.clone(),
+                &self.subscription,
+                extension_ms,
+            )
+            .await
+    }
+
+    /// Report incremental progress checkpoint (<= 64 KiB) and optionally extend visibility lease.
+    pub async fn report_progress(
+        &mut self,
+        message: &StreamMessage,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<ReportProgressResponse> {
+        let topic_name = message.msg_id.topic_name.clone();
+        let topic_consumer = self.consumers.get_mut(&topic_name).ok_or_else(|| {
+            DanubeError::Unrecoverable(format!(
+                "TopicConsumer not found for topic {}",
+                topic_name
+            ))
+        })?;
+        let mut topic_consumer = topic_consumer.lock().await;
+        topic_consumer
+            .send_report_progress(
+                message.request_id,
+                message.msg_id.clone(),
+                &self.subscription,
+                checkpoint,
+                extension_ms,
+            )
+            .await
+    }
+
+    /// Cancel all in-flight and queued tasks under `root_msg_id` on `topic_name`.
+    pub async fn cancel_task_tree(
+        &mut self,
+        topic_name: &str,
+        root_msg_id: &str,
+        reason: Option<String>,
+    ) -> Result<CancelTaskTreeResponse> {
+        let topic_consumer = self.consumers.get_mut(topic_name).ok_or_else(|| {
+            DanubeError::Unrecoverable(format!(
+                "TopicConsumer not found for topic {}",
+                topic_name
+            ))
+        })?;
+        let mut topic_consumer = topic_consumer.lock().await;
+        topic_consumer
+            .send_cancel_task_tree(0, topic_name, root_msg_id, reason)
+            .await
     }
 
     /// Gracefully close all receive tasks and stop background activities for this consumer

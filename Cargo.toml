@@ -26,9 +26,6 @@ members = [
     # -- Danube lib client
     "danube-client",
 
-    # -- Danube client cli 
-    "danube-cli", 
-
     # -- Danube admin (consolidated CLI + Server)
     "danube-admin",
 

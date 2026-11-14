@@ -260,6 +260,7 @@ async fn test_select_rebalancing_candidate_basic() {
         min_brokers_for_rebalance: 2,
         min_topic_age_seconds: 0,
         blacklist_topics: vec![],
+        ..Default::default()
     };
 
     let candidate = lm
@@ -348,6 +349,7 @@ async fn test_select_rebalancing_candidate_respects_blacklist() {
         min_brokers_for_rebalance: 2,
         min_topic_age_seconds: 0,
         blacklist_topics: vec!["/admin/critical".to_string()],
+        ..Default::default()
     };
 
     let candidate = lm
@@ -422,6 +424,7 @@ async fn test_select_rebalancing_candidate_single_move() {
         min_brokers_for_rebalance: 2,
         min_topic_age_seconds: 0,
         blacklist_topics: vec![],
+        ..Default::default()
     };
 
     let candidate = lm
@@ -929,6 +932,7 @@ async fn test_start_rebalancing_loop_basic() {
         min_brokers_for_rebalance: 2,
         min_topic_age_seconds: 0,
         blacklist_topics: vec![],
+        ..Default::default()
     };
 
     // Start the loop (it runs in background)

@@ -6,10 +6,83 @@
 //! This module has no dependency on the engine, replicator, or metrics —
 //! it is a pure state machine operated by the reliable dispatchers.
 
-use danube_core::message::StreamMessage;
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use danube_core::message::{StreamMessage, ATTR_CHECKPOINT_B64};
+use dashmap::DashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::subscription::{SubscriptionBackoffStrategy, SubscriptionFailurePolicy};
+
+pub(crate) const MAX_CHECKPOINT_BYTES: usize = 65_536;
+const MAX_CANCELLED_ROOTS: usize = 10_000;
+const CANCELLED_ROOT_TTL: Duration = Duration::from_secs(3600);
+
+/// Bounded TTL skip-list for cascading task-tree cancellation (`Option 8A`).
+#[derive(Debug, Default)]
+pub(crate) struct CancelledRootsCache {
+    roots: DashMap<String, Instant>,
+}
+
+impl CancelledRootsCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            roots: DashMap::new(),
+        }
+    }
+
+    pub(crate) fn insert(&self, root_id: impl Into<String>) {
+        let now = Instant::now();
+        if self.roots.len() >= MAX_CANCELLED_ROOTS {
+            self.roots
+                .retain(|_, inserted_at| now.duration_since(*inserted_at) < CANCELLED_ROOT_TTL);
+            if self.roots.len() >= MAX_CANCELLED_ROOTS {
+                if let Some(first_key) = self.roots.iter().next().map(|e| e.key().clone()) {
+                    self.roots.remove(&first_key);
+                }
+            }
+        }
+        self.roots.insert(root_id.into(), now);
+    }
+
+    fn contains_active(&self, id: &str) -> bool {
+        if let Some(entry) = self.roots.get(id) {
+            if entry.elapsed() < CANCELLED_ROOT_TTL {
+                return true;
+            }
+            drop(entry);
+            self.roots.remove(id);
+        }
+        false
+    }
+
+    /// Returns true if the message belongs to a cancelled task tree OR its `deadline_ms` has passed.
+    pub(crate) fn is_cancelled(&self, msg: &StreamMessage) -> bool {
+        if let Some(root_id) = msg.root_msg_id() {
+            if self.contains_active(root_id) {
+                return true;
+            }
+        }
+        if let Some(parent_id) = msg.parent_msg_id() {
+            if self.contains_active(parent_id) {
+                return true;
+            }
+        }
+        let self_offset = msg.msg_id.topic_offset.to_string();
+        if self.contains_active(&self_offset) {
+            return true;
+        }
+        if let Some(deadline_ms) = msg.deadline_ms() {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            if now_ms > deadline_ms {
+                return true;
+            }
+        }
+        false
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingDeliveryStatus {
@@ -30,6 +103,7 @@ pub(super) struct PendingDelivery {
     pub(super) last_failure_reason: Option<String>,
     pub(super) target_consumer_id: Option<u64>,
     pub(super) status: PendingDeliveryStatus,
+    pub(super) checkpoint: Option<Vec<u8>>,
 }
 
 impl PendingDelivery {
@@ -45,7 +119,49 @@ impl PendingDelivery {
             last_failure_reason: None,
             target_consumer_id: None,
             status: PendingDeliveryStatus::ReadyToSend,
+            checkpoint: None,
         }
+    }
+
+    pub(super) fn extend_lease(&mut self, extension_ms: u64) -> Instant {
+        let base = self.ack_deadline_at.max(Instant::now());
+        self.ack_deadline_at = base + Duration::from_millis(extension_ms);
+        self.ack_deadline_at
+    }
+
+    pub(super) fn set_checkpoint(
+        &mut self,
+        data: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<(), &'static str> {
+        if data.len() > MAX_CHECKPOINT_BYTES {
+            return Err("checkpoint exceeds 64 KiB limit");
+        }
+        let encoded = B64.encode(&data);
+        self.message
+            .attributes
+            .insert(ATTR_CHECKPOINT_B64.to_string(), encoded);
+        self.checkpoint = Some(data);
+        if extension_ms > 0 {
+            self.extend_lease(extension_ms);
+        }
+        Ok(())
+    }
+
+    pub(super) fn checkpoint_b64(&self) -> Option<String> {
+        self.checkpoint
+            .as_ref()
+            .map(|bytes| B64.encode(bytes))
+            .or_else(|| self.message.checkpoint_b64().map(|s| s.to_string()))
+    }
+
+    pub(super) fn message_for_delivery(&self) -> StreamMessage {
+        let mut msg = self.message.clone();
+        if let Some(ref bytes) = self.checkpoint {
+            msg.attributes
+                .insert(ATTR_CHECKPOINT_B64.to_string(), B64.encode(bytes));
+        }
+        msg
     }
 
     pub(super) fn is_awaiting_ack(&self) -> bool {
@@ -267,5 +383,49 @@ mod tests {
         assert_eq!(pending.status, PendingDeliveryStatus::RetryExhausted);
         assert_eq!(pending.last_failure_reason.as_deref(), Some("exhausted"));
         assert_eq!(pending.next_redelivery_at, exhausted_deadline);
+    }
+
+    #[test]
+    fn extend_lease_and_checkpoint_enforce_size_limit_and_persist_in_delivery() {
+        let mut pending = PendingDelivery::new(make_msg(6, 16, "/default/topic"));
+        pending.on_send_attempt(9, Duration::from_millis(500));
+        let original_deadline = pending.ack_deadline_at;
+
+        let extended = pending.extend_lease(1_000);
+        assert!(extended >= original_deadline + Duration::from_millis(1_000));
+
+        assert!(pending
+            .set_checkpoint(vec![0u8; super::MAX_CHECKPOINT_BYTES + 1], 0)
+            .is_err());
+
+        pending
+            .set_checkpoint(b"step-2".to_vec(), 500)
+            .expect("checkpoint within 64KiB should succeed");
+        let delivered = pending.message_for_delivery();
+        assert_eq!(
+            delivered.checkpoint_b64(),
+            pending.checkpoint_b64().as_deref()
+        );
+    }
+
+    #[test]
+    fn cancelled_roots_cache_matches_root_parent_offset_and_deadline() {
+        let cache = super::CancelledRootsCache::new();
+        cache.insert("root-42");
+
+        let mut child = make_msg(7, 17, "/default/topic");
+        child
+            .attributes
+            .insert(danube_core::message::ATTR_ROOT_MSG_ID.to_string(), "root-42".to_string());
+        assert!(cache.is_cancelled(&child));
+
+        let mut expired = make_msg(8, 18, "/default/topic");
+        expired
+            .attributes
+            .insert(danube_core::message::ATTR_DEADLINE_MS.to_string(), "1".to_string());
+        assert!(cache.is_cancelled(&expired));
+
+        let healthy = make_msg(9, 19, "/default/topic");
+        assert!(!cache.is_cancelled(&healthy));
     }
 }

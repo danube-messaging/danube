@@ -46,9 +46,10 @@ impl StorageFactory {
     ///   history and local staged WAL state is unavailable.
     /// - A sealed mobility marker takes precedence over both and resumes from the stored committed
     ///   offset + 1.
-    pub(super) async fn get_or_create_wal(
+    pub(super) async fn get_or_create_wal_with_sync_mode(
         &self,
         topic_path: &str,
+        wal_sync_mode: Option<crate::WalSyncMode>,
     ) -> Result<
         (
             Wal,
@@ -60,20 +61,20 @@ impl StorageFactory {
         PersistentStorageError,
     > {
         if let Some(existing) = self.topics.get(topic_path) {
-            return Ok((existing.clone(), None, None, false, None));
+            let resumed = self.sealed_resumed_topics.contains(topic_path);
+            return Ok((existing.clone(), None, None, resumed, None));
         }
 
         let mut cfg = self.base_cfg.clone();
+        if let Some(sync_mode) = wal_sync_mode {
+            cfg.sync_mode = Some(sync_mode);
+        }
         let mut root_path: Option<PathBuf> = None;
         let mut ckpt_store: Option<Arc<CheckpointStore>> = None;
-        if let Some(mut root) = cfg.dir.clone() {
-            let parts: Vec<&str> = topic_path.split('/').collect();
-            if parts.len() == 2 {
-                root.push(parts[0]);
-                root.push(parts[1]);
-            }
-            root_path = Some(root.clone());
-            cfg.dir = Some(root);
+        if let Some(root) = cfg.dir.clone() {
+            let topic_dir = resolve_topic_wal_dir(root, topic_path);
+            root_path = Some(topic_dir.clone());
+            cfg.dir = Some(topic_dir);
         }
         if let Some(dir) = cfg.dir.as_ref() {
             let wal_ckpt = dir.join("wal.ckpt");
@@ -82,7 +83,7 @@ impl StorageFactory {
                 warn!(target = "storage_factory", topic = %topic_path, error = %e, "failed to preload checkpoints from disk");
             }
             ckpt_store = Some(store);
-        } else if self.mode.requires_local_wal_staging() {
+        } else if self.current_mode().requires_local_wal_staging() {
             return Err(PersistentStorageError::Other(
                 "export-later durable mode requires wal.dir for durable WAL state".to_string(),
             ));
@@ -173,18 +174,20 @@ impl StorageFactory {
             }
         }
 
+        if recovery.resumed_from_sealed {
+            self.sealed_resumed_topics.insert(topic_path.to_string());
+        } else {
+            self.sealed_resumed_topics.remove(topic_path);
+        }
         self.topics.insert(topic_path.to_string(), wal.clone());
         Ok((wal, root_path, ckpt_store, recovery.resumed_from_sealed, rotation_rx))
     }
 
     pub(super) fn topic_wal_dir(&self, topic_path: &str) -> Option<PathBuf> {
-        let mut root = self.base_cfg.dir.clone()?;
-        let parts: Vec<&str> = topic_path.split('/').collect();
-        if parts.len() == 2 {
-            root.push(parts[0]);
-            root.push(parts[1]);
-        }
-        Some(root)
+        self.base_cfg
+            .dir
+            .clone()
+            .map(|root| resolve_topic_wal_dir(root, topic_path))
     }
 
     /// Return whether a checkpoint still points at usable local WAL files.
@@ -201,9 +204,9 @@ impl StorageFactory {
     }
 
     pub(super) fn durable_store_for_topic(&self) -> Result<Option<Arc<dyn DurableStore>>, PersistentStorageError> {
-        match self.durable_store.clone() {
+        match self.current_durable_store() {
             Some(store) => Ok(Some(store)),
-            None if self.mode.requires_separate_durable_backend() => Err(
+            None if self.current_mode().requires_separate_durable_backend() => Err(
                 PersistentStorageError::Other(
                     "storage mode requires separate durable backend".to_string(),
                 ),
@@ -280,7 +283,8 @@ impl StorageFactory {
         // Download un-exported messages from Valkey's stream and replay
         // them into the fresh WAL so consumers, segment exporter, and
         // subscription cursors all work normally.
-        let valkey_start_offset = if self.mode.requires_separate_durable_backend() {
+        let mode = self.current_mode();
+        let valkey_start_offset = if mode.requires_separate_durable_backend() {
             catalog_current_segment.as_ref().map(|s| s.end_offset.saturating_add(1)).unwrap_or(0)
         } else {
             0
@@ -289,7 +293,7 @@ impl StorageFactory {
         if let Some((min_offset, messages)) =
             self.download_valkey_unexported_stream(topic_path, valkey_start_offset).await
         {
-            let has_durable_backend = self.mode.requires_separate_durable_backend();
+            let has_durable_backend = mode.requires_separate_durable_backend();
             return RecoveryStartDecision {
                 initial_offset: Some(min_offset),
                 resumed_from_sealed: has_durable_backend,
@@ -302,7 +306,7 @@ impl StorageFactory {
         // Only applicable when the storage mode has a separate durable backend
         // (shared_fs, object_store). Resume from the end of the last exported
         // segment.
-        if self.mode.requires_separate_durable_backend() {
+        if mode.requires_separate_durable_backend() {
             if let Some(segment) = catalog_current_segment {
                 return RecoveryStartDecision {
                     initial_offset: Some(segment.end_offset.saturating_add(1)),
@@ -347,5 +351,40 @@ impl StorageFactory {
         };
 
         crate::valkey::recovery::download_unexported_stream(&client, topic_path, start_offset).await
+    }
+}
+
+fn resolve_topic_wal_dir(mut root: PathBuf, topic_path: &str) -> PathBuf {
+    let parts: Vec<&str> = topic_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() >= 2 {
+        root.push(parts[0]);
+        root.push(parts[1..].join("%2F"));
+    } else if parts.len() == 1 {
+        root.push(parts[0]);
+    }
+    root
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_topic_wal_dir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_resolve_topic_wal_dir_avoids_hierarchical_collision() {
+        let base = PathBuf::from("/tmp/wal-root");
+        let two_part = resolve_topic_wal_dir(base.clone(), "/default/orders");
+        let nested_a = resolve_topic_wal_dir(base.clone(), "/default/team/a");
+        let nested_b = resolve_topic_wal_dir(base.clone(), "/default/team/b");
+
+        assert_eq!(two_part, PathBuf::from("/tmp/wal-root/default/orders"));
+        assert_eq!(nested_a, PathBuf::from("/tmp/wal-root/default/team%2Fa"));
+        assert_eq!(nested_b, PathBuf::from("/tmp/wal-root/default/team%2Fb"));
+        assert_ne!(nested_a, base);
+        assert_ne!(nested_a, nested_b);
     }
 }

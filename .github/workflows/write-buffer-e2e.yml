@@ -5,7 +5,6 @@ on:
     paths:
       - 'danube-persistent-storage/**'
       - 'danube-broker/**'
-      - 'config/for_tests/danube_broker_write_buffer.yml'
       - '.github/workflows/write-buffer-e2e.yml'
   workflow_dispatch:
 
@@ -37,13 +36,6 @@ jobs:
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler redis-tools
-
-      - name: Create certificate files
-        run: |
-          mkdir -p ./cert
-          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
 
       - name: Verify Valkey is reachable
         run: |
@@ -88,12 +80,27 @@ jobs:
         run: |
           mkdir -p temp danube-data
 
-          ./target/release/danube-broker \
-            --config-file ./config/for_tests/danube_broker_write_buffer.yml \
+          cat > temp/write_buffer_override.yaml <<'EOF'
+          storage:
+            mode: local
+            local_wal_root: "./danube-data/broker-1/wal"
+            metadata_prefix: "/danube"
+            write_buffer:
+              backend: valkey
+              endpoints:
+                - "redis://127.0.0.1:6379"
+              wait_replicas: 0
+              wait_timeout_ms: 100
+              on_wait_timeout: fail
+              max_cached_closed_segments: 5
+          EOF
+
+          ./target/release/danube up \
+            --recovery-config temp/write_buffer_override.yaml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/raft-1 \
+            --data-dir ./danube-data/broker-1 \
             --prom-exporter 0.0.0.0:9040 \
             > temp/broker.log 2>&1 &
           echo $! > temp/broker.pid
@@ -113,12 +120,12 @@ jobs:
 
       - name: "Phase 2: Produce messages with write buffer"
         run: |
-          CLI_BIN=./target/release/danube-cli
+          ADMIN_BIN="./target/release/danube ctl"
 
           # Produce 10 messages through the broker (goes through TieredStorage → WAL + Valkey)
           # --reliable creates the topic with Reliable dispatch (auto_create_topics: true)
           # which enables storage (TieredStorage with hot WAL + warm Valkey double-write)
-          $CLI_BIN produce \
+          $ADMIN_BIN produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "crash-recovery-test-message" \
@@ -163,11 +170,11 @@ jobs:
 
           # Delete WAL directory to simulate disk loss
           echo "Deleting WAL directory..."
-          rm -rf ./danube-data/wal
+          rm -rf ./danube-data/broker-1/wal
           echo "✓ WAL directory deleted"
 
           # Verify WAL is gone
-          if [ -d ./danube-data/wal ]; then
+          if [ -d ./danube-data/broker-1/wal ]; then
             echo "ERROR: WAL directory still exists"
             exit 1
           fi
@@ -178,12 +185,12 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           echo "Restarting broker with same config (WAL deleted)..."
-          ./target/release/danube-broker \
-            --config-file ./config/for_tests/danube_broker_write_buffer.yml \
+          ./target/release/danube up \
+            --recovery-config temp/write_buffer_override.yaml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/raft-1 \
+            --data-dir ./danube-data/broker-1 \
             --prom-exporter 0.0.0.0:9040 \
             >> temp/broker.log 2>&1 &
           echo $! > temp/broker.pid
@@ -207,7 +214,7 @@ jobs:
           # resolve_recovery_start() → ValkeyWriteBuffer replay.
           echo "Triggering topic recovery by producing a message..."
           sleep 3
-          ./target/release/danube-cli produce \
+          ./target/release/danube ctl produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "post-crash-trigger" \
@@ -264,7 +271,7 @@ jobs:
       # =====================================================================
       - name: "Phase 4: Consume recovered messages"
         run: |
-          CLI_BIN=./target/release/danube-cli
+          ADMIN_BIN="./target/release/danube ctl"
           echo "=== Verifying recovered messages are consumable ==="
 
           # New subscriptions start from Latest. Cursor persistence is debounced
@@ -273,18 +280,18 @@ jobs:
           # produce while it's listening, and verify it receives the messages.
 
           # Start consumer in background
-          $CLI_BIN consume \
+          $ADMIN_BIN consume \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -n recovery-verifier \
-            -m recovery-verify-sub \
-            --sub-type exclusive \
+            --subscription recovery-verify-sub \
+            --subscription-type exclusive \
             > temp/consume_output.txt 2>&1 &
           CONSUMER_PID=$!
           sleep 3
 
           # Produce messages while the consumer is listening
-          $CLI_BIN produce \
+          $ADMIN_BIN produce \
             -s http://127.0.0.1:6650 \
             -t /default/wb-crash-test \
             -m "post-recovery-verify" \
@@ -364,4 +371,4 @@ jobs:
       - name: Stop brokers
         if: always()
         run: |
-          pkill -f danube-broker || true
+          pkill -x danube || true

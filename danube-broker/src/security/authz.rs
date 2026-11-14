@@ -23,6 +23,7 @@ pub(crate) enum Permission {
     Produce,
     Consume,
     Replicate,
+    ReadPayload,
     ManageNamespace,
     ManageTopic,
     ManageSchema,

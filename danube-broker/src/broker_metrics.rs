@@ -237,13 +237,22 @@ pub(crate) const REBALANCING_CYCLE_DURATION_SECONDS: Metric = Metric {
 pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u64) {
     info!("initializing metrics exporter");
 
-    if let Some(addr) = prom_addr {
+    let store = crate::telemetry_ring::BrokerTelemetryStore::global();
+    let prom_recorder: Option<Box<dyn metrics::Recorder + Send + Sync>> = if let Some(addr) = prom_addr {
         match PrometheusBuilder::new()
             .with_http_listener(addr)
             .add_global_label("broker", broker_id.to_string())
-            .install()
+            .build()
         {
-            Ok(()) => info!("Prometheus exporter listening on {}", addr),
+            Ok((recorder, exporter)) => {
+                tokio::spawn(async move {
+                    if let Err(e) = exporter.await {
+                        tracing::warn!(error = ?e, "Prometheus HTTP exporter terminated");
+                    }
+                });
+                info!("Prometheus exporter listening on {}", addr);
+                Some(Box::new(recorder))
+            }
             Err(e) => {
                 tracing::warn!(
                     %addr,
@@ -251,8 +260,16 @@ pub(crate) fn init_metrics(prom_addr: Option<std::net::SocketAddr>, broker_id: u
                     "failed to start Prometheus exporter (port in use?), \
                      broker continues without metrics scraping"
                 );
+                None
             }
         }
+    } else {
+        None
+    };
+
+    let recorder = crate::telemetry_ring::TelemetryRecorder::new(store, prom_recorder);
+    if let Err(e) = metrics::set_global_recorder(recorder) {
+        tracing::warn!(error = %e, "metrics global recorder already initialized");
     }
 
     for name in COUNTERS {

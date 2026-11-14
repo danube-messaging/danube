@@ -20,11 +20,11 @@ The dispatcher module is the **core message routing engine** for Danube broker s
 │  Single facade: { control_tx, ready_rx }                     │
 │  Factory constructors spawn the appropriate background task  │
 ├──────────────────────────────────────────────────────────────┤
-│  Constructors:                                               │
-│    - Dispatcher::non_reliable_exclusive()                    │
-│    - Dispatcher::non_reliable_shared()                       │
-│    - Dispatcher::reliable_exclusive(engine)                  │
-│    - Dispatcher::reliable_shared(engine)                     │
+- `Dispatcher::non_reliable_exclusive()`
+- `Dispatcher::non_reliable_shared()`
+- `Dispatcher::reliable_exclusive(engine)`
+- `Dispatcher::reliable_shared(engine)`
+- `Dispatcher::reliable_key_shared(engine)` / `non_reliable_key_shared()`
 └────────────────────────┬─────────────────────────────────────┘
                          │ spawns one of:
           ┌──────────────┼──────────────────────┐
@@ -61,14 +61,12 @@ The dispatcher module is the **core message routing engine** for Danube broker s
 - **Use Case**: Real-time streams, telemetry, non-durable subscriptions
 - **Trade-off**: Maximum throughput, potential message loss
 
-#### Reliable (At-Least-Once)
-- **Acks**: Strict acknowledgment gating
-- **Dispatch**: One message in-flight at a time, wait for ack
-- **Retry**: Pending message buffer for automatic retry
-- **Persistence**: Subscription cursor persisted to metadata
-- **Watchdog**: 500ms heartbeat checks for lag
-- **Use Case**: Durable subscriptions, financial transactions, critical data
-- **Trade-off**: Guaranteed delivery, lower throughput
+#### Reliable (At-Least-Once, Pipelined Window)
+- **Acks & Flow Control**: Sliding in-flight window (`DispatchWindow` / `InFlightWindow`, bounded by `max_unacked_messages`) instead of single-message stop-and-wait
+- **Retry & DLQ**: `PendingDelivery` tracks retries, exponential backoff NACKs, and Dead Letter Queue routing
+- **Workflow Support**: Handles lease extensions (`extend_lease`), persisted step checkpoints (`checkpoint_data`), and skip-list cascading task-tree cancellation
+- **Key-Shared Non-Blocking**: Checks subscription lag without blocking heartbeats or unrelated routing keys
+- **Persistence**: Subscription cursor persisted to metadata with background lag watchdog
 
 ## High-Level Workflows
 

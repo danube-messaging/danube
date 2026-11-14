@@ -7,6 +7,7 @@ use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::ObjectStore;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -67,6 +68,36 @@ impl BackendConfig {
                     if let Some(sk) = options.get("secret_key") {
                         builder = builder.with_secret_access_key(sk);
                     }
+                    if let Some(token) = options.get("session_token") {
+                        builder = builder.with_token(token);
+                    }
+                    if options
+                        .get("anonymous")
+                        .map_or(false, |v| matches!(v.as_str(), "true" | "1" | "yes"))
+                    {
+                        builder = builder.with_skip_signature(true);
+                    }
+                    if let Some(profile) = options.get("profile") {
+                        warn!(
+                            target = "object_store_backend",
+                            profile = %profile,
+                            "S3 profile option is not mapped into object_store::aws::AmazonS3ConfigKey; use ambient AWS_PROFILE / STS credentials or explicit access_key/secret_key/role_arn"
+                        );
+                    }
+                    if let Some(role_arn) = options.get("role_arn") {
+                        builder = builder.with_config(
+                            object_store::aws::AmazonS3ConfigKey::from_str("role_arn")
+                                .expect("valid role_arn key"),
+                            role_arn,
+                        );
+                    }
+                    if let Some(session_name) = options.get("session_name") {
+                        builder = builder.with_config(
+                            object_store::aws::AmazonS3ConfigKey::from_str("role_session_name")
+                                .expect("valid role_session_name key"),
+                            session_name,
+                        );
+                    }
 
                     // Addressing mode: default to path-style for custom endpoints (e.g., MinIO)
                     let vhost_opt = options.get("virtual_host_style");
@@ -95,6 +126,11 @@ impl BackendConfig {
                             "region",
                             "access_key",
                             "secret_key",
+                            "session_token",
+                            "anonymous",
+                            "profile",
+                            "role_arn",
+                            "session_name",
                             "virtual_host_style",
                         ],
                     );
@@ -108,12 +144,28 @@ impl BackendConfig {
                     let (bucket, prefix) =
                         split_bucket_prefix(root).map_err(PersistentStorageError::Other)?;
 
-                    warn_unknown_options("gcs", options, &["endpoint", "credential_file"]);
+                    warn_unknown_options(
+                        "gcs",
+                        options,
+                        &[
+                            "endpoint",
+                            "credential_file",
+                            "credentials_path",
+                            "credentials_json",
+                            "project",
+                        ],
+                    );
 
                     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&bucket);
 
-                    if let Some(cred_file) = options.get("credential_file") {
+                    if let Some(cred_file) = options
+                        .get("credential_file")
+                        .or_else(|| options.get("credentials_path"))
+                    {
                         builder = builder.with_service_account_path(cred_file);
+                    }
+                    if let Some(cred_json) = options.get("credentials_json") {
+                        builder = builder.with_service_account_key(cred_json);
                     }
                     if let Some(endpoint) = options.get("endpoint") {
                         builder = builder.with_base_url(endpoint);
@@ -234,4 +286,32 @@ pub(crate) fn split_fs_root(uri_or_path: &str) -> Result<(String, String), Strin
 fn normalize_prefix(p: &str) -> String {
     let trimmed = p.trim_matches('/');
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BackendConfig, ObjectStoreBackend};
+    use crate::object_store_backend::ObjStore;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_s3_role_arn_and_profile_do_not_corrupt_region() {
+        let mut options = HashMap::new();
+        options.insert("region".to_string(), "us-east-1".to_string());
+        options.insert("access_key".to_string(), "test-ak".to_string());
+        options.insert("secret_key".to_string(), "test-sk".to_string());
+        options.insert("profile".to_string(), "ignored-invalid-region".to_string());
+        options.insert(
+            "role_arn".to_string(),
+            "arn:aws:iam::123456789012:role/danube".to_string(),
+        );
+        options.insert("session_name".to_string(), "danube-test".to_string());
+
+        let store = ObjStore::new(BackendConfig::ObjectStore {
+            backend: ObjectStoreBackend::S3,
+            root: "s3://test-bucket/prefix".to_string(),
+            options,
+        });
+        assert!(store.is_ok(), "S3 builder failed: {:?}", store.err());
+    }
 }

@@ -9,7 +9,9 @@ use tracing::warn;
 use danube_core::message::MessageID;
 use danube_core::proto::{
     consumer_service_client::ConsumerServiceClient, health_check_request::ClientType, AckRequest,
-    AckResponse, ConsumerRequest, NackRequest, NackResponse, ReceiveRequest, StreamMessage,
+    AckResponse, CancelTaskTreeRequest, CancelTaskTreeResponse, ConsumerRequest,
+    ExtendVisibilityRequest, ExtendVisibilityResponse, NackRequest, NackResponse, ReceiveRequest,
+    ReportProgressRequest, ReportProgressResponse, StreamMessage,
 };
 
 use std::sync::{
@@ -303,6 +305,101 @@ impl TopicConsumer {
             }
         };
         Ok(response.into_inner())
+    }
+
+    pub(crate) async fn send_extend_visibility(
+        &mut self,
+        req_id: u64,
+        msg_id: MessageID,
+        subscription_name: &str,
+        extension_ms: u64,
+    ) -> Result<ExtendVisibilityResponse> {
+        let stream_client = match &mut self.state {
+            ConsumerState::Ready { stream_client, .. } => stream_client,
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "ExtendVisibility: consumer is not connected".into(),
+                ));
+            }
+        };
+
+        let mut request = tonic::Request::new(ExtendVisibilityRequest {
+            request_id: req_id,
+            msg_id: Some(msg_id.into()),
+            subscription_name: subscription_name.to_string(),
+            extension_ms,
+        });
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
+
+        match stream_client.extend_visibility(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) => Err(status_to_danube_error(status)),
+        }
+    }
+
+    pub(crate) async fn send_report_progress(
+        &mut self,
+        req_id: u64,
+        msg_id: MessageID,
+        subscription_name: &str,
+        checkpoint: Vec<u8>,
+        extension_ms: u64,
+    ) -> Result<ReportProgressResponse> {
+        let stream_client = match &mut self.state {
+            ConsumerState::Ready { stream_client, .. } => stream_client,
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "ReportProgress: consumer is not connected".into(),
+                ));
+            }
+        };
+
+        let mut request = tonic::Request::new(ReportProgressRequest {
+            request_id: req_id,
+            msg_id: Some(msg_id.into()),
+            subscription_name: subscription_name.to_string(),
+            checkpoint,
+            extension_ms,
+        });
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
+
+        match stream_client.report_progress(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) => Err(status_to_danube_error(status)),
+        }
+    }
+
+    pub(crate) async fn send_cancel_task_tree(
+        &mut self,
+        req_id: u64,
+        topic_name: &str,
+        root_msg_id: &str,
+        reason: Option<String>,
+    ) -> Result<CancelTaskTreeResponse> {
+        let stream_client = match &mut self.state {
+            ConsumerState::Ready { stream_client, .. } => stream_client,
+            ConsumerState::Disconnected => {
+                return Err(DanubeError::Unrecoverable(
+                    "CancelTaskTree: consumer is not connected".into(),
+                ));
+            }
+        };
+
+        let mut request = tonic::Request::new(CancelTaskTreeRequest {
+            request_id: req_id,
+            topic_name: topic_name.to_string(),
+            root_msg_id: root_msg_id.to_string(),
+            reason: reason.unwrap_or_default(),
+        });
+        RetryManager::insert_auth_token(&self.client, &mut request, &self.connect_url).await?;
+        RetryManager::insert_proxy_header(&mut request, &self.broker_addr, self.proxy);
+
+        match stream_client.cancel_task_tree(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) => Err(status_to_danube_error(status)),
+        }
     }
 
     pub(crate) fn get_topic_name(&self) -> &str {

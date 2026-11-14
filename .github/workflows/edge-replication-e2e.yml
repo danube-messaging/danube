@@ -10,7 +10,6 @@ on:
       - 'danube-core/proto/EdgeReplicator.proto'
       - 'danube-schema/**'
       - '.github/workflows/edge-replication-e2e.yml'
-      - 'config/edge.yaml'
   workflow_dispatch:
 
 jobs:
@@ -31,13 +30,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd protobuf-compiler
 
-      - name: Create certificate files
-        run: |
-          mkdir -p ./cert
-          printf "%s" "${{ secrets.CERT_FILE }}" > ./cert/server-cert.pem
-          printf "%s" "${{ secrets.KEY_FILE }}" > ./cert/server-key.pem
-          printf "%s" "${{ secrets.CA_FILE }}" > ./cert/ca-cert.pem
-
       - name: Build workspace (release)
         run: cargo build --workspace --release
 
@@ -51,32 +43,29 @@ jobs:
           mkdir -p temp danube-data/cloud-storage
           SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 
-          ./target/release/danube-broker \
-            --config-file config/danube_broker.yml \
+          ./target/release/danube up \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
-            --data-dir ./danube-data/raft-1 \
+            --data-dir ./danube-data/broker-1 \
             --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3000 \
             > temp/broker_6650.log 2>&1 &
 
-          ./target/release/danube-broker \
-            --config-file config/danube_broker.yml \
+          ./target/release/danube up \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
             --raft-addr 0.0.0.0:7651 \
-            --data-dir ./danube-data/raft-2 \
+            --data-dir ./danube-data/broker-2 \
             --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3001 \
             > temp/broker_6651.log 2>&1 &
 
-          ./target/release/danube-broker \
-            --config-file config/danube_broker.yml \
+          ./target/release/danube up \
             --broker-addr 0.0.0.0:6652 \
             --admin-addr 0.0.0.0:50053 \
             --raft-addr 0.0.0.0:7652 \
-            --data-dir ./danube-data/raft-3 \
+            --data-dir ./danube-data/broker-3 \
             --seed-nodes "$SEED_NODES" \
             --prom-exporter 0.0.0.0:3002 \
             > temp/broker_6652.log 2>&1 &
@@ -107,7 +96,7 @@ jobs:
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          ADMIN_BIN=./target/release/danube-admin
+          ADMIN_BIN="./target/release/danube ctl"
 
           echo "Creating namespace 'edge1'..."
           $ADMIN_BIN namespaces create edge1 || true
@@ -121,7 +110,7 @@ jobs:
         env:
           DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          ADMIN_BIN=./target/release/danube-admin
+          ADMIN_BIN="./target/release/danube ctl"
 
           echo "Registering 'telemetry-events' schema on cluster..."
           $ADMIN_BIN schemas register \
@@ -141,41 +130,37 @@ jobs:
         run: |
           mkdir -p danube-data/edge-1
 
-          # Generate edge config for the test
-          cat > temp/edge.yaml <<EOF
+          # Generate edge recovery config for custom topic mappings in the test
+          cat > temp/edge_override.yaml <<'EOF'
           edge:
-            edge_name: "edge1"
-            cluster_url: "http://127.0.0.1:6650"
-            token: ""
-            heartbeat_interval_ms: 10000
-
-          replicator:
-            batch_size: 100
-            batch_timeout_ms: 1000
-
-          mqtt:
-            listener: "0.0.0.0:1883"
-            topic_mappings:
-              - mqtt_pattern: "device/+/telemetry"
-                danube_topic: "/edge1/telemetry"
-                schema_subject: "telemetry-events"
-                validation_policy: "enforce"
-                extract_attributes:
-                  device_id: "$1"
-              - mqtt_pattern: "#"
-                danube_topic: "/edge1/raw"
+            edge:
+              edge_name: "edge1"
+              cluster_url: "http://127.0.0.1:6650"
+              token: ""
+              heartbeat_interval_ms: 10000
+            replicator:
+              batch_size: 100
+              batch_timeout_ms: 1000
+            mqtt:
+              listener: "0.0.0.0:1883"
+              topic_mappings:
+                - mqtt_pattern: "device/+/telemetry"
+                  danube_topic: "/edge1/telemetry"
+                  schema_subject: "telemetry-events"
+                  validation_policy: "enforce"
+                  extract_attributes:
+                    device_id: "$1"
+                - mqtt_pattern: "device/+/raw"
+                  danube_topic: "/edge1/raw"
           EOF
 
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' temp/edge.yaml
-
-          ./target/release/danube-broker \
+          ./target/release/danube up \
             --mode edge \
             --broker-addr 0.0.0.0:6653 \
             --admin-addr 0.0.0.0:50054 \
             --raft-addr 0.0.0.0:7653 \
             --data-dir ./danube-data/edge-1 \
-            --edge-config temp/edge.yaml \
+            --recovery-config temp/edge_override.yaml \
             > temp/edge_broker.log 2>&1 &
           echo $! > temp/edge_broker.pid
 
@@ -211,6 +196,42 @@ jobs:
 
       - name: Run MQTT E2E tests
         run: python3 scripts/edge-e2e/test_mqtt_ingestion.py
+
+      # =====================================================================
+      # Zero-YAML Edge Mode Smoke Test
+      # =====================================================================
+      - name: Smoke test zero-YAML edge mode
+        env:
+          RUST_LOG: info,openraft::replication=off,openraft=error
+        run: |
+          mkdir -p danube-data/edge-zero-yaml
+          ./target/release/danube up \
+            --mode edge \
+            --edge-name edge2 \
+            --broker-addr 0.0.0.0:6654 \
+            --admin-addr 0.0.0.0:50055 \
+            --raft-addr 0.0.0.0:7654 \
+            --data-dir ./danube-data/edge-zero-yaml \
+            --cloud-endpoint http://127.0.0.1:6650 \
+            --mqtt-addr 0.0.0.0:1884 \
+            > temp/edge_zero_yaml.log 2>&1 &
+          ZERO_YAML_PID=$!
+
+          for i in {1..10}; do
+            if nc -zv 127.0.0.1 6654 2>/dev/null; then
+              echo "✅ Zero-YAML edge broker on port 6654 is ready."
+              break
+            elif [ $i -eq 10 ]; then
+              echo "❌ Zero-YAML edge broker failed to start."
+              cat temp/edge_zero_yaml.log
+              kill $ZERO_YAML_PID 2>/dev/null || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          kill $ZERO_YAML_PID 2>/dev/null || true
+          wait $ZERO_YAML_PID 2>/dev/null || true
 
       # TODO: Enable once RBAC/JWT auth is configured in this workflow.
       # These tests require a valid EDGE_TOKEN and security-enabled brokers.
@@ -250,4 +271,4 @@ jobs:
       - name: Stop all brokers
         if: always()
         run: |
-          pkill -f danube-broker || true
+          pkill -x danube || true

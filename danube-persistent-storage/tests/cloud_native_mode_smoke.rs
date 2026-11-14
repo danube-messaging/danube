@@ -180,6 +180,9 @@ async fn cloud_native_recovers_from_catalog_when_checkpoint_points_to_missing_lo
         created_at: 1,
         completed: true,
         offset_index: None,
+        ref_count: 1,
+        object_topic: None,
+        max_valid_offset: None,
     };
     storage_metadata
         .put_segment_descriptor(topic_path, "00000000000000000000", &segment)

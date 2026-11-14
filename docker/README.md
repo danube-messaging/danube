@@ -1,433 +1,98 @@
-# Danube Docker Setups
+# Danube Docker Setup (v2)
 
-Choose the right setup for your use case:
+Danube v2 runs from a single binary (`/usr/local/bin/danube`) with **zero mounted YAML config files**.
 
-| Setup | Services | Backend | Use Case |
-|-------|----------|---------|----------|
-| **[quickstart](#quickstart)** | 3 Brokers + CLI + Prometheus | Filesystem | Quick testing, learning, MCP development |
-| **[with-ui](#with-ui)** | + Admin Server + Web UI | Filesystem | Cluster monitoring, visual exploration |
-| **[with-cloud-storage](#with-cloud-storage)** | + MinIO + MC | S3/MinIO | Cloud storage testing, durability testing |
-| **[with-lakehouse](#with-lakehouse)** | + Edge + Iceberg + Spark | S3/MinIO | Lakehouse pipeline, Iceberg/Parquet, analytics |
-| **[local-development](#local-development)** | All above (builds from source) | Filesystem | Development, testing local changes |
+The consolidated [`docker/docker-compose.yml`](docker-compose.yml) builds the [`Dockerfile`](../Dockerfile) and boots a 3-node Raft cluster (`broker1`, `broker2`, `broker3`).
 
 ## Prerequisites
 
 - Docker Engine 20.10+
 - Docker Compose 2.0+
-- At least 2GB RAM (4GB for cloud-storage setup)
 
----
-
-## Quickstart
-
-**Minimal setup with filesystem backend** - Perfect for quick testing and MCP tools development.
-
-**Services:** 3 Brokers (Raft consensus), CLI, Prometheus  
-**Storage:** Filesystem (no MinIO overhead)  
-**Ports:** 6650-6652 (Brokers), 50051-50053 (Admin), 9040-9042 (Metrics), 9090 (Prometheus)
-
-### Start
+## Quick Start
 
 ```bash
-cd quickstart/
-docker-compose up -d
+cd docker/
+docker compose up -d --build
 ```
 
-### Verify
+Check container status:
 
 ```bash
-docker-compose ps
-# All services should show "Up" status
+docker compose ps
 ```
 
-### Test
+Exposed host ports:
+- **Brokers (gRPC data + admin)**: `6650` (`broker1`), `6651` (`broker2`), `6652` (`broker3`)
+- **Prometheus metrics (`/metrics`)**: `9040`, `9041`, `9042`
+
+## Test Messaging & Admin via `danube ctl`
+
+No separate `danube-cli` or `danube-admin` container is needed — `danube` ships both inside every broker container:
 
 ```bash
-# Produce messages
-docker exec danube-cli danube-cli produce \
-  --service-addr http://broker1:6650 \
-  --topic "/default/test" \
+# Consume messages from broker1
+docker exec -it danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
+  consume --service-addr http://127.0.0.1:6650 --topic /default/test --subscription my-sub
+
+# Produce messages to broker1
+docker exec danube-broker1 danube ctl produce \
+  --service-addr http://127.0.0.1:6650 \
+  --topic /default/test \
   --count 100 \
-  --message "Hello Danube!"
-
-# Consume messages
-docker exec -it danube-cli danube-cli consume \
-  --service-addr http://broker1:6650 \
-  --topic "/default/test" \
-  --subscription "my-sub"
+  --message "Hello Danube v2!"
 ```
 
-### Stop
+### Cluster Administration & Declarative Apply
 
 ```bash
-docker-compose down -v  # -v removes volumes for fresh start
+# Inspect cluster and Raft status
+docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 brokers list
+docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 cluster status
+
+# Create a topic with a StreamIntent profile
+docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
+  topics create /default/agent-tasks --intent agent_task_queue
+
+# Zero-copy branch a topic
+docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
+  topics branch /default/agent-tasks /default/agent-tasks-replay
+
+# Apply a declarative YAML/JSON manifest (additive by default)
+docker exec -i danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
+  apply -f - < cluster-state.yaml
 ```
 
----
-
-## With UI
-
-**Adds web dashboard and admin server** - Perfect for cluster monitoring and exploration.
-
-**Services:** Quickstart + Admin Server + Web UI  
-**Storage:** Filesystem  
-**Additional Ports:** 8080 (Admin API), 8081 (Web UI)
-
-### Start
+## Single-Container Standalone Mode
 
 ```bash
-cd with-ui/
-docker-compose up -d
+docker build -t danube:local -f ../Dockerfile ..
+docker run --rm -p 6650:6650 -p 9040:9040 \
+  danube:local up \
+  --mode standalone \
+  --data-dir /danube-data \
+  --broker-addr 0.0.0.0:6650 \
+  --prom-exporter 0.0.0.0:9040
 ```
 
-### Access UI
+## Security, Storage & Recovery Overrides
 
-Open **http://localhost:8081** in your browser
+- **Startup TLS / Auto-TLS**: Pass `--auth-mode auto-tls` (or `--auth-mode tls` with `--tls-cert`, `--tls-key`, `--ca-cert`, `--jwt-secret`, `--super-admins`) directly in container `command`.
+- **Break-glass Recovery / Test Overrides**: If Raft quorum is lost or you need static local overrides (e.g., object store / shared filesystem / write buffer settings), mount a recovery JSON/YAML file and pass `--recovery-config /path/to/recovery.yaml`.
+- **Dedicated Admin Listener**: Pass `--admin-addr 0.0.0.0:50051` when you want to firewall admin gRPC separately from port `6650`.
 
-The UI provides:
-- Real-time cluster status and metrics
-- Topic and subscription management
-- Broker load visualization
-- Schema registry browser
-
-### Admin CLI
+## Cleanup
 
 ```bash
-# List brokers
-docker exec danube-admin brokers list
-
-# Check cluster balance
-docker exec danube-admin brokers balance
-
-# List topics
-docker exec danube-admin topics list --namespace default
+docker compose down -v
 ```
-
-### Stop
-
-```bash
-docker-compose down -v
-```
-
----
-
-## With Cloud Storage
-
-**S3/MinIO backend for testing cloud-native storage** - Perfect for durability and cloud migration testing.
-
-**Services:** MinIO, MC, 3 Brokers (Raft consensus), CLI, Prometheus  
-**Storage:** MinIO (S3-compatible)  
-**Additional Ports:** 9000 (MinIO API), 9001 (MinIO Console)
-
-### Start
-
-```bash
-cd with-cloud-storage/
-docker-compose up -d
-```
-
-### MinIO Console
-
-1. Open **http://localhost:9001**
-2. Login: `minioadmin` / `minioadmin123`
-3. View buckets: `danube-messages`, `danube-wal`
-
-### Test Reliable Messaging
-
-```bash
-# Produce with reliable delivery (persisted to S3)
-docker exec danube-cli danube-cli produce \
-  --service-addr http://broker1:6650 \
-  --topic "/default/persistent" \
-  --count 1000 \
-  --message "Persistent message" \
-  --reliable
-
-# Consume persistent messages
-docker exec -it danube-cli danube-cli consume \
-  --service-addr http://broker1:6650 \
-  --topic "/default/persistent" \
-  --subscription "persistent-sub" \
-  --sub-type exclusive
-```
-
-### Stop
-
-```bash
-docker-compose down -v
-```
-
----
-
-## With Lakehouse
-
-**Full data pipeline: IoT → Edge → Cluster → Iceberg/Parquet → Spark SQL** — Perfect for lakehouse integration testing and analytics demos.
-
-**Services:** MinIO, 3 Brokers (S3 storage), Edge Broker (MQTT), danube-iceberg, Iceberg REST Catalog, Spark-Iceberg (Jupyter), IoT Simulator, Prometheus  
-**Storage:** MinIO (S3-compatible)  
-**Additional Ports:** 1883 (MQTT), 8181 (Iceberg REST), 8888 (Jupyter), 9000/9001 (MinIO)
-
-### Start
-
-```bash
-cd with-lakehouse/
-docker-compose up -d --build
-# First build takes ~10 minutes (compiles Rust workspace)
-```
-
-### Query Iceberg Tables
-
-Open **http://localhost:8888** (Spark Jupyter Notebook):
-
-```sql
--- In a Spark SQL cell:
-SELECT device_id, temperature, humidity, timestamp
-FROM danube_catalog.edge1.telemetry_data
-ORDER BY timestamp DESC
-LIMIT 20;
-```
-
-### Verify Pipeline
-
-1. **IoT Simulator logs:** `docker logs lakehouse-iot-simulator`
-2. **MinIO Console:** http://localhost:9001 (login: `minioadmin` / `minioadmin123`)
-3. **danube-iceberg logs:** `docker logs lakehouse-danube-iceberg`
-
-See [with-lakehouse/README.md](with-lakehouse/README.md) for full documentation.
-
-### Stop
-
-```bash
-docker-compose down -v
-```
-
----
-
-## Local Development
-
-**Builds from source for contributors** - Perfect for developing broker/admin code.
-
-**Services:** All above (built locally) + UI  
-**Storage:** Filesystem  
-**Build Time:** ~5-10 minutes first time (cached after)
-
-### Start
-
-```bash
-# From repo root
-cd docker/local-development/
-docker-compose up -d --build
-```
-
-### Rebuild After Code Changes
-
-```bash
-# Rebuild specific services
-docker-compose build broker1 broker2 broker3 danube-admin
-docker-compose up -d --no-deps broker1 broker2 broker3 danube-admin
-
-# Or rebuild everything
-docker-compose up -d --build
-```
-
-### Stop
-
-```bash
-docker-compose down -v
-```
-
----
-
-## Common Operations
-
-### View Logs
-
-```bash
-# All services
-docker-compose logs -f
-
-# Specific service
-docker-compose logs -f broker1
-docker-compose logs -f danube-admin
-```
-
-### Prometheus Metrics
-
-```bash
-# Broker metrics
-curl http://localhost:9040/metrics  # broker1
-curl http://localhost:9041/metrics  # broker2
-
-# Prometheus UI
-open http://localhost:9090
-```
-
-### Admin Operations
-
-```bash
-# List brokers
-docker exec danube-admin brokers list
-
-# List namespaces
-docker exec danube-admin brokers namespaces
-
-# Check cluster balance
-docker exec danube-admin brokers balance
-
-# Trigger rebalancing
-docker exec danube-admin brokers rebalance
-```
-
-### JSON Schema Messages
-
-```bash
-# Produce with schema
-docker exec danube-cli danube-cli produce \
-  --service-addr http://broker1:6650 \
-  --topic "/default/json-topic" \
-  --count 100 \
-  --schema json \
-  --json-schema '{"type":"object","properties":{"message":{"type":"string"},"timestamp":{"type":"number"}}}' \
-  --message '{"message":"Hello JSON","timestamp":1640995200}'
-
-# Consume
-docker exec -it danube-cli danube-cli consume \
-  --service-addr http://broker1:6650 \
-  --topic "/default/json-topic" \
-  --subscription "json-sub"
-```
-
----
-
-## Configuration
-
-### Broker Configs
-
-- **Quickstart/With-UI/Local-Development:** Uses `../config/danube_broker.yml` (filesystem backend)
-- **With-Cloud-Storage:** Uses `../config/danube_broker_cloud.yml` (S3 backend)
-
-Both configs include:
-- `assignment_strategy: "balanced"` - Multi-factor broker selection
-- `auth: none` - Disabled for development
-- `policies: unlimited` - No rate limits for testing
-
-### Prometheus Config
-
-Shared across all setups: `docker/prometheus.yml`
-
-Scrapes both brokers every 5 seconds.
-
----
 
 ## Troubleshooting
 
-### Port Conflicts
-
-Check if ports are already in use:
-
 ```bash
-# Check specific port
-lsof -i :6650
+# Follow logs for a broker
+docker compose logs -f broker1
 
-# Kill process using port
-kill -9 <PID>
+# Inspect metrics endpoint
+curl http://localhost:9040/metrics
 ```
-
-### Container Won't Start
-
-```bash
-# Check logs
-docker-compose logs broker1
-
-# Check Docker resources
-docker stats
-```
-
-### Reset Everything
-
-```bash
-# Stop and remove all Danube containers/volumes
-docker-compose down -v
-docker volume prune -f
-docker network prune -f
-
-# Start fresh
-docker-compose up -d
-```
-
-### Build Issues (local-development)
-
-```bash
-# Clear Docker build cache
-docker builder prune -a
-
-# Rebuild from scratch
-docker-compose build --no-cache
-docker-compose up -d
-```
-
----
-
-## Production Considerations
-
-For production deployment:
-
-1. **Storage:** Replace MinIO with AWS S3, GCS, or Azure Blob
-2. **Security:** Enable TLS/mTLS in broker config (`auth: tls`)
-3. **Resources:** Configure CPU/memory limits in compose file
-4. **Monitoring:** Add Grafana dashboards for Prometheus
-5. **Backup:** Back up Raft data directories (`danube-data/raft`) for state recovery
-6. **Orchestration:** Use Kubernetes for scaling and HA
-
-### AWS S3 Migration
-
-Update `../config/danube_broker.yml`:
-
-```yaml
-storage:
-  mode: object_store
-  local_wal_root: "./danube-data/wal"
-  metadata_prefix: "/danube"
-  durable:
-    backend: "s3"
-    root: "s3://your-bucket/danube"
-    region: "us-west-2"
-    # Remove endpoint for AWS (uses default AWS endpoints)
-    # Use IAM roles instead of hardcoded keys
-```
-
----
-
-## Structure
-
-```
-docker/
-├── README.md                    # This file
-├── prometheus.yml               # Shared Prometheus config
-├── danube_broker.yml            # Filesystem backend config
-├── danube_broker_cloud.yml      # S3/MinIO backend config
-├── quickstart/
-│   └── docker-compose.yml
-├── with-ui/
-│   └── docker-compose.yml
-├── with-cloud-storage/
-│   └── docker-compose.yml
-├── with-lakehouse/
-│   ├── docker-compose.yml       # Full lakehouse pipeline
-│   ├── danube_broker_lakehouse.yml
-│   ├── danube_iceberg.yaml
-│   ├── edge.yaml
-│   ├── iot_simulator.py
-│   ├── Dockerfile.iot-simulator
-│   ├── requirements.txt
-│   └── README.md
-└── local-development/
-    └── docker-compose.yml
-```
-
-Config files referenced from `docker/`:
-- `danube_broker.yml` - Filesystem backend (default)
-- `danube_broker_cloud.yml` - S3/MinIO backend
-- `with-lakehouse/danube_broker_lakehouse.yml` - S3/MinIO with small WAL rotation for lakehouse demo
-
-Metadata is managed by embedded Raft consensus (no external dependencies like etcd).

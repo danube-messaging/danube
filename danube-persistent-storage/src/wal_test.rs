@@ -216,6 +216,7 @@ mod tests {
             flush_max_batch_bytes: Some(1024),
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            sync_mode: None,
         };
         let wal = Wal::with_config(cfg).await?;
 
@@ -268,6 +269,7 @@ mod tests {
             flush_max_batch_bytes: Some(1024),
             rotate_max_bytes,
             rotate_max_seconds: None,
+            sync_mode: None,
         };
         Wal::with_config(cfg).await
     }
@@ -284,6 +286,7 @@ mod tests {
             flush_max_batch_bytes: Some(1024),
             rotate_max_bytes: None,
             rotate_max_seconds: None,
+            sync_mode: None,
         };
 
         let err = Wal::with_config(cfg).await;

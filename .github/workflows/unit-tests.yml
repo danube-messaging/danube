@@ -24,15 +24,8 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Run broker unit tests (bin)
-        run: cargo test --bin danube-broker
+      - name: Run workspace unit tests (lib + bins)
+        run: cargo test --workspace --lib --bins
 
-      - name: Run library tests
-        run: |
-          cargo test -p danube-client
-          cargo test -p danube-raft
-          cargo test -p danube-schema
-          cargo test -p danube-persistent-storage
-
-      - name: Run danube-iceberg tests
-        run: cargo test -p danube-iceberg
+      - name: Check lakehouse feature compilation
+        run: cargo check --workspace --features danube-broker/lakehouse

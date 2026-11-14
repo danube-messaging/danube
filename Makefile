@@ -12,9 +12,6 @@ PROM_CONFIG := $(PWD)/scripts/prometheus.yml
 # Number of broker instances
 NUM_BROKERS := 3
 
-# Path to configuration file
-CONFIG_FILE := ./config/danube_broker.yml
-
 # Base data directory (each broker gets its own sub-directory)
 BASE_DATA_DIR := ./danube-data
 
@@ -49,22 +46,21 @@ SEED_NODES := $(shell for i in $$(seq 0 $$(echo $(NUM_BROKERS) - 1 | bc)); do \
 done)
 
 brokers:
-	@echo "Building Danube brokers..."
+	@echo "Building Danube binary..."
 	@mkdir -p temp
-	@RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-broker --bin danube-broker
+	@RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-broker --bin danube
 	@echo "Seed nodes: $(SEED_NODES)"
 	@for i in $(shell seq 0 $(shell echo $(NUM_BROKERS) - 1 | bc)); do \
 		broker_port=$$(($(BASE_BROKER_PORT) + i)); \
 		admin_port=$$(($(BASE_ADMIN_PORT) + i)); \
 		raft_port=$$(($(BASE_RAFT_PORT) + i)); \
 		prom_port=$$(($(BASE_PROM_PORT) + i)); \
-		data_dir="$(BASE_DATA_DIR)/broker-$$i/raft"; \
+		data_dir="$(BASE_DATA_DIR)/broker-$$i"; \
 		log_file="broker_$$broker_port.log"; \
 		mkdir -p "$$data_dir"; \
 		echo "Starting broker $$i: client=$$broker_port admin=$$admin_port raft=$$raft_port prom=$$prom_port"; \
 		RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 \
-		nohup ./target/release/danube-broker \
-		    --config-file $(CONFIG_FILE) \
+		nohup ./target/release/danube up \
 		    --broker-addr "0.0.0.0:$$broker_port" \
 		    --admin-addr "0.0.0.0:$$admin_port" \
 		    --raft-addr "0.0.0.0:$$raft_port" \
@@ -78,15 +74,15 @@ brokers:
 	@echo "$(NUM_BROKERS) broker(s) started — cluster auto-bootstraps via seed nodes."
 
 cluster-status:
-	@echo "Compiling danube-admin (release)..."
-	@cargo build --release --package danube-admin --bin danube-admin 2>/dev/null
-	@echo "Connecting to broker at 127.0.0.1:50051..."
-	@RUST_LOG=warn ./target/release/danube-admin cluster status || \
+	@echo "Compiling danube (release)..."
+	@cargo build --release --package danube-broker --bin danube 2>/dev/null
+	@echo "Connecting to broker at 127.0.0.1:$(BASE_ADMIN_PORT)..."
+	@DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:$(BASE_ADMIN_PORT)" RUST_LOG=warn ./target/release/danube ctl cluster status || \
 		(echo ""; echo "Hint: is the broker running? Start it with 'make brokers'"; exit 1)
 
 brokers-stop:
 	@echo "Stopping all Broker instances (keeping Raft data)..."
-	@pids=$$(ps aux | grep '[d]anube-broker --config-file' | awk '{print $$2}'); \
+	@pids=$$(ps aux | grep '[d]anube up.*--broker-addr' | awk '{print $$2}'); \
 	if [ -n "$$pids" ]; then \
 		echo "$$pids" | xargs -r kill; \
 		echo "Danube brokers stopped."; \
@@ -100,7 +96,7 @@ brokers-clean: brokers-stop data-clean
 broker-kill:
 	@if [ -z "$(ID)" ]; then echo "Usage: make broker-kill ID=<0-$(shell echo $(NUM_BROKERS) - 1 | bc)>"; exit 1; fi
 	@broker_port=$$(($(BASE_BROKER_PORT) + $(ID))); \
-	pid=$$(ps aux | grep "[d]anube-broker.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
+	pid=$$(ps aux | grep "[d]anube up.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
 	if [ -n "$$pid" ]; then \
 		kill $$pid; \
 		echo "Broker $(ID) (port $$broker_port, pid $$pid) killed."; \
@@ -115,9 +111,9 @@ broker-start:
 	admin_port=$$(($(BASE_ADMIN_PORT) + $(ID))); \
 	raft_port=$$(($(BASE_RAFT_PORT) + $(ID))); \
 	prom_port=$$(($(BASE_PROM_PORT) + $(ID))); \
-	data_dir="$(BASE_DATA_DIR)/broker-$(ID)/raft"; \
+	data_dir="$(BASE_DATA_DIR)/broker-$(ID)"; \
 	log_file="broker_$$broker_port.log"; \
-	existing=$$(ps aux | grep "[d]anube-broker.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
+	existing=$$(ps aux | grep "[d]anube up.*--broker-addr 0.0.0.0:$$broker_port" | awk '{print $$2}'); \
 	if [ -n "$$existing" ]; then \
 		echo "Broker $(ID) (port $$broker_port) is already running (pid $$existing)."; \
 		exit 1; \
@@ -125,8 +121,7 @@ broker-start:
 	mkdir -p "$$data_dir"; \
 	echo "Starting broker $(ID): client=$$broker_port admin=$$admin_port raft=$$raft_port prom=$$prom_port"; \
 	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 \
-	nohup ./target/release/danube-broker \
-	    --config-file $(CONFIG_FILE) \
+	nohup ./target/release/danube up \
 	    --broker-addr "0.0.0.0:$$broker_port" \
 	    --admin-addr "0.0.0.0:$$admin_port" \
 	    --raft-addr "0.0.0.0:$$raft_port" \
@@ -137,24 +132,25 @@ broker-start:
 	echo "Broker $(ID) started (log: temp/$$log_file)."
 
 data-clean:
-	@echo "Removing Raft data directories..."
-	rm -rf $(BASE_DATA_DIR)/broker-*/raft
-	@echo "Raft data removed. Cluster will need re-initialization."
+	@echo "Removing broker data directories (raft + wal)..."
+	rm -rf $(BASE_DATA_DIR)/broker-*
+	@echo "Broker data removed. Cluster will need re-initialization."
 
 admin:
-	@echo "Building Danube admin server..."
-	@RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-admin --bin danube-admin
-	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 ./target/release/danube-admin serve \
+	@echo "Building Danube binary..."
+	@mkdir -p temp
+	@RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 cargo build --release --package danube-broker --bin danube
+	RUST_LOG=$(LOG_LEVEL) RUST_BACKTRACE=1 ./target/release/danube ctl serve \
 	    --mode ui \
 	    --listen-addr 0.0.0.0:8080 \
-	    --broker-endpoint 0.0.0.0:$(BASE_ADMIN_PORT) \
+	    --broker-endpoint "http://127.0.0.1:$(BASE_ADMIN_PORT)" \
 	    > temp/admin_server_8080.log 2>&1 & \
 	sleep 2
 	@echo "Danube admin server started on 0.0.0.0:8080"
 
 admin-clean:
 	@echo "Cleaning up Admin server instances..."
-	@pids=$$(ps aux | grep '[d]anube-admin serve' | awk '{print $$2}'); \
+	@pids=$$(ps aux | grep '[d]anube ctl serve' | awk '{print $$2}'); \
 	if [ -n "$$pids" ]; then \
 		echo "$$pids" | xargs -r kill; \
 		echo "Danube admin server stopped."; \

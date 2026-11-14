@@ -8,8 +8,9 @@ use crate::object_store_backend::ObjStoreDurable;
 use crate::valkey::ValkeyClient;
 use crate::wal::deleter::{Deleter, DeleterConfig};
 use crate::wal_storage::WalStorage;
+use danube_core::message::StreamMessage;
 use danube_core::metadata::MetadataStore;
-use danube_core::storage::{PersistentStorage, PersistentStorageError};
+use danube_core::storage::{PersistentStorage, PersistentStorageError, StartPosition, TopicStream};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -22,11 +23,13 @@ impl StorageFactory {
         let segment_catalog = crate::metadata::SegmentCatalog::new(metadata.clone());
         let mobility_state = crate::metadata::MobilityState::new(metadata.clone());
         Self {
-            mode: config.mode,
+            mode: Arc::new(std::sync::RwLock::new(config.mode)),
             base_cfg: config.wal,
             segment_catalog,
             mobility_state,
-            durable_store,
+            durable_store: Arc::new(std::sync::RwLock::new(durable_store)),
+            cloud_tiered_topics: Arc::new(dashmap::DashSet::new()),
+            sealed_resumed_topics: Arc::new(dashmap::DashSet::new()),
             topics: Arc::new(dashmap::DashMap::new()),
             segment_exporters: Arc::new(dashmap::DashMap::new()),
             segment_exporter_tokens: Arc::new(dashmap::DashMap::new()),
@@ -38,6 +41,176 @@ impl StorageFactory {
             write_buffer: config.write_buffer,
             valkey_client: Arc::new(tokio::sync::OnceCell::new()),
         }
+    }
+
+    pub(super) fn current_mode(&self) -> super::StorageMode {
+        self.mode.read().expect("storage mode lock").clone()
+    }
+
+    pub(super) fn current_durable_store(&self) -> Option<Arc<dyn DurableStore>> {
+        self.durable_store
+            .read()
+            .expect("durable store lock")
+            .clone()
+    }
+
+    /// Number of topics explicitly opted into cloud tiering.
+    pub fn cloud_tiered_topic_count(&self) -> usize {
+        self.cloud_tiered_topics.len()
+    }
+
+    /// Current cluster object store config if configured.
+    pub fn current_object_store_config(&self) -> Option<super::ObjectStoreConfig> {
+        match self.current_mode() {
+            super::StorageMode::ObjectStore(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    /// Live-register or swap the cluster object store after running a write/read/delete probe.
+    pub async fn configure_object_store(
+        &self,
+        cfg: super::ObjectStoreConfig,
+        force: bool,
+    ) -> Result<(), PersistentStorageError> {
+        crate::probe_object_store(&cfg).await?;
+
+        if self.current_durable_store().is_some()
+            && !self.cloud_tiered_topics.is_empty()
+            && !force
+        {
+            return Err(PersistentStorageError::Other(
+                "cannot change or detach object store while cloud-tiered topics exist without force=true"
+                    .to_string(),
+            ));
+        }
+
+        let new_store = ObjStoreDurable::from_backend(cfg.durable_backend())?;
+        {
+            let mut store_guard = self.durable_store.write().expect("durable store lock");
+            *store_guard = Some(Arc::new(new_store));
+        }
+        {
+            let mut mode_guard = self.mode.write().expect("storage mode lock");
+            *mode_guard = super::StorageMode::ObjectStore(cfg);
+        }
+        Ok(())
+    }
+
+    /// Proactively rebuild the underlying `ObjStoreDurable` handle from the active
+    /// configuration so refreshed IAM/STS/federated credentials take effect without
+    /// interrupting open WAL writers.
+    pub fn refresh_object_store_credentials(&self) -> Result<(), PersistentStorageError> {
+        let backend_cfg = match self.current_mode() {
+            super::StorageMode::Local => return Ok(()),
+            super::StorageMode::SharedFs(shared_fs) => {
+                crate::object_store_backend::BackendConfig::Filesystem {
+                    root: shared_fs.root,
+                }
+            }
+            super::StorageMode::ObjectStore(cfg) => cfg.durable_backend(),
+        };
+        let refreshed = ObjStoreDurable::from_backend(backend_cfg)?;
+        let mut store_guard = self.durable_store.write().expect("durable store lock");
+        *store_guard = Some(Arc::new(refreshed));
+        Ok(())
+    }
+
+    /// Live-upgrade an active topic from `Local` to `CloudTiered` without restarting.
+    pub async fn enable_cloud_tiering_for_topic(
+        &self,
+        topic_name: &str,
+    ) -> Result<(), PersistentStorageError> {
+        if self.current_durable_store().is_none() {
+            return Err(PersistentStorageError::Other(
+                "cannot enable cloud tiering: cluster object store is not configured".to_string(),
+            ));
+        }
+        let topic_path = normalize_topic_path(topic_name);
+        self.cloud_tiered_topics.insert(topic_path.clone());
+
+        if let Some(wal) = self.topics.get(&topic_path).map(|w| w.clone()) {
+            self.spawn_segment_exporter_if_needed(&topic_path, &wal, true);
+        }
+        Ok(())
+    }
+
+    /// Disable dynamic cloud tiering for a topic when downgraded to `local`.
+    pub fn disable_cloud_tiering_for_topic(&self, topic_name: &str) {
+        let topic_path = normalize_topic_path(topic_name);
+        self.cloud_tiered_topics.remove(&topic_path);
+    }
+
+    pub(super) fn spawn_segment_exporter_if_needed(
+        &self,
+        topic_path: &str,
+        wal: &crate::wal::Wal,
+        has_durable_store: bool,
+    ) {
+        let should_spawn = has_durable_store
+            && (self.should_start_background_export()
+                || self.cloud_tiered_topics.contains(topic_path))
+            && !self.segment_exporters.contains_key(topic_path);
+        if !should_spawn {
+            return;
+        }
+        let factory = self.clone();
+        let wal = wal.clone();
+        let topic_path_for_task = topic_path.to_string();
+        let interval_seconds = self.segment_export_interval_seconds;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_for_task = cancel.clone();
+        let handle = tokio::spawn(async move {
+            info!(
+                target = "storage_factory",
+                topic = %topic_path_for_task,
+                interval = interval_seconds,
+                "durable segment exporter started"
+            );
+            if let Err(e) = factory
+                .cut_and_export_topic_segments(&topic_path_for_task, &wal)
+                .await
+            {
+                warn!(
+                    target = "storage_factory",
+                    topic = %topic_path_for_task,
+                    error = %e,
+                    "durable segment exporter cycle failed on startup"
+                );
+            }
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+            loop {
+                tokio::select! {
+                    _ = cancel_for_task.cancelled() => {
+                        info!(
+                            target = "storage_factory",
+                            topic = %topic_path_for_task,
+                            "durable segment exporter stopped"
+                        );
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(e) = factory
+                            .cut_and_export_topic_segments(&topic_path_for_task, &wal)
+                            .await
+                        {
+                            warn!(
+                                target = "storage_factory",
+                                topic = %topic_path_for_task,
+                                error = %e,
+                                "durable segment exporter cycle failed"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(())
+        });
+        self.segment_exporters
+            .insert(topic_path.to_string(), handle);
+        self.segment_exporter_tokens
+            .insert(topic_path.to_string(), cancel);
     }
 
     /// Returns completed segment descriptors for a topic, ordered by start_offset.
@@ -65,6 +238,84 @@ impl StorageFactory {
         Ok(descriptors)
     }
 
+    /// Zero-copy branch sealed segment descriptors from `source_topic` into `target_topic`
+    /// up to optional `max_offset`, incrementing reference counts on shared segments.
+    pub async fn branch_topic_segments(
+        &self,
+        source_topic: &str,
+        target_topic: &str,
+        max_offset: Option<u64>,
+    ) -> Result<usize, PersistentStorageError> {
+        let src = normalize_topic_path(source_topic);
+        let dst = normalize_topic_path(target_topic);
+        self.segment_catalog
+            .metadata()
+            .branch_topic_segments(&src, &dst, max_offset)
+            .await
+    }
+
+    /// Return the highest durable offset (respecting `max_valid_offset` clamps) present in
+    /// the topic's segment catalog, including segment 0.
+    pub async fn max_durable_offset(
+        &self,
+        topic_name: &str,
+    ) -> Result<Option<u64>, PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        let descriptors = self.segment_catalog.list_segments(&topic_path).await?;
+        Ok(descriptors
+            .into_iter()
+            .filter(|d| d.completed)
+            .map(|d| d.max_valid_offset.map_or(d.end_offset, |m| d.end_offset.min(m)))
+            .max())
+    }
+
+    /// Flush locally hosted WAL frames for `topic_name` and export sealed segments when
+    /// durable segment export is enabled for that topic.
+    pub async fn flush_topic(&self, topic_name: &str) -> Result<(), PersistentStorageError> {
+        let topic_path = normalize_topic_path(topic_name);
+        if let Some(wal) = self.topics.get(&topic_path).map(|entry| entry.value().clone()) {
+            wal.flush().await?;
+            if self.should_start_background_export()
+                || self.cloud_tiered_topics.contains(&topic_path)
+            {
+                self.cut_and_export_topic_segments(&topic_path, &wal).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open a read-only storage handle backed solely by durable history segments without creating
+    /// local WAL files, clearing mobility state, or spawning exporter/deleter background tasks.
+    pub async fn open_read_only_durable(
+        &self,
+        topic_name: &str,
+    ) -> Result<Option<Arc<dyn PersistentStorage>>, PersistentStorageError> {
+        let Some(durable_store) = self.current_durable_store() else {
+            return Ok(None);
+        };
+        let topic_path = normalize_topic_path(topic_name);
+        let descriptors = self.segment_catalog.list_segments(&topic_path).await?;
+        if descriptors.is_empty() {
+            return Ok(None);
+        }
+        let head_offset = descriptors
+            .into_iter()
+            .filter(|d| d.completed)
+            .map(|d| {
+                d.max_valid_offset
+                    .map_or(d.end_offset, |m| d.end_offset.min(m))
+                    .saturating_add(1)
+            })
+            .max()
+            .unwrap_or(0);
+        Ok(Some(Arc::new(ReadOnlyDurableStorage {
+            durable_store,
+            metadata: self.segment_catalog.metadata().clone(),
+            topic_path,
+            head_offset,
+        })))
+    }
+
     fn segment_export_interval_seconds(config: &StorageFactoryConfig) -> u64 {
         config.segment_export_interval_seconds.unwrap_or(300)
     }
@@ -87,7 +338,7 @@ impl StorageFactory {
     }
 
     pub(crate) fn should_start_background_export(&self) -> bool {
-        self.mode.uses_background_export()
+        self.current_mode().uses_background_export()
     }
 
     fn should_run_retention_deleter(&self) -> bool {
@@ -110,10 +361,23 @@ impl StorageFactory {
     ///   history for the already-sealed prefix and use the hot WAL only for new local progress.
     /// - Export/deleter tasks are started once per topic and reused across repeated `for_topic()`
     ///   calls in the same process.
-    pub async fn for_topic(&self, topic_name: &str) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
+    pub async fn for_topic(
+        &self,
+        topic_name: &str,
+    ) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
+        self.for_topic_with_sync_mode(topic_name, None).await
+    }
+
+    /// Build or retrieve per-topic storage with an optional per-topic `WalSyncMode` override.
+    pub async fn for_topic_with_sync_mode(
+        &self,
+        topic_name: &str,
+        wal_sync_mode: Option<crate::WalSyncMode>,
+    ) -> Result<Arc<dyn PersistentStorage>, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
-        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed, rotation_rx) =
-            self.get_or_create_wal(&topic_path).await?;
+        let (topic_wal, resolved_dir, ckpt_store, resumed_from_sealed, rotation_rx) = self
+            .get_or_create_wal_with_sync_mode(&topic_path, wal_sync_mode)
+            .await?;
         let durable_store = self.durable_store_for_topic()?;
 
         if let Some(ref dir) = resolved_dir {
@@ -121,7 +385,7 @@ impl StorageFactory {
                 target = "storage_factory",
                 topic = %topic_path,
                 wal_dir = %dir.display(),
-                mode = ?self.mode,
+                mode = ?self.current_mode(),
                 metadata_root = %self.metadata_root,
                 "created per-topic storage"
             );
@@ -135,66 +399,7 @@ impl StorageFactory {
             }
         }
 
-        let should_spawn_segment_exporter = durable_store.is_some()
-            && self.should_start_background_export()
-            && !self.segment_exporters.contains_key(&topic_path);
-        if should_spawn_segment_exporter {
-            let factory = self.clone();
-            let wal = topic_wal.clone();
-            let topic_path_for_task = topic_path.clone();
-            let interval_seconds = self.segment_export_interval_seconds;
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let cancel_for_task = cancel.clone();
-            let handle = tokio::spawn(async move {
-                info!(
-                    target = "storage_factory",
-                    topic = %topic_path_for_task,
-                    interval = interval_seconds,
-                    "durable segment exporter started"
-                );
-                if let Err(e) = factory
-                    .cut_and_export_topic_segments(&topic_path_for_task, &wal)
-                    .await
-                {
-                    warn!(
-                        target = "storage_factory",
-                        topic = %topic_path_for_task,
-                        error = %e,
-                        "durable segment exporter cycle failed on startup"
-                    );
-                }
-                let mut ticker =
-                    tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
-                loop {
-                    tokio::select! {
-                        _ = cancel_for_task.cancelled() => {
-                            info!(
-                                target = "storage_factory",
-                                topic = %topic_path_for_task,
-                                "durable segment exporter stopped"
-                            );
-                            break;
-                        }
-                        _ = ticker.tick() => {
-                            if let Err(e) = factory
-                                .cut_and_export_topic_segments(&topic_path_for_task, &wal)
-                                .await
-                            {
-                                warn!(
-                                    target = "storage_factory",
-                                    topic = %topic_path_for_task,
-                                    error = %e,
-                                    "durable segment exporter cycle failed"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            });
-            self.segment_exporters.insert(topic_path.clone(), handle);
-            self.segment_exporter_tokens.insert(topic_path.clone(), cancel);
-        }
+        self.spawn_segment_exporter_if_needed(&topic_path, &topic_wal, durable_store.is_some());
 
         if self.should_run_retention_deleter() && !self.deleters.contains_key(&topic_path) {
             if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
@@ -208,7 +413,8 @@ impl StorageFactory {
                     store,
                     self.segment_catalog.metadata().clone(),
                     cfg,
-                );
+                )
+                .with_writer_cmd_tx(topic_wal.writer_cmd_tx());
                 let arc_del = Arc::new(deleter);
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let handle = arc_del.clone().start_with_cancel(cancel.clone());
@@ -338,6 +544,7 @@ impl StorageFactory {
         broker_id: u64,
     ) -> Result<SealInfo, PersistentStorageError> {
         let topic_path = normalize_topic_path(topic_name);
+        self.sealed_resumed_topics.remove(&topic_path);
         let wal = match self.topics.remove(&topic_path) {
             Some((_, w)) => w,
             None => {
@@ -350,7 +557,7 @@ impl StorageFactory {
         let last_local_wal_offset = wal.last_committed_offset();
         wal.shutdown().await?;
         self.stop_topic_background_tasks(&topic_path).await;
-        if self.mode.requires_separate_durable_backend() {
+        if self.current_mode().requires_separate_durable_backend() {
             self.export_topic_segments(&topic_path, &wal, true).await?;
             self.clear_topic_wal_state(&topic_path).await?;
         }
@@ -391,5 +598,62 @@ impl StorageFactory {
         self.segment_catalog.delete_topic(&topic_path).await?;
         self.clear_topic_wal_state(&topic_path).await?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReadOnlyDurableStorage {
+    durable_store: Arc<dyn DurableStore>,
+    metadata: StorageMetadata,
+    topic_path: String,
+    head_offset: u64,
+}
+
+#[async_trait::async_trait]
+impl PersistentStorage for ReadOnlyDurableStorage {
+    async fn append_message(
+        &self,
+        _topic_name: &str,
+        _msg: StreamMessage,
+    ) -> Result<u64, PersistentStorageError> {
+        Err(PersistentStorageError::Unsupported(
+            "read-only durable storage does not support appends".to_string(),
+        ))
+    }
+
+    async fn create_reader(
+        &self,
+        _topic_name: &str,
+        start: StartPosition,
+    ) -> Result<TopicStream, PersistentStorageError> {
+        let start_offset = match start {
+            StartPosition::Latest => self.head_offset,
+            StartPosition::Offset(offset) => offset,
+        };
+        if start_offset >= self.head_offset {
+            return Ok(Box::pin(tokio_stream::empty()));
+        }
+        let reader = DurableHistoryReader::new(
+            self.durable_store.clone(),
+            self.metadata.clone(),
+            self.topic_path.clone(),
+        );
+        reader.read_range(start_offset, None).await
+    }
+
+    async fn ack_checkpoint(
+        &self,
+        _topic_name: &str,
+        _up_to_offset: u64,
+    ) -> Result<(), PersistentStorageError> {
+        Ok(())
+    }
+
+    async fn flush(&self, _topic_name: &str) -> Result<(), PersistentStorageError> {
+        Ok(())
+    }
+
+    fn current_offset(&self) -> u64 {
+        self.head_offset
     }
 }

@@ -1,0 +1,91 @@
+# Licensed under the Apache License, Version 2.0
+# Danube 2.0 Consolidated Docker Compose (zero mounted YAML config files)
+
+services:
+  broker1:
+    container_name: "danube-broker1"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: on-failure
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
+    volumes:
+      - broker1_data:/danube-data
+    networks:
+      - danube_net
+    ports:
+      - "6650:6650"
+      - "9040:9040"
+    command:
+      [
+        "up",
+        "--data-dir", "/danube-data",
+        "--broker-addr", "0.0.0.0:6650",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker1:6650",
+        "--seed-nodes", "broker1:7650,broker2:7650,broker3:7650",
+      ]
+
+  broker2:
+    container_name: "danube-broker2"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: on-failure
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
+    volumes:
+      - broker2_data:/danube-data
+    networks:
+      - danube_net
+    ports:
+      - "6651:6650"
+      - "9041:9040"
+    command:
+      [
+        "up",
+        "--data-dir", "/danube-data",
+        "--broker-addr", "0.0.0.0:6650",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker2:6650",
+        "--seed-nodes", "broker1:7650,broker2:7650,broker3:7650",
+      ]
+
+  broker3:
+    container_name: "danube-broker3"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: on-failure
+    environment:
+      - RUST_LOG=danube_broker=info,danube_core=info,openraft=warn
+    volumes:
+      - broker3_data:/danube-data
+    networks:
+      - danube_net
+    ports:
+      - "6652:6650"
+      - "9042:9040"
+    command:
+      [
+        "up",
+        "--data-dir", "/danube-data",
+        "--broker-addr", "0.0.0.0:6650",
+        "--raft-addr", "0.0.0.0:7650",
+        "--prom-exporter", "0.0.0.0:9040",
+        "--advertised-addr", "broker3:6650",
+        "--seed-nodes", "broker1:7650,broker2:7650,broker3:7650",
+      ]
+
+networks:
+  danube_net:
+    driver: bridge
+
+volumes:
+  broker1_data:
+  broker2_data:
+  broker3_data:
+

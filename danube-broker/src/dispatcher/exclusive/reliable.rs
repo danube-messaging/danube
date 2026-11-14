@@ -228,6 +228,7 @@ async fn handle_command(
                     window.in_flight_count()
                 );
             }
+            engine.save_checkpoints(window.collect_checkpoints()).await;
             if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "DisconnectAllConsumers: flush progress failed");
             }
@@ -258,8 +259,42 @@ async fn handle_command(
             }
         }
         DispatcherCommand::FlushProgressNow => {
+            engine.save_checkpoints(window.collect_checkpoints()).await;
             if let Err(e) = engine.flush_progress_now().await {
                 warn!(error = %e, "FlushProgressNow: failed to flush");
+            }
+        }
+        DispatcherCommand::ExtendVisibility {
+            offset,
+            extension_ms,
+            reply,
+        } => {
+            let new_deadline = window.extend_lease(offset, extension_ms);
+            if let Some(tx) = reply {
+                let _ = tx.send(new_deadline);
+            }
+        }
+        DispatcherCommand::ReportProgress {
+            offset,
+            checkpoint,
+            extension_ms,
+            reply,
+        } => {
+            let ok = window.set_checkpoint(offset, checkpoint, extension_ms);
+            if let Some(tx) = reply {
+                let _ = tx.send(ok);
+            }
+        }
+        DispatcherCommand::CancelRoot { root_msg_id, reply } => {
+            engine.cancelled_roots.insert(root_msg_id);
+            let (evicted, safe) = window.evict_cancelled_roots(&engine.cancelled_roots);
+            if let Some(safe) = safe {
+                if let Err(e) = engine.advance_cursor_to(safe).await {
+                    warn!(error = %e, "advance_cursor_to failed after cancel_root");
+                }
+            }
+            if let Some(tx) = reply {
+                let _ = tx.send(evicted);
             }
         }
     }
@@ -488,7 +523,7 @@ async fn handle_poll_and_dispatch(
         for offset in retry_offsets {
             if let Some(pending) = window.get_mut(offset) {
                 let is_redelivery = pending.delivery_attempt > 0;
-                let msg = pending.message.clone();
+                let msg = pending.message_for_delivery();
 
                 if let Err(e) = cons.send_message(msg).await {
                     warn!(
@@ -551,6 +586,14 @@ async fn handle_poll_and_dispatch(
             };
 
             let offset = msg.msg_id.topic_offset;
+            if engine.should_skip_message(&msg) {
+                if let Some(safe) = window.on_skipped(offset) {
+                    if let Err(e) = engine.advance_cursor_to(safe).await {
+                        warn!(error = %e, "advance_cursor_to failed on cancelled skip");
+                    }
+                }
+                continue;
+            }
             let mut delivery = PendingDelivery::new(msg.clone());
 
             match cons.send_message(msg).await {

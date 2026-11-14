@@ -50,7 +50,7 @@ pub struct ServerArgs {
     #[arg(
         long,
         env = "DANUBE_ADMIN_ENDPOINT",
-        default_value = "http://127.0.0.1:50051"
+        default_value = "http://127.0.0.1:6650"
     )]
     pub broker_endpoint: String,
 

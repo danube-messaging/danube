@@ -172,21 +172,21 @@ fn topic_declarations_empty_without_mqtt() {
 }
 
 #[test]
-fn config_from_file_loads_actual_config() {
-    // Test against the real config/edge.yaml in the repo
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{}/../config/edge.yaml", manifest_dir);
-    let config = EdgeConfig::from_file(&config_path).expect("load config/edge.yaml");
+fn zero_yaml_builds_single_ingest_topic_config() {
+    let config = EdgeConfig::zero_yaml(
+        "edge1".to_string(),
+        "http://127.0.0.1:6650".to_string(),
+        "0.0.0.0:1883".to_string(),
+        String::new(),
+    );
 
     assert_eq!(config.edge.edge_name, "edge1");
-    assert!(!config.edge.cluster_url.is_empty());
-    assert!(config.mqtt.is_some());
-    // Verify schema_subject is parsed from the real config
-    let mqtt = config.mqtt.as_ref().unwrap();
-    assert_eq!(
-        mqtt.topic_mappings[0].schema_subject,
-        Some("telemetry-events".to_string())
-    );
+    assert_eq!(config.edge.cluster_url, "http://127.0.0.1:6650");
+    let mqtt = config.mqtt.as_ref().expect("mqtt section present");
+    assert_eq!(mqtt.listener, "0.0.0.0:1883");
+    assert_eq!(mqtt.topic_mappings.len(), 1);
+    assert_eq!(mqtt.topic_mappings[0].mqtt_pattern, "#");
+    assert_eq!(mqtt.topic_mappings[0].danube_topic, "/edge1/ingest");
 }
 
 // --- Namespace validation tests ---

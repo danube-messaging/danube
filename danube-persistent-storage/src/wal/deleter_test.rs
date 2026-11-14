@@ -39,6 +39,9 @@ mod tests {
             created_at: 0,
             completed: true,
             offset_index: None,
+            ref_count: 1,
+            object_topic: None,
+            max_valid_offset: None,
         };
         metadata
             .put_segment_descriptor(topic_path, &start_padded, &segment)
@@ -309,5 +312,110 @@ mod tests {
         assert_eq!(after.rotated_files.len(), 1, "missing file should not be removed from checkpoint");
         assert_eq!(after.rotated_files[0].0, 1);
         assert_eq!(after.start_offset, 0, "start_offset should not advance on failed deletion");
+    }
+
+    #[tokio::test]
+    async fn test_deleter_syncs_with_live_writer_without_clobbering() {
+        use crate::wal::{Wal, WalConfig, WalSyncMode};
+        use danube_core::message::{MessageID, StreamMessage};
+        use std::collections::HashMap;
+
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().to_path_buf();
+        let store = std::sync::Arc::new(CheckpointStore::new(root.join("wal.ckpt")));
+
+        let cfg = WalConfig {
+            dir: Some(root.clone()),
+            file_name: Some("wal.0.log".to_string()),
+            cache_capacity: Some(4),
+            flush_interval_ms: Some(50),
+            flush_max_batch_bytes: Some(1024),
+            rotate_max_bytes: Some(256),
+            rotate_max_seconds: None,
+            sync_mode: Some(WalSyncMode::OsCacheFlush),
+        };
+        let (wal, _rot_rx) = Wal::with_config_with_store(cfg, Some(store.clone()), None)
+            .await
+            .expect("wal init");
+
+        for i in 0..20u64 {
+            let msg = StreamMessage {
+                request_id: i,
+                msg_id: MessageID {
+                    producer_id: 1,
+                    topic_name: "/default/prune".to_string(),
+                    broker_addr: "localhost:6650".to_string(),
+                    topic_offset: 0,
+                },
+                payload: vec![b'x'; 128].into(),
+                publish_time: 1000 + i,
+                producer_name: "p1".to_string(),
+                subscription_name: None,
+                attributes: HashMap::new(),
+                schema_id: None,
+                schema_version: None,
+                routing_key: None,
+            };
+            wal.append(&msg).await.expect("append");
+        }
+        wal.rotate().await.expect("rotate");
+
+        let before = store.get_wal().await.expect("ckpt before");
+        assert!(before.rotated_files.len() >= 2, "expected multiple rotated files");
+        let first_seq = before.rotated_files[0].0;
+        let expected_durable_end = before.rotated_files[1].2;
+
+        let metadata = build_metadata().await;
+        seed_durable_segment(&metadata, "/default/prune", 0, expected_durable_end).await;
+
+        let deleter = std::sync::Arc::new(
+            Deleter::new(
+                "/default/prune".into(),
+                store.clone(),
+                metadata,
+                DeleterConfig {
+                    check_interval_minutes: 5,
+                    retention_time_minutes: Some(0),
+                    retention_size_mb: None,
+                },
+            )
+            .with_writer_cmd_tx(wal.writer_cmd_tx()),
+        );
+
+        deleter.run_cycle().await.expect("deleter run_cycle");
+
+        // Append and flush more data through the live writer to verify writer doesn't resurrect deleted files or reset start_offset
+        let extra = StreamMessage {
+            request_id: 99,
+            msg_id: MessageID {
+                producer_id: 1,
+                topic_name: "/default/prune".to_string(),
+                broker_addr: "localhost:6650".to_string(),
+                topic_offset: 0,
+            },
+            payload: vec![b'y'; 64].into(),
+            publish_time: 2000,
+            producer_name: "p1".to_string(),
+            subscription_name: None,
+            attributes: HashMap::new(),
+            schema_id: None,
+            schema_version: None,
+            routing_key: None,
+        };
+        wal.append(&extra).await.expect("extra append");
+        wal.flush().await.expect("flush");
+
+        let after = store.get_wal().await.expect("ckpt after");
+        assert!(
+            after.rotated_files.iter().all(|(seq, _, _)| *seq != first_seq),
+            "pruned file seq {} must not be resurrected by writer flush",
+            first_seq
+        );
+        assert!(
+            after.start_offset > 0,
+            "start_offset should remain > 0 after subsequent writer flush, got {}",
+            after.start_offset
+        );
+        wal.shutdown().await.expect("shutdown");
     }
 }

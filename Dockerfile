@@ -26,52 +26,16 @@ WORKDIR /app
 # Copy the project files
 COPY . .
 
-# Build the project
-RUN cargo build --release
+# Build the unified Danube binary (broker + embedded admin CLI/MCP + lakehouse runtime)
+RUN cargo build --release --features danube-broker/lakehouse
 
-# Broker stage: use the base runtime image
-FROM base AS broker
+# Runtime stage: single unified `danube` binary
+FROM base
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /app/target/release/danube-broker /usr/local/bin/danube-broker
+COPY --from=builder /app/target/release/danube /usr/local/bin/danube
 
-# Copy the configuration file into the container
-COPY config/danube_broker.yml /etc/danube_broker.yml
+# Expose client/admin (6650), Raft transport (7650), and Prometheus (9040)
+EXPOSE 6650 7650 9040
 
-# Expose the ports: client, admin, Raft transport, Prometheus
-EXPOSE 6650 50051 7650 9040
-
-# Define entrypoint and default command
-ENTRYPOINT ["/usr/local/bin/danube-broker"]
-CMD ["--config-file", "/etc/danube_broker.yml"]
-
-# CLI stage: use the base runtime image
-FROM base AS cli
-
-# Copy the compiled CLI binary from the builder stage
-COPY --from=builder /app/target/release/danube-cli /usr/local/bin/danube-cli
-
-# Define entrypoint
-ENTRYPOINT ["/usr/local/bin/danube-cli"]
-
-# Admin stage: consolidated admin binary with CLI and server modes
-FROM base AS admin
-
-# Copy the consolidated danube-admin binary from the builder stage
-COPY --from=builder /app/target/release/danube-admin /usr/local/bin/danube-admin
-
-# Expose the HTTP port (used in 'serve' mode)
-EXPOSE 8080
-
-# Define entrypoint
-ENTRYPOINT ["/usr/local/bin/danube-admin"]
-
-# Iceberg stage: lakehouse connector (sidecar)
-FROM base AS iceberg
-
-# Copy the danube-iceberg binary from the builder stage
-COPY --from=builder /app/target/release/danube-iceberg /usr/local/bin/danube-iceberg
-
-# Define entrypoint
-ENTRYPOINT ["/usr/local/bin/danube-iceberg"]
-CMD ["--config", "/etc/danube-iceberg-config.yaml"]
+ENTRYPOINT ["/usr/local/bin/danube"]
+CMD ["up", "--data-dir", "/danube-data", "--broker-addr", "0.0.0.0:6650"]

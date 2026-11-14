@@ -20,7 +20,7 @@ mod writer;
 use cache::Cache;
 use writer::{LogCommand, WriterInit};
 
-pub use writer::RotationEvent;
+pub use writer::{RotationEvent, WalSyncMode};
 
 use crate::checkpoint::{CheckPoint, CheckpointStore, WalCheckpoint};
 
@@ -49,6 +49,7 @@ pub(crate) struct WalInner {
     // Rotation state
     rotate_max_bytes: Option<u64>,
     rotate_max_seconds: Option<u64>,
+    sync_mode: WalSyncMode,
     // Checkpoint path
     checkpoint_path: Option<PathBuf>,
     // Optional per-topic checkpoint store (cache + atomic persistence)
@@ -106,6 +107,11 @@ pub struct WalConfig {
     ///
     /// Default when `None`: rotation by time is disabled
     pub rotate_max_seconds: Option<u64>,
+
+    /// Group-commit durability mode for `Wal::append` and `Wal::append_batch`.
+    ///
+    /// Default when `None`: `WalSyncMode::OsCacheFlush` if `dir` is set, else `WalSyncMode::Async`.
+    pub sync_mode: Option<WalSyncMode>,
 }
 
 impl WalConfig {
@@ -141,6 +147,7 @@ impl Default for Wal {
                 flush_max_batch_bytes: 10 * 1024 * 1024, // 10 MiB default batch
                 rotate_max_bytes: None,
                 rotate_max_seconds: None,
+                sync_mode: WalSyncMode::Async,
                 checkpoint_path: None,
                 ckpt_store: None,
                 cmd_tx,
@@ -154,6 +161,7 @@ impl Default for Wal {
             flush_max_batch_bytes: wal.inner.flush_max_batch_bytes,
             rotate_max_bytes: wal.inner.rotate_max_bytes,
             rotate_max_seconds: wal.inner.rotate_max_seconds,
+            sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
         };
@@ -226,6 +234,13 @@ impl Wal {
         let flush_max_batch_bytes = cfg.flush_max_batch_bytes.unwrap_or(10 * 1024 * 1024); // 10 MiB default
         let rotate_max_bytes = cfg.rotate_max_bytes;
         let rotate_max_seconds = cfg.rotate_max_seconds;
+        let sync_mode = cfg.sync_mode.unwrap_or_else(|| {
+            if wal_path_opt.is_some() {
+                WalSyncMode::OsCacheFlush
+            } else {
+                WalSyncMode::Async
+            }
+        });
         let checkpoint_path = cfg.wal_dir().map(|mut d| {
             d.push("wal.ckpt");
             d
@@ -286,6 +301,7 @@ impl Wal {
                 flush_max_batch_bytes,
                 rotate_max_bytes,
                 rotate_max_seconds,
+                sync_mode,
                 checkpoint_path,
                 ckpt_store: ckpt_store.clone(),
                 cmd_tx,
@@ -299,6 +315,7 @@ impl Wal {
             flush_max_batch_bytes,
             rotate_max_bytes,
             rotate_max_seconds,
+            sync_mode,
             ckpt_store,
             rotation_tx: Some(rotation_tx),
         };
@@ -339,7 +356,27 @@ impl Wal {
         let bytes = bincode::serde::encode_to_vec(&stamped, bincode::config::standard())
             .map_err(|e| PersistentStorageError::Io(format!("bincode serialize failed: {}", e)))?;
 
-        permit.send(LogCommand::Write { offset, bytes });
+        let needs_ack =
+            self.inner.checkpoint_path.is_some() && self.inner.sync_mode != WalSyncMode::Async;
+
+        if needs_ack {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            permit.send(LogCommand::Write {
+                offset,
+                bytes,
+                ack_tx: Some(ack_tx),
+            });
+            let result = ack_rx
+                .await
+                .map_err(|_| PersistentStorageError::Wal("wal writer dropped write ack".into()))?;
+            Self::writer_control_result("write", result)?;
+        } else {
+            permit.send(LogCommand::Write {
+                offset,
+                bytes,
+                ack_tx: None,
+            });
+        }
 
         // Notify tailing readers only if active subscribers exist
         if self.inner.tx.receiver_count() > 0 {
@@ -400,15 +437,40 @@ impl Wal {
         }
 
         // 3. ONE channel send — pre-encoded frames go directly to background writer
-        self.inner
-            .cmd_tx
-            .send(LogCommand::WriteBatch {
-                first_offset,
-                last_offset,
-                frames: frames_buf,
-            })
-            .await
-            .map_err(|_| PersistentStorageError::Other("wal writer channel closed".to_string()))?;
+        let needs_ack =
+            self.inner.checkpoint_path.is_some() && self.inner.sync_mode != WalSyncMode::Async;
+        if needs_ack {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            self.inner
+                .cmd_tx
+                .send(LogCommand::WriteBatch {
+                    first_offset,
+                    last_offset,
+                    frames: frames_buf,
+                    ack_tx: Some(ack_tx),
+                })
+                .await
+                .map_err(|_| {
+                    PersistentStorageError::Other("wal writer channel closed".to_string())
+                })?;
+            let result = ack_rx.await.map_err(|_| {
+                PersistentStorageError::Wal("wal writer dropped write_batch ack".into())
+            })?;
+            Self::writer_control_result("write_batch", result)?;
+        } else {
+            self.inner
+                .cmd_tx
+                .send(LogCommand::WriteBatch {
+                    first_offset,
+                    last_offset,
+                    frames: frames_buf,
+                    ack_tx: None,
+                })
+                .await
+                .map_err(|_| {
+                    PersistentStorageError::Other("wal writer channel closed".to_string())
+                })?;
+        }
 
         // 4. ONE cache lock — bulk insert all messages + broadcast
         {
@@ -530,6 +592,11 @@ impl Wal {
         result: Result<(), String>,
     ) -> Result<(), PersistentStorageError> {
         result.map_err(|e| PersistentStorageError::Wal(format!("wal {} failed: {}", command, e)))
+    }
+
+    /// Clone the background writer command sender (used by Deleter to coordinate checkpoint pruning).
+    pub(crate) fn writer_cmd_tx(&self) -> mpsc::Sender<LogCommand> {
+        self.inner.cmd_tx.clone()
     }
 
     /// Trigger a writer flush and wait for the writer to acknowledge the result.

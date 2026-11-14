@@ -508,7 +508,7 @@ println!("Type: {}", schema.schema_type);
 1. **Start the Danube broker**:
    ```bash
    # From the danube root directory
-   cargo run --bin danube-broker
+   cargo run -p danube-broker --bin danube -- up --mode standalone
    ```
 
 2. **For schema validation examples**, add `jsonschema` to your `Cargo.toml`:

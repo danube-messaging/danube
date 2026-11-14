@@ -1,12 +1,14 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use danube_core::admin_proto::{
-    BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
-    GetSubscriptionFailurePolicyRequest, NamespaceRequest, NewTopicRequest,
-    PartitionedTopicRequest, SetSubscriptionFailurePolicyRequest,
+    BranchTopicRequest, BrokerRequest, DescribeTopicRequest, DispatchStrategy as AdminDispatchStrategy,
+    GetSubscriptionFailurePolicyRequest, InferTopicSchemaRequest, NamespaceRequest, NewTopicRequest,
+    PartitionedTopicRequest, PeekMessagesRequest, ReplayDlqRequest, SeekSubscriptionRequest,
+    SetSubscriptionFailurePolicyRequest,
     SubscriptionBackoffStrategy as AdminSubscriptionBackoffStrategy,
     SubscriptionFailurePolicy as AdminSubscriptionFailurePolicy,
     SubscriptionPoisonPolicy as AdminSubscriptionPoisonPolicy, SubscriptionRequest, TopicRequest,
+    UpdateTopicStorageModeRequest,
 };
 use danube_core::proto::danube_schema::{
     ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
@@ -113,6 +115,11 @@ enum TopicsCommands {
             help = "Dispatch strategy: non_reliable|reliable"
         )]
         dispatch_strategy: String,
+        #[arg(
+            long,
+            help = "Optional StreamIntent profile (e.g. agent_event_mesh, agent_task_queue, lakehouse_feed)"
+        )]
+        intent: Option<String>,
     },
     #[command(
         about = "Delete an existing topic",
@@ -262,6 +269,94 @@ enum TopicsCommands {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
     },
+    #[command(
+        about = "Update topic storage tiering (local -> cloud_tiered live)",
+        arg_required_else_help = true
+    )]
+    StorageMode {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["local", "cloud_tiered"], help = "Target storage mode")]
+        mode: String,
+        #[arg(long, default_value_t = false, help = "Force downgrade to local")]
+        force: bool,
+    },
+    #[command(
+        about = "Zero-copy branch a source topic into a new topic",
+        arg_required_else_help = true
+    )]
+    Branch {
+        #[arg(help = "Source topic path (e.g., '/default/orders')")]
+        source_topic: String,
+        #[arg(help = "Target branch topic path (e.g., '/default/orders-exp')")]
+        target_topic: String,
+        #[arg(long, help = "Optional inclusive offset to branch up to")]
+        at_offset: Option<u64>,
+        #[arg(long, help = "Optional publish timestamp (ns since epoch) to branch up to")]
+        at_timestamp_ns: Option<u64>,
+    },
+    #[command(
+        about = "Seek a subscription cursor to a specific offset or publish timestamp",
+        arg_required_else_help = true
+    )]
+    Seek {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, help = "Subscription name to seek")]
+        subscription: String,
+        #[arg(long, help = "Target offset to resume delivery from")]
+        to_offset: Option<u64>,
+        #[arg(long, help = "Target publish timestamp (ns since epoch) to resume delivery from")]
+        to_timestamp_ns: Option<u64>,
+    },
+    #[command(
+        about = "Replay messages from a dead-letter topic back to the source topic",
+        arg_required_else_help = true
+    )]
+    ReplayDlq {
+        #[arg(help = "Target topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, help = "Subscription name whose DLQ should be replayed")]
+        subscription: String,
+        #[arg(long, help = "Explicit DLQ topic path (defaults to subscription's configured DLQ)")]
+        dlq_topic: Option<String>,
+        #[arg(long, default_value_t = 100, help = "Maximum number of messages to replay")]
+        max_messages: u32,
+        #[arg(long, default_value_t = 0, help = "Starting offset in the DLQ topic")]
+        start_offset: u64,
+    },
+    #[command(
+        about = "Peek raw messages from a topic without advancing consumer cursors",
+        arg_required_else_help = true
+    )]
+    Peek {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, default_value_t = 0, help = "Starting topic offset")]
+        start_offset: u64,
+        #[arg(long, default_value_t = 10, help = "Number of messages to inspect (1..=100)")]
+        count: u32,
+    },
+    #[command(
+        about = "Sample recent JSON messages and infer a Draft-07 JSON Schema",
+        arg_required_else_help = true
+    )]
+    InferSchema {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, default_value_t = 100, help = "Number of recent messages to sample")]
+        sample_size: u32,
+    },
 }
 
 pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
@@ -348,6 +443,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             partitions,
             schema_subject,
             dispatch_strategy,
+            intent,
         } => {
             let topic_path = normalize_topic(&topic, namespace.as_deref())?;
 
@@ -357,6 +453,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     partitions: parts as u32,
                     schema_subject: schema_subject.clone(),
                     dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
+                    intent: intent.clone(),
                 };
                 let response = client.create_partitioned_topic(req).await?;
                 if response.success {
@@ -371,6 +468,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     name: topic_path.clone(),
                     schema_subject: schema_subject.clone(),
                     dispatch_strategy: parse_dispatch_strategy(&dispatch_strategy) as i32,
+                    intent: intent.clone(),
                 };
                 let response = client.create_topic(request).await?;
                 if response.success {
@@ -707,34 +805,154 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 }
             }
         }
+
+        TopicsCommands::StorageMode {
+            topic,
+            namespace,
+            mode,
+            force,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .update_topic_storage_mode(UpdateTopicStorageModeRequest {
+                    topic_name: topic_name.clone(),
+                    storage_mode: mode.clone(),
+                    force,
+                })
+                .await?;
+            if resp.success {
+                println!("Updated storage mode for {} -> {}", topic_name, mode);
+            }
+        }
+        TopicsCommands::Branch {
+            source_topic,
+            target_topic,
+            at_offset,
+            at_timestamp_ns,
+        } => {
+            let src = normalize_topic(&source_topic, None)?;
+            let dst = normalize_topic(&target_topic, None)?;
+            let resp = client
+                .branch_topic(BranchTopicRequest {
+                    source_topic: src,
+                    target_topic: dst,
+                    at_offset,
+                    at_timestamp_ns,
+                })
+                .await?;
+            println!(
+                "Branched {} -> {} up to offset {} (copied_segments={}, copied_local_messages={})",
+                resp.source_topic,
+                resp.target_topic,
+                resp.branched_up_to_offset,
+                resp.copied_segments,
+                resp.copied_local_messages
+            );
+        }
+        TopicsCommands::Seek {
+            topic,
+            namespace,
+            subscription,
+            to_offset,
+            to_timestamp_ns,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .seek_subscription(SeekSubscriptionRequest {
+                    topic: topic_name,
+                    subscription,
+                    to_offset,
+                    to_timestamp_ns,
+                })
+                .await?;
+            println!(
+                "Sought {} ({}) -> offset {}: {}",
+                resp.topic, resp.subscription, resp.resolved_offset, resp.message
+            );
+        }
+        TopicsCommands::ReplayDlq {
+            topic,
+            namespace,
+            subscription,
+            dlq_topic,
+            max_messages,
+            start_offset,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .replay_dlq(ReplayDlqRequest {
+                    topic: topic_name,
+                    subscription,
+                    dlq_topic,
+                    max_messages,
+                    start_offset,
+                })
+                .await?;
+            println!(
+                "Replayed {} message(s) from {} -> {} (last_replayed_offset={})",
+                resp.replayed_count,
+                resp.source_dlq_topic,
+                resp.target_topic,
+                resp.last_replayed_offset
+            );
+        }
+        TopicsCommands::Peek {
+            topic,
+            namespace,
+            start_offset,
+            count,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .peek_messages(PeekMessagesRequest {
+                    topic: topic_name,
+                    start_offset,
+                    count,
+                })
+                .await?;
+            println!(
+                "Peeked {} message(s) from {}:",
+                resp.messages.len(),
+                resp.topic
+            );
+            for msg in resp.messages {
+                let preview = String::from_utf8_lossy(&msg.payload);
+                println!(
+                    "  [offset={}] producer={} time={} routing_key='{}' payload={}",
+                    msg.offset, msg.producer_name, msg.publish_time, msg.routing_key, preview
+                );
+            }
+        }
+        TopicsCommands::InferSchema {
+            topic,
+            namespace,
+            sample_size,
+        } => {
+            let topic_name = normalize_topic(&topic, namespace.as_deref())?;
+            let resp = client
+                .infer_topic_schema(InferTopicSchemaRequest {
+                    topic: topic_name,
+                    sample_size,
+                })
+                .await?;
+            println!(
+                "Inferred schema for {} (sampled={}, valid_json={}):\n{}",
+                resp.topic, resp.sampled_count, resp.valid_json_count, resp.json_schema
+            );
+        }
     }
 
     Ok(())
 }
 
-// Topics string representation:  /{namespace}/{topic-name}
+// Topics string representation: /{namespace}/{topic-segment...}
 fn validate_topic_format(input: &str) -> bool {
-    let parts: Vec<&str> = input.split('/').collect();
-
-    if parts.len() != 3 {
-        return false;
-    }
-
-    for part in parts.iter() {
-        if !part
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            return false;
-        }
-    }
-
-    true
+    danube_core::topic_path::TopicPath::parse(input).is_ok()
 }
 
 // Normalize topic path to "/namespace/topic". Accepts:
-//  - "/ns/topic"
-//  - "ns/topic"
+//  - "/ns/topic" or "/ns/nested/topic"
+//  - "ns/topic" or "ns/nested/topic"
 //  - "topic" when --namespace is provided
 fn normalize_topic(input: &str, namespace: Option<&str>) -> Result<String> {
     let s = input.trim();
@@ -745,12 +963,17 @@ fn normalize_topic(input: &str, namespace: Option<&str>) -> Result<String> {
         return Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic"));
     }
     let parts: Vec<&str> = s.split('/').collect();
-    match parts.len() {
-        2 => Ok(format!("/{}", s)),
-        1 => {
-            let ns = namespace.ok_or_else(|| anyhow::anyhow!("missing --namespace for topic without namespace"))?;
-            Ok(format!("/{}/{}", ns, s))
+    if parts.len() >= 2 {
+        let candidate = format!("/{}", s);
+        if validate_topic_format(&candidate) {
+            return Ok(candidate);
         }
-        _ => Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic")),
+    } else if parts.len() == 1 {
+        let ns = namespace.ok_or_else(|| anyhow::anyhow!("missing --namespace for topic without namespace"))?;
+        let candidate = format!("/{}/{}", ns, s);
+        if validate_topic_format(&candidate) {
+            return Ok(candidate);
+        }
     }
+    Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic"))
 }

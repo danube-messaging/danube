@@ -3,9 +3,11 @@ use crate::security::authz::{enforce_authorization, Permission, Resource};
 use crate::security::authn::get_security_context;
 use danube_core::admin_proto::{
     broker_admin_server::BrokerAdmin, ActivateBrokerRequest, ActivateBrokerResponse,
-    BrokerListResponse, BrokerLoadInfo, BrokerResponse, ClusterBalanceRequest,
-    ClusterBalanceResponse, Empty, NamespaceListResponse, ProposedMove, RebalanceRequest,
-    RebalanceResponse, UnloadBrokerRequest, UnloadBrokerResponse,
+    BrokerListResponse, BrokerLoadInfo, BrokerLogEntry, BrokerResponse, ClusterBalanceRequest,
+    ClusterBalanceResponse, Empty, GetBrokerLogsRequest, GetBrokerLogsResponse,
+    GetMetricsSnapshotRequest, GetMetricsSnapshotResponse, MetricSample, MetricSeries,
+    NamespaceListResponse, ProposedMove, RebalanceRequest, RebalanceResponse, UnloadBrokerRequest,
+    UnloadBrokerResponse,
 };
 
 use tonic::{Request, Response};
@@ -118,6 +120,15 @@ impl BrokerAdmin for DanubeAdminImpl {
                 e
             )));
         }
+
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "activate_broker",
+            &req.broker_id,
+            serde_json::json!({ "reason": reason }),
+        )
+        .await;
 
         Ok(Response::new(ActivateBrokerResponse { success: true }))
     }
@@ -263,6 +274,14 @@ impl BrokerAdmin for DanubeAdminImpl {
         // For now, report summary.
         let total = topics.len() as u32;
         let pending = total.saturating_sub(succeeded + failed);
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "unload_broker",
+            &target_broker,
+            serde_json::json!({ "total": total, "succeeded": succeeded, "failed": failed }),
+        )
+        .await;
         let response = UnloadBrokerResponse {
             started: true,
             total,
@@ -507,12 +526,125 @@ impl BrokerAdmin for DanubeAdminImpl {
 
         info!("rebalancing started in background (will continue until balanced)");
 
+        let _ = crate::audit::record_audit_event(
+            &self.resources.store,
+            security_context.principal.principal_name(),
+            "trigger_rebalance",
+            "cluster",
+            serde_json::json!({ "max_moves": req.max_moves }),
+        )
+        .await;
+
         Ok(Response::new(RebalanceResponse {
             success: true,
             moves_executed: 1, // First move initiated
             proposed_moves,
             error_message: "Rebalancing started in background, will continue until balanced"
                 .to_string(),
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn get_broker_logs(
+        &self,
+        request: Request<GetBrokerLogsRequest>,
+    ) -> std::result::Result<Response<GetBrokerLogsResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        if enforce_authorization(
+            &security_context,
+            &Resource::Cluster,
+            Permission::ManageBroker,
+            &self.resources.security,
+        )
+        .await
+        .is_err()
+        {
+            enforce_authorization(
+                &security_context,
+                &Resource::Cluster,
+                Permission::Consume,
+                &self.resources.security,
+            )
+            .await?;
+        }
+
+        let req = request.into_inner();
+        let (entries, total_buffered) = crate::log_ring::LogRingHandle::global().query(
+            if req.level.is_empty() { None } else { Some(req.level.as_str()) },
+            if req.target.is_empty() { None } else { Some(req.target.as_str()) },
+            if req.contains.is_empty() { None } else { Some(req.contains.as_str()) },
+            if req.since_ms == 0 { None } else { Some(req.since_ms) },
+            req.limit as usize,
+        );
+
+        let proto_entries = entries
+            .into_iter()
+            .map(|e| BrokerLogEntry {
+                timestamp_ms: e.timestamp_ms,
+                level: e.level,
+                target: e.target,
+                message: e.message,
+                fields: e.fields.into_iter().collect(),
+            })
+            .collect();
+
+        Ok(Response::new(GetBrokerLogsResponse {
+            broker_id: self.broker_service.broker_id,
+            entries: proto_entries,
+            total_buffered: total_buffered as u64,
+        }))
+    }
+
+    #[tracing::instrument(level = Level::INFO, skip_all)]
+    async fn get_metrics_snapshot(
+        &self,
+        request: Request<GetMetricsSnapshotRequest>,
+    ) -> std::result::Result<Response<GetMetricsSnapshotResponse>, tonic::Status> {
+        let security_context = get_security_context(&request)?;
+        if enforce_authorization(
+            &security_context,
+            &Resource::Cluster,
+            Permission::ManageBroker,
+            &self.resources.security,
+        )
+        .await
+        .is_err()
+        {
+            enforce_authorization(
+                &security_context,
+                &Resource::Cluster,
+                Permission::Consume,
+                &self.resources.security,
+            )
+            .await?;
+        }
+
+        let req = request.into_inner();
+        let (collected_at_ms, series) = crate::telemetry_ring::BrokerTelemetryStore::global()
+            .query_snapshot(&req.metric_names, req.window_seconds);
+
+        let proto_series = series
+            .into_iter()
+            .map(|s| MetricSeries {
+                name: s.name,
+                kind: s.kind,
+                labels: s.labels.into_iter().collect(),
+                current_value: s.current_value,
+                history: s
+                    .history
+                    .into_iter()
+                    .map(|p| MetricSample {
+                        timestamp_ms: p.timestamp_ms,
+                        value: p.value,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Ok(Response::new(GetMetricsSnapshotResponse {
+            broker_id: self.broker_service.broker_id,
+            collected_at_ms,
+            series: proto_series,
         }))
     }
 }

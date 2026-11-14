@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
@@ -11,6 +12,7 @@ use crate::persistent_metrics::WAL_DELETE_TOTAL;
 
 use crate::checkpoint::{CheckpointStore, WalCheckpoint};
 use crate::metadata::StorageMetadata;
+use crate::wal::writer::LogCommand;
 use danube_core::storage::PersistentStorageError;
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ pub struct Deleter {
     ckpt_store: Arc<CheckpointStore>,
     metadata: StorageMetadata,
     cfg: DeleterConfig,
+    writer_cmd_tx: Option<mpsc::Sender<LogCommand>>,
 }
 
 impl Deleter {
@@ -50,7 +53,15 @@ impl Deleter {
             ckpt_store,
             metadata,
             cfg,
+            writer_cmd_tx: None,
         }
+    }
+
+    /// Attach the live WAL writer command channel so checkpoint pruning is
+    /// serialized through `WriterState` and never clobbered by later rotations.
+    pub(crate) fn with_writer_cmd_tx(mut self, cmd_tx: mpsc::Sender<LogCommand>) -> Self {
+        self.writer_cmd_tx = Some(cmd_tx);
+        self
     }
 
     pub fn start_with_cancel(
@@ -134,6 +145,7 @@ impl Deleter {
         }
 
         // Update rotated_files by removing deleted and recompute start_offset
+        let pruned_seqs: Vec<u64> = to_delete.iter().map(|(seq, ..)| *seq).collect();
         wal_ckpt.rotated_files.retain(|(seq, path, _first)| {
             !to_delete
                 .iter()
@@ -150,7 +162,29 @@ impl Deleter {
             .unwrap_or(wal_ckpt.start_offset);
         wal_ckpt.start_offset = new_start;
 
-        self.ckpt_store.update_wal(&wal_ckpt).await?;
+        let mut synced_via_writer = false;
+        if let Some(cmd_tx) = &self.writer_cmd_tx {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if cmd_tx
+                .send(LogCommand::PruneRotatedFiles {
+                    pruned_seqs,
+                    new_start_offset: new_start,
+                    reply_tx,
+                })
+                .await
+                .is_ok()
+            {
+                if let Ok(res) = reply_rx.await {
+                    res.map_err(|e| {
+                        PersistentStorageError::Wal(format!("wal prune sync failed: {}", e))
+                    })?;
+                    synced_via_writer = true;
+                }
+            }
+        }
+        if !synced_via_writer {
+            self.ckpt_store.update_wal(&wal_ckpt).await?;
+        }
         info!(target = "wal_deleter", topic = %self.topic_path, deleted_count, deleted_bytes, new_start_offset = new_start, "retention cycle completed");
         if deleted_count > 0 {
             counter!(WAL_DELETE_TOTAL.name, "topic"=> self.topic_path.clone(), "reason"=> "retention").increment(deleted_count as u64);

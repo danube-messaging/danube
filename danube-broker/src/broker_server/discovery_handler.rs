@@ -1,5 +1,5 @@
 use crate::broker_server::DanubeServerImpl;
-use crate::broker_service::validate_topic_format;
+use crate::broker_service::normalize_topic_path;
 
 use danube_core::proto::{
     discovery_server::Discovery, topic_lookup_response::LookupType, TopicLookupRequest,
@@ -31,21 +31,15 @@ impl Discovery for DanubeServerImpl {
 
         trace!(topic = %req.topic, "topic lookup request");
 
-        // The topic format is /{namespace_name}/{topic_name}
-        if !validate_topic_format(&req.topic) {
-            return Err(Status::invalid_argument(format!(
-                "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
-                &req.topic
-            )));
-        }
+        let normalized_topic = normalize_topic_path(&req.topic)?;
 
         let service = self.service.as_ref();
 
         let (broker_url, connect_url, proxy, lookup_type) =
-            match service.lookup_topic(&req.topic).await {
+            match service.lookup_topic(&normalized_topic).await {
                 Some((true, _, _)) => {
                     trace!(
-                        topic = %req.topic,
+                        topic = %normalized_topic,
                         broker_url = %self.broker_url,
                         connect_url = %self.connect_url,
                         "topic lookup response: served by this broker"
@@ -60,7 +54,7 @@ impl Discovery for DanubeServerImpl {
                 Some((false, broker_url, connect_url)) => {
                     let proxy = broker_url != connect_url;
                     trace!(
-                        topic = %req.topic,
+                        topic = %normalized_topic,
                         broker_url = %broker_url,
                         connect_url = %connect_url,
                         "topic lookup response: served by other broker"
@@ -68,10 +62,10 @@ impl Discovery for DanubeServerImpl {
                     (broker_url, connect_url, proxy, LookupType::Redirect)
                 }
                 None => {
-                    debug!(topic = %req.topic, "topic lookup failed");
+                    debug!(topic = %normalized_topic, "topic lookup failed");
                     return Err(Status::not_found(format!(
                         "Unable to find the requested topic: {}",
-                        &req.topic
+                        &normalized_topic
                     )));
                 }
             };
@@ -105,17 +99,11 @@ impl Discovery for DanubeServerImpl {
 
         trace!(topic = %req.topic, "topic partitions request");
 
-        // The topic format is /{namespace_name}/{topic_name}
-        if !validate_topic_format(&req.topic) {
-            return Err(Status::invalid_argument(format!(
-                "The topic: {} has an invalid format, should be: /namespace_name/topic_name",
-                &req.topic
-            )));
-        }
+        let normalized_topic = normalize_topic_path(&req.topic)?;
 
         let service = self.service.as_ref();
 
-        let result = service.topic_partitions(&req.topic).await;
+        let result = service.topic_partitions(&normalized_topic).await;
 
         let response = TopicPartitionsResponse {
             request_id: req.request_id,

@@ -88,6 +88,14 @@ impl RebalancingAggressiveness {
     }
 }
 
+fn default_min_topic_age_before_move_secs() -> u64 {
+    60
+}
+
+fn default_topic_move_cooldown_secs() -> u64 {
+    120
+}
+
 /// Rebalancing configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RebalancingConfig {
@@ -105,6 +113,12 @@ pub struct RebalancingConfig {
     pub min_brokers_for_rebalance: usize,
     /// Don't move topics younger than this (seconds)
     pub min_topic_age_seconds: u64,
+    /// Minimum topic age before automated rebalancing considers moving it (seconds)
+    #[serde(default = "default_min_topic_age_before_move_secs")]
+    pub min_topic_age_before_move_secs: u64,
+    /// Minimum cooldown before the same topic can be moved again (seconds)
+    #[serde(default = "default_topic_move_cooldown_secs")]
+    pub topic_move_cooldown_secs: u64,
     /// Topics matching these patterns will never be rebalanced
     pub blacklist_topics: Vec<String>,
 }
@@ -119,6 +133,8 @@ impl Default for RebalancingConfig {
             cooldown_seconds: 60,
             min_brokers_for_rebalance: 2,
             min_topic_age_seconds: 300,
+            min_topic_age_before_move_secs: default_min_topic_age_before_move_secs(),
+            topic_move_cooldown_secs: default_topic_move_cooldown_secs(),
             blacklist_topics: vec![],
         }
     }

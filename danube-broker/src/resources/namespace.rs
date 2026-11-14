@@ -127,8 +127,10 @@ impl NamespaceResources {
         for key in keys {
             let parts: Vec<&str> = key.split('/').collect();
 
-            if let (Some(namespace), Some(topic)) = (parts.get(4), parts.get(5)) {
-                let topic_name = join_path(&[namespace, topic]);
+            if parts.len() >= 6 {
+                let namespace = parts[4];
+                let topic = parts[5..].join("/");
+                let topic_name = join_path(&[namespace, &topic]);
                 topics.push(topic_name);
             }
         }
@@ -150,8 +152,10 @@ impl NamespaceResources {
         for key in keys {
             let parts: Vec<&str> = key.split('/').collect();
 
-            if let (Some(namespace), Some(topic)) = (parts.get(4), parts.get(5)) {
-                let topic_name = join_path(&["/", namespace, topic]);
+            if parts.len() >= 6 {
+                let namespace = parts[4];
+                let topic = parts[5..].join("/");
+                let topic_name = join_path(&["/", namespace, &topic]);
                 topics.push(topic_name);
             }
         }

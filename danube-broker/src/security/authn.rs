@@ -10,7 +10,7 @@
 
 use crate::security::config::AuthConfig;
 use danube_core::jwt::Claims;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::metadata::MetadataMap;
@@ -111,13 +111,29 @@ pub(crate) fn get_security_context<T>(request: &Request<T>) -> Result<SecurityCo
 #[derive(Debug, Clone)]
 pub(crate) struct JwtValidationCache {
     cache: Arc<DashMap<String, (SecurityContext, Instant)>>,
+    revoked_subjects: Option<Arc<DashSet<String>>>,
 }
 
 impl JwtValidationCache {
+    #[allow(dead_code)]
     pub(crate) fn new() -> Self {
         Self {
             cache: Arc::new(DashMap::new()),
+            revoked_subjects: None,
         }
+    }
+
+    pub(crate) fn with_revoked(revoked_subjects: Arc<DashSet<String>>) -> Self {
+        Self {
+            cache: Arc::new(DashMap::new()),
+            revoked_subjects: Some(revoked_subjects),
+        }
+    }
+
+    pub(crate) fn is_revoked(&self, subject: &str) -> bool {
+        self.revoked_subjects
+            .as_ref()
+            .is_some_and(|set| set.contains(subject))
     }
 
     /// Look up a cached validation result. Returns `None` if the token
@@ -147,6 +163,7 @@ impl JwtValidationCache {
 enum SecurityError {
     InvalidMetadata,
     InvalidToken,
+    RevokedSubject,
     JwtNotConfigured,
     MissingCredentials,
 }
@@ -158,6 +175,9 @@ impl SecurityError {
                 Status::unauthenticated("Authentication metadata is invalid")
             }
             SecurityError::InvalidToken => Status::unauthenticated("Invalid token"),
+            SecurityError::RevokedSubject => {
+                Status::unauthenticated("Token subject has been revoked")
+            }
             SecurityError::JwtNotConfigured => {
                 Status::failed_precondition("JWT support is not enabled")
             }
@@ -242,6 +262,12 @@ pub(crate) fn authenticate_request(
     } else {
         return Err(SecurityError::MissingCredentials.into_status());
     };
+
+    if matches!(context.authentication_method, AuthenticationMethod::Jwt)
+        && jwt_cache.is_revoked(context.principal.principal_name())
+    {
+        return Err(SecurityError::RevokedSubject.into_status());
+    }
 
     request.extensions_mut().insert(context);
     Ok(request)
