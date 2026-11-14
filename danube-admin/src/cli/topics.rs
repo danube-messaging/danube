@@ -14,7 +14,7 @@ use danube_core::proto::danube_schema::{
     ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
 };
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::{intent_summary_for_topic, AdminGrpcClient, GrpcClientConfig};
 
 #[derive(Debug, Args)]
 #[command(
@@ -117,7 +117,7 @@ enum TopicsCommands {
         dispatch_strategy: String,
         #[arg(
             long,
-            help = "Optional StreamIntent profile (e.g. agent_event_mesh, agent_task_queue, lakehouse_feed)"
+            help = "Stream intent profile (realtime, event_stream, task_queue, audit_log)"
         )]
         intent: Option<String>,
     },
@@ -462,6 +462,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                         println!("   Schema subject: {}", subject);
                     }
                     println!("   Partitions: {}", parts);
+                    if let Some(ref raw_intent) = intent {
+                        let summary = intent_summary_for_topic(raw_intent, &topic_path)
+                            .unwrap_or_else(|| raw_intent.clone());
+                        println!("   Intent: {}", summary);
+                    }
                 }
             } else {
                 let request = NewTopicRequest {
@@ -475,6 +480,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     println!("✅ Topic created: {}", topic_path);
                     if let Some(subject) = schema_subject {
                         println!("   Schema subject: {}", subject);
+                    }
+                    if let Some(ref raw_intent) = intent {
+                        let summary = intent_summary_for_topic(raw_intent, &topic_path)
+                            .unwrap_or_else(|| raw_intent.clone());
+                        println!("   Intent: {}", summary);
                     }
                 }
             }
@@ -523,6 +533,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                     "topic": topic_info.name,
                     "broker_id": topic_info.broker_id,
                     "delivery": topic_info.delivery,
+                    "intent": topic_info.intent,
                     "schema_subject": topic_info.schema_subject,
                     "schema_id": topic_info.schema_id,
                     "schema_version": topic_info.schema_version,
@@ -538,6 +549,9 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 }
                 if !topic_info.delivery.is_empty() {
                     println!("Delivery: {}", topic_info.delivery);
+                }
+                if let Some(ref intent) = topic_info.intent {
+                    println!("Intent: {}", intent);
                 }
 
                 // Schema Registry info

@@ -350,6 +350,9 @@ pub struct DescribeTopicResponse {
     /// "NONE", "BACKWARD", "FORWARD", "FULL"
     #[prost(string, optional, tag = "9")]
     pub compatibility_mode: ::core::option::Option<::prost::alloc::string::String>,
+    /// Resolved StreamIntent summary (if created with --intent)
+    #[prost(string, optional, tag = "10")]
+    pub intent: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

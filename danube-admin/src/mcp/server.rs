@@ -318,14 +318,20 @@ impl DanubeMcpServer {
         Ok(Self::tool_result(output))
     }
 
-    /// Create a new topic with optional partitioning and schema validation.
+    /// Create a new topic with optional partitioning, schema validation, and workload intent.
     ///
     /// Side effects: Creates a new topic in cluster metadata and assigns it to a broker.
-    /// Supports both non-partitioned (single partition) and partitioned topics.
+    /// Supports both non-partitioned (partitions=0) and partitioned topics (explicitly via partitions > 0).
+    /// Storage mode follows the cluster default automatically unless updated later with set_topic_storage_mode.
     ///
     /// Topic name must follow format: "/namespace/topic-name". Use list_namespaces to verify
     /// namespace exists. For schema-validated topics, register the schema first with register_schema.
-    /// Delivery strategy: "reliable" (WAL + cloud storage) or "non_reliable" (in-memory only).
+    /// Delivery strategy: "reliable" (WAL + cluster storage) or "non_reliable" (in-memory only).
+    /// Workload intents ("intent" parameter):
+    /// - "realtime": non_reliable in-memory streaming (heartbeats, live tokens, RPC)
+    /// - "event_stream": reliable pub/sub with wal_sync=os_cache_flush, 3 retries (500ms), DLQ <topic>-dlq
+    /// - "task_queue": reliable job queue with wal_sync=fsync_batch, 5 retries (1000ms), DLQ <topic>-dlq
+    /// - "audit_log": reliable compliance/tool log with wal_sync=fsync_batch, 10 retries (500ms), poison_policy=block
     #[tool]
     async fn create_topic(
         &self,

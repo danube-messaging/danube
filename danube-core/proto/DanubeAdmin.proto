@@ -367,6 +367,7 @@ message DescribeTopicResponse {
   optional uint32 schema_version = 7;      // Schema version
   optional string schema_type = 8;         // "json_schema", "avro", "protobuf", "string", "bytes"
   optional string compatibility_mode = 9;  // "NONE", "BACKWARD", "FORWARD", "FULL"
+  optional string intent = 10;             // Resolved StreamIntent summary (if created with --intent)
 }
 
 // Broker Unload

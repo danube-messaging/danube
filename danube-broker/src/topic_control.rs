@@ -136,10 +136,7 @@ impl TopicManager {
         let topic_intent = self.resources.topic.get_topic_intent(topic_name).await;
         let persisted_storage_mode = self.resources.topic.get_topic_storage_mode(topic_name).await;
 
-        let effective_tier = persisted_storage_mode
-            .as_deref()
-            .or_else(|| topic_intent.as_ref().map(|i| i.storage_tier.as_str()));
-        match effective_tier {
+        match persisted_storage_mode.as_deref() {
             Some("cloud_tiered") | Some("cloud-tiered") | Some("object_store") => {
                 if let Err(err) = self
                     .storage_factory
