@@ -22,7 +22,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-tonic-types = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }

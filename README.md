@@ -3,19 +3,19 @@
 </p>
 
 <p align="center">
-  <b>Agent-ready, zero-YAML streaming and messaging platform built in Rust. One binary.</b>
+  <b>Agent-ready, zero-YAML messaging and event streaming built in Rust. One binary.</b>
 </p>
 
 <p align="center">
-  <a href="https://danube-messaging.com/"><img src="https://img.shields.io/badge/📑-Documentation-blue" alt="Documentation"></a>
-  <a href="docker/README.md"><img src="https://img.shields.io/badge/🐳-Docker%20Ready-2496ED" alt="Docker"></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/🦀-Rust-000000" alt="Rust"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/📜-Apache%202.0-green" alt="License"></a>
+  <a href="https://danube-messaging.com/"><img src="https://img.shields.io/badge/%F0%9F%93%91-Documentation-blue" alt="Documentation"></a>
+  <a href="docker/README.md"><img src="https://img.shields.io/badge/%F0%9F%90%B3-Docker%20Ready-2496ED" alt="Docker"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/%F0%9F%A6%80-Rust-000000" alt="Rust"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/%F0%9F%93%9C-Apache%202.0-green" alt="License"></a>
 </p>
 
-**Danube v2** is an open-source distributed messaging, event streaming, and agent coordination platform built in Rust on [Tokio](https://tokio.rs/) and embedded [openraft](https://github.com/databendlabs/openraft) (`redb`). It brings together sub-millisecond pub/sub, durable WAL + cloud-tiered streaming, zero-ETL Apache Iceberg lakehouse export, resilient edge MQTT ingestion, and native AI agent orchestration primitives inside **one self-contained binary (`danube`)** — with **zero YAML files** and **zero external dependencies**.
+**Danube** is an open-source distributed messaging, event streaming, and agent coordination platform built in Rust on [Tokio](https://tokio.rs/) and embedded [openraft](https://github.com/databendlabs/openraft) (`redb`). It combines sub-millisecond pub/sub, durable WAL + cloud-tiered streams, zero-ETL Apache Iceberg lakehouse export, edge MQTT ingestion, and native AI agent orchestration primitives in **one self-contained binary (`danube`)**: **zero YAML files**, **no JVM**, and **no external coordinators** like ZooKeeper or BookKeeper.
 
-📖 **[Full Documentation](https://danube-messaging.com/)** · 🧭 **[Why Danube v2? Positioning & Architecture](danube_positioning.md)** · 🤖 **[CLI & MCP Control Plane](danube-admin/README.md)** · 🐳 **[Docker Guide](docker/README.md)**
+📖 **[Full Documentation](https://danube-messaging.com/)** · 🧭 **[Positioning & Architecture](danube_positioning.md)** · 🤖 **[CLI & MCP Control Plane](danube-admin/README.md)** · 🐳 **[Docker Guide](docker/README.md)**
 
 ---
 
@@ -33,65 +33,84 @@ docker run -p 6650:6650 -p 9040:9040 \
   up --mode standalone --data-dir /danube-data --broker-addr 0.0.0.0:6650
 ```
 
-Broker, Raft metadata, Schema Registry, and Admin gRPC are served cleanly over **`127.0.0.1:6650`**.
+Client messaging, discovery, Schema Registry, and Admin gRPC are served together on **`127.0.0.1:6650`**.
 
-Test messaging, declarative state, or MCP from the **exact same binary**:
+Send messages, apply declarative state, or connect an AI agent using the **same binary**:
 
 ```bash
-# Terminal 1: consume
+# Terminal 1: consume messages
 danube ctl consume -s http://127.0.0.1:6650 -t /default/demo -m my_sub
 
-# Terminal 2: produce
-danube ctl produce -s http://127.0.0.1:6650 -t /default/demo -c 10 -m "Hello, Danube v2!"
+# Terminal 2: produce messages
+danube ctl produce -s http://127.0.0.1:6650 -t /default/demo -c 10 -m "Hello, Danube!"
 
-# Apply declarative namespaces, topics (with StreamIntents), schemas, and RBAC
+# Declaratively provision namespaces, topics (with intents), schemas, and RBAC
 danube ctl apply -f cluster-state.yaml --dry-run
 danube ctl apply -f cluster-state.yaml
 
-# Start the MCP server for Claude Code, Cursor, VS Code, or Antigravity
+# Start the built-in MCP server for Claude Code, Cursor, VS Code, or Antigravity
 danube mcp --broker-endpoint http://127.0.0.1:6650
 ```
 
-Or connect from your application using the [client libraries](#client-libraries) (Rust, Go, Java, Python).
+Or connect directly from your applications via the [client libraries](#client-libraries) (Rust, Go, Java, Python).
 
 ---
 
-## Why Danube v2
+## Core Streaming Capabilities
 
-Danube v2 collapses the legacy multi-binary, YAML-heavy messaging stack into an autonomous platform designed for both human operators and AI agents:
+Danube gives you a complete, cloud-native streaming engine out of the box without assembling half a dozen separate infrastructure projects:
 
-### 1. One Binary (`danube`): Broker, CLI, UI Server, and MCP
-No separate broker, CLI, admin, or bridge binaries to keep in sync:
-- `danube up` — Runs the broker (`cluster`, `standalone`, or `edge` mode; also the default when no subcommand is given)
-- `danube ctl` — Full operator & developer CLI (`produce`, `consume`, `apply`, `topics`, `schemas`, `brokers`, `cluster`, `namespaces`, `security`, `serve`), including `topics peek`, `topics seek`, `topics replay-dlq`, `topics infer-schema`, and `topics branch`
-- `danube mcp` — Built-in Model Context Protocol (MCP) server (stdio or Streamable HTTP) with built-in cluster telemetry, broker log access, schema inference, subscription seek/DLQ replay, and confirmation-guarded destructive operations
+| Capability | What You Get |
+| :--- | :--- |
+| **Dual-Dispatch Engine** | Run **Non-Reliable** (in-memory, zero-disk-I/O, sub-millisecond) and **Reliable** (WAL + cloud-tiered) topics side by side in the same cluster. Reliable delivery pipelines messages via sliding windows (`max_unacked_messages`), honest group-commit durability (`Async`, `OsCacheFlush`, `FsyncBatch`), exponential backoff retries, and Dead-Letter Queues (DLQ). |
+| **Flexible Subscription Models** | Supports **Exclusive**, **Failover**, **Shared**, and **Key-Shared** (consistent-hash per-key ordering with glob key filters) subscriptions, decoupling consumer scaling from partition counts. |
+| **Instant Topic Mobility** | Metadata lives in embedded Raft while historical segments live in shared filesystems or object storage (S3, GCS, Azure). Rebalancing and failover move topic ownership across brokers in `<100ms` without copying gigabytes of log data. |
+| **Embedded Schema Registry** | Built-in **JSON Schema**, **Avro**, and **Protobuf** registry with versioned subjects and compatibility validation on port `6650`. |
+| **Zero-ETL Iceberg Lakehouse** | Feature-gated [`danube-iceberg`](danube-iceberg/README.md) (`--features lakehouse`) converts sealed WAL segments into ZSTD Parquet files with column stats on an isolated Tokio pool and commits directly to Apache Iceberg REST (including AWS SigV4) or SQL catalogs. |
+| **Edge-to-Cloud MQTT Gateway** | `danube up --mode edge` embeds an MQTT v3.1.1/v5.0 broker backed by a local WAL that consolidates unmatched edge topics into `/{edge-name}/ingest` (preserving `mqtt.topic` and `routing_key`) so IoT fleets survive WAN outages without exploding cloud Raft metadata. |
 
-### 2. Zero-YAML Operations, StreamIntents & Declarative State
-- **Zero-config startup**: Start single-node or multi-node clusters purely via CLI flags and environment variables; runtime cluster state lives in embedded Raft (`--recovery-config` remains available strictly as a break-glass local override if Raft quorum is lost).
-- **StreamIntent Profiles**: Create topics by workload intent (`agent_event_mesh`, `agent_task_queue`, `tool_invocation_log`, `telemetry_firehose`, `lakehouse_feed`, `custom`) — expanded into explicit Raft settings so upgrades never silently mutate running streams.
-- **Declarative `danube ctl apply`**: GitOps-friendly YAML/JSON reconciliation that computes a dry-run plan first, is strictly additive by default, and requires explicit `--prune` (and `--force` for non-empty topics) to delete.
+---
 
-### 3. Native Primitives for AI Agents & Stateful Workflows
-- **Execution Lease Heartbeats (`extend_lease`)**: Long-running LLM calls and tool steps extend processing leases without triggering redelivery storms.
-- **Persisted Progress Checkpoints (`report_progress`)**: Workers checkpoint `checkpoint_data` into durable topic state so failover resumes at the last completed step instead of restarting expensive workflows from zero.
-- **Cascading Task-Tree Cancellation (`cancel_task_tree`)**: Cancel an entire parent task tree across `x-correlation-id` / `x-parent-msg-id` so queued descendant messages are skipped cleanly at dispatch.
-- **Stream Branching (`danube ctl topics branch`)**: Fork any topic at an offset or timestamp into an independent writable branch topic (copying retained WAL segments up to the branch point with reference-counted branch protection) for isolated replay, debugging, and counterfactual evaluation.
-- **Request-Reply & Schema Inference**: Built-in `DanubeClient::request_reply` with correlation matching and `infer_topic_schema` (`danube ctl topics infer-schema`) to synthesize JSON Schema Draft-07 contracts from live samples.
+## Simple for Humans (Zero-Ops UX)
 
-### 4. High-Throughput Dual-Dispatch Engine & Honest Durability
-- **Non-Reliable & Reliable Side-by-Side**: Run zero-disk-I/O in-memory streams next to durable WAL + Cloud Storage topics in the same cluster.
-- **Pipelined Reliable Dispatch**: In-flight sliding windows (`DispatchWindow` / `InFlightWindow`, `max_unacked_messages`) eliminate single-message stop-and-wait bottlenecks while preserving per-key ordering under **Key-Shared** dispatch.
-- **Honest WAL Group Commit**: Choose between periodic `Async`, OS-page-cache `OsCacheFlush`, or `fdatasync`-backed `FsyncBatch` durability modes.
-- **Dead-Letter Queues**: Configurable retry budgets with exponential backoff and automatic DLQ routing.
+Danube is built so a single developer or small platform team can go from laptop prototype to production Kubernetes without fighting YAML sprawl:
 
-### 5. Zero-Touch Security, Auto-TLS & Voter Safety
-- **Embedded Auto-TLS (`--auth-mode auto-tls`)**: Automatically initializes an embedded Cluster CA in Raft (encrypted at rest via `DANUBE_CLUSTER_SECRET` or local secret) and distributes node certificates.
-- **Strict RBAC & Payload Guardrails**: Default-deny RBAC including dedicated `ReadPayload` permission for payload peeking, `confirm_destructive=true` confirmation guardrails on destructive MCP tools (plus `dry_run` preview support on rebalance, unload, and `apply`), Raft audit trail, and break-glass bootstrap token recovery so admins cannot lock themselves out.
-- **Production Quorum Safety**: Caps Raft voters (`target_voter_count`), promotes surplus brokers as non-voting learners, supports `--seed-nodes` with `--join` self-join via `JoinCluster`, and gracefully drains on `SIGTERM` instead of churning Raft membership.
+* **One Binary, One Port**: `danube up` runs the broker, `danube ctl` handles CLI admin, UI serving, and data testing, and `danube mcp` exposes AI tooling. Everything multiplexes cleanly onto port `6650` by default (`--admin-addr` is available if you want separate firewall listeners).
+* **Zero-YAML Startup & Dynamic Raft Config**: Clusters boot from CLI flags and environment variables while policies, schemas, storage tiering, and RBAC live dynamically in embedded Raft (with `--recovery-config` reserved strictly for break-glass recovery).
+* **Intent-Driven Provisioning (`--intent`)**: Create topics by workload role instead of guessing retention bytes and flush flags (`agent_event_mesh`, `agent_task_queue`, `tool_invocation_log`, `telemetry_firehose`, `lakehouse_feed`, `custom`). Intents expand at creation time into explicit Raft settings so upgrades never silently change live topics.
+* **Safe Additive GitOps (`danube ctl apply`)**: Reconcile namespaces, topics, intents, schemas, and RBAC from a single manifest. Previews a `--dry-run` plan first and is strictly additive by default (never deleting existing topics unless `--prune` and `--force` are passed).
+* **One-Flag Security & Safe Rolling Restarts**: Enable encrypted transport and bootstrap RBAC in seconds with `--auth-mode auto-tls` (encrypted Cluster CA in Raft + `0600` bootstrap admin token) or mount `cert-manager` PEMs. Raft caps voters automatically (`target_voter_count`), promotes surplus brokers as active non-voting learners, and drains topics cleanly on `SIGTERM` without quorum churn.
 
-### 6. Lakehouse-Native & Edge-Ready
-- **Embedded Lakehouse Library (`danube-iceberg`)**: Feature-gated (`--features danube-broker/lakehouse`) Apache Iceberg Parquet + statistics writer running on an isolated Tokio runtime (`DANUBE_LAKEHOUSE_CONFIG` or idle standby) with `--node-role` workload separation (`broker`, `lakehouse`, `all`) and REST (including AWS SigV4) or SQL catalog support.
-- **Consolidated Edge Gateway**: Edge mode (`--mode edge`) bridges MQTT v3.1.1/v5.0 devices through a local WAL into a single consolidated cloud ingest topic (`/{edge-name}/ingest`, with optional `topic_map` overrides) preserving the original MQTT topic in the `mqtt.topic` attribute and `routing_key`, protecting cloud Raft metadata from per-device topic explosion.
+---
+
+## Built for AI Agents
+
+General-purpose brokers force AI teams to bolt external databases onto message queues for long-lived tasks, and force AI SREs to scrape raw Prometheus logs to debug clusters. **Danube treats agents as first-class citizens**: both as **application workloads** running on streams and as **platform operators** managing the cluster.
+
+### 1. Running Agent Workloads on Danube (Agent-Native Runtime)
+
+Agent workflows run for minutes instead of milliseconds, spawn dynamic sub-task trees, crash mid-trajectory, and need reproducible branching for evaluation. Danube embeds these coordination primitives directly into the broker and client SDK:
+
+* **Heartbeated Task Leases (`extend_lease`)**: Long-running LLM calls and tool steps send lease heartbeats to keep ownership alive without timing out or triggering duplicate work across workers.
+* **Mid-Task Progress Checkpoints (`report_progress`)**: Workers persist structured step checkpoints (`checkpoint_data`) directly with pending delivery state. When a worker crashes or a topic moves, Danube redelivers the task with its last checkpoint (`x-danube-checkpoint-b64`) so execution resumes at the failed step instead of restarting from scratch.
+* **Cascading Task-Tree Cancellation (`cancel_task_tree`)**: Cancel an entire parent task tree across `x-correlation-id` and `x-parent-msg-id` headers in one call. The broker's dispatcher skips queued descendant tasks cleanly so orphaned sub-agents do not waste compute or model tokens.
+* **Zero-Copy Stream Branching (`danube ctl topics branch`)**: Fork any topic at an offset or nanosecond timestamp into an independent writable branch topic (`topics branch <src> <dst> --at-offset N`) with reference-counted segment protection: ideal for counterfactual replay, A/B prompt evaluation, and "Git for agent trajectories."
+* **Native Request-Reply (`DanubeClient::request_reply`)**: Built-in correlation matching (`x-danube-correlation-id` / `x-danube-reply-to`) over low-latency `Non-Reliable` reply topics for synchronous agent-to-tool and agent-to-agent calls.
+
+### 2. Operating & Debugging with AI Agents (`danube mcp`)
+
+Connect Claude Code, Cursor, VS Code, or Antigravity directly to your cluster over stdio or HTTP/SSE:
+
+```bash
+danube mcp --broker-endpoint http://127.0.0.1:6650
+```
+
+* **Zero External Monitoring Required**: Built-in in-memory telemetry and log ring buffers give MCP clients instant access to broker metrics, logs, and composite one-call root-cause diagnostics (`explain_consumer_stall`, `inspect_subscription`).
+* **Non-Destructive Peeking & Schema Inference**: Agents can sample live traffic without advancing consumer cursors (`peek_messages` / `danube ctl topics peek`) and automatically generate JSON Schema Draft-07 contracts from real payloads (`infer_topic_schema` / `danube ctl topics infer-schema`).
+* **Guardrails & Auditability by Default**:
+  * Destructive actions (`delete_topic`, `unload_broker`, `truncate`) default to `dry_run: true` and require explicit confirmation.
+  * Payload inspection requires a dedicated `ReadPayload` RBAC permission separate from cluster metadata access.
+  * Control-plane mutations are recorded to an internal Raft audit log.
 
 ---
 
@@ -105,7 +124,7 @@ danube up --mode standalone --data-dir ./danube-data
 ```
 
 ### Cluster
-Multi-node Raft consensus with automated topic placement, load-based rebalancing, and <100ms topic mobility over shared filesystem or object storage (S3/GCS/Azure):
+Multi-node Raft consensus with automated topic placement, load-based rebalancing, and `<100ms` topic mobility over shared filesystem or object storage (S3/GCS/Azure):
 
 ```bash
 # Node 1
@@ -116,12 +135,12 @@ danube up \
   --seed-nodes "node1:7650,node2:7650,node3:7650"
 ```
 
-Optional network isolation for control-plane traffic: add `--admin-addr 0.0.0.0:50051` to bind Admin gRPC on a separate listener, `--seed-nodes <addrs> --join` to auto-join an existing cluster, or `--node-role lakehouse|broker|all` to specialize nodes (`DANUBE_LAKEHOUSE_CONFIG` configures embedded Iceberg pipelines).
+Optional flags: `--admin-addr 0.0.0.0:50051` to separate Admin gRPC, `--seed-nodes <addrs> --join` to join an existing cluster, or `--node-role lakehouse|broker|all` to dedicate Iceberg export nodes (`DANUBE_LAKEHOUSE_CONFIG`).
 
 Deploy with [Docker Compose](docker/README.md) or [Kubernetes](https://danube-messaging.com/getting-started/kubernetes/).
 
 ### Edge
-Lightweight MQTT gateway that buffers device messages in a local WAL during WAN outages and continuously replicates them over gRPC to a consolidated ingest topic in your cloud cluster:
+Lightweight MQTT gateway that buffers device messages in a local WAL during WAN outages and continuously replicates them over gRPC into a single consolidated ingest topic in your cloud cluster:
 
 ```bash
 danube up --mode edge \
@@ -131,7 +150,7 @@ danube up --mode edge \
   --data-dir ./edge-data
 ```
 
-```
+```text
 MQTT devices ──► Danube Edge (up --mode edge) ──► Local WAL ──► Cloud Cluster
                  (MQTT v3.1.1 / v5.0)             (survives     (/<edge-name>/ingest
                                                    outages)      with mqtt.topic & routing_key)
@@ -148,15 +167,15 @@ MQTT devices ──► Danube Edge (up --mode edge) ──► Local WAL ──�
 
 ## Project Structure
 
-- **[`danube-broker`](danube-broker/)** — Unified `danube` binary (`up`, `ctl`, `mcp`), dispatcher, security, and cluster orchestration
-- **[`danube-admin`](danube-admin/README.md)** — Control-plane CLI (`ctl`), HTTP UI/API server, and AI MCP server (`mcp`)
-- **[`danube-edge`](danube-edge/)** — Edge MQTT v3.1.1/v5.0 gateway and WAL-backed cloud replicator
-- **[`danube-iceberg`](danube-iceberg/README.md)** — Embedded Iceberg/Parquet lakehouse runtime (`--features danube-broker/lakehouse`)
-- **[`danube-schema`](danube-schema/)** — Embedded Schema Registry (JSON Schema, Avro, Protobuf)
-- **[`danube-raft`](danube-raft/README.md)** — Embedded `openraft` + `redb` consensus and metadata store
-- **[`danube-persistent-storage`](danube-persistent-storage/README.md)** — Group-commit WAL, object-store tiering, and CoW segment lifecycle
-- **[`danube-client`](danube-client/README.md)** — Async Rust client SDK
-- **[`danube-core`](danube-core/README.md)** — Shared protocol definitions, topic paths, JWT helpers, and core types
+- **[`danube-broker`](danube-broker/)** : Unified `danube` binary (`up`, `ctl`, `mcp`), dispatcher, security, and cluster orchestration
+- **[`danube-admin`](danube-admin/README.md)** : Control-plane CLI (`ctl`), HTTP UI/API server, and AI MCP server (`mcp`)
+- **[`danube-edge`](danube-edge/)** : Edge MQTT v3.1.1/v5.0 gateway and WAL-backed cloud replicator
+- **[`danube-iceberg`](danube-iceberg/README.md)** : Embedded Iceberg/Parquet lakehouse runtime (`--features danube-broker/lakehouse`)
+- **[`danube-schema`](danube-schema/)** : Embedded Schema Registry (JSON Schema, Avro, Protobuf)
+- **[`danube-raft`](danube-raft/README.md)** : Embedded `openraft` + `redb` consensus and metadata store
+- **[`danube-persistent-storage`](danube-persistent-storage/README.md)** : Group-commit WAL, object-store tiering, and CoW segment lifecycle
+- **[`danube-client`](danube-client/README.md)** : Async Rust client SDK
+- **[`danube-core`](danube-core/README.md)** : Shared protocol definitions, topic paths, JWT helpers, and core types
 
 ## Building from Source
 
