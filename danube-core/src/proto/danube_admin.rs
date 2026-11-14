@@ -350,6 +350,9 @@ pub struct DescribeTopicResponse {
     /// "NONE", "BACKWARD", "FORWARD", "FULL"
     #[prost(string, optional, tag = "9")]
     pub compatibility_mode: ::core::option::Option<::prost::alloc::string::String>,
+    /// Resolved StreamIntent summary (if created with --intent)
+    #[prost(string, optional, tag = "10")]
+    pub intent: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Broker Unload
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -943,6 +946,146 @@ pub struct ReplayDlqResponse {
     pub replayed_count: u32,
     #[prost(uint64, tag = "5")]
     pub last_replayed_offset: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConfigureClusterStorageRequest {
+    /// "local", "shared_fs", or "object_store"
+    #[prost(string, tag = "1")]
+    pub mode: ::prost::alloc::string::String,
+    /// Backend for object_store mode (e.g. "s3", "gcs", "azblob", "memory", "fs")
+    #[prost(string, tag = "2")]
+    pub backend: ::prost::alloc::string::String,
+    /// Root path or URI (required for shared_fs and object_store)
+    #[prost(string, tag = "3")]
+    pub root: ::prost::alloc::string::String,
+    /// Additional OpenDAL options (region, endpoint, access_key, secret_key, ...)
+    #[prost(map = "string, string", tag = "4")]
+    pub options: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(bool, tag = "5")]
+    pub force: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureClusterStorageResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub active_mode: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureWriteBufferRequest {
+    #[prost(bool, tag = "1")]
+    pub enabled: bool,
+    #[prost(string, repeated, tag = "2")]
+    pub endpoints: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Optional profile preset: "ha" or "dev"
+    #[prost(string, optional, tag = "3")]
+    pub profile: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, optional, tag = "4")]
+    pub wait_replicas: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "5")]
+    pub wait_timeout_ms: ::core::option::Option<u64>,
+    /// "ack" or "fail"
+    #[prost(string, optional, tag = "6")]
+    pub on_wait_timeout: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, optional, tag = "7")]
+    pub max_cached_closed_segments: ::core::option::Option<u32>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureWriteBufferResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub enabled: bool,
+    #[prost(string, tag = "4")]
+    pub effective_profile: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureWalRetentionRequest {
+    #[prost(uint64, optional, tag = "1")]
+    pub retention_time_minutes: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub retention_size_mb: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "3")]
+    pub check_interval_minutes: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub rotate_max_bytes: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub rotate_max_hours: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub cache_capacity: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub flush_interval_ms: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "8")]
+    pub flush_max_batch_bytes: ::core::option::Option<u64>,
+    /// Clear retention limits (disable background deleter)
+    #[prost(bool, tag = "9")]
+    pub clear_retention: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureWalRetentionResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureLoadManagerRequest {
+    /// "fair", "balanced", or "weighted_load"
+    #[prost(string, optional, tag = "1")]
+    pub assignment_strategy: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag = "2")]
+    pub load_report_interval_seconds: ::core::option::Option<u64>,
+    #[prost(bool, optional, tag = "3")]
+    pub rebalancing_enabled: ::core::option::Option<bool>,
+    /// Rebalancing preset: "conservative", "balanced", or "aggressive"
+    #[prost(string, optional, tag = "4")]
+    pub rebalancing_profile: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag = "5")]
+    pub check_interval_seconds: ::core::option::Option<u64>,
+    #[prost(uint32, optional, tag = "6")]
+    pub max_moves_per_hour: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "7")]
+    pub cooldown_seconds: ::core::option::Option<u64>,
+    #[prost(uint32, optional, tag = "8")]
+    pub min_brokers_for_rebalance: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "9")]
+    pub min_topic_age_seconds: ::core::option::Option<u64>,
+    #[prost(string, repeated, tag = "10")]
+    pub blacklist_topics: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "11")]
+    pub replace_blacklist: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureLoadManagerResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExportClusterConfigRequest {
+    /// Optional broker_id; omit or 0 for cluster-level config only
+    #[prost(uint64, optional, tag = "1")]
+    pub broker_id: ::core::option::Option<u64>,
+    /// "yaml" (default) or "json"
+    #[prost(string, tag = "2")]
+    pub format: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExportClusterConfigResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub format: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub content: ::prost::alloc::string::String,
 }
 /// Keep enums/messages consistent with danube/DanubeApi.proto
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -2259,6 +2402,144 @@ pub mod cluster_admin_client {
                 .insert(GrpcMethod::new("danube_admin.ClusterAdmin", "JoinCluster"));
             self.inner.unary(req, path, codec).await
         }
+        /// Configure cluster storage mode (local, shared_fs, or object_store) via Raft.
+        pub async fn configure_cluster_storage(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureClusterStorageRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureClusterStorageResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ConfigureClusterStorage",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "danube_admin.ClusterAdmin",
+                        "ConfigureClusterStorage",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Enable/configure or disable the Valkey write buffer via Raft.
+        pub async fn configure_write_buffer(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureWriteBufferRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureWriteBufferResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ConfigureWriteBuffer",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ConfigureWriteBuffer"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Configure cluster-wide WAL and retention settings via Raft.
+        pub async fn configure_wal_retention(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureWalRetentionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureWalRetentionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ConfigureWalRetention",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ConfigureWalRetention"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Configure LoadManager placement strategy and automated rebalancing via Raft.
+        pub async fn configure_load_manager(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureLoadManagerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureLoadManagerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ConfigureLoadManager",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ConfigureLoadManager"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Export live cluster (and optional node) configuration as a valid RecoveryConfig YAML/JSON.
+        pub async fn export_cluster_config(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExportClusterConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExportClusterConfigResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/danube_admin.ClusterAdmin/ExportClusterConfig",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("danube_admin.ClusterAdmin", "ExportClusterConfig"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2341,6 +2622,46 @@ pub mod cluster_admin_server {
             request: tonic::Request<super::JoinClusterRequest>,
         ) -> std::result::Result<
             tonic::Response<super::JoinClusterResponse>,
+            tonic::Status,
+        >;
+        /// Configure cluster storage mode (local, shared_fs, or object_store) via Raft.
+        async fn configure_cluster_storage(
+            &self,
+            request: tonic::Request<super::ConfigureClusterStorageRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureClusterStorageResponse>,
+            tonic::Status,
+        >;
+        /// Enable/configure or disable the Valkey write buffer via Raft.
+        async fn configure_write_buffer(
+            &self,
+            request: tonic::Request<super::ConfigureWriteBufferRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureWriteBufferResponse>,
+            tonic::Status,
+        >;
+        /// Configure cluster-wide WAL and retention settings via Raft.
+        async fn configure_wal_retention(
+            &self,
+            request: tonic::Request<super::ConfigureWalRetentionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureWalRetentionResponse>,
+            tonic::Status,
+        >;
+        /// Configure LoadManager placement strategy and automated rebalancing via Raft.
+        async fn configure_load_manager(
+            &self,
+            request: tonic::Request<super::ConfigureLoadManagerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ConfigureLoadManagerResponse>,
+            tonic::Status,
+        >;
+        /// Export live cluster (and optional node) configuration as a valid RecoveryConfig YAML/JSON.
+        async fn export_cluster_config(
+            &self,
+            request: tonic::Request<super::ExportClusterConfigRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExportClusterConfigResponse>,
             tonic::Status,
         >;
     }
@@ -2815,6 +3136,244 @@ pub mod cluster_admin_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = JoinClusterSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ConfigureClusterStorage" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureClusterStorageSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ConfigureClusterStorageRequest>
+                    for ConfigureClusterStorageSvc<T> {
+                        type Response = super::ConfigureClusterStorageResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ConfigureClusterStorageRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::configure_cluster_storage(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureClusterStorageSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ConfigureWriteBuffer" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureWriteBufferSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ConfigureWriteBufferRequest>
+                    for ConfigureWriteBufferSvc<T> {
+                        type Response = super::ConfigureWriteBufferResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureWriteBufferRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::configure_write_buffer(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureWriteBufferSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ConfigureWalRetention" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureWalRetentionSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ConfigureWalRetentionRequest>
+                    for ConfigureWalRetentionSvc<T> {
+                        type Response = super::ConfigureWalRetentionResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureWalRetentionRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::configure_wal_retention(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureWalRetentionSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ConfigureLoadManager" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureLoadManagerSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ConfigureLoadManagerRequest>
+                    for ConfigureLoadManagerSvc<T> {
+                        type Response = super::ConfigureLoadManagerResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureLoadManagerRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::configure_load_manager(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureLoadManagerSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/danube_admin.ClusterAdmin/ExportClusterConfig" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExportClusterConfigSvc<T: ClusterAdmin>(pub Arc<T>);
+                    impl<
+                        T: ClusterAdmin,
+                    > tonic::server::UnaryService<super::ExportClusterConfigRequest>
+                    for ExportClusterConfigSvc<T> {
+                        type Response = super::ExportClusterConfigResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExportClusterConfigRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ClusterAdmin>::export_cluster_config(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExportClusterConfigSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

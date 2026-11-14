@@ -277,7 +277,10 @@ impl DanubeService {
         self.determine_initial_state(&cluster, auto_joined).await;
 
         // 4b. Reconcile cluster object store configuration before loading topics
-        self.reconcile_cluster_storage_config().await;
+        // 4. Reconcile cluster-wide runtime config stored in Raft
+        //    (must happen before topic creation/reconciliation so StorageFactory & LoadManager have live config)
+        self.reconcile_cluster_config(Some(&cluster.load_manager))
+            .await;
 
         // 5. Reconcile pre-existing topic assignments
         self.reconcile_topic_assignments().await;
@@ -299,9 +302,10 @@ impl DanubeService {
             cluster.leadership.clone(),
             self.meta_store.clone(),
         );
-        spawn_cluster_storage_config_watcher(
+        spawn_cluster_config_watcher(
             self.meta_store.clone(),
             self.broker.storage_factory().clone(),
+            cluster.load_manager.clone(),
         )
         .await;
         spawn_object_store_credential_refresher(self.broker.storage_factory().clone());
@@ -354,7 +358,7 @@ impl DanubeService {
         self.initialize_metadata_and_auth().await?;
 
         // 4b. Reconcile cluster object store configuration if already persisted
-        self.reconcile_cluster_storage_config().await;
+        self.reconcile_cluster_config(None).await;
 
         // 5. Broker gRPC + replicator
         let server_handle = self
@@ -833,18 +837,56 @@ impl DanubeService {
 
     /// Reads `/cluster/config/storage` from the metadata store and configures the
     /// broker's `StorageFactory` before assigned topics are loaded.
-    async fn reconcile_cluster_storage_config(&self) {
+    async fn reconcile_cluster_config(&self, load_manager: Option<&load_manager::LoadManager>) {
+        let storage_factory = self.broker.storage_factory();
+
         match self
             .meta_store
             .get("/cluster/config/storage", MetaOptions::None)
             .await
         {
-            Ok(Some(val)) => {
-                apply_stored_cluster_storage_config(&self.broker.storage_factory(), &val).await;
-            }
+            Ok(Some(val)) => apply_stored_cluster_storage_config(&storage_factory, &val).await,
             Ok(None) => {}
             Err(err) => {
                 warn!(error = %err, "failed to read /cluster/config/storage on startup");
+            }
+        }
+
+        match self
+            .meta_store
+            .get("/cluster/config/write_buffer", MetaOptions::None)
+            .await
+        {
+            Ok(Some(val)) => apply_stored_write_buffer_config(&storage_factory, &val).await,
+            Ok(None) => {}
+            Err(err) => {
+                warn!(error = %err, "failed to read /cluster/config/write_buffer on startup");
+            }
+        }
+
+        match self
+            .meta_store
+            .get("/cluster/config/wal", MetaOptions::None)
+            .await
+        {
+            Ok(Some(val)) => apply_stored_wal_config(&storage_factory, &val),
+            Ok(None) => {}
+            Err(err) => {
+                warn!(error = %err, "failed to read /cluster/config/wal on startup");
+            }
+        }
+
+        if let Some(lm) = load_manager {
+            match self
+                .meta_store
+                .get("/cluster/config/load_manager", MetaOptions::None)
+                .await
+            {
+                Ok(Some(val)) => apply_stored_load_manager_config(lm, &val),
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(error = %err, "failed to read /cluster/config/load_manager on startup");
+                }
             }
         }
     }
@@ -926,37 +968,24 @@ impl DanubeService {
         });
         info!("load manager service started");
 
-        // Automated rebalancing
-        if let Some(ref lm_config) = self.service_config.load_manager {
-            if lm_config.rebalancing.enabled {
-                info!(
-                    check_interval_seconds = lm_config.rebalancing.check_interval_seconds,
-                    aggressiveness = ?lm_config.rebalancing.aggressiveness,
-                    max_moves_per_hour = lm_config.rebalancing.max_moves_per_hour,
-                    "starting automated rebalancing loop"
-                );
-                let load_manager = cluster.load_manager.clone();
-                let rebalancing_config = lm_config.rebalancing.clone();
-                let leader_election = cluster.leader_election.clone();
-                tokio::spawn(async move {
-                    let _handle =
-                        load_manager.start_rebalancing_loop(rebalancing_config, leader_election);
-                });
-            } else {
-                info!("automated rebalancing is disabled");
-            }
-        } else {
-            debug!("no load manager configuration, rebalancing disabled");
-        }
+        // Automated rebalancing loop (always spawned so live LoadManager config updates via Raft activate immediately)
+        let lm_config = cluster.load_manager.current_config();
+        info!(
+            enabled = lm_config.rebalancing.enabled,
+            check_interval_seconds = lm_config.rebalancing.check_interval_seconds,
+            aggressiveness = ?lm_config.rebalancing.aggressiveness,
+            max_moves_per_hour = lm_config.rebalancing.max_moves_per_hour,
+            "starting automated rebalancing monitor"
+        );
+        let load_manager = cluster.load_manager.clone();
+        let rebalancing_config = lm_config.rebalancing;
+        let leader_election = cluster.leader_election.clone();
+        tokio::spawn(async move {
+            let _handle = load_manager.start_rebalancing_loop(rebalancing_config, leader_election);
+        });
 
-        // Periodic load reports
-        let load_report_interval = self
-            .service_config
-            .load_manager
-            .as_ref()
-            .map(|c| c.load_report_interval_seconds)
-            .unwrap_or(30);
-
+        // Periodic load reports (dynamically tracks LoadManager's interval handle)
+        let load_report_interval = cluster.load_manager.load_report_interval_handle();
         let broker_service = Arc::clone(&self.broker);
         let meta_store = self.meta_store.clone();
         tokio::spawn(async move {
@@ -999,11 +1028,18 @@ async fn create_namespace_if_absent(
 async fn post_broker_load_report(
     broker_service: Arc<BrokerService>,
     meta_store: MetadataStorage,
-    interval_seconds: u64,
+    interval_seconds: Arc<std::sync::atomic::AtomicU64>,
 ) {
-    let mut interval = time::interval(Duration::from_secs(interval_seconds));
+    let mut first_tick = true;
     loop {
-        interval.tick().await;
+        if !first_tick {
+            let mut elapsed = 0u64;
+            while elapsed < interval_seconds.load(std::sync::atomic::Ordering::Relaxed).max(1) {
+                time::sleep(Duration::from_secs(1)).await;
+                elapsed += 1;
+            }
+        }
+        first_tick = false;
         let topics = broker_service.get_topics();
         let broker_id = broker_service.broker_id;
         let load_report: LoadReport = load_report::generate_load_report(
@@ -1193,10 +1229,189 @@ fn spawn_object_store_credential_refresher(
     });
 }
 
-async fn apply_stored_cluster_storage_config(
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ClusterWriteBufferSpec {
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) endpoints: Vec<String>,
+    #[serde(default)]
+    pub(crate) profile: Option<String>,
+    #[serde(default)]
+    pub(crate) wait_replicas: Option<u32>,
+    #[serde(default)]
+    pub(crate) wait_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) on_wait_timeout: Option<String>,
+    #[serde(default)]
+    pub(crate) max_cached_closed_segments: Option<u32>,
+}
+
+impl ClusterWriteBufferSpec {
+    pub(crate) fn apply_profile(&mut self, profile: &str) -> Result<(), String> {
+        match profile.trim().to_ascii_lowercase().as_str() {
+            "ha" => {
+                self.profile = Some("ha".to_string());
+                self.wait_replicas = Some(1);
+                self.wait_timeout_ms = Some(100);
+                self.on_wait_timeout = Some("fail".to_string());
+                self.max_cached_closed_segments = Some(10);
+                Ok(())
+            }
+            "dev" => {
+                self.profile = Some("dev".to_string());
+                self.wait_replicas = Some(0);
+                self.wait_timeout_ms = Some(50);
+                self.on_wait_timeout = Some("ack".to_string());
+                self.max_cached_closed_segments = Some(2);
+                Ok(())
+            }
+            other => Err(format!(
+                "invalid write_buffer profile '{}'; expected 'ha' or 'dev'",
+                other
+            )),
+        }
+    }
+
+    pub(crate) fn to_write_buffer_config(
+        &self,
+    ) -> Result<Option<danube_persistent_storage::valkey::config::WriteBufferConfig>, String> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        if self.endpoints.is_empty() {
+            return Err("write_buffer enabled requires at least one endpoint".to_string());
+        }
+        let defaults = danube_persistent_storage::valkey::config::WriteBufferConfig::default();
+        let on_wait_timeout = match self.on_wait_timeout.as_deref() {
+            Some(s) => {
+                match s.trim().to_ascii_lowercase().as_str() {
+                    "ack" | "fallback" | "fallback_local_only" => {
+                        danube_persistent_storage::valkey::config::WaitTimeoutPolicy::Ack
+                    }
+                    "fail" | "reject" => {
+                        danube_persistent_storage::valkey::config::WaitTimeoutPolicy::Fail
+                    }
+                    other => {
+                        return Err(format!(
+                            "invalid on_wait_timeout '{}'; expected 'fail' or 'ack'",
+                            other
+                        ));
+                    }
+                }
+            }
+            None => defaults.on_wait_timeout,
+        };
+        Ok(Some(
+            danube_persistent_storage::valkey::config::WriteBufferConfig {
+                endpoints: self.endpoints.clone(),
+                wait_replicas: self.wait_replicas.unwrap_or(defaults.wait_replicas),
+                wait_timeout_ms: self.wait_timeout_ms.unwrap_or(defaults.wait_timeout_ms),
+                on_wait_timeout,
+                max_cached_closed_segments: self
+                    .max_cached_closed_segments
+                    .unwrap_or(defaults.max_cached_closed_segments),
+            },
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ClusterWalRetentionSpec {
+    #[serde(default)]
+    pub(crate) retention_time_minutes: Option<u64>,
+    #[serde(default)]
+    pub(crate) retention_size_mb: Option<u64>,
+    #[serde(default)]
+    pub(crate) check_interval_minutes: Option<u64>,
+    #[serde(default)]
+    pub(crate) rotate_max_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) rotate_max_hours: Option<u64>,
+    #[serde(default)]
+    pub(crate) cache_capacity: Option<usize>,
+    #[serde(default)]
+    pub(crate) flush_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) flush_max_batch_bytes: Option<usize>,
+}
+
+impl ClusterWalRetentionSpec {
+    pub(crate) fn apply_to_factory(&self, storage_factory: &danube_persistent_storage::StorageFactory) {
+        let mut wal = storage_factory.current_wal_config();
+        if let Some(cap) = self.cache_capacity {
+            wal.cache_capacity = Some(cap);
+        }
+        if let Some(ms) = self.flush_interval_ms {
+            wal.flush_interval_ms = Some(ms);
+        }
+        if let Some(bytes) = self.flush_max_batch_bytes {
+            wal.flush_max_batch_bytes = Some(bytes);
+        }
+        if let Some(bytes) = self.rotate_max_bytes {
+            wal.rotate_max_bytes = Some(bytes);
+        }
+        if let Some(hours) = self.rotate_max_hours {
+            wal.rotate_max_seconds = Some(hours.saturating_mul(3600));
+        }
+
+        let has_retention = self.retention_time_minutes.is_some()
+            || self.retention_size_mb.is_some()
+            || self.check_interval_minutes.is_some();
+        let retention = if has_retention {
+            Some(Some(danube_persistent_storage::RetentionConfig {
+                check_interval_minutes: self.check_interval_minutes.unwrap_or(5),
+                time_minutes: self.retention_time_minutes,
+                size_mb: self.retention_size_mb,
+            }))
+        } else {
+            Some(None)
+        };
+
+        storage_factory.configure_wal_and_retention(Some(wal), retention);
+    }
+}
+
+pub(crate) async fn apply_stored_cluster_storage_config(
     storage_factory: &danube_persistent_storage::StorageFactory,
     val: &serde_json::Value,
 ) {
+    let mode = val
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase());
+
+    match mode.as_deref() {
+        Some("local") => {
+            if let Err(err) = storage_factory.configure_local_storage(true) {
+                warn!(error = %err, "failed to apply cluster local storage config");
+            } else {
+                info!("reconciled cluster storage mode: local");
+            }
+            return;
+        }
+        Some("shared_fs") => {
+            let Some(root) = val.get("root").and_then(|v| v.as_str()) else {
+                warn!("ignoring /cluster/config/storage shared_fs without 'root' field");
+                return;
+            };
+            let cfg = danube_persistent_storage::SharedFsConfig {
+                root: root.to_string(),
+            };
+            if let Err(err) = storage_factory.configure_shared_fs(cfg, true) {
+                warn!(error = %err, root, "failed to apply cluster shared_fs storage config");
+            } else {
+                info!(root, "reconciled cluster storage mode: shared_fs");
+            }
+            return;
+        }
+        Some("object_store") | None => {}
+        Some(other) => {
+            warn!(mode = other, "ignoring unknown /cluster/config/storage mode");
+            return;
+        }
+    }
+
     let Some(backend) = val.get("backend").and_then(|v| v.as_str()) else {
         warn!("ignoring /cluster/config/storage without 'backend' field");
         return;
@@ -1234,30 +1449,109 @@ async fn apply_stored_cluster_storage_config(
     }
 }
 
-async fn spawn_cluster_storage_config_watcher(
+pub(crate) async fn apply_stored_write_buffer_config(
+    storage_factory: &danube_persistent_storage::StorageFactory,
+    val: &serde_json::Value,
+) {
+    let spec: ClusterWriteBufferSpec = match serde_json::from_value(val.clone()) {
+        Ok(s) => s,
+        Err(err) => {
+            warn!(error = %err, "failed to parse /cluster/config/write_buffer");
+            return;
+        }
+    };
+    let wb_cfg = match spec.to_write_buffer_config() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            warn!(error = %err, "invalid /cluster/config/write_buffer");
+            return;
+        }
+    };
+    if let Err(err) = storage_factory.configure_write_buffer(wb_cfg).await {
+        warn!(error = %err, "failed to apply cluster write_buffer config");
+    } else {
+        info!(enabled = spec.enabled, "reconciled cluster write_buffer configuration");
+    }
+}
+
+pub(crate) fn apply_stored_wal_config(
+    storage_factory: &danube_persistent_storage::StorageFactory,
+    val: &serde_json::Value,
+) {
+    let spec: ClusterWalRetentionSpec = match serde_json::from_value(val.clone()) {
+        Ok(s) => s,
+        Err(err) => {
+            warn!(error = %err, "failed to parse /cluster/config/wal");
+            return;
+        }
+    };
+    spec.apply_to_factory(storage_factory);
+    info!("reconciled cluster WAL and retention configuration");
+}
+
+pub(crate) fn apply_stored_load_manager_config(
+    load_manager: &load_manager::LoadManager,
+    val: &serde_json::Value,
+) {
+    let cfg: load_manager::config::LoadManagerConfig = match serde_json::from_value(val.clone()) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(error = %err, "failed to parse /cluster/config/load_manager");
+            return;
+        }
+    };
+    load_manager.update_config(cfg.clone());
+    info!(
+        strategy = ?cfg.assignment_strategy,
+        rebalance_enabled = cfg.rebalancing.enabled,
+        "reconciled cluster load_manager configuration"
+    );
+}
+
+async fn spawn_cluster_config_watcher(
     meta_store: MetadataStorage,
     storage_factory: danube_persistent_storage::StorageFactory,
+    load_manager: load_manager::LoadManager,
 ) {
-    match meta_store.watch("/cluster/config/storage").await {
+    match meta_store.watch("/cluster/config").await {
         Ok(mut watch_stream) => {
             tokio::spawn(async move {
                 while let Some(result) = watch_stream.next().await {
                     match result {
-                        Ok(WatchEvent::Put { value, .. }) => {
-                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) {
-                                apply_stored_cluster_storage_config(&storage_factory, &val).await;
+                        Ok(WatchEvent::Put { key, value, .. }) => {
+                            let Ok(key_str) = std::str::from_utf8(&key) else {
+                                continue;
+                            };
+                            let Ok(val) = serde_json::from_slice::<serde_json::Value>(&value) else {
+                                continue;
+                            };
+                            match key_str {
+                                "/cluster/config/storage" => {
+                                    apply_stored_cluster_storage_config(&storage_factory, &val)
+                                        .await;
+                                }
+                                "/cluster/config/write_buffer" => {
+                                    apply_stored_write_buffer_config(&storage_factory, &val).await;
+                                }
+                                "/cluster/config/wal" => {
+                                    apply_stored_wal_config(&storage_factory, &val);
+                                }
+                                "/cluster/config/load_manager" => {
+                                    apply_stored_load_manager_config(&load_manager, &val);
+                                }
+                                _ => {}
                             }
                         }
                         Ok(WatchEvent::Delete { .. }) => {}
                         Err(err) => {
-                            warn!(error = %err, "cluster storage config watch error");
+                            warn!(error = %err, "cluster config watch error");
                         }
                     }
                 }
             });
         }
         Err(err) => {
-            warn!(error = %err, "failed to watch /cluster/config/storage");
+            warn!(error = %err, "failed to watch /cluster/config");
         }
     }
 }

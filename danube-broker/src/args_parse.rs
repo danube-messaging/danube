@@ -46,6 +46,8 @@ pub(crate) struct Args {
     pub(crate) connect_url: Option<String>,
     pub(crate) raft_addr: Option<String>,
     pub(crate) data_dir: Option<String>,
+    /// Per-node override for local WAL staging root directory (takes priority over cluster defaults)
+    pub(crate) wal_dir: Option<String>,
     pub(crate) seed_nodes: Option<String>,
     pub(crate) join: bool,
     /// Edge mode: unique edge identifier
@@ -85,6 +87,7 @@ impl Args {
         println!("Broker options:");
         println!("  --mode <mode>        Broker mode: cluster, standalone, or edge (default: cluster)");
         println!("  --data-dir           Base data directory (default: ./danube-data)");
+        println!("  --wal-dir            Per-node local WAL staging directory override");
         println!("  --broker-addr        Danube Broker listen/advertised address");
         println!("  --admin-addr         Optional separate Admin gRPC listen address");
         println!("  --prom-exporter      Prometheus Exporter http address");
@@ -129,6 +132,7 @@ impl Args {
         let mut connect_url = None;
         let mut raft_addr = None;
         let mut data_dir = None;
+        let mut wal_dir = None;
         let mut seed_nodes = None;
         let mut join = false;
         let mut edge_name = None;
@@ -170,6 +174,9 @@ impl Args {
                 }
                 "--data-dir" => {
                     data_dir = args_iter.next().map(|s| s.to_string());
+                }
+                "--wal-dir" => {
+                    wal_dir = args_iter.next().map(|s| s.to_string());
                 }
                 "--seed-nodes" => {
                     seed_nodes = args_iter.next().map(|s| s.to_string());
@@ -291,6 +298,7 @@ impl Args {
             connect_url,
             raft_addr,
             data_dir,
+            wal_dir,
             seed_nodes,
             join,
             edge_name,
@@ -458,5 +466,13 @@ mod tests {
         assert_eq!(args.cloud_endpoint.as_deref(), Some("https://cloud:6650"));
         assert_eq!(args.mqtt_addr.as_deref(), Some("0.0.0.0:1884"));
         assert_eq!(args.edge_token.as_deref(), Some("secret-token"));
+    }
+
+    #[test]
+    fn parses_wal_dir_override() {
+        let args = Args::parse_from(["danube", "--wal-dir", "/mnt/nvme-wal"])
+            .expect("--wal-dir should parse");
+
+        assert_eq!(args.wal_dir.as_deref(), Some("/mnt/nvme-wal"));
     }
 }

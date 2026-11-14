@@ -5,7 +5,7 @@ use crate::policies::Policies;
 use crate::storage_configuration::StorageConfig;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -69,27 +69,27 @@ pub(crate) struct EdgeConfig {
 /// Used when Raft quorum is lost or locked out so an operator can force seed nodes,
 /// super admins, storage settings, load manager, auth, edge config, or bind addresses
 /// from a local JSON/YAML file.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct RecoveryConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) seed_nodes: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) super_admins: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_create_topics: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) policies: Option<Policies>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) storage: Option<StorageConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) load_manager: Option<LoadManagerConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auth: Option<AuthConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(crate) edge: Option<danube_edge::config::EdgeConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) broker_addr: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) admin_addr: Option<String>,
 }
 
@@ -412,5 +412,43 @@ mod tests {
             edge_cfg.inline.mqtt.as_ref().map(|m| m.listener.as_str()),
             Some("0.0.0.0:1884")
         );
+    }
+
+    #[test]
+    fn recovery_config_yaml_round_trip() {
+        let yaml_in = super::RecoveryConfig {
+            auto_create_topics: Some(true),
+            storage: Some(StorageConfig::SharedFs {
+                local_wal_root: Some("/mnt/nvme/wal".to_string()),
+                metadata_prefix: Some("/danube".to_string()),
+                durable: Some(crate::storage_configuration::SharedFsDurableNode {
+                    root: "/mnt/shared".to_string(),
+                }),
+                local_retention: None,
+                wal: Default::default(),
+                write_buffer: None,
+            }),
+            load_manager: Some(crate::danube_service::load_manager::config::LoadManagerConfig::default()),
+            broker_addr: Some("127.0.0.1:6650".to_string()),
+            admin_addr: Some("127.0.0.1:50051".to_string()),
+            ..Default::default()
+        };
+
+        let serialized = serde_yaml::to_string(&yaml_in).expect("serialize recovery config YAML");
+        let tmp_dir = std::env::temp_dir().join(format!("danube_rt_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let rec_path = tmp_dir.join("recovery.yml");
+        std::fs::write(&rec_path, &serialized).expect("write recovery.yml");
+
+        let mut cfg = ServiceConfiguration::cluster_zero_yaml(&tmp_dir)
+            .expect("cluster zero-YAML config");
+        cfg.apply_recovery_config(&rec_path)
+            .expect("apply exported YAML recovery config");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        assert!(matches!(cfg.storage, StorageConfig::SharedFs { .. }));
+        assert_eq!(cfg.storage.local_wal_root(), Some("/mnt/nvme/wal"));
+        assert_eq!(cfg.broker_addr.to_string(), "127.0.0.1:6650");
+        assert_eq!(cfg.admin_addr.to_string(), "127.0.0.1:50051");
     }
 }

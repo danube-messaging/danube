@@ -65,7 +65,7 @@ impl StorageFactory {
             return Ok((existing.clone(), None, None, resumed, None));
         }
 
-        let mut cfg = self.base_cfg.clone();
+        let mut cfg = self.current_wal_config();
         if let Some(sync_mode) = wal_sync_mode {
             cfg.sync_mode = Some(sync_mode);
         }
@@ -140,7 +140,7 @@ impl StorageFactory {
 
         // Only pass the rotation receiver to lifecycle when write_buffer is
         // configured — otherwise there's nobody listening so we just drop it.
-        let rotation_rx = if self.write_buffer.is_some() {
+        let rotation_rx = if self.current_write_buffer_config().is_some() {
             Some(rotation_rx)
         } else {
             None
@@ -184,9 +184,8 @@ impl StorageFactory {
     }
 
     pub(super) fn topic_wal_dir(&self, topic_path: &str) -> Option<PathBuf> {
-        self.base_cfg
+        self.current_wal_config()
             .dir
-            .clone()
             .map(|root| resolve_topic_wal_dir(root, topic_path))
     }
 
@@ -336,8 +335,8 @@ impl StorageFactory {
         topic_path: &str,
         start_offset: u64,
     ) -> Option<(u64, Vec<StreamMessage>)> {
-        let wb_config = self.write_buffer.as_ref()?;
-        let client = match self.get_or_connect_valkey(wb_config).await {
+        let wb_config = self.current_write_buffer_config()?;
+        let client = match self.get_or_connect_valkey(&wb_config).await {
             Ok(client) => client,
             Err(e) => {
                 warn!(

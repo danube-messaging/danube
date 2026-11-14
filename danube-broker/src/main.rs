@@ -130,6 +130,10 @@ async fn main() -> Result<()> {
         tracing::warn!(recovery_config = %recovery_path, "applied local break-glass recovery configuration override");
     }
 
+    if let Some(ref wal_dir) = args.wal_dir {
+        service_config.storage.set_local_wal_root(wal_dir.clone());
+    }
+
     if args.tls_cert.is_some() || args.tls_key.is_some() || args.ca_cert.is_some() {
         let cert_file = args.tls_cert.clone().ok_or_else(|| {
             anyhow::anyhow!("--tls-cert is required when configuring TLS via CLI flags")
@@ -570,6 +574,9 @@ async fn main() -> Result<()> {
                 assignment_strategy,
                 rebalancing_config,
             );
+            if let Some(ref lm_config) = service_config.load_manager {
+                load_manager.set_load_report_interval_seconds(lm_config.load_report_interval_seconds);
+            }
 
             Some(ClusterServices {
                 leader_election: leader_election_service,

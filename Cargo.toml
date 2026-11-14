@@ -41,7 +41,6 @@ tokio-stream = "0.1.18"
 tokio-util = "0.7"
 async-trait = "0.1.89"
 tonic = { version = "0.14" , features = ["tls-ring"] }
-tonic-types = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
 bytes = { version = "1.11", features = ["serde"] }

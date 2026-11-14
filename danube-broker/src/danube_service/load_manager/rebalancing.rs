@@ -234,7 +234,8 @@ pub(super) fn start_rebalancing_loop<F>(
     rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
     meta_store: MetadataStorage,
-    config: config::RebalancingConfig,
+    live_config: Arc<std::sync::RwLock<Option<config::RebalancingConfig>>>,
+    fallback_config: config::RebalancingConfig,
     leader_election: LeaderElection,
     is_broker_active: F,
 ) -> JoinHandle<()>
@@ -245,20 +246,56 @@ where
         + 'static,
 {
     tokio::spawn(async move {
+        let initial_config = {
+            live_config
+                .read()
+                .expect("rebalancing config lock")
+                .clone()
+                .unwrap_or_else(|| fallback_config.clone())
+        };
         info!(
-            check_interval_seconds = config.check_interval_seconds,
-            aggressiveness = ?config.aggressiveness,
-            max_moves_per_hour = config.max_moves_per_hour,
+            enabled = initial_config.enabled,
+            check_interval_seconds = initial_config.check_interval_seconds,
+            aggressiveness = ?initial_config.aggressiveness,
+            max_moves_per_hour = initial_config.max_moves_per_hour,
             "starting automated rebalancing loop (moves 1 topic per cycle)"
         );
 
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(config.check_interval_seconds));
-
         let mut history = RebalancingHistory::new(1000);
+        let mut first_tick = true;
 
         loop {
-            interval.tick().await;
+            if !first_tick {
+                let mut elapsed = 0u64;
+                loop {
+                    let target_secs = {
+                        let cfg = live_config
+                            .read()
+                            .expect("rebalancing config lock")
+                            .clone()
+                            .unwrap_or_else(|| fallback_config.clone());
+                        if cfg.enabled {
+                            cfg.check_interval_seconds.max(1)
+                        } else {
+                            5
+                        }
+                    };
+                    if elapsed >= target_secs {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    elapsed += 1;
+                }
+            }
+            first_tick = false;
+
+            let config = {
+                live_config
+                    .read()
+                    .expect("rebalancing config lock")
+                    .clone()
+                    .unwrap_or_else(|| fallback_config.clone())
+            };
 
             // Check 1: Only leader performs rebalancing
             let leader_state = leader_election.get_state().await;

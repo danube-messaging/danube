@@ -1,6 +1,6 @@
 //! Topic management tools
 
-use crate::core::AdminGrpcClient;
+use crate::core::{intent_summary_for_topic, AdminGrpcClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -87,6 +87,9 @@ pub async fn describe_topic(client: &Arc<AdminGrpcClient>, params: DescribeTopic
             let mut output = format!("Topic: {}\n\n", response.name);
             output.push_str(&format!("Broker ID: {}\n", response.broker_id));
             output.push_str(&format!("Delivery: {}\n", response.delivery));
+            if let Some(intent) = response.intent {
+                output.push_str(&format!("Intent: {}\n", intent));
+            }
 
             if let Some(schema_subject) = response.schema_subject {
                 output.push_str("\nSchema Information:\n");
@@ -150,8 +153,12 @@ pub struct CreateTopicParams {
     /// Example: "user-events-value", "analytics-v2"
     pub schema_subject: Option<String>,
 
-    /// Optional StreamIntent profile (e.g. "agent_event_mesh", "agent_task_queue",
-    /// "tool_invocation_log", "telemetry_firehose", "lakehouse_feed").
+    /// Optional StreamIntent workload preset that configures delivery, WAL sync mode,
+    /// and default subscription failure policy (retries + DLQ):
+    /// - "realtime" (aliases: telemetry_firehose, firehose, telemetry, ephemeral): non_reliable in-memory streaming
+    /// - "event_stream" (aliases: agent_event_mesh, event_mesh, events, lakehouse_feed): reliable, wal_sync=os_cache_flush, 3 retries (500ms), poison_policy=dead_letter (<topic>-dlq)
+    /// - "task_queue" (aliases: agent_task_queue, tasks, work_queue): reliable, wal_sync=fsync_batch, 5 retries (1000ms), poison_policy=dead_letter (<topic>-dlq)
+    /// - "audit_log" (aliases: tool_invocation_log, tool_log, audit, state_log): reliable, wal_sync=fsync_batch, 10 retries (500ms), poison_policy=block (no DLQ)
     pub intent: Option<String>,
 }
 
@@ -164,6 +171,20 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
         1 // Reliable
     } else {
         0 // NonReliable
+    };
+    let intent_note = params
+        .intent
+        .as_deref()
+        .map(|raw| {
+            let summary = intent_summary_for_topic(raw, &params.name)
+                .unwrap_or_else(|| raw.to_string());
+            format!("\nIntent: {}", summary)
+        })
+        .unwrap_or_default();
+    let effective_dispatch = if dispatch == 1 || intent_note.contains("delivery=reliable") {
+        "reliable"
+    } else {
+        params.dispatch_strategy.as_str()
     };
 
     if params.partitions > 0 {
@@ -179,8 +200,8 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
         match client.create_partitioned_topic(req).await {
             Ok(_) => {
                 format!(
-                    "Successfully created partitioned topic '{}' with {} partitions ({})",
-                    params.name, params.partitions, params.dispatch_strategy
+                    "Successfully created partitioned topic '{}' with {} partitions ({}){}",
+                    params.name, params.partitions, effective_dispatch, intent_note
                 )
             }
             Err(e) => format!("Error creating partitioned topic: {}", e),
@@ -197,8 +218,8 @@ pub async fn create_topic(client: &Arc<AdminGrpcClient>, params: CreateTopicPara
         match client.create_topic(req).await {
             Ok(_) => {
                 format!(
-                    "Successfully created topic '{}' ({})",
-                    params.name, params.dispatch_strategy
+                    "Successfully created topic '{}' ({}){}",
+                    params.name, effective_dispatch, intent_note
                 )
             }
             Err(e) => format!("Error creating topic: {}", e),

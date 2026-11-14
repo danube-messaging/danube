@@ -32,25 +32,11 @@ jobs:
       - name: Start Broker 1 (single-node cluster)
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
           mkdir -p danube-data temp
-          cat > temp/rebalance_override.yaml <<'EOF'
-          load_manager:
-            assignment_strategy: "fair"
-            load_report_interval_seconds: 5
-            rebalancing:
-              enabled: true
-              aggressiveness: "aggressive"
-              check_interval_seconds: 5
-              max_moves_per_hour: 30
-              cooldown_seconds: 2
-              min_brokers_for_rebalance: 2
-              min_topic_age_seconds: 30
-              blacklist_topics: []
-          EOF
 
           nohup ./target/release/danube up \
-            --recovery-config temp/rebalance_override.yaml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
@@ -71,13 +57,24 @@ jobs:
             sleep 3
           done
 
+          echo "Configuring LoadManager via admin CLI..."
+          ./target/release/danube ctl cluster load-manager \
+            --assignment-strategy fair \
+            --load-report-interval-seconds 5 \
+            --rebalance true \
+            --profile aggressive \
+            --check-interval-seconds 5 \
+            --max-moves-per-hour 30 \
+            --cooldown-seconds 2 \
+            --min-brokers 2 \
+            --min-topic-age-seconds 30
+
       - name: Start Brokers 2 and 3 with --join
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           # Start Broker 2 in --join mode
           nohup ./target/release/danube up \
-            --recovery-config temp/rebalance_override.yaml \
             --broker-addr 0.0.0.0:6651 \
             --admin-addr 0.0.0.0:50052 \
             --raft-addr 0.0.0.0:7651 \
@@ -88,7 +85,6 @@ jobs:
 
           # Start Broker 3 in --join mode
           nohup ./target/release/danube up \
-            --recovery-config temp/rebalance_override.yaml \
             --broker-addr 0.0.0.0:6652 \
             --admin-addr 0.0.0.0:50053 \
             --raft-addr 0.0.0.0:7652 \

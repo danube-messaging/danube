@@ -566,6 +566,12 @@ impl TopicAdmin for DanubeAdminImpl {
             Some(ConfigDispatchStrategy::NonReliable) => "NonReliable".to_string(),
             None => "NonReliable".to_string(),
         };
+        let intent = self
+            .resources
+            .topic
+            .get_topic_intent(lookup)
+            .await
+            .map(|settings| settings.summary_for_topic(&req.name));
 
         // Get schema registry information if topic has a schema
         let (schema_subject, schema_id, schema_version, schema_type, compatibility_mode) =
@@ -581,6 +587,7 @@ impl TopicAdmin for DanubeAdminImpl {
             schema_version,
             schema_type,
             compatibility_mode,
+            intent,
         };
         Ok(tonic::Response::new(response))
     }
@@ -1756,26 +1763,6 @@ impl DanubeAdminImpl {
             .set_topic_intent(topic_name, val)
             .await
             .map_err(|e| Status::internal(format!("failed to persist topic intent: {}", e)))?;
-
-        if settings.storage_tier == "cloud_tiered" {
-            self.resources
-                .topic
-                .set_topic_storage_mode(topic_name, "cloud_tiered")
-                .await
-                .map_err(|e| Status::internal(format!("failed to persist topic storage mode: {}", e)))?;
-            if let Err(err) = self
-                .broker_service
-                .storage_factory()
-                .enable_cloud_tiering_for_topic(topic_name)
-                .await
-            {
-                tracing::warn!(
-                    topic = %topic_name,
-                    error = %err,
-                    "cloud_tiered intent recorded but cluster object store is not configured yet"
-                );
-            }
-        }
         Ok(())
     }
 

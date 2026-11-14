@@ -74,40 +74,26 @@ jobs:
       # =====================================================================
       # Phase 2: Broker E2E — produce messages with write buffer enabled
       # =====================================================================
-      - name: "Phase 2: Start broker with write buffer config"
+      - name: "Phase 2: Start broker and enable write buffer via CLI"
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
-          mkdir -p temp danube-data
-
-          cat > temp/write_buffer_override.yaml <<'EOF'
-          storage:
-            mode: local
-            local_wal_root: "./danube-data/broker-1/wal"
-            metadata_prefix: "/danube"
-            write_buffer:
-              backend: valkey
-              endpoints:
-                - "redis://127.0.0.1:6379"
-              wait_replicas: 0
-              wait_timeout_ms: 100
-              on_wait_timeout: fail
-              max_cached_closed_segments: 5
-          EOF
+          mkdir -p temp danube-data/broker-1/wal
 
           ./target/release/danube up \
-            --recovery-config temp/write_buffer_override.yaml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
             --data-dir ./danube-data/broker-1 \
+            --wal-dir ./danube-data/broker-1/wal \
             --prom-exporter 0.0.0.0:9040 \
             > temp/broker.log 2>&1 &
           echo $! > temp/broker.pid
 
           for attempt in $(seq 1 20); do
-            if nc -zv 127.0.0.1 6650 2>/dev/null; then
-              echo "Broker is ready on port 6650."
+            if nc -zv 127.0.0.1 6650 2>/dev/null && nc -zv 127.0.0.1 50051 2>/dev/null; then
+              echo "Broker is ready on ports 6650 and 50051."
               break
             elif [ $attempt -eq 20 ]; then
               echo "ERROR: Broker failed to start."
@@ -117,6 +103,16 @@ jobs:
             echo "Waiting for broker to start... ($attempt/20)"
             sleep 3
           done
+
+          echo "Enabling Valkey write buffer dynamically via admin CLI..."
+          ./target/release/danube ctl cluster write-buffer enable \
+            --endpoints redis://127.0.0.1:6379 \
+            --wait-replicas 0 \
+            --wait-timeout-ms 100 \
+            --on-wait-timeout fail \
+            --max-cached-segments 5
+          ./target/release/danube ctl cluster export-config --format yaml
+          sleep 1
 
       - name: "Phase 2: Produce messages with write buffer"
         run: |
@@ -180,17 +176,17 @@ jobs:
           fi
           echo "✓ Confirmed WAL is gone — only Valkey has the buffered data"
 
-      - name: "Phase 3: Restart broker (same config, no WAL)"
+      - name: "Phase 3: Restart broker (zero YAML, Raft restores write buffer, no WAL)"
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
-          echo "Restarting broker with same config (WAL deleted)..."
+          echo "Restarting broker without YAML config (WAL deleted; Raft restores write buffer)..."
           ./target/release/danube up \
-            --recovery-config temp/write_buffer_override.yaml \
             --broker-addr 0.0.0.0:6650 \
             --admin-addr 0.0.0.0:50051 \
             --raft-addr 0.0.0.0:7650 \
             --data-dir ./danube-data/broker-1 \
+            --wal-dir ./danube-data/broker-1/wal \
             --prom-exporter 0.0.0.0:9040 \
             >> temp/broker.log 2>&1 &
           echo $! > temp/broker.pid

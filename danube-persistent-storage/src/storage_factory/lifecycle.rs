@@ -24,7 +24,7 @@ impl StorageFactory {
         let mobility_state = crate::metadata::MobilityState::new(metadata.clone());
         Self {
             mode: Arc::new(std::sync::RwLock::new(config.mode)),
-            base_cfg: config.wal,
+            base_cfg: Arc::new(std::sync::RwLock::new(config.wal)),
             segment_catalog,
             mobility_state,
             durable_store: Arc::new(std::sync::RwLock::new(durable_store)),
@@ -34,17 +34,29 @@ impl StorageFactory {
             segment_exporters: Arc::new(dashmap::DashMap::new()),
             segment_exporter_tokens: Arc::new(dashmap::DashMap::new()),
             segment_export_interval_seconds,
-            deleter_cfg,
+            deleter_cfg: Arc::new(std::sync::RwLock::new(deleter_cfg)),
             deleters: Arc::new(dashmap::DashMap::new()),
             deleter_tokens: Arc::new(dashmap::DashMap::new()),
             metadata_root: config.metadata_root,
-            write_buffer: config.write_buffer,
-            valkey_client: Arc::new(tokio::sync::OnceCell::new()),
+            write_buffer: Arc::new(std::sync::RwLock::new(config.write_buffer)),
+            valkey_client: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
-    pub(super) fn current_mode(&self) -> super::StorageMode {
+    pub fn current_mode(&self) -> super::StorageMode {
         self.mode.read().expect("storage mode lock").clone()
+    }
+
+    pub fn current_wal_config(&self) -> crate::wal::WalConfig {
+        self.base_cfg.read().expect("wal config lock").clone()
+    }
+
+    pub fn current_deleter_config(&self) -> Option<DeleterConfig> {
+        self.deleter_cfg.read().expect("deleter config lock").clone()
+    }
+
+    pub fn current_write_buffer_config(&self) -> Option<crate::valkey::config::WriteBufferConfig> {
+        self.write_buffer.read().expect("write buffer lock").clone()
     }
 
     pub(super) fn current_durable_store(&self) -> Option<Arc<dyn DurableStore>> {
@@ -64,6 +76,117 @@ impl StorageFactory {
         match self.current_mode() {
             super::StorageMode::ObjectStore(cfg) => Some(cfg),
             _ => None,
+        }
+    }
+
+    /// Switch cluster storage mode back to local filesystem (no durable backend).
+    pub fn configure_local_storage(&self, force: bool) -> Result<(), PersistentStorageError> {
+        if self.current_durable_store().is_some()
+            && !self.cloud_tiered_topics.is_empty()
+            && !force
+        {
+            return Err(PersistentStorageError::Other(
+                "cannot switch to local storage while cloud-tiered topics exist without force=true"
+                    .to_string(),
+            ));
+        }
+
+        {
+            let mut store_guard = self.durable_store.write().expect("durable store lock");
+            *store_guard = None;
+        }
+        {
+            let mut mode_guard = self.mode.write().expect("storage mode lock");
+            *mode_guard = super::StorageMode::Local;
+        }
+        Ok(())
+    }
+
+    /// Live-configure or swap shared filesystem durable storage.
+    pub fn configure_shared_fs(
+        &self,
+        cfg: super::SharedFsConfig,
+        force: bool,
+    ) -> Result<(), PersistentStorageError> {
+        if cfg.root.trim().is_empty() {
+            return Err(PersistentStorageError::Other(
+                "shared_fs root path must not be empty".to_string(),
+            ));
+        }
+
+        if self.current_durable_store().is_some()
+            && !self.cloud_tiered_topics.is_empty()
+            && !force
+        {
+            return Err(PersistentStorageError::Other(
+                "cannot change shared_fs storage while cloud-tiered topics exist without force=true"
+                    .to_string(),
+            ));
+        }
+
+        let new_store =
+            ObjStoreDurable::from_backend(crate::object_store_backend::BackendConfig::Filesystem {
+                root: cfg.root.clone(),
+            })?;
+        {
+            let mut store_guard = self.durable_store.write().expect("durable store lock");
+            *store_guard = Some(Arc::new(new_store));
+        }
+        {
+            let mut mode_guard = self.mode.write().expect("storage mode lock");
+            *mode_guard = super::StorageMode::SharedFs(cfg);
+        }
+        Ok(())
+    }
+
+    /// Live-configure or disable the Valkey write buffer.
+    pub async fn configure_write_buffer(
+        &self,
+        cfg: Option<crate::valkey::config::WriteBufferConfig>,
+    ) -> Result<(), PersistentStorageError> {
+        if let Some(ref wb_cfg) = cfg {
+            if wb_cfg.endpoints.is_empty() {
+                return Err(PersistentStorageError::Other(
+                    "write_buffer endpoints must not be empty".to_string(),
+                ));
+            }
+        }
+        {
+            let mut guard = self.write_buffer.write().expect("write buffer lock");
+            *guard = cfg;
+        }
+        {
+            let mut client_guard = self.valkey_client.write().await;
+            *client_guard = None;
+        }
+        Ok(())
+    }
+
+    /// Live-update cluster-wide WAL and retention settings while preserving each node's local WAL root.
+    pub fn configure_wal_and_retention(
+        &self,
+        wal_cfg: Option<crate::wal::WalConfig>,
+        retention: Option<Option<super::RetentionConfig>>,
+    ) {
+        if let Some(mut updated_wal) = wal_cfg {
+            let mut guard = self.base_cfg.write().expect("wal config lock");
+            let local_dir = guard.dir.clone();
+            let local_sync = guard.sync_mode;
+            if updated_wal.sync_mode.is_none() {
+                updated_wal.sync_mode = local_sync;
+            }
+            updated_wal.dir = local_dir;
+            *guard = updated_wal;
+        }
+
+        if let Some(maybe_retention) = retention {
+            let updated_deleter = maybe_retention.map(|r| DeleterConfig {
+                check_interval_minutes: r.check_interval_minutes,
+                retention_time_minutes: r.time_minutes,
+                retention_size_mb: r.size_mb,
+            });
+            let mut guard = self.deleter_cfg.write().expect("deleter config lock");
+            *guard = updated_deleter;
         }
     }
 
@@ -342,7 +465,7 @@ impl StorageFactory {
     }
 
     fn should_run_retention_deleter(&self) -> bool {
-        self.deleter_cfg.is_some()
+        self.current_deleter_config().is_some()
     }
 
     /// Build or retrieve per-topic storage and start any required background services.
@@ -402,7 +525,9 @@ impl StorageFactory {
         self.spawn_segment_exporter_if_needed(&topic_path, &topic_wal, durable_store.is_some());
 
         if self.should_run_retention_deleter() && !self.deleters.contains_key(&topic_path) {
-            if let (Some(_dir), Some(cfg)) = (resolved_dir.clone(), self.deleter_cfg.clone()) {
+            if let (Some(_dir), Some(cfg)) =
+                (resolved_dir.clone(), self.current_deleter_config())
+            {
                 let store = ckpt_store.clone().ok_or_else(|| {
                     PersistentStorageError::Other(
                         "retention deleter requires wal.dir for checkpoint state".to_string(),
@@ -438,7 +563,8 @@ impl StorageFactory {
         });
 
         // Warm Tier: Valkey stream reader + client (optional)
-        let warm = if let Some(ref wb_config) = self.write_buffer {
+        let write_buffer_cfg = self.current_write_buffer_config();
+        let warm = if let Some(ref wb_config) = write_buffer_cfg {
             let valkey_client = self.get_or_connect_valkey(wb_config).await?;
 
             // Spawn the rotation listener: WAL rotation → XTRIM old segments
@@ -478,20 +604,27 @@ impl StorageFactory {
         &self,
         config: &crate::valkey::config::WriteBufferConfig,
     ) -> Result<Arc<ValkeyClient>, PersistentStorageError> {
-        self.valkey_client
-            .get_or_try_init(|| async {
-                ValkeyClient::connect(config)
-                    .await
-                    .map(Arc::new)
-                    .map_err(|e| {
-                        PersistentStorageError::Other(format!(
-                            "failed to connect to Valkey write buffer: {}",
-                            e
-                        ))
-                    })
-            })
+        {
+            let guard = self.valkey_client.read().await;
+            if let Some(ref client) = *guard {
+                return Ok(client.clone());
+            }
+        }
+        let mut guard = self.valkey_client.write().await;
+        if let Some(ref client) = *guard {
+            return Ok(client.clone());
+        }
+        let client = ValkeyClient::connect(config)
             .await
-            .cloned()
+            .map(Arc::new)
+            .map_err(|e| {
+                PersistentStorageError::Other(format!(
+                    "failed to connect to Valkey write buffer: {}",
+                    e
+                ))
+            })?;
+        *guard = Some(client.clone());
+        Ok(client)
     }
 
     pub async fn shutdown(&self) {

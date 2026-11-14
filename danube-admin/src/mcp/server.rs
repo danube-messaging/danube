@@ -284,6 +284,56 @@ impl DanubeMcpServer {
         Ok(Self::tool_result(output))
     }
 
+    /// Configure cluster storage mode live across the cluster via Raft (local, shared_fs, or object_store).
+    #[tool]
+    async fn cluster_configure_storage(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureClusterStorageParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_cluster_storage(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure or disable the Valkey warm write buffer live across the cluster via Raft.
+    #[tool]
+    async fn cluster_configure_write_buffer(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureWriteBufferParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_write_buffer(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure cluster-wide WAL rotation/flush and retention settings live via Raft.
+    #[tool]
+    async fn cluster_configure_wal(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureWalRetentionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_wal_retention(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure LoadManager placement strategy and automated rebalancing live via Raft.
+    #[tool]
+    async fn cluster_configure_load_manager(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureLoadManagerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_load_manager(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Export live cluster configuration as a valid RecoveryConfig YAML or JSON for break-glass recovery.
+    #[tool]
+    async fn cluster_export_config(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ExportClusterConfigParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::export_cluster_config(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
     // ===== TOPIC MANAGEMENT TOOLS =====
 
     /// List all topics in a specific namespace or for a specific broker.
@@ -318,14 +368,20 @@ impl DanubeMcpServer {
         Ok(Self::tool_result(output))
     }
 
-    /// Create a new topic with optional partitioning and schema validation.
+    /// Create a new topic with optional partitioning, schema validation, and workload intent.
     ///
     /// Side effects: Creates a new topic in cluster metadata and assigns it to a broker.
-    /// Supports both non-partitioned (single partition) and partitioned topics.
+    /// Supports both non-partitioned (partitions=0) and partitioned topics (explicitly via partitions > 0).
+    /// Storage mode follows the cluster default automatically unless updated later with set_topic_storage_mode.
     ///
     /// Topic name must follow format: "/namespace/topic-name". Use list_namespaces to verify
     /// namespace exists. For schema-validated topics, register the schema first with register_schema.
-    /// Delivery strategy: "reliable" (WAL + cloud storage) or "non_reliable" (in-memory only).
+    /// Delivery strategy: "reliable" (WAL + cluster storage) or "non_reliable" (in-memory only).
+    /// Workload intents ("intent" parameter):
+    /// - "realtime": non_reliable in-memory streaming (heartbeats, live tokens, RPC)
+    /// - "event_stream": reliable pub/sub with wal_sync=os_cache_flush, 3 retries (500ms), DLQ <topic>-dlq
+    /// - "task_queue": reliable job queue with wal_sync=fsync_batch, 5 retries (1000ms), DLQ <topic>-dlq
+    /// - "audit_log": reliable compliance/tool log with wal_sync=fsync_batch, 10 retries (500ms), poison_policy=block
     #[tool]
     async fn create_topic(
         &self,

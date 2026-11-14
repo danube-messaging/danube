@@ -5,6 +5,7 @@ on:
     paths:
       - "danube-admin/**"
       - "danube-broker/**"
+      - "danube-persistent-storage/**"
       - "danube-schema/**"
       - "danube-core/proto/DanubeAdmin.proto"
       - ".github/workflows/cli-e2e.yml"
@@ -39,6 +40,7 @@ jobs:
             --broker-addr 0.0.0.0:6650 \
             --raft-addr 0.0.0.0:7650 \
             --data-dir ./danube-data/broker-1 \
+            --wal-dir ./danube-data/broker-1/custom-wal \
             --prom-exporter 0.0.0.0:9040 \
             > broker.log 2>&1 &
 
@@ -65,40 +67,109 @@ jobs:
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
         run: cargo test -p danube-admin --tests -- --nocapture
 
-      - name: Test v2 single-port admin multiplexing, declarative apply, and stream branching
+      - name: Test v2 single-port admin multiplexing, stream intents, --wal-dir, and branching
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:6650
         run: |
           set -e
           ADMIN_BIN="./target/release/danube ctl"
           mkdir -p temp
 
           # 1. Verify admin gRPC is multiplexed on the main broker port (6650)
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN brokers list
+          $ADMIN_BIN brokers list
           echo "✅ Single-port admin multiplexing on 6650 verified"
 
-          # 2. Verify declarative desired-state dry-run & apply with stream intents
+          # 2. Verify the 4 canonical --intent profiles
+          $ADMIN_BIN topics create /default/intent-realtime --intent realtime
+          $ADMIN_BIN topics create /default/intent-events --intent event_stream
+          $ADMIN_BIN topics create /default/intent-tasks --intent task_queue
+          $ADMIN_BIN topics create /default/intent-audit --intent audit_log
+
+          $ADMIN_BIN topics describe /default/intent-realtime --output json | jq -e '.delivery == "NonReliable" and (.intent | startswith("realtime"))'
+          $ADMIN_BIN topics describe /default/intent-events --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-events-dlq")) and (.intent | contains("max_retries=3"))'
+          $ADMIN_BIN topics describe /default/intent-tasks --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-tasks-dlq")) and (.intent | contains("max_retries=5"))'
+          $ADMIN_BIN topics describe /default/intent-audit --output json | jq -e '.delivery == "Reliable" and (.intent | contains("poison_policy=block")) and (.intent | contains("max_retries=10"))'
+          echo "✅ Canonical stream intents (realtime, event_stream, task_queue, audit_log) verified"
+
+          # 3. Verify --wal-dir on disk and subscription failure-policy inheritance from intent
+          timeout 20 $ADMIN_BIN consume -s http://127.0.0.1:6650 -t /default/intent-tasks -n sub-check --subscription intent-sub -l 1 > temp/intent_consume.txt 2>&1 &
+          CONSUME_PID=$!
+          sleep 3
+          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/intent-tasks -m "task-1" -c 3 -i 500 --reliable
+          wait $CONSUME_PID
+          [ -d ./danube-data/broker-1/custom-wal ]
+          $ADMIN_BIN topics get-failure-policy /default/intent-tasks --subscription intent-sub --output json | jq -e '.max_redelivery_count == 5 and .dead_letter_topic == "/default/intent-tasks-dlq" and .poison_policy == "dead_letter" and .backoff_strategy == "exponential"'
+          echo "✅ --wal-dir override and subscription failure-policy inheritance verified"
+
+          # 4. Verify zero-copy topic branching via CLI
+          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/branch-src -m "branch-msg" -c 5 -i 50 --reliable
+          $ADMIN_BIN topics branch /default/branch-src /default/branch-dst --at-offset 2
+          $ADMIN_BIN topics describe /default/branch-dst
+          echo "✅ Topic branching verified"
+
+      - name: Test dynamic cluster config, export-config, and cluster declarative apply
+        env:
+          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:6650
+        run: |
+          set -e
+          ADMIN_BIN="./target/release/danube ctl"
+          mkdir -p temp danube-data/shared-fs
+
+          # 1. Configure WAL/retention, LoadManager, and shared_fs dynamically (Zero-YAML)
+          $ADMIN_BIN cluster wal \
+            --retention-time-minutes 1440 \
+            --retention-size-mb 4096 \
+            --rotate-max-bytes 268435456 \
+            --flush-interval-ms 10
+          $ADMIN_BIN cluster load-manager \
+            --assignment-strategy balanced \
+            --load-report-interval-seconds 15 \
+            --rebalance true \
+            --profile aggressive
+          $ADMIN_BIN cluster storage shared-fs --root ./danube-data/shared-fs
+          $ADMIN_BIN cluster storage status
+          sleep 1
+
+          # 2. Verify break-glass RecoveryConfig export in YAML and JSON
+          $ADMIN_BIN cluster export-config --format yaml --output temp/exported_recovery.yaml
+          grep -q "shared_fs" temp/exported_recovery.yaml
+          grep -q "./danube-data/shared-fs" temp/exported_recovery.yaml
+          grep -q "./danube-data/broker-1/custom-wal" temp/exported_recovery.yaml
+          grep -q "1440" temp/exported_recovery.yaml
+          grep -q "balanced" temp/exported_recovery.yaml
+          grep -q "aggressive" temp/exported_recovery.yaml
+
+          $ADMIN_BIN cluster export-config --format json > temp/exported_recovery.json
+          jq -e '.storage.mode == "shared_fs" and .storage.durable.root == "./danube-data/shared-fs" and .storage.local_wal_root == "./danube-data/broker-1/custom-wal" and .storage.local_retention.time_minutes == 1440 and .storage.wal.rotation.max_bytes == 268435456 and .load_manager.assignment_strategy == "balanced" and .load_manager.load_report_interval_seconds == 15 and .load_manager.rebalancing.enabled == true and .load_manager.rebalancing.aggressiveness == "aggressive"' temp/exported_recovery.json
+          echo "✅ Dynamic cluster configuration & break-glass export-config verified"
+
+          # 3. Verify declarative desired-state dry-run & apply with cluster blocks and stream intents
           cat > temp/desired_state.yaml <<EOF
+          shared_fs:
+            root: ./danube-data/shared-fs
+          load_manager:
+            assignment_strategy: weighted_load
+            load_report_interval_seconds: 10
+            rebalancing:
+              enabled: true
+              aggressiveness: conservative
           namespaces:
             - agentic-e2e
           topics:
             - name: /agentic-e2e/tasks
-              intent: agent_task_queue
+              intent: task_queue
               partitions: 2
             - name: /agentic-e2e/events
-              intent: agent_event_mesh
+              intent: event_stream
           EOF
 
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN apply -f temp/desired_state.yaml --dry-run
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN apply -f temp/desired_state.yaml
-          TOPICS_OUT=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics list --namespace agentic-e2e --output json)
+          $ADMIN_BIN apply -f temp/desired_state.yaml --dry-run
+          $ADMIN_BIN apply -f temp/desired_state.yaml
+          TOPICS_OUT=$($ADMIN_BIN topics list --namespace agentic-e2e --output json)
           echo "$TOPICS_OUT" | grep -q "/agentic-e2e/tasks"
           echo "$TOPICS_OUT" | grep -q "/agentic-e2e/events"
-          echo "✅ Declarative apply with stream intents verified"
-
-          # 3. Verify zero-copy topic branching via CLI
-          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/branch-src -m "branch-msg" -c 5 -i 50 --reliable
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics branch /default/branch-src /default/branch-dst --at-offset 2
-          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650 $ADMIN_BIN topics describe /default/branch-dst
-          echo "✅ Topic branching verified"
+          $ADMIN_BIN cluster export-config --format json | jq -e '.load_manager.assignment_strategy == "weighted_load" and .load_manager.rebalancing.aggressiveness == "conservative"'
+          echo "✅ Declarative apply with cluster config & canonical intents verified"
 
       - name: Upload broker logs on failure
         if: failure()

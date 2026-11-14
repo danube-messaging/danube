@@ -288,6 +288,66 @@ impl AdminGrpcClient {
         self.execute_with_timeout(fut).await
     }
 
+    pub async fn configure_cluster_storage(
+        &self,
+        req: admin::ConfigureClusterStorageRequest,
+    ) -> Result<admin::ConfigureClusterStorageResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.configure_cluster_storage(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn configure_write_buffer(
+        &self,
+        req: admin::ConfigureWriteBufferRequest,
+    ) -> Result<admin::ConfigureWriteBufferResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.configure_write_buffer(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn configure_wal_retention(
+        &self,
+        req: admin::ConfigureWalRetentionRequest,
+    ) -> Result<admin::ConfigureWalRetentionResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.configure_wal_retention(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn configure_load_manager(
+        &self,
+        req: admin::ConfigureLoadManagerRequest,
+    ) -> Result<admin::ConfigureLoadManagerResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.configure_load_manager(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
+    pub async fn export_cluster_config(
+        &self,
+        req: admin::ExportClusterConfigRequest,
+    ) -> Result<admin::ExportClusterConfigResponse> {
+        let mut client = admin::cluster_admin_client::ClusterAdminClient::with_interceptor(
+            self.channel.clone(),
+            self.auth_interceptor(),
+        );
+        let fut = async move { client.export_cluster_config(req).await };
+        self.execute_with_timeout(fut).await
+    }
+
     // ===== NAMESPACE ADMIN METHODS =====
 
     pub async fn list_namespaces(&self) -> Result<admin::NamespaceListResponse> {
