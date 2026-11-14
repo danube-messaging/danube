@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone)]
 pub struct StorageFactory {
     mode: Arc<RwLock<StorageMode>>,
-    base_cfg: crate::wal::WalConfig,
+    base_cfg: Arc<RwLock<crate::wal::WalConfig>>,
     segment_catalog: SegmentCatalog,
     mobility_state: MobilityState,
     durable_store: Arc<RwLock<Option<Arc<dyn DurableStore>>>>,
@@ -32,13 +32,13 @@ pub struct StorageFactory {
     segment_exporters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     segment_exporter_tokens: Arc<DashMap<String, CancellationToken>>,
     segment_export_interval_seconds: u64,
-    deleter_cfg: Option<DeleterConfig>,
+    deleter_cfg: Arc<RwLock<Option<DeleterConfig>>>,
     deleters: Arc<DashMap<String, JoinHandle<Result<(), PersistentStorageError>>>>,
     deleter_tokens: Arc<DashMap<String, CancellationToken>>,
     metadata_root: String,
-    write_buffer: Option<WriteBufferConfig>,
+    write_buffer: Arc<RwLock<Option<WriteBufferConfig>>>,
     /// Shared Valkey client, lazily initialized on first topic with write_buffer.
-    valkey_client: Arc<tokio::sync::OnceCell<Arc<ValkeyClient>>>,
+    valkey_client: Arc<tokio::sync::RwLock<Option<Arc<ValkeyClient>>>>,
 }
 
 #[derive(Debug, Clone)]

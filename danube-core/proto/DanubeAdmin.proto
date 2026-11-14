@@ -67,6 +67,21 @@ service ClusterAdmin {
 
   // Self-join an existing cluster with automatic voter target cap.
   rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+
+  // Configure cluster storage mode (local, shared_fs, or object_store) via Raft.
+  rpc ConfigureClusterStorage(ConfigureClusterStorageRequest) returns (ConfigureClusterStorageResponse);
+
+  // Enable/configure or disable the Valkey write buffer via Raft.
+  rpc ConfigureWriteBuffer(ConfigureWriteBufferRequest) returns (ConfigureWriteBufferResponse);
+
+  // Configure cluster-wide WAL and retention settings via Raft.
+  rpc ConfigureWalRetention(ConfigureWalRetentionRequest) returns (ConfigureWalRetentionResponse);
+
+  // Configure LoadManager placement strategy and automated rebalancing via Raft.
+  rpc ConfigureLoadManager(ConfigureLoadManagerRequest) returns (ConfigureLoadManagerResponse);
+
+  // Export live cluster (and optional node) configuration as a valid RecoveryConfig YAML/JSON.
+  rpc ExportClusterConfig(ExportClusterConfigRequest) returns (ExportClusterConfigResponse);
 }
 
 service NamespaceAdmin {
@@ -766,4 +781,93 @@ message ReplayDlqResponse {
   string target_topic = 3;
   uint32 replayed_count = 4;
   uint64 last_replayed_offset = 5;
+}
+
+message ConfigureClusterStorageRequest {
+  // "local", "shared_fs", or "object_store"
+  string mode = 1;
+  // Backend for object_store mode (e.g. "s3", "gcs", "azblob", "memory", "fs")
+  string backend = 2;
+  // Root path or URI (required for shared_fs and object_store)
+  string root = 3;
+  // Additional OpenDAL options (region, endpoint, access_key, secret_key, ...)
+  map<string, string> options = 4;
+  bool force = 5;
+}
+
+message ConfigureClusterStorageResponse {
+  bool success = 1;
+  string message = 2;
+  string active_mode = 3;
+}
+
+message ConfigureWriteBufferRequest {
+  bool enabled = 1;
+  repeated string endpoints = 2;
+  // Optional profile preset: "ha" or "dev"
+  optional string profile = 3;
+  optional uint32 wait_replicas = 4;
+  optional uint64 wait_timeout_ms = 5;
+  // "ack" or "fail"
+  optional string on_wait_timeout = 6;
+  optional uint32 max_cached_closed_segments = 7;
+}
+
+message ConfigureWriteBufferResponse {
+  bool success = 1;
+  string message = 2;
+  bool enabled = 3;
+  string effective_profile = 4;
+}
+
+message ConfigureWalRetentionRequest {
+  optional uint64 retention_time_minutes = 1;
+  optional uint64 retention_size_mb = 2;
+  optional uint64 check_interval_minutes = 3;
+  optional uint64 rotate_max_bytes = 4;
+  optional uint64 rotate_max_hours = 5;
+  optional uint64 cache_capacity = 6;
+  optional uint64 flush_interval_ms = 7;
+  optional uint64 flush_max_batch_bytes = 8;
+  // Clear retention limits (disable background deleter)
+  bool clear_retention = 9;
+}
+
+message ConfigureWalRetentionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ConfigureLoadManagerRequest {
+  // "fair", "balanced", or "weighted_load"
+  optional string assignment_strategy = 1;
+  optional uint64 load_report_interval_seconds = 2;
+  optional bool rebalancing_enabled = 3;
+  // Rebalancing preset: "conservative", "balanced", or "aggressive"
+  optional string rebalancing_profile = 4;
+  optional uint64 check_interval_seconds = 5;
+  optional uint32 max_moves_per_hour = 6;
+  optional uint64 cooldown_seconds = 7;
+  optional uint32 min_brokers_for_rebalance = 8;
+  optional uint64 min_topic_age_seconds = 9;
+  repeated string blacklist_topics = 10;
+  bool replace_blacklist = 11;
+}
+
+message ConfigureLoadManagerResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ExportClusterConfigRequest {
+  // Optional broker_id; omit or 0 for cluster-level config only
+  optional uint64 broker_id = 1;
+  // "yaml" (default) or "json"
+  string format = 2;
+}
+
+message ExportClusterConfigResponse {
+  bool success = 1;
+  string format = 2;
+  string content = 3;
 }

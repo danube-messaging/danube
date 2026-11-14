@@ -56,8 +56,9 @@ pub(crate) struct LoadManager {
     pub(crate) brokers_usage: Arc<Mutex<HashMap<u64, LoadReport>>>,
     pub(crate) rankings: Arc<Mutex<Vec<(u64, usize)>>>,
     next_broker: Arc<Mutex<Option<u64>>>,
-    assignment_strategy: config::AssignmentStrategy,
-    rebalancing_config: Option<config::RebalancingConfig>,
+    assignment_strategy: Arc<std::sync::RwLock<config::AssignmentStrategy>>,
+    load_report_interval_seconds: Arc<std::sync::atomic::AtomicU64>,
+    rebalancing_config: Arc<std::sync::RwLock<Option<config::RebalancingConfig>>>,
 }
 
 impl LoadManager {
@@ -86,9 +87,65 @@ impl LoadManager {
             brokers_usage: Arc::new(Mutex::new(HashMap::new())),
             rankings: Arc::new(Mutex::new(Vec::new())),
             next_broker: Arc::new(Mutex::new(Some(broker_id))),
-            assignment_strategy,
-            rebalancing_config,
+            assignment_strategy: Arc::new(std::sync::RwLock::new(assignment_strategy)),
+            load_report_interval_seconds: Arc::new(std::sync::atomic::AtomicU64::new(30)),
+            rebalancing_config: Arc::new(std::sync::RwLock::new(rebalancing_config)),
         }
+    }
+
+    /// Update LoadManager configuration live via Raft control plane.
+    pub fn update_config(&self, cfg: config::LoadManagerConfig) {
+        {
+            let mut strategy = self
+                .assignment_strategy
+                .write()
+                .expect("assignment strategy lock");
+            *strategy = cfg.assignment_strategy;
+        }
+        self.load_report_interval_seconds.store(
+            cfg.load_report_interval_seconds.max(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        {
+            let mut rebalancing = self
+                .rebalancing_config
+                .write()
+                .expect("rebalancing config lock");
+            *rebalancing = Some(cfg.rebalancing);
+        }
+    }
+
+    /// Return a snapshot of the effective LoadManagerConfig.
+    pub fn current_config(&self) -> config::LoadManagerConfig {
+        let assignment_strategy = self
+            .assignment_strategy
+            .read()
+            .expect("assignment strategy lock")
+            .clone();
+        let load_report_interval_seconds = self
+            .load_report_interval_seconds
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let rebalancing = self
+            .rebalancing_config
+            .read()
+            .expect("rebalancing config lock")
+            .clone()
+            .unwrap_or_default();
+
+        config::LoadManagerConfig {
+            assignment_strategy,
+            load_report_interval_seconds,
+            rebalancing,
+        }
+    }
+
+    pub fn load_report_interval_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.load_report_interval_seconds)
+    }
+
+    pub fn set_load_report_interval_seconds(&self, seconds: u64) {
+        self.load_report_interval_seconds
+            .store(seconds.max(1), std::sync::atomic::Ordering::Relaxed);
     }
     /// Initializes the LoadManager and starts watching for cluster events
     ///
@@ -958,10 +1015,13 @@ impl LoadManager {
             })
         };
 
+        let live_rebalancing = self.rebalancing_config.clone();
+
         rebalancing::start_rebalancing_loop(
             rankings,
             brokers_usage,
             meta_store,
+            live_rebalancing,
             config,
             leader_election,
             is_broker_active,
@@ -975,8 +1035,13 @@ impl LoadManager {
     /// - Fair: Simple topic count only (predictable, testing-friendly)
     /// - Balanced: Multi-factor scoring with weighted topic load + CPU + Memory
     /// - WeightedLoad: Adaptive algorithm that detects and prioritizes bottlenecks
-    async fn calculate_rankings(&self) {
-        let broker_loads = match &self.assignment_strategy {
+    pub async fn calculate_rankings(&self) {
+        let strategy = self
+            .assignment_strategy
+            .read()
+            .expect("assignment strategy lock")
+            .clone();
+        let broker_loads = match strategy {
             config::AssignmentStrategy::Fair => {
                 // Simple topic count for fair round-robin distribution
                 rankings::rankings_simple(self.brokers_usage.clone()).await
@@ -1011,12 +1076,18 @@ impl LoadManager {
     ///
     /// Returns the current rebalancing config if available from service configuration.
     pub async fn get_rebalancing_config(&self) -> Option<config::RebalancingConfig> {
-        self.rebalancing_config.clone()
+        self.rebalancing_config
+            .read()
+            .expect("rebalancing config lock")
+            .clone()
     }
 
     /// Gets assignment strategy (for admin CLI)
-    pub fn get_assignment_strategy(&self) -> &config::AssignmentStrategy {
-        &self.assignment_strategy
+    pub fn get_assignment_strategy(&self) -> config::AssignmentStrategy {
+        self.assignment_strategy
+            .read()
+            .expect("assignment strategy lock")
+            .clone()
     }
 }
 

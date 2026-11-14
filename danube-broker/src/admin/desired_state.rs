@@ -12,7 +12,20 @@ pub(crate) struct DesiredStateManifest {
     #[serde(default)]
     pub(crate) topics: Vec<DesiredTopicSpec>,
     #[serde(default)]
+    pub(crate) shared_fs: Option<DesiredSharedFsSpec>,
+    #[serde(default)]
     pub(crate) object_store: Option<DesiredObjectStoreSpec>,
+    #[serde(default)]
+    pub(crate) write_buffer: Option<crate::danube_service::ClusterWriteBufferSpec>,
+    #[serde(default)]
+    pub(crate) load_manager: Option<crate::danube_service::load_manager::config::LoadManagerConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DesiredSharedFsSpec {
+    pub(crate) root: String,
+    #[serde(default)]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,11 +112,38 @@ pub(crate) fn compute_plan(
     let existing_topic_set: BTreeSet<&str> = existing_topics.iter().map(String::as_str).collect();
     let mut planned_namespaces: BTreeSet<String> = BTreeSet::new();
 
+    if let Some(ref shared_fs) = manifest.shared_fs {
+        actions.push(PlannedAction {
+            kind: "update_config".to_string(),
+            resource: "cluster/shared_fs".to_string(),
+            details: format!("root={}", shared_fs.root),
+        });
+    }
+
     if let Some(ref obj) = manifest.object_store {
         actions.push(PlannedAction {
             kind: "update_config".to_string(),
             resource: "cluster/object_store".to_string(),
             details: format!("backend={} root={}", obj.backend, obj.root),
+        });
+    }
+
+    if let Some(ref wb) = manifest.write_buffer {
+        actions.push(PlannedAction {
+            kind: "update_config".to_string(),
+            resource: "cluster/write_buffer".to_string(),
+            details: format!("enabled={} endpoints={:?}", wb.enabled, wb.endpoints),
+        });
+    }
+
+    if let Some(ref lm) = manifest.load_manager {
+        actions.push(PlannedAction {
+            kind: "update_config".to_string(),
+            resource: "cluster/load_manager".to_string(),
+            details: format!(
+                "strategy={:?} rebalancing_enabled={}",
+                lm.assignment_strategy, lm.rebalancing.enabled
+            ),
         });
     }
 
@@ -231,7 +271,7 @@ topics:
                 schema_subject: None,
                 storage_mode: Some("cloud_tiered".to_string()),
             }],
-            object_store: None,
+            ..Default::default()
         };
         let existing_ns = vec!["default".to_string(), "system".to_string()];
         let existing_topics = vec![
@@ -257,6 +297,36 @@ topics:
             .map(|a| a.resource.as_str())
             .collect();
         assert_eq!(deletes, vec!["/default/existing-unlisted"]);
+    }
+
+    #[test]
+    fn parses_and_plans_cluster_config_blocks() {
+        let yaml = r#"
+shared_fs:
+  root: /mnt/danube-shared
+write_buffer:
+  enabled: true
+  endpoints: ["redis://127.0.0.1:6379"]
+  profile: ha
+load_manager:
+  assignment_strategy: weighted_load
+  rebalancing:
+    enabled: true
+    aggressiveness: aggressive
+namespaces: []
+topics: []
+"#;
+        let manifest = DesiredStateManifest::parse(yaml).expect("parse cluster config manifest");
+        let plan = compute_plan(&manifest, &[], &[], false);
+        assert!(plan
+            .iter()
+            .any(|a| a.kind == "update_config" && a.resource == "cluster/shared_fs"));
+        assert!(plan
+            .iter()
+            .any(|a| a.kind == "update_config" && a.resource == "cluster/write_buffer"));
+        assert!(plan
+            .iter()
+            .any(|a| a.kind == "update_config" && a.resource == "cluster/load_manager"));
     }
 }
 

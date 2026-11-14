@@ -55,8 +55,6 @@ impl RebalancingAggressiveness {
     }
 
     /// Get default check interval based on aggressiveness (seconds)
-    /// Reserved for future CLI/API use (Step 9)
-    #[allow(dead_code)]
     pub fn default_check_interval(&self) -> u64 {
         match self {
             Self::Conservative => 600, // 10 minutes
@@ -66,8 +64,6 @@ impl RebalancingAggressiveness {
     }
 
     /// Get default max moves per hour based on aggressiveness
-    /// Reserved for future CLI/API use (Step 9)
-    #[allow(dead_code)]
     pub fn default_max_moves_per_hour(&self) -> usize {
         match self {
             Self::Conservative => 5,
@@ -77,8 +73,6 @@ impl RebalancingAggressiveness {
     }
 
     /// Get default cooldown seconds based on aggressiveness
-    /// Reserved for future CLI/API use (Step 9)
-    #[allow(dead_code)]
     pub fn default_cooldown_seconds(&self) -> u64 {
         match self {
             Self::Conservative => 120, // 2 minutes
@@ -98,6 +92,7 @@ fn default_topic_move_cooldown_secs() -> u64 {
 
 /// Rebalancing configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RebalancingConfig {
     /// Enable/disable automated rebalancing
     pub enabled: bool,
@@ -142,6 +137,7 @@ impl Default for RebalancingConfig {
 
 /// Load Manager configuration (Phase 3)
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct LoadManagerConfig {
     /// Topic assignment strategy for new topics
     #[serde(default)]
@@ -157,6 +153,44 @@ pub struct LoadManagerConfig {
     /// Automated rebalancing configuration
     #[serde(default)]
     pub rebalancing: RebalancingConfig,
+}
+
+impl AssignmentStrategy {
+    pub fn from_str_name(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fair" => Ok(Self::Fair),
+            "balanced" => Ok(Self::Balanced),
+            "weighted_load" | "weighted-load" | "weighted" => Ok(Self::WeightedLoad),
+            other => Err(format!(
+                "invalid assignment_strategy '{}'; expected 'fair', 'balanced', or 'weighted_load'",
+                other
+            )),
+        }
+    }
+}
+
+impl RebalancingAggressiveness {
+    pub fn from_str_name(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "conservative" => Ok(Self::Conservative),
+            "balanced" => Ok(Self::Balanced),
+            "aggressive" => Ok(Self::Aggressive),
+            other => Err(format!(
+                "invalid rebalancing profile '{}'; expected 'conservative', 'balanced', or 'aggressive'",
+                other
+            )),
+        }
+    }
+}
+
+impl RebalancingConfig {
+    /// Apply an aggressiveness profile preset (check interval, max moves/hour, cooldown).
+    pub fn apply_profile(&mut self, profile: RebalancingAggressiveness) {
+        self.check_interval_seconds = profile.default_check_interval();
+        self.max_moves_per_hour = profile.default_max_moves_per_hour();
+        self.cooldown_seconds = profile.default_cooldown_seconds();
+        self.aggressiveness = profile;
+    }
 }
 
 fn default_load_report_interval() -> u64 {
@@ -232,5 +266,21 @@ mod tests {
         let config = LoadManagerConfig::default();
         assert_eq!(config.assignment_strategy, AssignmentStrategy::Balanced);
         assert!(!config.rebalancing.enabled);
+    }
+
+    #[test]
+    fn test_rebalancing_apply_profile() {
+        let mut cfg = RebalancingConfig::default();
+        cfg.apply_profile(RebalancingAggressiveness::Aggressive);
+        assert_eq!(cfg.aggressiveness, RebalancingAggressiveness::Aggressive);
+        assert_eq!(cfg.check_interval_seconds, 120);
+        assert_eq!(cfg.max_moves_per_hour, 20);
+        assert_eq!(cfg.cooldown_seconds, 30);
+
+        cfg.apply_profile(RebalancingAggressiveness::Conservative);
+        assert_eq!(cfg.aggressiveness, RebalancingAggressiveness::Conservative);
+        assert_eq!(cfg.check_interval_seconds, 600);
+        assert_eq!(cfg.max_moves_per_hour, 5);
+        assert_eq!(cfg.cooldown_seconds, 120);
     }
 }

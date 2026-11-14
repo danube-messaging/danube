@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub(crate) enum StorageConfig {
     Local {
@@ -174,14 +174,33 @@ impl StorageConfig {
             write_buffer: None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn local_wal_root(&self) -> Option<&str> {
+        match self {
+            Self::Local { local_wal_root, .. } => Some(local_wal_root.as_str()),
+            Self::SharedFs { local_wal_root, .. } | Self::ObjectStore { local_wal_root, .. } => {
+                local_wal_root.as_deref()
+            }
+        }
+    }
+
+    pub(crate) fn set_local_wal_root(&mut self, root: String) {
+        match self {
+            Self::Local { local_wal_root, .. } => *local_wal_root = root,
+            Self::SharedFs { local_wal_root, .. } | Self::ObjectStore { local_wal_root, .. } => {
+                *local_wal_root = Some(root);
+            }
+        }
+    }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct SharedFsDurableNode {
     pub(crate) root: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub(crate) struct WalNode {
     pub(crate) dir: Option<String>,
     pub(crate) file_name: Option<String>,
@@ -194,26 +213,26 @@ pub(crate) struct WalNode {
     pub(crate) file_sync: Option<WalFlushNode>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalFlushNode {
     pub(crate) interval_ms: Option<u64>,
     pub(crate) max_batch_bytes: Option<usize>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalRotationNode {
     pub(crate) max_bytes: Option<u64>,
     pub(crate) max_hours: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WalAdvancedNode {
     pub(crate) cache_capacity: Option<usize>,
     pub(crate) file_sync: Option<WalFlushNode>,
     pub(crate) rotation: Option<WalRotationNode>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct LocalRetentionNode {
     pub(crate) time_minutes: Option<u64>,
     pub(crate) size_mb: Option<u64>,
@@ -260,7 +279,7 @@ impl WalNode {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "backend")]
 pub(crate) enum ObjectStoreNode {
     #[serde(rename = "s3")]
@@ -304,7 +323,7 @@ pub(crate) enum ObjectStoreNode {
 ///   on_wait_timeout: fail
 ///   max_cached_closed_segments: 5
 /// ```
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct WriteBufferNode {
     /// Backend type (currently only "valkey" is supported).
     #[allow(dead_code)]

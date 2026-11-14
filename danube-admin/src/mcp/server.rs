@@ -284,6 +284,56 @@ impl DanubeMcpServer {
         Ok(Self::tool_result(output))
     }
 
+    /// Configure cluster storage mode live across the cluster via Raft (local, shared_fs, or object_store).
+    #[tool]
+    async fn cluster_configure_storage(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureClusterStorageParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_cluster_storage(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure or disable the Valkey warm write buffer live across the cluster via Raft.
+    #[tool]
+    async fn cluster_configure_write_buffer(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureWriteBufferParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_write_buffer(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure cluster-wide WAL rotation/flush and retention settings live via Raft.
+    #[tool]
+    async fn cluster_configure_wal(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureWalRetentionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_wal_retention(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Configure LoadManager placement strategy and automated rebalancing live via Raft.
+    #[tool]
+    async fn cluster_configure_load_manager(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ConfigureLoadManagerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::configure_load_manager(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
+    /// Export live cluster configuration as a valid RecoveryConfig YAML or JSON for break-glass recovery.
+    #[tool]
+    async fn cluster_export_config(
+        &self,
+        Parameters(params): Parameters<tools::cluster::ExportClusterConfigParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = tools::cluster::export_cluster_config(&self.client, params).await;
+        Ok(Self::tool_result(output))
+    }
+
     // ===== TOPIC MANAGEMENT TOOLS =====
 
     /// List all topics in a specific namespace or for a specific broker.

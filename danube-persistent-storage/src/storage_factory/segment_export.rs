@@ -176,9 +176,12 @@ impl StorageFactory {
 
     /// Remove all Valkey keys associated with a deleted topic.
     async fn clear_valkey_topic_keys(&self, topic_path: &str) {
-        let client = match self.valkey_client.get() {
-            Some(client) => client.clone(),
-            None => return,
+        let client = {
+            let guard = self.valkey_client.read().await;
+            match guard.as_ref() {
+                Some(client) => client.clone(),
+                None => return,
+            }
         };
 
         let stream_key = format!("/topics/{}/stream", topic_path);

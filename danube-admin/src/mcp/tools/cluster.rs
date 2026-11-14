@@ -685,3 +685,201 @@ pub async fn apply_desired_state(
         }
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigureClusterStorageParams {
+    /// Storage mode: "local", "shared_fs", or "object_store"
+    pub mode: String,
+    /// Backend for object_store mode ("s3", "gcs", "azblob", "filesystem")
+    #[serde(default)]
+    pub backend: String,
+    /// Root path (shared_fs) or bucket/container URI (object_store)
+    #[serde(default)]
+    pub root: String,
+    /// Additional OpenDAL backend options (e.g. region, endpoint)
+    #[serde(default)]
+    pub options: std::collections::HashMap<String, String>,
+    /// Allow replacing active durable storage when cloud-tiered topics exist
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn configure_cluster_storage(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureClusterStorageParams,
+) -> String {
+    let req = danube_core::admin_proto::ConfigureClusterStorageRequest {
+        mode: params.mode,
+        backend: params.backend,
+        root: params.root,
+        options: params.options,
+        force: params.force,
+    };
+    match client.configure_cluster_storage(req).await {
+        Ok(resp) => resp.message,
+        Err(e) => format!("Error configuring cluster storage: {}", e),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigureWriteBufferParams {
+    /// Enable or disable the Valkey warm write buffer
+    pub enabled: bool,
+    /// Valkey/Redis endpoints (required when enabled=true unless already configured)
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    /// Optional profile preset: "ha" or "dev"
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Override WAIT replica count
+    #[serde(default)]
+    pub wait_replicas: Option<u32>,
+    /// Override WAIT timeout in milliseconds
+    #[serde(default)]
+    pub wait_timeout_ms: Option<u64>,
+    /// Timeout policy: "fail" or "ack"
+    #[serde(default)]
+    pub on_wait_timeout: Option<String>,
+    /// Max closed WAL segments cached in Valkey
+    #[serde(default)]
+    pub max_cached_closed_segments: Option<u32>,
+}
+
+pub async fn configure_write_buffer(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureWriteBufferParams,
+) -> String {
+    let req = danube_core::admin_proto::ConfigureWriteBufferRequest {
+        enabled: params.enabled,
+        endpoints: params.endpoints,
+        profile: params.profile,
+        wait_replicas: params.wait_replicas,
+        wait_timeout_ms: params.wait_timeout_ms,
+        on_wait_timeout: params.on_wait_timeout,
+        max_cached_closed_segments: params.max_cached_closed_segments,
+    };
+    match client.configure_write_buffer(req).await {
+        Ok(resp) => resp.message,
+        Err(e) => format!("Error configuring write buffer: {}", e),
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigureWalRetentionParams {
+    #[serde(default)]
+    pub retention_time_minutes: Option<u64>,
+    #[serde(default)]
+    pub retention_size_mb: Option<u64>,
+    #[serde(default)]
+    pub check_interval_minutes: Option<u64>,
+    #[serde(default)]
+    pub rotate_max_bytes: Option<u64>,
+    #[serde(default)]
+    pub rotate_max_hours: Option<u64>,
+    #[serde(default)]
+    pub cache_capacity: Option<u64>,
+    #[serde(default)]
+    pub flush_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub flush_max_batch_bytes: Option<u64>,
+    #[serde(default)]
+    pub clear_retention: bool,
+}
+
+pub async fn configure_wal_retention(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureWalRetentionParams,
+) -> String {
+    let req = danube_core::admin_proto::ConfigureWalRetentionRequest {
+        retention_time_minutes: params.retention_time_minutes,
+        retention_size_mb: params.retention_size_mb,
+        check_interval_minutes: params.check_interval_minutes,
+        rotate_max_bytes: params.rotate_max_bytes,
+        rotate_max_hours: params.rotate_max_hours,
+        cache_capacity: params.cache_capacity,
+        flush_interval_ms: params.flush_interval_ms,
+        flush_max_batch_bytes: params.flush_max_batch_bytes,
+        clear_retention: params.clear_retention,
+    };
+    match client.configure_wal_retention(req).await {
+        Ok(resp) => resp.message,
+        Err(e) => format!("Error configuring WAL and retention: {}", e),
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigureLoadManagerParams {
+    /// Placement strategy: "fair", "balanced", or "weighted_load"
+    #[serde(default)]
+    pub assignment_strategy: Option<String>,
+    /// Broker load report interval in seconds
+    #[serde(default)]
+    pub load_report_interval_seconds: Option<u64>,
+    /// Enable or disable automated rebalancing
+    #[serde(default)]
+    pub rebalancing_enabled: Option<bool>,
+    /// Rebalancing profile preset: "conservative", "balanced", or "aggressive"
+    #[serde(default)]
+    pub rebalancing_profile: Option<String>,
+    #[serde(default)]
+    pub check_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_moves_per_hour: Option<u32>,
+    #[serde(default)]
+    pub cooldown_seconds: Option<u64>,
+    #[serde(default)]
+    pub min_brokers_for_rebalance: Option<u32>,
+    #[serde(default)]
+    pub min_topic_age_seconds: Option<u64>,
+    #[serde(default)]
+    pub blacklist_topics: Vec<String>,
+    #[serde(default)]
+    pub replace_blacklist: bool,
+}
+
+pub async fn configure_load_manager(
+    client: &Arc<AdminGrpcClient>,
+    params: ConfigureLoadManagerParams,
+) -> String {
+    let req = danube_core::admin_proto::ConfigureLoadManagerRequest {
+        assignment_strategy: params.assignment_strategy,
+        load_report_interval_seconds: params.load_report_interval_seconds,
+        rebalancing_enabled: params.rebalancing_enabled,
+        rebalancing_profile: params.rebalancing_profile,
+        check_interval_seconds: params.check_interval_seconds,
+        max_moves_per_hour: params.max_moves_per_hour,
+        cooldown_seconds: params.cooldown_seconds,
+        min_brokers_for_rebalance: params.min_brokers_for_rebalance,
+        min_topic_age_seconds: params.min_topic_age_seconds,
+        blacklist_topics: params.blacklist_topics,
+        replace_blacklist: params.replace_blacklist,
+    };
+    match client.configure_load_manager(req).await {
+        Ok(resp) => resp.message,
+        Err(e) => format!("Error configuring LoadManager: {}", e),
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ExportClusterConfigParams {
+    /// Optional broker ID to include node bind/admin addresses
+    #[serde(default)]
+    pub broker_id: Option<u64>,
+    /// Output format: "yaml" (default) or "json"
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+pub async fn export_cluster_config(
+    client: &Arc<AdminGrpcClient>,
+    params: ExportClusterConfigParams,
+) -> String {
+    let req = danube_core::admin_proto::ExportClusterConfigRequest {
+        broker_id: params.broker_id,
+        format: params.format.unwrap_or_else(|| "yaml".to_string()),
+    };
+    match client.export_cluster_config(req).await {
+        Ok(resp) => resp.content,
+        Err(e) => format!("Error exporting cluster config: {}", e),
+    }
+}
