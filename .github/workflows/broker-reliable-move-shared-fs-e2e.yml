@@ -34,13 +34,6 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p temp danube-data/shared-fs
-          cat > temp/shared_fs_override.yaml <<'EOF'
-          storage:
-            mode: shared_fs
-            metadata_prefix: "/danube"
-            durable:
-              root: "./danube-data/shared-fs"
-          EOF
 
           SEED_NODES="0.0.0.0:7650,0.0.0.0:7651,0.0.0.0:7652"
 
@@ -51,7 +44,6 @@ jobs:
             prom_port=$((9040 + i))
 
             nohup ./target/release/danube up \
-              --recovery-config temp/shared_fs_override.yaml \
               --broker-addr 0.0.0.0:$broker_port \
               --admin-addr 0.0.0.0:$admin_port \
               --raft-addr 0.0.0.0:$raft_port \
@@ -108,6 +100,12 @@ jobs:
           echo ""
           echo "Brokers after activation:"
           $ADMIN_BIN brokers list
+
+          echo ""
+          echo "Configuring shared_fs durable storage via admin CLI..."
+          $ADMIN_BIN cluster storage shared-fs --root ./danube-data/shared-fs
+          $ADMIN_BIN cluster storage status
+          sleep 2
 
       - name: Run shared_fs reliable move integration tests
         env:
