@@ -487,12 +487,22 @@ jobs:
             exit 1
           fi
 
+          # Pick a surviving broker != DRAIN_IDX for post-SIGTERM queries
+          QUERY_ADMIN=""
+          for i in 0 1 2; do
+            if [ "$i" != "$DRAIN_IDX" ]; then
+              QUERY_ADMIN=$((50051 + i))
+              echo "$QUERY_ADMIN" > temp/survivor_admin_port.txt
+              break
+            fi
+          done
+
           DRAIN_PID=$(cat temp/broker_$DRAIN_IDX.pid)
           echo "Sending SIGTERM to follower broker $DRAIN_IDX (node=$DRAIN_NODE_ID, pid=$DRAIN_PID)..."
           kill -TERM "$DRAIN_PID"
           sleep 3
 
-          BROKERS_JSON=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+          BROKERS_JSON=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$QUERY_ADMIN \
             ./target/release/danube ctl brokers list --output json)
           DRAIN_STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$DRAIN_NODE_ID" '.[] | select(.broker_id == ($id | tostring)) | .broker_status')
           echo "Broker $DRAIN_NODE_ID status after SIGTERM: $DRAIN_STATUS"
@@ -503,7 +513,7 @@ jobs:
           fi
 
           # Verify Raft membership was preserved (all 3 voters intact on rolling SIGTERM)
-          CLUSTER_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN \
+          CLUSTER_AFTER=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$QUERY_ADMIN \
             ./target/release/danube ctl cluster status 2>&1)
           VOTER_COUNT=$(echo "$CLUSTER_AFTER" | grep 'Voters' | grep -oP '\d+' | wc -l)
           if [ "$VOTER_COUNT" -lt 3 ]; then
@@ -517,9 +527,8 @@ jobs:
       # Final summary
       # =====================================================================
       - name: "Final: All phases passed"
-        env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
         run: |
+          SURVIVOR_ADMIN=$(cat temp/survivor_admin_port.txt)
           echo "========================================="
           echo "  Broker Restart E2E — ALL TESTS PASSED"
           echo "========================================="
@@ -536,9 +545,9 @@ jobs:
           echo "  - Topic reconciliation: topics restored on restarted leader"
           echo ""
           echo "=== Final cluster state ==="
-          ./target/release/danube ctl cluster status || true
-          ./target/release/danube ctl brokers list || true
-          ./target/release/danube ctl topics list --namespace default || true
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN ./target/release/danube ctl cluster status || true
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN ./target/release/danube ctl brokers list || true
+          DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:$SURVIVOR_ADMIN ./target/release/danube ctl topics list --namespace default || true
 
       - name: Upload logs on failure
         if: failure()

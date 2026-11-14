@@ -6,7 +6,6 @@ mod broker_server;
 mod broker_service;
 mod consumer;
 mod danube_service;
-mod dispatch_config;
 mod dispatcher;
 mod edge_service;
 mod log_ring;
@@ -510,7 +509,7 @@ async fn main() -> Result<()> {
         storage_factory,
         service_config.auto_create_topics,
         edge_replicator,
-        service_config.dispatch_config.max_unacked_messages,
+        service_config.default_max_unacked_messages,
     );
 
     // Init metrics with or without prometheus exporter

@@ -1,5 +1,4 @@
 use crate::args_parse::NodeRole;
-use crate::dispatch_config::DispatchConfig;
 use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
 use crate::policies::Policies;
@@ -45,8 +44,8 @@ pub(crate) struct ServiceConfiguration {
     pub(crate) admin_tls: bool,
     /// Load Manager configuration
     pub(crate) load_manager: Option<LoadManagerConfig>,
-    /// Dispatch configuration (cluster-wide defaults for pipelining)
-    pub(crate) dispatch_config: DispatchConfig,
+    /// Default maximum unacknowledged messages per subscription
+    pub(crate) default_max_unacked_messages: usize,
     /// Edge replication configuration (edge mode only)
     pub(crate) edge_config: Option<EdgeConfig>,
     /// Workload role assigned to this node (broker, lakehouse, all)
@@ -142,7 +141,7 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: None,
-            dispatch_config: DispatchConfig::default(),
+            default_max_unacked_messages: 10,
             edge_config: None,
             node_role: NodeRole::All,
         })
@@ -180,7 +179,7 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: Some(LoadManagerConfig::default()),
-            dispatch_config: DispatchConfig::default(),
+            default_max_unacked_messages: 10,
             edge_config: None,
             node_role: NodeRole::All,
         })
@@ -248,7 +247,7 @@ impl ServiceConfiguration {
             },
             admin_tls: false,
             load_manager: None,
-            dispatch_config: DispatchConfig::default(),
+            default_max_unacked_messages: 10,
             edge_config: Some(EdgeConfig {
                 inline: edge_cfg,
                 token_override,
