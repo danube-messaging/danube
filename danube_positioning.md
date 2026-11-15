@@ -11,7 +11,7 @@ Built on [Tokio](https://tokio.rs/) and embedded [openraft](https://github.com/d
 * **Pipelined Dual-Dispatch Engine:** Sub-millisecond **Non-Reliable** (in-memory) and **Reliable** (group-commit WAL + S3/GCS/Azure object storage) topics run side-by-side with sliding in-flight dispatch windows (`max_unacked_messages`).
 * **Native Agentic Runtime:** Built-in execution lease heartbeats (`extend_lease`), persisted progress checkpoints (`report_progress`), cascading task-tree cancellation (`cancel_task_tree`), Copy-on-Write stream branching (`branch`), and guardrailed MCP tooling.
 * **Embedded Lakehouse Engine:** Feature-gated Apache Iceberg export (`danube-iceberg`) runs inside an isolated Tokio worker pool (`--role lakehouse` or `all`) to write Parquet files with full column statistics directly to Iceberg REST (including AWS SigV4) or SQL catalogs.
-* **Edge-to-Cloud Continuum:** `danube up edge` turns the same binary into an MQTT v3.1.1/v5.0 gateway backed by a local WAL that replicates into a single consolidated cloud ingest topic (`/edge/{edge-name}/mqtt`), preventing per-device topic explosion in cloud Raft metadata.
+* **Edge-to-Cloud Continuum:** `danube up edge` turns the same binary into an MQTT v3.1.1/v5.0 gateway backed by a local WAL that replicates into a single consolidated cloud ingest topic (`/{edge-name}/ingest`), preventing per-device topic explosion in cloud Raft metadata.
 
 ---
 
@@ -23,7 +23,7 @@ Rather than cloning legacy broker topologies, Danube v2 makes deliberate archite
 * **How Danube does it:** Topics choose between two dispatch strategies in the same cluster and over the same client connections:
   * **Non-Reliable (Fire-and-Forget / In-Memory):** Messages flow from producers into consumer channels via Tokio async queues with zero disk I/O and sub-millisecond dispatch. Ideal for metrics, heartbeats, and ephemeral telemetry.
   * **Reliable (Pipelined At-Least-Once / Durable):** Messages enter a local per-topic WAL using batched group commit with three explicit durability levels (`WalSyncMode::Async`, OS page-cache `WalSyncMode::OsCacheFlush`, or `fdatasync`-backed `WalSyncMode::FsyncBatch`), then dispatch through sliding in-flight windows (`DispatchWindow` / `InFlightWindow`, bounded by `max_unacked_messages`) with exponential NACK backoff and Dead Letter Queues (DLQ). Sealed WAL segments offload asynchronously to Cloud Object Storage.
-  * **StreamIntent Presets:** Operators and agents can provision topics via high-level intents (`agent_event_mesh`, `agent_task_queue`, `tool_invocation_log`, `telemetry_firehose`, `lakehouse_feed`, `custom`) which expand into explicit, immutable settings persisted in Raft so broker upgrades never silently alter live topics.
+  * **StreamIntent Presets:** Operators and agents can provision topics via high-level intents (`realtime`, `event_stream`, `task_queue`, `audit_log`) which expand into explicit, immutable settings persisted in Raft so broker upgrades never silently alter live topics.
 * **The Industry Contrast:** Apache Kafka forces every message through partitioned disk logs even for disposable telemetry; other stacks force teams to pair Redis Pub/Sub with Kafka or Pulsar. Danube v2 unifies both modes in one engine while exposing honest durability semantics (`OsCacheFlush` vs `FsyncBatch`).
 
 ### 2. Instant Topic Mobility & Copy-on-Write Stream Branching
@@ -39,7 +39,7 @@ Rather than cloning legacy broker topologies, Danube v2 makes deliberate archite
 * **The Industry Contrast:** Partition-only brokers cap consumer group parallelism at the partition count; scaling past that requires risky partition splits. Danube v2 decouples consumer elasticity from physical partitioning while preserving strict per-key sequence.
 
 ### 5. Edge-to-Cloud Continuum (Single-Ingest-Topic Protection)
-* **How Danube does it:** Starting `danube up edge --name ... --cloud-endpoint ...` turns the binary into an MQTT v3.1.1/v5.0 gateway backed by a local WAL. To prevent thousands of edge device topics from overwhelming cloud Raft metadata, edge mode consolidates MQTT ingestion into `/edge/{edge-name}/mqtt` while preserving the original MQTT topic in the `x-mqtt-topic` message attribute.
+* **How Danube does it:** Starting `danube up edge --name ... --cloud-endpoint ...` turns the binary into an MQTT v3.1.1/v5.0 gateway backed by a local WAL. To prevent thousands of edge device topics from overwhelming cloud Raft metadata, edge mode consolidates MQTT ingestion into `/{edge-name}/ingest` while preserving the original MQTT topic in the `mqtt.topic` message attribute.
 * **The Industry Contrast:** Deploying Mosquitto + custom bridge scripts + separate cloud brokers creates fragile, unvalidated pipelines, while naive 1-to-1 MQTT-to-cloud topic mirroring causes metadata explosions. Danube v2 protects the cloud control plane while preserving full MQTT topic routing context.
 
 ### 6. Zero-YAML Autonomous Operations, Voter Safety & Auto-TLS
