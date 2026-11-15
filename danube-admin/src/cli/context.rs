@@ -1,4 +1,4 @@
-//! `danube context` — manage saved client connection profiles.
+//! `danube context` - manage saved client connection profiles.
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand, ValueHint};

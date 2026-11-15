@@ -1,4 +1,4 @@
-//! `danube up` — start a Danube node in one of three modes.
+//! `danube up` - start a Danube node in one of three modes.
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum, ValueHint};
@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// Broker deployment mode.
 ///
-/// - `Cluster`    — Raft-replicated metadata, LoadManager, leader election.
-/// - `Standalone` — Single node: direct topic loading, no cluster orchestration.
-/// - `Edge`       — Edge node: MQTT ingest + replication to a cloud cluster.
+/// - `Cluster`    - Raft-replicated metadata, LoadManager, leader election.
+/// - `Standalone` - Single node: direct topic loading, no cluster orchestration.
+/// - `Edge`       - Edge node: MQTT ingest + replication to a cloud cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrokerMode {
     Cluster,
@@ -343,7 +343,7 @@ pub(crate) enum Membership {
     NotApplicable,
     /// Explicit `--single-node`.
     SingleNode,
-    /// No membership flag given — falls back to single-node bootstrap.
+    /// No membership flag given - falls back to single-node bootstrap.
     Implicit,
     /// `--seed-nodes`.
     Seeds,
@@ -592,7 +592,7 @@ pub(crate) fn render_summary(opts: &UpOptions, state: &DataDirState, view: &Reso
     let line = |out: &mut String, k: &str, v: &str| out.push_str(&format!("  {:<14}{}\n", k, v));
 
     out.push_str(&format!(
-        "\nDanube {} — {} node{}\n",
+        "\nDanube {} | {} node{}\n",
         env!("CARGO_PKG_VERSION"),
         opts.mode.as_str(),
         if opts.dry_run { " (dry run)" } else { "" }

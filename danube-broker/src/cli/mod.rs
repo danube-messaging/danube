@@ -26,7 +26,7 @@ pub(crate) const STYLES: Styles = Styles::styled()
     .valid(AnsiColor::Cyan.on_default().bold())
     .invalid(AnsiColor::Yellow.on_default().bold());
 
-const ROOT_ABOUT: &str = "Danube — lightweight, agent-native event streaming";
+const ROOT_ABOUT: &str = "Danube: lightweight, agent-native event streaming";
 
 const ROOT_AFTER_HELP: &str = "\
 Quick start:

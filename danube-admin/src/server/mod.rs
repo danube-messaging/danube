@@ -19,7 +19,7 @@ pub enum ServerMode {
     McpStdio,
 }
 
-/// `danube console` — web admin console backend.
+/// `danube console` - web admin console backend.
 #[derive(Debug, Args, Clone)]
 #[command(
     about = "Run the web admin console backend (HTTP API + MCP over HTTP)",
@@ -59,7 +59,7 @@ pub struct ConsoleArgs {
     pub client: ClientArgs,
 }
 
-/// `danube mcp` — Model Context Protocol server for AI agents.
+/// `danube mcp` - Model Context Protocol server for AI agents.
 #[derive(Debug, Args, Clone)]
 #[command(
     about = "Run the MCP server for AI agents (stdio by default)",

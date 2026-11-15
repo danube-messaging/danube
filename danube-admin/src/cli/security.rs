@@ -178,7 +178,7 @@ Scopes: cluster, namespace, topic"
 
 #[derive(Debug, Subcommand)]
 enum TokensCommands {
-    /// Create a signed JWT token (offline — no broker connection needed)
+    /// Create a signed JWT token (offline - no broker connection needed)
     #[command(
         after_help = "Examples:
   danube auth token create --subject my-app --jwt-secret your-secret-key
@@ -209,7 +209,7 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
         issuer: String,
     },
 
-    /// Validate a JWT token and display its claims (offline — no broker connection needed)
+    /// Validate a JWT token and display its claims (offline - no broker connection needed)
     #[command(
         after_help = "Example:\n  danube auth token validate eyJhbGciOi... --jwt-secret your-secret-key",
         arg_required_else_help = true
@@ -256,7 +256,7 @@ pub async fn handle(cmd: Security) -> Result<()> {
         SecurityCommands::Token(
             cmd @ (TokensCommands::Create { .. } | TokensCommands::Validate { .. }),
         ) => {
-            // Offline JWT helpers — no broker connection needed
+            // Offline JWT helpers - no broker connection needed
             handle_tokens_offline(cmd)
         }
         _ => {

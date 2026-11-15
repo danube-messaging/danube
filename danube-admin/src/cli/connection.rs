@@ -3,7 +3,7 @@
 //!
 //! Resolution order for each field:
 //!   1. explicit flag (`--endpoint`, `--token`, ...)
-//!   2. environment variable (`DANUBE_ENDPOINT`, `DANUBE_TOKEN`, ...) — handled by clap
+//!   2. environment variable (`DANUBE_ENDPOINT`, `DANUBE_TOKEN`, ...) - handled by clap
 //!   3. selected context (`--context` / `DANUBE_CONTEXT` / current context in contexts.toml)
 //!   4. built-in default (`http://127.0.0.1:6650`, no TLS, no token)
 
