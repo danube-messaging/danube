@@ -28,3 +28,4 @@
 
 - New gRPC handlers must call the authz layer with the narrowest resource scope.
 - Never log tokens, secrets or payloads (payload access is the `ReadPayload` permission).
+

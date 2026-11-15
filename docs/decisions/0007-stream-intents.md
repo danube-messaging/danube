@@ -30,3 +30,4 @@ Partitions and schema subject stay **explicit**: partitioning changes ordering s
 - Changing a preset affects **new** topics only. Never re-read the intent name to derive behaviour at runtime.
 - Do not add fields to `ExpandedStreamSettings` unless the broker enforces them per topic.
 - Keep aliases, CLI help, MCP tool docs and the docs page `concepts/stream-intents` in sync.
+

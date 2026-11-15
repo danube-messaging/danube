@@ -42,3 +42,4 @@ Replicating the tail between brokers means building per-topic replica sets, in-s
 ## Revisit if
 
 Export becomes continuous with near-zero lag (for example small segments streamed to object storage), or brokers gain native tail replication. Either could make Valkey unnecessary.
+

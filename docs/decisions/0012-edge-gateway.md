@@ -21,3 +21,4 @@
 
 - Anything that creates cloud topics per device or per MQTT topic needs a new decision record.
 - The cloud namespace for the edge must exist (`danube namespace create <edge-name>`) before replication.
+

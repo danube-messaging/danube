@@ -28,3 +28,4 @@ Embedded metadata store: openraft consensus + redb storage, exposed through `dan
 ```bash
 cargo test -p danube-raft            # includes cluster_and_leadership, watch_and_ttl
 ```
+

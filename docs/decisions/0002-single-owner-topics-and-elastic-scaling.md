@@ -39,3 +39,4 @@ Users coming from IBM MQ / Tibco EMS ask for "replicated queues": a message land
 ## Revisit if
 
 Clients that cannot follow redirects become a requirement. A thin stateless proxy in front would then be preferable to broker-side forwarding.
+

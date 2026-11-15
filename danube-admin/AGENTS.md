@@ -29,3 +29,4 @@ Client side of the `danube` binary: resource and messaging commands, connection 
 cargo test -p danube-admin --lib          # parsing/debug_assert, contexts
 cargo test -p danube-admin --test <name>  # lifecycle tests need a running broker (DANUBE_BROKER_ENDPOINT)
 ```
+

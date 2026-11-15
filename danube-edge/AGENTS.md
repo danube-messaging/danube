@@ -28,3 +28,4 @@ MQTT v3.1.1/v5.0 gateway and WAL-backed replicator behind `danube up edge`. Read
 cargo test -p danube-edge --lib
 cargo test -p danube-edge --test edge_replication_basic   # needs a running cloud broker
 ```
+

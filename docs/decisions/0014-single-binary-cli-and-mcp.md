@@ -20,3 +20,4 @@
 - Pre-1.0: clean breaks are allowed, but update every caller (workflows, docker, Makefile, README, CHANGELOG, docs repo) in the same PR.
 - New commands: singular noun, then verb (plural visible aliases are fine), an `about`, examples in `after_help`, and a parse test.
 - New MCP tools that mutate state must support dry run or confirmation and be covered by RBAC.
+

@@ -42,3 +42,4 @@ When all subscriptions have acknowledged past a sealed segment, the broker may d
 ## Related ideas (not decided)
 
 A JMS adapter on top of `danube-java` could map JMS queues onto shared subscriptions and JMS topics onto exclusive or failover subscriptions.
+

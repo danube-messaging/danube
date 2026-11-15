@@ -32,3 +32,4 @@ Each broker embeds a Raft node (`danube-raft`):
 - Never block the Raft apply path on I/O outside redb.
 - New metadata keys must follow 0001 (bounded write rate) and be added to the docs `architecture/metadata-paths` page.
 - Keep the voter cap logic (0010) in mind when touching membership.
+

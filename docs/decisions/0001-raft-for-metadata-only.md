@@ -51,3 +51,4 @@ Rule of thumb: Raft write rate should scale with **admin actions and topic count
 ## Revisit if
 
 A workload needs synchronous multi-broker durability for the tail **and** Valkey is not acceptable. The preferred direction is still tail replication outside Raft.
+

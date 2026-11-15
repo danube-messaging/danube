@@ -20,3 +20,4 @@
 
 - Schema bodies are small and change rarely, which is fine for Raft (0001). Never store per-message schema data.
 - Changing compatibility mode requires `ManageSchema`.
+

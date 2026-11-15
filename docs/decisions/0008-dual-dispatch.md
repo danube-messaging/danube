@@ -25,3 +25,4 @@ Producers must declare the matching strategy: the broker rejects a mismatch ("Pr
 ## Revisit if
 
 Producers should adopt the topic's strategy automatically instead of declaring it. That is a likely UX improvement: the mismatch error is a common stumbling block.
+

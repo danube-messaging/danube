@@ -27,3 +27,4 @@ Rebalancing is only safe because topic moves are metadata operations (0002). Kee
 
 - New placement inputs must come from load reports, not from per-message hooks.
 - Any automatic action must respect the cooldowns and support `--dry-run`.
+

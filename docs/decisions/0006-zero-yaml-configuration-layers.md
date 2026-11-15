@@ -37,3 +37,4 @@ Safety rails at startup:
 
 - A new setting goes in layer 1 only if it is truly node-specific. Otherwise put it in Raft, expose it via `danube cluster ...` and the manifest (`desired_state` in the broker), and include it in `export-config`.
 - Never add a field that is accepted but not enforced.
+

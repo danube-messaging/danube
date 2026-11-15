@@ -84,3 +84,4 @@ Integration tests under `*/tests/` need a running broker. End-to-end coverage li
 ## Writing style (docs, help text, CHANGELOG)
 
 Short sentences, lead with an example, lists instead of wide tables, no em dashes ("—"); use "-", "," or ":". Documentation lives in the separate `danube-docs` repo (Astro Starlight).
+

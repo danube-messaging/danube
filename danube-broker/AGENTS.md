@@ -35,3 +35,4 @@ Builds the `danube` binary: CLI root, node boot, broker service, dispatcher, adm
 cargo test -p danube-broker --bin danube            # unit tests incl. cli::, dispatcher, intents
 cargo test -p danube-broker --test <name>           # integration (needs a running broker, see tests/test_utils.rs)
 ```
+
