@@ -32,8 +32,8 @@ const ROOT_AFTER_HELP: &str = "\
 Quick start:
   danube up standalone                                      # start a local node
   danube topic create /default/events --intent event_stream
-  danube produce /default/events -m 'hello'
-  danube consume /default/events
+  danube consume /default/events                            # terminal 2
+  danube produce /default/events -m 'hello' -r              # terminal 3
 
 Run 'danube <COMMAND> --help' for details on a command.";
 

@@ -253,7 +253,11 @@ impl TopicResources {
             let suffix = key.strip_prefix(&path).unwrap_or(&key);
             let sub = suffix.trim_start_matches('/').split('/').next();
             if let Some(subscription) = sub.filter(|s| !s.is_empty()) {
-                subscriptions.push(subscription.to_string());
+                // A subscription owns several child keys (metadata, cursor,
+                // failure_policy, ...); list each subscription name once.
+                if !subscriptions.iter().any(|s| s == subscription) {
+                    subscriptions.push(subscription.to_string());
+                }
             }
         }
 
