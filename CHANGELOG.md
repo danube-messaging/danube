@@ -1,52 +1,52 @@
-## Unreleased
+<!-- v0.17.0 START -->
+## v0.17.0 - 2026-11-15
 
-**`danube` CLI redesign (breaking)**
+**One binary. Zero YAML. Built for humans and AI agents.**
 
-The unified `danube` binary now has a flat, noun-based command tree. `danube ctl` is gone: resource commands live at the top level with singular nouns, the broker starts via `danube up <MODE>`, and every client command shares one set of connection flags. Run bare `danube` for an overview.
+Danube 0.17 is the biggest release so far. Danube is now a single `danube` binary that runs the broker, manages the cluster and talks to it, with no config files to write. It is also the first release designed for AI agents as first-class users, next to the people who operate it.
 
-### ✨ New
+```bash
+danube up standalone                                   # start a node
+danube topic create /default/orders --intent event_stream
+danube consume /default/orders                         # terminal 1
+danube produce /default/orders -m "hello danube"       # terminal 2
+```
 
-* `danube up standalone|cluster|edge` with grouped, mode-specific flags and `--dry-run` (print the resolved node configuration and exit). Each data dir gets a `danube-node.json` marker; a directory cannot be reused across modes.
-* `danube context add|use|list|current|show|delete` — saved connection profiles in `~/.config/danube/contexts.toml` (`$DANUBE_CONFIG_DIR`).
-* `danube completions <bash|zsh|fish|elvish|powershell>` and `danube version`.
-* Global client flags on every client command: `--endpoint` (`DANUBE_ENDPOINT`), `--context` (`DANUBE_CONTEXT`), `--token` (`DANUBE_TOKEN`), `--tls`, `--tls-ca`, `--tls-cert`, `--tls-key`, `--tls-domain` (`DANUBE_TLS*`).
-* `danube console` replaces `serve`; its HTTP server also exposes MCP at `/mcp`. `danube mcp` is stdio MCP, `danube mcp --http ADDR` is streamable HTTP.
+### 🚀 What Danube is now
 
-### 💥 Breaking renames
+* **One binary for everything.** Broker, embedded Raft, edge gateway, lakehouse export, admin CLI, web console and MCP server all ship as `danube`. No ZooKeeper, no BookKeeper, no JVM, no sidecars to wire up.
+* **Zero YAML.** Start a node with `danube up` flags. Change cluster-wide settings live with `danube cluster ...` or declaratively with `danube apply -f`. Settings are stored in Raft and shared by every node.
+* **Say what a topic is for, not how to tune it.** Stream intents (`realtime`, `event_stream`, `task_queue`, `audit_log`) pick delivery, durability, retries and dead-lettering for you when the topic is created.
+* **Elastic by design.** Raft holds only metadata, never messages. Each topic has one owner and its sealed segments live in shared storage, so moving a topic is a metadata change. Brokers scale in and out quickly instead of copying data.
+* **Durable without extra infrastructure.** A per-topic write-ahead log with segments tiered to a shared filesystem or object storage (S3, GCS, Azure). Valkey, Prometheus and Iceberg stay optional.
 
-| Old | New |
-| :--- | :--- |
-| `danube ctl <cmd>` / `danube-admin <cmd>` | `danube <cmd>` |
-| `topics` / `namespaces` / `schemas` / `brokers` / `security` | `topic` / `namespace` / `schema` / `broker` / `auth` |
-| `danube up --mode standalone` | `danube up standalone` |
-| `danube up` / `--mode cluster` | `danube up cluster --data-dir DIR` (+ `--seed-nodes`, `--join` or `--single-node`) |
-| `danube up --mode edge --edge-name N --edge-token T` | `danube up edge --data-dir DIR --name N --cloud-endpoint URL --cloud-token T` |
-| `--broker-addr` / `--admin-addr` / `--prom-exporter` | `--listen` / `--admin-listen` / `--metrics-listen` |
-| `--raft-addr HOST:PORT` | `--raft-port PORT` |
-| `--auth-mode` / `--node-role` / `--mqtt-addr` / `--super-admins` | `--auth` / `--role` / `--mqtt-listen` / `--super-admin` |
-| `-s/--service-addr`, `DANUBE_SERVICE_ADDR`, `DANUBE_ADMIN_ENDPOINT` | `--endpoint`, `DANUBE_ENDPOINT` |
-| `DANUBE_ADMIN_TOKEN` / `--ca` / `--cert` (all `DANUBE_ADMIN_*` envs) | `DANUBE_TOKEN` / `--tls-ca` / `--tls-cert` (`DANUBE_TLS*`) |
-| `produce -t/--topic T --attributes k:v` | `produce T --attr k:v` |
-| `consume -t/--topic T --subscription-type X` | `consume T -t/--type X` |
-| `topics subscriptions` / `unsubscribe` / `seek` | `topic subscription list` / `delete` / `seek` |
-| `topics get-failure-policy` / `set-failure-policy` | `topic subscription failure-policy get` / `set` |
-| `topics configure-schema` / `get-schema-config` / `set-validation-policy` / `infer-schema` | `topic schema configure` / `show` / `validation-policy` / `infer` |
-| `topics replay-dlq` | `topic dlq replay` |
-| `cluster add-node` / `promote-node` / `remove-node` | `cluster node add` / `promote` / `remove` |
-| `cluster storage status` / `brokers leader-broker` | `cluster storage show` / `broker leader` |
-| `security roles` / `bindings` / `tokens` | `auth role` / `binding` / `token` |
-| `tokens ... --secret-key` (`DANUBE_JWT_SECRET_KEY`) | `auth token ... --jwt-secret` (`DANUBE_JWT_SECRET`) |
-| `tokens validate --token X` | `auth token validate X` |
-| `ctl serve --mode ui\|all --listen-addr A --broker-endpoint E` | `danube console --listen A --endpoint E` (`DANUBE_CONSOLE_LISTEN`, `--http-token`/`DANUBE_HTTP_TOKEN`, `--require-auth`) |
-| `danube mcp --broker-endpoint E` | `danube mcp --endpoint E` |
+### 🤖 Built for AI agents
 
-### 🔒 Security and fixes
+* **Agent coordination primitives:** task queues with visibility timeouts, progress reports with checkpoints, and cancellation of whole task trees.
+* **MCP server built in:** `danube mcp` (stdio) or `danube console` (HTTP at `/mcp`) lets agents create topics, inspect consumers and debug a cluster, with guardrails. Agents never see secrets or message payloads unless you grant it.
+* **Topic branching:** copy a topic at an offset for safe replay and experiments.
 
-* **Consumer RBAC:** `receive_messages`, `ack` and `nack` now authorize against the consumer's topic instead of cluster scope, so namespace- and topic-scoped `Consume` bindings work end to end. A missing `msg_id` in `ack`/`nack` now returns `InvalidArgument` instead of panicking.
-* **Secret redaction:** `danube cluster export-config` replaces the JWT secret, object-store credentials and Valkey passwords with `<redacted>`. Use `--include-secrets` for a real recovery file (written with `0600`). The MCP export tool never includes secrets, and `--recovery-config` rejects a redacted file.
-* **Focused inspection:** `danube cluster storage show`, bare `danube cluster wal` and bare `danube cluster load-manager` print only their own section instead of the full exported config.
-* **Producer dispatch strategy:** an existing topic's strategy now wins. `danube produce /default/orders -m hi` works on a topic created with `--intent event_stream`, no `-r` needed. A reliable producer on a non-reliable topic is still rejected.
-* **Multi-node auto-TLS:** `danube up cluster --auth auto-tls` with `--seed-nodes` or `--join` now fails fast with instructions unless `ca.pem`, `ca-key.pem` and `jwt.secret` are already in `{data_dir}/tls/`, instead of retrying forever.
+### 🧭 A CLI that explains itself
+
+* Run `danube` on its own for an overview of everything you can do.
+* `danube up standalone | cluster | edge` with mode-specific flags, safety checks for the data directory, and `--dry-run` to see the resolved config before starting.
+* Short, consistent commands: `danube topic`, `danube produce`, `danube consume`, `danube cluster`, `danube auth`.
+* Saved connections with `danube context`, plus shell completions.
+
+### 🔒 Secure by default
+
+* `--auth auto-tls` gives a single node TLS, JWT and an admin token on first boot. Multi-node auto-TLS refuses to start without a shared CA instead of hanging.
+* Role-based access works at cluster, namespace and topic scope for producers and consumers.
+* `danube cluster export-config` hides the JWT secret and cloud credentials unless you ask for them with `--include-secrets`.
+
+### What's Changed
+* fix: topic-scoped consumer RBAC, secret redaction, producer dispatch strategy, multi-node auto-tls guard (#251) by @danrusei in fb8e888
+* Docs/agents md (#250) by @danrusei in 95e915c
+* Feat/cli redesign (#249) by @danrusei in 6050317
+* Docs/readme and deps cleanup (#248) by @danrusei in 40b6bcb
+* Danube v2 migration: unified binary, zero-YAML ops, core durability, … (#247) by @danrusei in 50c28e1
+* document why Danube by @danrusei in 9632acf
+<!-- v0.17.0 END -->
 
 <!-- v0.16.0 START -->
 ## v0.16.0 - 2026-09-13

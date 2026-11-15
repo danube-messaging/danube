@@ -240,7 +240,7 @@ jobs:
           cat > RELEASE_STATIC.md <<EOF
           ## Release Notes - Binaries
 
-          ## Unified Danube Server (\`danube\` — Broker + Raft + Edge + Lakehouse + CLI + \`danube console\` + \`danube mcp\`):
+          ## Unified Danube binary (\`danube\`: broker, Raft, edge, lakehouse, CLI, \`danube console\` and \`danube mcp\`):
           - **Linux (x86_64)**: [danube-${VERSION}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-${VERSION}-x86_64-unknown-linux-gnu.tar.gz)
           - **macOS (Apple Silicon)**: [danube-${VERSION}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-${VERSION}-aarch64-apple-darwin.tar.gz)
           - **Windows (x86_64)**: [danube-${VERSION}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${VERSION}/danube-${VERSION}-x86_64-pc-windows-msvc.zip)
@@ -253,16 +253,16 @@ jobs:
           
           ### Quick Start with Docker:
           \`\`\`bash
-          # Run Danube Broker (zero-YAML)
-          docker run -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube:${VERSION}
-          
-          # Use Danube CLI
-          docker run --rm ghcr.io/${{ github.repository_owner }}/danube:${VERSION} broker list
-          docker run --rm ghcr.io/${{ github.repository_owner }}/danube:${VERSION} produce --help
-          
-          # Use with Docker Compose
-          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
-          docker-compose up -d
+          # Run a single-node Danube broker (zero YAML)
+          docker run -d --name danube -p 6650:6650 ghcr.io/${{ github.repository_owner }}/danube:${VERSION}
+
+          # Use the Danube CLI inside the container
+          docker exec danube danube broker list
+          docker exec danube danube topic create /default/orders --intent event_stream
+
+          # 3-node cluster with Docker Compose
+          git clone --depth 1 --branch ${VERSION} https://github.com/${{ github.repository }}.git
+          cd danube/docker && docker compose up -d
           \`\`\`
 
           ### Install from Archive:
@@ -291,7 +291,7 @@ jobs:
           cat RELEASE_NOTES.md RELEASE_STATIC.md > RELEASE_BODY.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
