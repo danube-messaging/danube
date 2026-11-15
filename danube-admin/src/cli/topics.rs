@@ -274,7 +274,7 @@ enum SubscriptionCommands {
         topic: String,
         #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(long, help = "Subscription name to seek")]
+        #[arg(short, long, help = "Subscription name to seek")]
         subscription: String,
         #[arg(long, help = "Target offset to resume delivery from")]
         to_offset: Option<u64>,
@@ -430,7 +430,7 @@ enum DlqCommands {
         topic: String,
         #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(long, help = "Subscription name whose DLQ should be replayed")]
+        #[arg(short, long, help = "Subscription name whose DLQ should be replayed")]
         subscription: String,
         #[arg(long, help = "Explicit DLQ topic path (defaults to subscription's configured DLQ)")]
         dlq_topic: Option<String>,

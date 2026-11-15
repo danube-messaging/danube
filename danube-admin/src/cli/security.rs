@@ -66,7 +66,7 @@ enum RolesCommands {
   danube auth role create admin-role --permissions ManageCluster,ManageBroker,ManageNamespace,ManageTopic
 
 Valid permissions:
-  Lookup, Produce, Consume, Replicate, ManageNamespace, ManageTopic,
+  Lookup, Produce, Consume, Replicate, ReadPayload, ManageNamespace, ManageTopic,
   ManageSchema, ManageBroker, ManageCluster"
     )]
     Create {

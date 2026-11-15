@@ -49,6 +49,8 @@ pub struct AppState {
     pub ttl: Duration,
     pub metrics: MetricsClient,
     pub mcp_config: McpConfig,
+    /// Allowed CORS origin; `None` keeps the permissive default.
+    pub cors_allow_origin: Option<String>,
     pub auth_token: Option<String>,
     pub require_auth: bool,
     pub cluster_page_cache: Mutex<Option<CacheEntry<ClusterPage>>>,
@@ -96,6 +98,7 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
         ttl,
         metrics,
         mcp_config,
+        cors_allow_origin: args.cors_allow_origin.clone(),
         auth_token: configured_token,
         require_auth,
         cluster_page_cache: Mutex::new(None),
@@ -144,7 +147,17 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
 //   normalizes topic names and applies sensible defaults where applicable.
 //
 pub fn build_router(app_state: Arc<AppState>) -> Router {
-    let cors = CorsLayer::permissive();
+    let cors = match app_state
+        .cors_allow_origin
+        .as_deref()
+        .and_then(|origin| origin.parse::<axum::http::HeaderValue>().ok())
+    {
+        Some(origin) => CorsLayer::new()
+            .allow_origin(origin)
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any),
+        None => CorsLayer::permissive(),
+    };
 
     let mcp_state = Arc::clone(&app_state);
     let mcp_service = StreamableHttpService::new(

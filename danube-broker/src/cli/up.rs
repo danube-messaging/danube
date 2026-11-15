@@ -130,7 +130,7 @@ resumes its existing identity and membership.",
   danube up cluster --data-dir /var/lib/danube --single-node
   danube up cluster --data-dir /var/lib/danube --advertised-addr broker1:6650 \\
                     --seed-nodes broker1:7650,broker2:7650,broker3:7650
-  danube up cluster --data-dir /var/lib/danube --join"
+  danube up cluster --data-dir /var/lib/danube --join --admin-listen 0.0.0.0:50051"
     )]
     Cluster(ClusterArgs),
 
@@ -277,7 +277,7 @@ pub(crate) struct ClusterArgs {
           help_heading = "Membership")]
     pub(crate) seed_nodes: Vec<String>,
 
-    /// Wait to be added to a running cluster via `danube cluster node add`
+    /// Wait to be added via `danube cluster node add` (pair with --admin-listen)
     #[arg(long, help_heading = "Membership")]
     pub(crate) join: bool,
 
@@ -674,6 +674,14 @@ pub(crate) fn warnings(opts: &UpOptions, state: &DataDirState) -> Vec<String> {
             "no membership flag given; bootstrapping a NEW single-node cluster.\n           \
              Pass --seed-nodes to form a multi-node cluster, --join to join a running one,\n           \
              or --single-node to confirm and silence this warning."
+                .to_string(),
+        );
+    }
+    if opts.membership == Membership::Join && opts.admin_addr.is_none() && *state == DataDirState::Fresh {
+        w.push(
+            "--join without --admin-listen: the shared --listen port only opens after this node \
+             becomes a member,\n           so `danube cluster node add --node-addr ...` cannot reach it. \
+             Add --admin-listen <ADDR> (e.g. 0.0.0.0:50051)."
                 .to_string(),
         );
     }
