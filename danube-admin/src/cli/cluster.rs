@@ -111,7 +111,12 @@ enum ClusterCommands {
         replace_blacklist: bool,
     },
 
-    #[command(about = "Export live cluster config as a break-glass RecoveryConfig YAML/JSON")]
+    #[command(
+        about = "Export live cluster config as a break-glass RecoveryConfig YAML/JSON",
+        long_about = "Export the live cluster config as a break-glass RecoveryConfig.\n\nSecrets (JWT secret, object store credentials, Valkey passwords) are replaced \
+with \"<redacted>\" unless --include-secrets is given.",
+        after_help = "Examples:\n  danube cluster export-config\n  danube cluster export-config --format json --output cluster.json\n  danube cluster export-config --include-secrets --output recovery.yaml"
+    )]
     ExportConfig {
         #[arg(long, help = "Optional broker ID to include node bind/admin addresses")]
         broker_id: Option<u64>,
@@ -119,6 +124,11 @@ enum ClusterCommands {
         format: String,
         #[arg(long, help = "Optional file path to write exported config")]
         output: Option<String>,
+        #[arg(
+            long,
+            help = "Include secrets in plain text (for a real recovery file). Store the output securely"
+        )]
+        include_secrets: bool,
     },
 }
 
@@ -271,7 +281,8 @@ pub async fn handle(cmd: Cluster) -> Result<()> {
             broker_id,
             format,
             output,
-        } => handle_export_config(&conn, broker_id, format, output).await,
+            include_secrets,
+        } => handle_export_config(&conn, broker_id, format, output, include_secrets).await,
     }
 }
 
@@ -401,6 +412,49 @@ async fn connect_client(conn: &Connection) -> Result<AdminGrpcClient> {
     .await
 }
 
+/// Fetch the redacted cluster config and print only the selected top-level
+/// keys of one section as YAML. `section` is a top-level key (e.g. "storage");
+/// `keys` limits the output to those keys inside it (empty = whole section).
+async fn print_config_section(
+    client: &AdminGrpcClient,
+    section: &str,
+    keys: &[&str],
+) -> Result<()> {
+    let exported = client
+        .export_cluster_config(ExportClusterConfigRequest {
+            broker_id: None,
+            format: "json".to_string(),
+            include_secrets: false,
+        })
+        .await?;
+    let doc: serde_json::Value = serde_json::from_str(&exported.content)?;
+    let value = select_section(&doc, section, keys);
+    if value.is_null() {
+        println!("{section}: not configured");
+    } else {
+        print!("{}", serde_yaml::to_string(&value)?);
+    }
+    Ok(())
+}
+
+fn select_section(doc: &serde_json::Value, section: &str, keys: &[&str]) -> serde_json::Value {
+    let Some(inner) = doc.get(section) else {
+        return serde_json::Value::Null;
+    };
+    if keys.is_empty() {
+        return serde_json::json!({ section: inner });
+    }
+    let mut picked = serde_json::Map::new();
+    for key in keys {
+        if let Some(v) = inner.get(*key) {
+            if !v.is_null() {
+                picked.insert((*key).to_string(), v.clone());
+            }
+        }
+    }
+    serde_json::json!({ section: picked })
+}
+
 fn parse_kv_options(pairs: Vec<String>) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
     for pair in pairs {
@@ -416,13 +470,7 @@ async fn handle_storage(action: StorageCommands, conn: &Connection) -> Result<()
     let client = connect_client(conn).await?;
     match action {
         StorageCommands::Show => {
-            let exported = client
-                .export_cluster_config(ExportClusterConfigRequest {
-                    broker_id: None,
-                    format: "yaml".to_string(),
-                })
-                .await?;
-            println!("{}", exported.content);
+            print_config_section(&client, "storage", &[]).await?;
         }
         StorageCommands::Local { force } => {
             let resp = client
@@ -529,14 +577,7 @@ async fn handle_wal(
         || flush_max_batch_bytes.is_some();
 
     if !has_updates {
-        let exported = client
-            .export_cluster_config(ExportClusterConfigRequest {
-                broker_id: None,
-                format: "yaml".to_string(),
-            })
-            .await?;
-        println!("{}", exported.content);
-        return Ok(());
+        return print_config_section(&client, "storage", &["wal", "local_retention"]).await;
     }
 
     let resp = client
@@ -585,14 +626,7 @@ async fn handle_load_manager(
         || !blacklist_topics.is_empty();
 
     if !has_updates {
-        let exported = client
-            .export_cluster_config(ExportClusterConfigRequest {
-                broker_id: None,
-                format: "yaml".to_string(),
-            })
-            .await?;
-        println!("{}", exported.content);
-        return Ok(());
+        return print_config_section(&client, "load_manager", &[]).await;
     }
 
     let resp = client
@@ -619,13 +653,26 @@ async fn handle_export_config(
     broker_id: Option<u64>,
     format: String,
     output: Option<String>,
+    include_secrets: bool,
 ) -> Result<()> {
     let client = connect_client(conn).await?;
     let resp = client
-        .export_cluster_config(ExportClusterConfigRequest { broker_id, format })
+        .export_cluster_config(ExportClusterConfigRequest {
+            broker_id,
+            format,
+            include_secrets,
+        })
         .await?;
+    if include_secrets {
+        eprintln!("warning: output contains secrets in plain text; store it securely");
+    }
     if let Some(path) = output {
         std::fs::write(&path, &resp.content)?;
+        #[cfg(unix)]
+        if include_secrets {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         println!("Exported cluster configuration ({}) to {}", resp.format, path);
     } else {
         print!("{}", resp.content);
@@ -653,6 +700,34 @@ mod tests {
     #[test]
     fn command_tree_is_valid() {
         TestCli::command().debug_assert();
+    }
+
+    #[test]
+    fn select_section_only_returns_requested_keys() {
+        let doc = serde_json::json!({
+            "auth": { "jwt": { "secret_key": "<redacted>" } },
+            "storage": { "mode": "local", "wal": { "cache_capacity": 10 }, "local_retention": null },
+            "load_manager": { "assignment_strategy": "balanced" }
+        });
+        let wal = select_section(&doc, "storage", &["wal", "local_retention"]);
+        assert_eq!(wal, serde_json::json!({ "storage": { "wal": { "cache_capacity": 10 } } }));
+        let lm = select_section(&doc, "load_manager", &[]);
+        assert!(lm.get("auth").is_none());
+        assert_eq!(lm["load_manager"]["assignment_strategy"], "balanced");
+        assert!(select_section(&doc, "missing", &[]).is_null());
+    }
+
+    #[test]
+    fn parses_export_config_include_secrets() {
+        let cli = TestCli::try_parse_from([
+            "danube", "cluster", "export-config", "--include-secrets", "--output", "r.yaml",
+        ])
+        .expect("parse");
+        let TestCmd::Cluster(c) = cli.cmd;
+        assert!(matches!(
+            c.command,
+            ClusterCommands::ExportConfig { include_secrets: true, .. }
+        ));
     }
 
     #[test]

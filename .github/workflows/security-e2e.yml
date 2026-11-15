@@ -188,6 +188,17 @@ jobs:
           fi
           echo "✅ Last-admin lockout protection verified"
 
+          # 3. Secret redaction: export-config hides the JWT secret unless --include-secrets
+          EXPORTED=$($ADMIN_BIN cluster export-config --format yaml)
+          if echo "$EXPORTED" | grep -q "your-secret-key"; then
+            echo "FAIL: export-config leaked the JWT secret"; exit 1
+          fi
+          echo "$EXPORTED" | grep -q "<redacted>"
+          $ADMIN_BIN cluster export-config --include-secrets --output temp/recovery-with-secrets.yaml
+          grep -q "your-secret-key" temp/recovery-with-secrets.yaml
+          [ "$(stat -c "%a" temp/recovery-with-secrets.yaml)" = "600" ]
+          echo "✅ export-config secret redaction verified"
+
       # =====================================================================
       # Phase 2: Standalone --auth auto-tls zero-secret bootstrap E2E
       # =====================================================================
@@ -231,6 +242,23 @@ jobs:
           DANUBE_TOKEN="$BOOTSTRAP_TOKEN" \
             ./target/release/danube broker list
           echo "✅ Auto-TLS single-port admin connection with bootstrap_admin.token verified"
+
+          # Multi-node auto-tls without a shared CA must fail fast, not hang
+          set +e
+          timeout 30 ./target/release/danube up cluster \
+            --data-dir ./danube-data/auto-tls-multi \
+            --listen 127.0.0.1:6656 \
+            --raft-port 7656 \
+            --seed-nodes 127.0.0.1:7656,127.0.0.1:7657 \
+            --auth auto-tls > temp/auto-tls-multi.log 2>&1
+          CODE=$?
+          set -e
+          if [ "$CODE" = "0" ] || [ "$CODE" = "124" ]; then
+            echo "FAIL: multi-node auto-tls without a shared CA should exit with an error (code $CODE)"
+            cat temp/auto-tls-multi.log; exit 1
+          fi
+          grep -q "needs a CA shared by all nodes" temp/auto-tls-multi.log
+          echo "✅ Multi-node auto-tls shared-CA guard verified"
 
       # =====================================================================
       # Cleanup

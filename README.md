@@ -32,7 +32,7 @@ danube topic create /default/orders --intent event_stream
 
 # 3. Stream some messages (two terminals)
 danube consume /default/orders
-danube produce /default/orders -m "hello danube" -r
+danube produce /default/orders -m "hello danube"
 ```
 
 That's it. Run `danube` on its own any time to see everything it can do.

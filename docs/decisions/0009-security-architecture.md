@@ -20,8 +20,8 @@
 ## Known gaps (do not paper over them in docs)
 
 - Consume/receive and some schema reads check permissions at **cluster** scope only, so topic- or namespace-scoped bindings are not enough for consumers.
-- Multi-node `auto-tls`: each fresh node creates its own CA before syncing via Raft, so Raft mTLS may fail to form. The workaround is pre-seeding the first node's CA files, or using `--auth tls`.
-- `danube cluster export-config` includes secrets (JWT key, object-store credentials). Treat its output as sensitive.
+- Multi-node `auto-tls`: Raft uses mTLS from the first connection, but the cluster CA only syncs through Raft after the cluster forms. So `danube up` refuses `--auth auto-tls` with `--seed-nodes` or `--join` unless `ca.pem`, `ca-key.pem` and `jwt.secret` are already in `{data_dir}/tls/` (copied from the first node). Copying `jwt.secret` keeps every node's `bootstrap_admin.token` valid. For production, use `--auth tls`.
+- `danube cluster export-config` redacts the JWT secret, object-store credentials and Valkey passwords by default. `--include-secrets` produces a real recovery file (written with `0600`). The JWT secret can mint a token for any subject, including super-admins, so it must never reach logs or AI agent context: the MCP tool never asks for secrets.
 - `danube mcp --http` has no HTTP auth of its own; protect it with `danube console --require-auth` or a proxy.
 
 ## Rules for changes

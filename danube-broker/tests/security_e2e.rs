@@ -119,6 +119,59 @@ async fn security_authorized_consume() -> Result<()> {
     Ok(())
 }
 
+/// Regression test: a principal with only a **topic-scoped** Consume binding must be
+/// able to receive and ack, not just subscribe. `receive_messages`, `ack` and `nack`
+/// used to authorize at cluster scope, so this flow failed after `subscribe`.
+///
+/// **Precondition:** The CI workflow bound the authorized principal to
+/// `/default/security-test` with `producer-role` and `consumer-role` at topic scope.
+///
+/// **Expected Outcome:** The consumer receives the message and the ack succeeds.
+#[tokio::test]
+#[ignore = "requires security e2e workflow"]
+async fn security_topic_scoped_consume_receive_and_ack() -> Result<()> {
+    let token = env("DANUBE_AUTHORIZED_TOKEN");
+    let client = build_client(&token).await?;
+    let topic = "/default/security-test";
+
+    // Start the consumer first: a new subscription starts at the end of the topic.
+    let mut consumer = client
+        .new_consumer()
+        .with_topic(topic)
+        .with_consumer_name("security-e2e-receiver")
+        .with_subscription("security-e2e-receive-sub")
+        .with_subscription_type(SubType::Exclusive)
+        .build()?;
+    consumer.subscribe().await?;
+    let mut messages = consumer.receive().await?;
+    sleep(Duration::from_millis(500)).await;
+
+    let mut producer = client
+        .new_producer()
+        .with_topic(topic)
+        .with_name("security-e2e-receive-producer")
+        .build()?;
+    producer.create().await?;
+    producer
+        .send("topic-scoped-receive".as_bytes().to_vec(), None)
+        .await?;
+
+    let message = tokio::time::timeout(Duration::from_secs(10), messages.recv())
+        .await
+        .expect("topic-scoped consumer should receive a message (receive_messages authz)")
+        .expect("receive channel closed");
+    assert_eq!(message.payload.as_ref(), b"topic-scoped-receive");
+
+    let ack = consumer.ack(&message).await;
+    assert!(
+        ack.is_ok(),
+        "topic-scoped consumer should be able to ack, got: {:?}",
+        ack.err()
+    );
+
+    Ok(())
+}
+
 /// Tests that a principal with NO RBAC bindings is denied when trying to produce.
 ///
 /// **Precondition:** The `DANUBE_DENIED_TOKEN` JWT belongs to a principal

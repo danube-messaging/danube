@@ -40,6 +40,14 @@ The unified `danube` binary now has a flat, noun-based command tree. `danube ctl
 | `ctl serve --mode ui\|all --listen-addr A --broker-endpoint E` | `danube console --listen A --endpoint E` (`DANUBE_CONSOLE_LISTEN`, `--http-token`/`DANUBE_HTTP_TOKEN`, `--require-auth`) |
 | `danube mcp --broker-endpoint E` | `danube mcp --endpoint E` |
 
+### 🔒 Security and fixes
+
+* **Consumer RBAC:** `receive_messages`, `ack` and `nack` now authorize against the consumer's topic instead of cluster scope, so namespace- and topic-scoped `Consume` bindings work end to end. A missing `msg_id` in `ack`/`nack` now returns `InvalidArgument` instead of panicking.
+* **Secret redaction:** `danube cluster export-config` replaces the JWT secret, object-store credentials and Valkey passwords with `<redacted>`. Use `--include-secrets` for a real recovery file (written with `0600`). The MCP export tool never includes secrets, and `--recovery-config` rejects a redacted file.
+* **Focused inspection:** `danube cluster storage show`, bare `danube cluster wal` and bare `danube cluster load-manager` print only their own section instead of the full exported config.
+* **Producer dispatch strategy:** an existing topic's strategy now wins. `danube produce /default/orders -m hi` works on a topic created with `--intent event_stream`, no `-r` needed. A reliable producer on a non-reliable topic is still rejected.
+* **Multi-node auto-TLS:** `danube up cluster --auth auto-tls` with `--seed-nodes` or `--join` now fails fast with instructions unless `ca.pem`, `ca-key.pem` and `jwt.secret` are already in `{data_dir}/tls/`, instead of retrying forever.
+
 <!-- v0.16.0 START -->
 ## v0.16.0 - 2026-09-13
 

@@ -9,7 +9,12 @@ Each topic has one dispatch strategy, fixed at creation:
 - **Non-reliable:** messages are kept in memory and pushed to connected consumers. No WAL and no redelivery after a broker restart. Lowest latency. Used by `realtime` and request/reply topics.
 - **Reliable:** messages are appended to the WAL (sync level from the intent), delivered with ack tracking, a sliding window of unacked messages (`max_unacked_messages`), retries with backoff, and DLQ or block on poison messages.
 
-Producers must declare the matching strategy: the broker rejects a mismatch ("Producer requested dispatch strategy does not match topic strategy"). The CLI uses `danube produce -r` for reliable.
+The topic's strategy is the source of truth once it exists. A producer's requested strategy only decides the strategy of an auto-created topic (`danube produce -r` or `with_reliable_dispatch()`). For an existing topic:
+
+- a non-reliable request on a reliable topic is accepted: the producer gets a stronger guarantee.
+- a reliable request on a non-reliable topic is rejected: the producer expects durability it would not get.
+
+The rule is asymmetric because `NonReliable` is the proto default (0), so the broker cannot tell "not set" from "explicitly non-reliable".
 
 ## Why
 

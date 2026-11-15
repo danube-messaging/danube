@@ -58,7 +58,8 @@ pub struct Produce {
     #[arg(short = 'p', long, help_heading = "Topic auto-creation")]
     pub partitions: Option<u32>,
 
-    /// Use reliable (WAL-backed) dispatch when the topic is auto-created
+    /// Use reliable (WAL-backed) dispatch when the topic is auto-created.
+    /// Not needed for existing topics: the producer follows the topic's strategy.
     #[arg(short = 'r', long, help_heading = "Topic auto-creation")]
     pub reliable: bool,
 

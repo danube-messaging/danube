@@ -282,6 +282,11 @@ async fn run_node(args: UpOptions) -> Result<()> {
                 }
                 san_hosts.push(service_config.broker_addr.ip().to_string());
 
+                crate::security::auto_tls::ensure_shared_ca_for_multi_node(
+                    Path::new(data_dir),
+                    args.join || !args.seed_nodes.is_empty(),
+                )?;
+
                 let provisioned = crate::security::auto_tls::provision_local_auto_tls(
                     Path::new(data_dir),
                     &san_hosts,

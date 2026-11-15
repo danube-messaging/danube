@@ -864,6 +864,9 @@ message ExportClusterConfigRequest {
   optional uint64 broker_id = 1;
   // "yaml" (default) or "json"
   string format = 2;
+  // Include secrets (JWT secret, object store credentials, Valkey passwords).
+  // Default false: secrets are replaced with "<redacted>".
+  bool include_secrets = 3;
 }
 
 message ExportClusterConfigResponse {

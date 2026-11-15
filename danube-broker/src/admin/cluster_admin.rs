@@ -326,8 +326,9 @@ impl ClusterAdmin for DanubeAdminImpl {
             Some(ObjectStoreConfig::ObjectStore {
                 backend,
                 root,
-                options,
+                mut options,
             }) => {
+                redact_object_store_options(&mut options);
                 let backend_str = match backend {
                     ObjectStoreBackend::S3 => "s3",
                     ObjectStoreBackend::Gcs => "gcs",
@@ -451,7 +452,11 @@ impl ClusterAdmin for DanubeAdminImpl {
             applied.push(PlannedAction {
                 kind: "update_config".to_string(),
                 resource: "cluster/write_buffer".to_string(),
-                details: format!("enabled={} endpoints={:?}", wb.enabled, wb.endpoints),
+                details: format!(
+                    "enabled={} endpoints={:?}",
+                    wb.enabled,
+                    wb.endpoints.iter().map(|e| redact_url_password(e)).collect::<Vec<_>>()
+                ),
             });
         }
 
@@ -820,7 +825,11 @@ impl ClusterAdmin for DanubeAdminImpl {
             security_context.principal.principal_name(),
             "configure_write_buffer",
             "cluster",
-            serde_json::json!({ "enabled": req.enabled, "profile": effective_profile, "endpoints": spec.endpoints }),
+            serde_json::json!({
+                "enabled": req.enabled,
+                "profile": effective_profile,
+                "endpoints": spec.endpoints.iter().map(|e| redact_url_password(e)).collect::<Vec<_>>(),
+            }),
         )
         .await;
 
@@ -1067,6 +1076,10 @@ impl ClusterAdmin for DanubeAdminImpl {
             }
         }
 
+        if !req.include_secrets {
+            redact_recovery_secrets(&mut recovery);
+        }
+
         let format_norm = req.format.trim().to_ascii_lowercase();
         let (fmt, content) = match format_norm.as_str() {
             "json" => (
@@ -1304,6 +1317,91 @@ fn strip_uri_scheme(raw: &str) -> String {
         .to_string()
 }
 
+/// Placeholder written in place of secrets in exported configuration.
+pub(crate) const REDACTED: &str = "<redacted>";
+
+/// Object store option keys that hold credentials.
+const SECRET_OPTION_KEYS: &[&str] = &[
+    "access_key",
+    "secret_key",
+    "session_token",
+    "credentials_json",
+    "account_key",
+];
+
+fn redact_opt(value: &mut Option<String>) {
+    if value.is_some() {
+        *value = Some(REDACTED.to_string());
+    }
+}
+
+/// Replace the password in a `scheme://user:password@host` URL, if any.
+fn redact_url_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let Some((userinfo, host)) = rest.rsplit_once('@') else {
+        return url.to_string();
+    };
+    match userinfo.split_once(':') {
+        Some((user, _password)) => format!("{scheme}://{user}:{REDACTED}@{host}"),
+        // `redis://password@host` style: the whole userinfo is the secret
+        None => format!("{scheme}://{REDACTED}@{host}"),
+    }
+}
+
+/// Redact object store credential options in place.
+pub(crate) fn redact_object_store_options(options: &mut std::collections::HashMap<String, String>) {
+    for key in SECRET_OPTION_KEYS {
+        if let Some(v) = options.get_mut(*key) {
+            *v = REDACTED.to_string();
+        }
+    }
+}
+
+/// Remove secrets from an exported recovery config: the JWT signing secret,
+/// object store credentials and passwords embedded in Valkey endpoint URLs.
+pub(crate) fn redact_recovery_secrets(recovery: &mut RecoveryConfig) {
+    if let Some(jwt) = recovery.auth.as_mut().and_then(|a| a.jwt.as_mut()) {
+        jwt.secret_key = REDACTED.to_string();
+    }
+
+    let Some(storage) = recovery.storage.as_mut() else {
+        return;
+    };
+    let write_buffer = match storage {
+        StorageConfig::Local { write_buffer, .. } => write_buffer,
+        StorageConfig::SharedFs { write_buffer, .. } => write_buffer,
+        StorageConfig::ObjectStore {
+            durable,
+            write_buffer,
+            ..
+        } => {
+            match durable {
+                Some(ObjectStoreNode::S3 {
+                    access_key,
+                    secret_key,
+                    session_token,
+                    ..
+                }) => {
+                    redact_opt(access_key);
+                    redact_opt(secret_key);
+                    redact_opt(session_token);
+                }
+                Some(ObjectStoreNode::Gcs {
+                    credentials_json, ..
+                }) => redact_opt(credentials_json),
+                Some(ObjectStoreNode::Azblob { account_key, .. }) => redact_opt(account_key),
+                None => {}
+            }
+            write_buffer
+        }
+    };
+    if let Some(wb) = write_buffer.as_mut() {
+        wb.endpoints = wb.endpoints.iter().map(|e| redact_url_password(e)).collect();
+    }
+}
+
 fn build_export_storage_config(factory: &StorageFactory) -> StorageConfig {
     let wal_cfg = factory.current_wal_config();
     let deleter_cfg = factory.current_deleter_config();
@@ -1429,5 +1527,97 @@ fn build_export_storage_config(factory: &StorageFactory) -> StorageConfig {
                 write_buffer,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+    use crate::security::config::{AuthConfig, AuthMode, JwtConfig};
+
+    fn s3_recovery() -> RecoveryConfig {
+        RecoveryConfig {
+            auth: Some(AuthConfig {
+                mode: AuthMode::Tls,
+                tls: None,
+                jwt: Some(JwtConfig {
+                    secret_key: "super-secret".into(),
+                    issuer: "danube".into(),
+                    expiration_time: 3600,
+                }),
+                super_admins: vec!["admin".into()],
+            }),
+            storage: Some(StorageConfig::ObjectStore {
+                local_wal_root: None,
+                metadata_prefix: None,
+                durable: Some(ObjectStoreNode::S3 {
+                    root: "s3://bucket".into(),
+                    region: Some("eu-west-1".into()),
+                    endpoint: None,
+                    access_key: Some("AKIA123".into()),
+                    secret_key: Some("s3-secret".into()),
+                    profile: None,
+                    role_arn: None,
+                    session_token: Some("sess-tok-999".into()),
+                    anonymous: None,
+                    virtual_host_style: None,
+                }),
+                local_retention: None,
+                wal: WalNode::default(),
+                write_buffer: Some(WriteBufferNode {
+                    backend: "valkey".into(),
+                    endpoints: vec![
+                        "redis://default:vk-pass@valkey:6379".into(),
+                        "redis://valkey-2:6379".into(),
+                    ],
+                    wait_replicas: None,
+                    wait_timeout_ms: None,
+                    on_wait_timeout: None,
+                    max_cached_closed_segments: None,
+                }),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn redacts_jwt_object_store_and_valkey_secrets() {
+        let mut recovery = s3_recovery();
+        redact_recovery_secrets(&mut recovery);
+        let yaml = serde_yaml::to_string(&recovery).unwrap();
+
+        for secret in ["super-secret", "AKIA123", "s3-secret", "sess-tok-999", "vk-pass"] {
+            assert!(!yaml.contains(secret), "secret {secret} leaked:\n{yaml}");
+        }
+        // Non-secret values are kept so the export stays useful.
+        for kept in ["s3://bucket", "eu-west-1", "admin", "redis://valkey-2:6379", "default:"] {
+            assert!(yaml.contains(kept), "expected {kept} in:\n{yaml}");
+        }
+    }
+
+    #[test]
+    fn redacts_url_passwords() {
+        assert_eq!(
+            redact_url_password("redis://user:pw@host:6379"),
+            "redis://user:<redacted>@host:6379"
+        );
+        assert_eq!(
+            redact_url_password("redis://pw@host:6379"),
+            "redis://<redacted>@host:6379"
+        );
+        assert_eq!(redact_url_password("redis://host:6379"), "redis://host:6379");
+    }
+
+    #[test]
+    fn redacts_object_store_options() {
+        let mut opts = std::collections::HashMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("secret_key".to_string(), "x".to_string()),
+            ("account_key".to_string(), "y".to_string()),
+        ]);
+        redact_object_store_options(&mut opts);
+        assert_eq!(opts["region"], "us-east-1");
+        assert_eq!(opts["secret_key"], REDACTED);
+        assert_eq!(opts["account_key"], REDACTED);
     }
 }

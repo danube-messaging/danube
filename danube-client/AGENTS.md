@@ -14,7 +14,7 @@ Async Rust SDK used by applications, the CLI (`produce` / `consume`), edge and t
 ## Invariants
 
 - Always follow redirects and re-lookup after a topic move. Never assume a fixed broker per topic.
-- The producer's dispatch strategy must match the topic (ADR 0008).
+- The producer's dispatch strategy only matters for auto-created topics; an existing topic's strategy wins, except a reliable producer is rejected on a non-reliable topic (ADR 0008).
 - Public builder APIs are mirrored in the docs (`client-libraries/*`) and the other SDKs. Treat renames as breaking changes.
 
 ## Pitfalls

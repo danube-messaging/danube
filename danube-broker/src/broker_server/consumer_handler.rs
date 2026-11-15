@@ -166,13 +166,7 @@ impl ConsumerService for DanubeServerImpl {
         request: tonic::Request<ReceiveRequest>,
     ) -> std::result::Result<tonic::Response<Self::ReceiveMessagesStream>, tonic::Status> {
         let security_context = get_security_context(&request)?;
-        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let consumer_id = request.into_inner().consumer_id;
-
-        // Create a new mpsc channel to stream messages to the client via gRPC
-        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Small buffer to trigger send failures quickly
-
-        info!(consumer_id = %consumer_id, "consumer ready to receive messages");
 
         let service = self.service.as_ref();
 
@@ -187,6 +181,21 @@ impl ConsumerService for DanubeServerImpl {
             counter!(BROKER_RPC_TOTAL.name, "service"=>"consumer", "method"=>"receive_messages", "result"=>"error").increment(1);
             return Err(status);
         };
+
+        // Authorize against the consumer's topic so topic- and namespace-scoped
+        // bindings work the same way they do for `subscribe`.
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(consumer.topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
+
+        // Create a new mpsc channel to stream messages to the client via gRPC
+        let (grpc_tx, grpc_rx) = mpsc::channel(4); // Small buffer to trigger send failures quickly
+
+        info!(consumer_id = %consumer_id, "consumer ready to receive messages");
 
         // Attach direct gRPC stream to consumer and obtain session cancellation token
         let (token_for_task, session_id) = consumer.attach_stream(grpc_tx.clone()).await;
@@ -230,11 +239,21 @@ impl ConsumerService for DanubeServerImpl {
         request: tonic::Request<AckRequest>,
     ) -> std::result::Result<tonic::Response<AckResponse>, tonic::Status> {
         let security_context = get_security_context(&request)?;
-        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let ack_request = request.into_inner();
+        let mut msg_id = ack_request
+            .msg_id
+            .ok_or_else(|| Status::invalid_argument("missing msg_id"))?;
+        msg_id.topic_name = crate::broker_service::normalize_topic_path(&msg_id.topic_name)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(msg_id.topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
         let ack = AckMessage {
             request_id: ack_request.request_id,
-            msg_id: ack_request.msg_id.unwrap().into(),
+            msg_id: msg_id.into(),
             subscription_name: ack_request.subscription_name,
         };
 
@@ -264,11 +283,21 @@ impl ConsumerService for DanubeServerImpl {
         request: tonic::Request<NackRequest>,
     ) -> std::result::Result<tonic::Response<NackResponse>, tonic::Status> {
         let security_context = get_security_context(&request)?;
-        enforce_authorization(&security_context, &Resource::Cluster, Permission::Consume, &self.service.resources.security).await?;
         let nack_request = request.into_inner();
+        let mut msg_id = nack_request
+            .msg_id
+            .ok_or_else(|| Status::invalid_argument("missing msg_id"))?;
+        msg_id.topic_name = crate::broker_service::normalize_topic_path(&msg_id.topic_name)?;
+        enforce_authorization(
+            &security_context,
+            &Resource::Topic(msg_id.topic_name.clone()),
+            Permission::Consume,
+            &self.service.resources.security,
+        )
+        .await?;
         let nack = NackMessage {
             request_id: nack_request.request_id,
-            msg_id: nack_request.msg_id.unwrap().into(),
+            msg_id: msg_id.into(),
             subscription_name: nack_request.subscription_name,
             delay_ms: nack_request.delay_ms,
             reason: nack_request.reason,

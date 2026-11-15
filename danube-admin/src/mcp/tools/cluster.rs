@@ -876,6 +876,8 @@ pub async fn export_cluster_config(
     let req = danube_core::admin_proto::ExportClusterConfigRequest {
         broker_id: params.broker_id,
         format: params.format.unwrap_or_else(|| "yaml".to_string()),
+        // Never expose secrets to an AI agent's context.
+        include_secrets: false,
     };
     match client.export_cluster_config(req).await {
         Ok(resp) => resp.content,
