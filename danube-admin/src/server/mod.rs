@@ -4,6 +4,8 @@ pub mod ui;
 
 use anyhow::Result;
 use clap::Args;
+
+use crate::cli::{ClientArgs, Connection};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -11,108 +13,177 @@ use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerMode {
-    /// Admin UI server (HTTP REST API)
-    Ui,
-    /// MCP server only
-    Mcp,
-    /// Both UI and MCP
-    All,
+    /// HTTP server: console REST API (`/ui/v1/...`) + streamable HTTP MCP (`/mcp`)
+    Http,
+    /// MCP over stdio (for local AI agents / IDEs)
+    McpStdio,
 }
 
-impl std::str::FromStr for ServerMode {
-    type Err = String;
+/// `danube console` - web admin console backend.
+#[derive(Debug, Args, Clone)]
+#[command(
+    about = "Run the web admin console backend (HTTP API + MCP over HTTP)",
+    long_about = "Run the web admin console backend.\n\n\
+Serves the console REST API under /ui/v1/... and the streamable HTTP MCP endpoint \
+under /mcp, both backed by the broker admin API.",
+    after_help = "Examples:
+  danube console
+  danube console --listen 0.0.0.0:8080 --endpoint http://broker:6650
+  danube console --require-auth --http-token \"$TOKEN\" --prometheus-url http://prometheus:9090"
+)]
+pub struct ConsoleArgs {
+    /// HTTP listen address
+    #[arg(long, default_value = "0.0.0.0:8080", env = "DANUBE_CONSOLE_LISTEN", value_name = "ADDR", help_heading = "Server")]
+    pub listen: String,
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "ui" => Ok(Self::Ui),
-            "mcp" => Ok(Self::Mcp),
-            "all" => Ok(Self::All),
-            _ => Err(format!("Invalid mode: {}. Use: ui, mcp, or all", s)),
+    /// Require a bearer token on HTTP requests
+    #[arg(long, env = "DANUBE_HTTP_REQUIRE_AUTH", help_heading = "Server")]
+    pub require_auth: bool,
+
+    /// Bearer token accepted on HTTP requests
+    #[arg(long, env = "DANUBE_HTTP_TOKEN", hide_env_values = true, value_name = "TOKEN", help_heading = "Server")]
+    pub http_token: Option<String>,
+
+    /// CORS allowed origin
+    #[arg(long, value_name = "ORIGIN", help_heading = "Server")]
+    pub cors_allow_origin: Option<String>,
+
+    /// Response cache TTL in milliseconds
+    #[arg(long, default_value_t = 3000, value_name = "MS", help_heading = "Server")]
+    pub cache_ttl_ms: u64,
+
+    #[command(flatten)]
+    pub backend: BackendArgs,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
+}
+
+/// `danube mcp` - Model Context Protocol server for AI agents.
+#[derive(Debug, Args, Clone)]
+#[command(
+    about = "Run the MCP server for AI agents (stdio by default)",
+    long_about = "Run the Model Context Protocol server that exposes Danube admin tools, \
+prompts and resources to AI agents.\n\n\
+By default it speaks MCP over stdio, which is what IDEs and local agents expect. \
+Use --http to serve streamable HTTP MCP at http://<ADDR>/mcp instead.",
+    after_help = "Examples:
+  danube mcp                                   # stdio, broker at http://127.0.0.1:6650
+  danube mcp --endpoint http://broker:6650 --config ./mcp.yaml
+  danube mcp --http 0.0.0.0:8080               # streamable HTTP at /mcp"
+)]
+pub struct McpArgs {
+    /// Serve MCP over streamable HTTP on this address instead of stdio
+    #[arg(long, value_name = "ADDR", help_heading = "Transport")]
+    pub http: Option<String>,
+
+    #[command(flatten)]
+    pub backend: BackendArgs,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
+}
+
+/// Backend settings shared by `danube console` and `danube mcp`.
+#[derive(Debug, Args, Clone)]
+pub struct BackendArgs {
+    /// MCP configuration file (enables log access tools and resources)
+    #[arg(long, env = "DANUBE_MCP_CONFIG", value_name = "FILE", value_hint = clap::ValueHint::FilePath, help_heading = "Backend")]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Admin API request timeout in milliseconds
+    #[arg(long, default_value_t = 5000, value_name = "MS", help_heading = "Backend")]
+    pub request_timeout_ms: u64,
+
+    /// Prometheus base URL used for metrics tools
+    #[arg(long, default_value = "http://localhost:9090", env = "DANUBE_PROMETHEUS_URL", value_name = "URL", help_heading = "Backend")]
+    pub prometheus_url: String,
+
+    /// Prometheus query timeout in milliseconds
+    #[arg(long, default_value_t = 5000, value_name = "MS", help_heading = "Backend")]
+    pub metrics_timeout_ms: u64,
+}
+
+/// Resolved runtime settings for the HTTP / MCP servers.
+#[derive(Debug, Clone)]
+pub struct ServerArgs {
+    pub mode: ServerMode,
+    pub config: Option<std::path::PathBuf>,
+    pub listen_addr: String,
+    pub broker_endpoint: String,
+    pub connection: Connection,
+    pub request_timeout_ms: u64,
+    pub cache_ttl_ms: u64,
+    pub cors_allow_origin: Option<String>,
+    pub prometheus_url: String,
+    pub metrics_timeout_ms: u64,
+    pub http_token: Option<String>,
+    pub require_auth: bool,
+}
+
+impl ServerArgs {
+    fn grpc_config(&self, endpoint: String) -> crate::core::GrpcClientConfig {
+        crate::core::GrpcClientConfig {
+            endpoint,
+            request_timeout_ms: self.request_timeout_ms,
+            ..self.connection.grpc_config()
         }
     }
 }
 
-#[derive(Debug, Args, Clone)]
-pub struct ServerArgs {
-    /// Server mode: ui, mcp, or all (required)
-    #[arg(long, env = "DANUBE_ADMIN_MODE")]
-    pub mode: ServerMode,
+impl ConsoleArgs {
+    pub fn into_server_args(self) -> Result<ServerArgs> {
+        let connection = self.client.resolve()?;
+        Ok(ServerArgs {
+            mode: ServerMode::Http,
+            config: self.backend.config,
+            listen_addr: self.listen,
+            broker_endpoint: connection.endpoint.clone(),
+            connection,
+            request_timeout_ms: self.backend.request_timeout_ms,
+            cache_ttl_ms: self.cache_ttl_ms,
+            cors_allow_origin: self.cors_allow_origin,
+            prometheus_url: self.backend.prometheus_url,
+            metrics_timeout_ms: self.backend.metrics_timeout_ms,
+            http_token: self.http_token,
+            require_auth: self.require_auth,
+        })
+    }
+}
 
-    /// MCP configuration file (optional, enables log access and resources)
-    #[arg(long, env = "DANUBE_MCP_CONFIG")]
-    pub config: Option<std::path::PathBuf>,
-
-    /// HTTP server listen address
-    #[arg(long, default_value = "0.0.0.0:8080", env = "DANUBE_ADMIN_LISTEN_ADDR")]
-    pub listen_addr: String,
-
-    /// Broker gRPC endpoint (can be overridden by config file)
-    #[arg(
-        long,
-        env = "DANUBE_ADMIN_ENDPOINT",
-        default_value = "http://127.0.0.1:6650"
-    )]
-    pub broker_endpoint: String,
-
-    /// Request timeout in milliseconds
-    #[arg(long, default_value_t = 5000)]
-    pub request_timeout_ms: u64,
-
-    /// Cache TTL in milliseconds
-    #[arg(long, default_value_t = 3000)]
-    pub cache_ttl_ms: u64,
-
-    /// CORS allow origin
-    #[arg(long)]
-    pub cors_allow_origin: Option<String>,
-
-    // gRPC TLS/mTLS options
-    #[arg(long)]
-    pub grpc_enable_tls: Option<bool>,
-    #[arg(long)]
-    pub grpc_domain: Option<String>,
-    #[arg(long)]
-    pub grpc_ca: Option<String>,
-    #[arg(long)]
-    pub grpc_cert: Option<String>,
-    #[arg(long)]
-    pub grpc_key: Option<String>,
-
-    /// Prometheus base URL
-    #[arg(long, default_value = "http://localhost:9090")]
-    pub prometheus_url: String,
-
-    /// Metrics timeout in milliseconds
-    #[arg(long, default_value_t = 5000)]
-    pub metrics_timeout_ms: u64,
+impl McpArgs {
+    pub fn into_server_args(self) -> Result<ServerArgs> {
+        let connection = self.client.resolve()?;
+        let (mode, listen_addr) = match self.http {
+            Some(addr) => (ServerMode::Http, addr),
+            None => (ServerMode::McpStdio, String::new()),
+        };
+        Ok(ServerArgs {
+            mode,
+            config: self.backend.config,
+            listen_addr,
+            broker_endpoint: connection.endpoint.clone(),
+            connection,
+            request_timeout_ms: self.backend.request_timeout_ms,
+            cache_ttl_ms: 3000,
+            cors_allow_origin: None,
+            prometheus_url: self.backend.prometheus_url,
+            metrics_timeout_ms: self.backend.metrics_timeout_ms,
+            http_token: None,
+            require_auth: false,
+        })
+    }
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
     match args.mode {
-        ServerMode::Ui => {
-            info!("Starting Admin UI server");
+        ServerMode::Http => {
+            info!("Starting HTTP server (console API + MCP at /mcp)");
             run_http_server(args).await
         }
-        ServerMode::Mcp => {
-            info!("Starting MCP server");
+        ServerMode::McpStdio => {
+            info!("Starting MCP server (stdio)");
             run_mcp_server(args).await
-        }
-        ServerMode::All => {
-            info!("Starting both UI and MCP servers");
-
-            // Clone args for UI server (MCP takes ownership)
-            let ui_args = args.clone();
-
-            // Spawn both servers concurrently
-            let ui_handle = tokio::spawn(async move { run_http_server(ui_args).await });
-            let mcp_handle = tokio::spawn(async move { run_mcp_server(args).await });
-
-            // Wait for both - if either fails, propagate error
-            let (ui_result, mcp_result) = tokio::join!(ui_handle, mcp_handle);
-            ui_result??;
-            mcp_result??;
-
-            Ok(())
         }
     }
 }
@@ -133,7 +204,7 @@ async fn run_http_server(args: ServerArgs) -> Result<()> {
 }
 
 async fn run_mcp_server(args: ServerArgs) -> Result<()> {
-    use crate::core::{AdminGrpcClient, GrpcClientConfig};
+    use crate::core::AdminGrpcClient;
     use crate::mcp::config::McpConfig;
 
     info!("Initializing MCP server");
@@ -150,18 +221,7 @@ async fn run_mcp_server(args: ServerArgs) -> Result<()> {
     // Use broker endpoint from config file if available, otherwise from CLI args
     let broker_endpoint = mcp_config.broker_endpoint.clone();
 
-    let grpc_config = GrpcClientConfig {
-        endpoint: broker_endpoint,
-        request_timeout_ms: args.request_timeout_ms,
-        enable_tls: args.grpc_enable_tls,
-        domain: args.grpc_domain.clone(),
-        ca_path: args.grpc_ca.clone(),
-        cert_path: args.grpc_cert.clone(),
-        key_path: args.grpc_key.clone(),
-        token: std::env::var("DANUBE_ADMIN_TOKEN")
-            .ok()
-            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()),
-    };
+    let grpc_config = args.grpc_config(broker_endpoint);
 
     let client = Arc::new(AdminGrpcClient::connect(grpc_config).await?);
     crate::mcp::run_mcp_server(client, mcp_config).await

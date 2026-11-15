@@ -45,6 +45,8 @@ jsonwebtoken = { workspace = true }
 ring = "0.17"
 metrics-exporter-prometheus = "0.17"
 serde_yaml = "0.9.34"
+clap = { workspace = true }
+clap_complete = { workspace = true }
 sysinfo = "0.38"
 
 # Schema registry (types, validation, compatibility) provided by danube-schema

@@ -21,7 +21,7 @@ struct McpClient {
 impl McpClient {
     /// Spawn MCP server as subprocess with stdio transport
     fn spawn() -> Self {
-        let endpoint = std::env::var("DANUBE_ADMIN_ENDPOINT")
+        let endpoint = std::env::var("DANUBE_ENDPOINT")
             .unwrap_or_else(|_| "http://127.0.0.1:6650".to_string());
 
         let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,7 +48,7 @@ impl McpClient {
         });
 
         let process = cmd
-            .env("DANUBE_ADMIN_ENDPOINT", endpoint)
+            .env("DANUBE_ENDPOINT", endpoint)
             .env("DANUBE_BROKER_ENDPOINT", "http://127.0.0.1:6650")
             .env("RUST_LOG", "error") // Reduce noise in test output
             .stdin(Stdio::piped())

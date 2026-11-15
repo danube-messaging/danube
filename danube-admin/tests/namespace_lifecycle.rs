@@ -11,7 +11,7 @@ fn namespace_lifecycle_creates_and_deletes() {
 
     // assert it appears in brokers namespaces
     let mut cmd = cli();
-    cmd.args(["brokers", "namespaces", "--output", "json"])
+    cmd.args(["broker", "namespaces", "--output", "json"])
         .assert()
         .success()
         .stdout(predicates::str::contains(&ns));

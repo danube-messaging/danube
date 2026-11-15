@@ -14,18 +14,21 @@ use danube_core::proto::danube_schema::{
     ConfigureTopicSchemaRequest, GetTopicSchemaConfigRequest, UpdateTopicValidationPolicyRequest,
 };
 
-use crate::core::{intent_summary_for_topic, AdminGrpcClient, GrpcClientConfig};
+use crate::core::{intent_summary_for_topic, AdminGrpcClient};
 
 #[derive(Debug, Args)]
 #[command(
-    about = "Manage topics in the Danube cluster",
-    long_about = "Manage topics in the Danube cluster.\n\nCommon examples:\n  danube-admin topics list --namespace default\n  danube-admin topics create /default/mytopic\n  danube-admin topics create /default/mytopic --partitions 3\n  danube-admin topics describe /default/mytopic",
+    about = "Manage topics, their subscriptions, schemas and dead-letter queues",
+    long_about = "Manage topics in the Danube cluster, including their subscriptions, schema configuration and dead-letter queues.\n\nCommon examples:\n  danube topic list --namespace default\n  danube topic create /default/mytopic --partitions 3\n  danube topic describe /default/mytopic\n  danube topic subscription list /default/mytopic\n  danube topic schema show /default/mytopic",
     subcommand_required = true,
     arg_required_else_help = true
 )]
 pub struct Topics {
     #[command(subcommand)]
     command: TopicsCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 // Convert CLI string into enum DispatchStrategy for admin API
@@ -74,7 +77,10 @@ fn subscription_poison_policy_label(policy: i32) -> &'static str {
 
 #[derive(Debug, Subcommand)]
 enum TopicsCommands {
-    #[command(about = "List topics by namespace or by broker")]
+    #[command(
+        about = "List topics by namespace or by broker",
+        after_help = "Examples:\n  danube topic list --namespace default\n  danube topic list --broker 1234 --output json"
+    )]
     List {
         #[arg(
             long,
@@ -94,8 +100,7 @@ enum TopicsCommands {
     },
     #[command(
         about = "Create a topic (use --partitions for partitioned)",
-        long_about = "Create a topic.\n\nExamples:\n  topics create /ns/my-topic\n  topics create /ns/my-topic --dispatch-strategy reliable\n  topics create /ns/my-topic --partitions 3\n  topics create my-topic --namespace ns --schema-subject user-events",
-        after_help = "Examples:\n  danube-admin topics create /default/mytopic\n  danube-admin topics create /default/mytopic --dispatch-strategy reliable\n  danube-admin topics create /default/mytopic --partitions 3\n  danube-admin topics create mytopic --namespace default --schema-subject user-events\n\nEnv:\n  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)\n  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY",
+        after_help = "Examples:\n  danube topic create /default/mytopic\n  danube topic create /default/mytopic --dispatch-strategy reliable\n  danube topic create /default/mytopic --partitions 3\n  danube topic create mytopic --namespace default --schema-subject user-events",
         arg_required_else_help = true
     )]
     Create {
@@ -122,108 +127,237 @@ enum TopicsCommands {
         intent: Option<String>,
     },
     #[command(
-        about = "Delete an existing topic",
-        after_help = "Example:\n  danube-admin topics delete /default/mytopic\n  danube-admin topics delete mytopic --namespace default",
-        arg_required_else_help = true
-    )]
-    Delete {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-    },
-    #[command(
-        about = "List the subscriptions of the specified topic",
-        after_help = "Example:\n  danube-admin topics subscriptions /default/mytopic --output json",
-        arg_required_else_help = true
-    )]
-    Subscriptions {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
-        output: Option<String>,
-    },
-    #[command(
         about = "Describe a topic (schema and subscriptions)",
-        after_help = "Example:\n  danube-admin topics describe /default/mytopic --output json",
+        after_help = "Example:\n  danube topic describe /default/mytopic --output json",
         arg_required_else_help = true
     )]
     Describe {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
         output: Option<String>,
     },
     #[command(
-        about = "Delete a subscription from a topic",
-        after_help = "Example:\n  danube-admin topics unsubscribe --subscription sub1 /default/mytopic",
+        about = "Delete an existing topic",
+        after_help = "Examples:\n  danube topic delete /default/mytopic\n  danube topic delete mytopic --namespace default",
         arg_required_else_help = true
     )]
-    Unsubscribe {
+    Delete {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(short, long)]
-        subscription: String,
     },
-    SetFailurePolicy {
+    #[command(
+        about = "Peek raw messages from a topic without advancing consumer cursors",
+        after_help = "Example:\n  danube topic peek /default/mytopic --start-offset 0 --count 10",
+        arg_required_else_help = true
+    )]
+    Peek {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(short, long)]
-        subscription: String,
-        #[arg(long)]
-        max_redelivery_count: u32,
-        #[arg(long)]
-        ack_timeout_ms: u64,
-        #[arg(long)]
-        base_redelivery_delay_ms: u64,
-        #[arg(long)]
-        max_redelivery_delay_ms: u64,
-        #[arg(long, value_parser = ["fixed", "exponential"], default_value = "fixed")]
-        backoff_strategy: String,
-        #[arg(long)]
-        dead_letter_topic: Option<String>,
-        #[arg(long, value_parser = ["dead_letter", "dead-letter", "block", "drop"])]
-        poison_policy: String,
+        #[arg(long, default_value_t = 0, help = "Starting topic offset")]
+        start_offset: u64,
+        #[arg(long, default_value_t = 10, help = "Number of messages to inspect (1..=100)")]
+        count: u32,
     },
-    GetFailurePolicy {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(short, long)]
-        subscription: String,
-        #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
-        output: Option<String>,
+    #[command(
+        about = "Zero-copy branch a source topic into a new topic",
+        after_help = "Example:\n  danube topic branch /default/orders /default/orders-exp --at-offset 1000",
+        arg_required_else_help = true
+    )]
+    Branch {
+        #[arg(help = "Source topic path (e.g., '/default/orders')")]
+        source_topic: String,
+        #[arg(help = "Target branch topic path (e.g., '/default/orders-exp')")]
+        target_topic: String,
+        #[arg(long, help = "Optional inclusive offset to branch up to")]
+        at_offset: Option<u64>,
+        #[arg(long, help = "Optional publish timestamp (ns since epoch) to branch up to")]
+        at_timestamp_ns: Option<u64>,
     },
     #[command(
         about = "Unload a topic from its current broker to be reassigned to a different broker",
-        after_help = "Example:\n  danube-admin topics unload /default/mytopic\n  danube-admin topics unload mytopic --namespace default",
+        after_help = "Examples:\n  danube topic unload /default/mytopic\n  danube topic unload mytopic --namespace default",
         arg_required_else_help = true
     )]
     Unload {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
     },
     #[command(
-        about = "Configure schema for a topic (admin-only)",
-        long_about = "Configure schema settings for a topic. Assigns schema subject and sets validation policies.",
-        after_help = "Examples:\n  danube-admin topics configure-schema /default/user-events --subject user-events-value --validation-policy enforce --enable-payload-validation\n  danube-admin topics configure-schema mytopic --namespace default --subject events --validation-policy warn",
+        about = "Update topic storage tiering (local -> cloud_tiered live)",
+        after_help = "Example:\n  danube topic storage-mode /default/mytopic --mode cloud_tiered",
         arg_required_else_help = true
     )]
-    ConfigureSchema {
+    StorageMode {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["local", "cloud_tiered"], help = "Target storage mode")]
+        mode: String,
+        #[arg(long, default_value_t = false, help = "Force downgrade to local")]
+        force: bool,
+    },
+    #[command(
+        about = "Manage the subscriptions of a topic",
+        visible_alias = "sub",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Subscription {
+        #[command(subcommand)]
+        command: SubscriptionCommands,
+    },
+    #[command(
+        about = "Manage the schema configuration of a topic",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Schema {
+        #[command(subcommand)]
+        command: TopicSchemaCommands,
+    },
+    #[command(
+        about = "Operate on a topic's dead-letter queue",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Dlq {
+        #[command(subcommand)]
+        command: DlqCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SubscriptionCommands {
+    #[command(
+        about = "List the subscriptions of a topic",
+        after_help = "Example:\n  danube topic subscription list /default/mytopic --output json",
+        arg_required_else_help = true
+    )]
+    List {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
+        output: Option<String>,
+    },
+    #[command(
+        about = "Delete a subscription from a topic",
+        after_help = "Example:\n  danube topic subscription delete /default/mytopic --subscription sub1",
+        arg_required_else_help = true
+    )]
+    Delete {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(short, long, help = "Subscription name")]
+        subscription: String,
+    },
+    #[command(
+        about = "Seek a subscription cursor to a specific offset or publish timestamp",
+        after_help = "Examples:\n  danube topic subscription seek /default/mytopic --subscription sub1 --to-offset 42\n  danube topic subscription seek /default/mytopic --subscription sub1 --to-timestamp-ns 1700000000000000000",
+        arg_required_else_help = true
+    )]
+    Seek {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(short, long, help = "Subscription name to seek")]
+        subscription: String,
+        #[arg(long, help = "Target offset to resume delivery from")]
+        to_offset: Option<u64>,
+        #[arg(long, help = "Target publish timestamp (ns since epoch) to resume delivery from")]
+        to_timestamp_ns: Option<u64>,
+    },
+    #[command(
+        about = "Inspect or update a subscription's failure (redelivery / poison) policy",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    FailurePolicy {
+        #[command(subcommand)]
+        command: FailurePolicyCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FailurePolicyCommands {
+    #[command(
+        about = "Show the failure policy of a subscription",
+        after_help = "Example:\n  danube topic subscription failure-policy get /default/mytopic --subscription sub1 --output json",
+        arg_required_else_help = true
+    )]
+    Get {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(short, long, help = "Subscription name")]
+        subscription: String,
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
+        output: Option<String>,
+    },
+    #[command(
+        about = "Set the failure policy of a subscription",
+        after_help = "Example:\n  danube topic subscription failure-policy set /default/mytopic --subscription sub1 \\\n    --max-redelivery-count 5 --ack-timeout-ms 30000 \\\n    --base-redelivery-delay-ms 1000 --max-redelivery-delay-ms 60000 \\\n    --backoff-strategy exponential --poison-policy dead_letter --dead-letter-topic /default/mytopic-dlq",
+        arg_required_else_help = true
+    )]
+    Set {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(short, long, help = "Subscription name")]
+        subscription: String,
+        #[arg(long, help = "Maximum number of redeliveries before the poison policy applies")]
+        max_redelivery_count: u32,
+        #[arg(long, help = "Ack timeout in milliseconds before a message is redelivered")]
+        ack_timeout_ms: u64,
+        #[arg(long, help = "Base redelivery delay in milliseconds")]
+        base_redelivery_delay_ms: u64,
+        #[arg(long, help = "Maximum redelivery delay in milliseconds")]
+        max_redelivery_delay_ms: u64,
+        #[arg(
+            long,
+            value_parser = ["fixed", "exponential"],
+            default_value = "fixed",
+            help = "Redelivery backoff strategy"
+        )]
+        backoff_strategy: String,
+        #[arg(long, help = "Dead-letter topic used by the dead_letter poison policy")]
+        dead_letter_topic: Option<String>,
+        #[arg(
+            long,
+            value_parser = ["dead_letter", "dead-letter", "block", "drop"],
+            help = "What to do with a message after max redeliveries"
+        )]
+        poison_policy: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TopicSchemaCommands {
+    #[command(
+        about = "Assign a schema subject and validation policy to a topic (admin-only)",
+        after_help = "Examples:\n  danube topic schema configure /default/user-events --subject user-events-value --validation-policy enforce --enable-payload-validation\n  danube topic schema configure mytopic --namespace default --subject events --validation-policy warn",
+        arg_required_else_help = true
+    )]
+    Configure {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
         #[arg(long, help = "Schema subject name")]
         subject: String,
@@ -238,14 +372,27 @@ enum TopicsCommands {
         enable_payload_validation: bool,
     },
     #[command(
-        about = "Update validation policy for a topic (admin-only)",
-        after_help = "Examples:\n  danube-admin topics set-validation-policy /default/user-events --policy enforce --enable-payload-validation\n  danube-admin topics set-validation-policy mytopic --namespace default --policy warn",
+        about = "Show the schema configuration of a topic",
+        after_help = "Examples:\n  danube topic schema show /default/user-events\n  danube topic schema show mytopic --namespace default --output json",
         arg_required_else_help = true
     )]
-    SetValidationPolicy {
+    Show {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
+        namespace: Option<String>,
+        #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
+        output: Option<String>,
+    },
+    #[command(
+        about = "Update the validation policy of a topic (admin-only)",
+        after_help = "Examples:\n  danube topic schema validation-policy /default/user-events --policy enforce --enable-payload-validation\n  danube topic schema validation-policy mytopic --namespace default --policy warn",
+        arg_required_else_help = true
+    )]
+    ValidationPolicy {
+        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
+        topic: String,
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
         #[arg(
             long,
@@ -257,72 +404,33 @@ enum TopicsCommands {
         enable_payload_validation: bool,
     },
     #[command(
-        about = "Get schema configuration for a topic",
-        after_help = "Examples:\n  danube-admin topics get-schema-config /default/user-events\n  danube-admin topics get-schema-config mytopic --namespace default --output json",
+        about = "Sample recent JSON messages and infer a Draft-07 JSON Schema",
+        after_help = "Example:\n  danube topic schema infer /default/mytopic --sample-size 200",
         arg_required_else_help = true
     )]
-    GetSchemaConfig {
+    Infer {
         #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
-        output: Option<String>,
+        #[arg(long, default_value_t = 100, help = "Number of recent messages to sample")]
+        sample_size: u32,
     },
-    #[command(
-        about = "Update topic storage tiering (local -> cloud_tiered live)",
-        arg_required_else_help = true
-    )]
-    StorageMode {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long, value_parser = ["local", "cloud_tiered"], help = "Target storage mode")]
-        mode: String,
-        #[arg(long, default_value_t = false, help = "Force downgrade to local")]
-        force: bool,
-    },
-    #[command(
-        about = "Zero-copy branch a source topic into a new topic",
-        arg_required_else_help = true
-    )]
-    Branch {
-        #[arg(help = "Source topic path (e.g., '/default/orders')")]
-        source_topic: String,
-        #[arg(help = "Target branch topic path (e.g., '/default/orders-exp')")]
-        target_topic: String,
-        #[arg(long, help = "Optional inclusive offset to branch up to")]
-        at_offset: Option<u64>,
-        #[arg(long, help = "Optional publish timestamp (ns since epoch) to branch up to")]
-        at_timestamp_ns: Option<u64>,
-    },
-    #[command(
-        about = "Seek a subscription cursor to a specific offset or publish timestamp",
-        arg_required_else_help = true
-    )]
-    Seek {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long, help = "Subscription name to seek")]
-        subscription: String,
-        #[arg(long, help = "Target offset to resume delivery from")]
-        to_offset: Option<u64>,
-        #[arg(long, help = "Target publish timestamp (ns since epoch) to resume delivery from")]
-        to_timestamp_ns: Option<u64>,
-    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DlqCommands {
     #[command(
         about = "Replay messages from a dead-letter topic back to the source topic",
+        after_help = "Example:\n  danube topic dlq replay /default/mytopic --subscription sub1 --max-messages 100",
         arg_required_else_help = true
     )]
-    ReplayDlq {
+    Replay {
         #[arg(help = "Target topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
         topic: String,
-        #[arg(long)]
+        #[arg(long, help = "Namespace (if topic provided without namespace)")]
         namespace: Option<String>,
-        #[arg(long, help = "Subscription name whose DLQ should be replayed")]
+        #[arg(short, long, help = "Subscription name whose DLQ should be replayed")]
         subscription: String,
         #[arg(long, help = "Explicit DLQ topic path (defaults to subscription's configured DLQ)")]
         dlq_topic: Option<String>,
@@ -331,42 +439,13 @@ enum TopicsCommands {
         #[arg(long, default_value_t = 0, help = "Starting offset in the DLQ topic")]
         start_offset: u64,
     },
-    #[command(
-        about = "Peek raw messages from a topic without advancing consumer cursors",
-        arg_required_else_help = true
-    )]
-    Peek {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long, default_value_t = 0, help = "Starting topic offset")]
-        start_offset: u64,
-        #[arg(long, default_value_t = 10, help = "Number of messages to inspect (1..=100)")]
-        count: u32,
-    },
-    #[command(
-        about = "Sample recent JSON messages and infer a Draft-07 JSON Schema",
-        arg_required_else_help = true
-    )]
-    InferSchema {
-        #[arg(help = "Topic name. Accepts '/ns/topic' or 'topic' with --namespace")]
-        topic: String,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long, default_value_t = 100, help = "Number of recent messages to sample")]
-        sample_size: u32,
-    },
 }
 
-pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
-    let config = GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        ..Default::default()
-    };
-    let client = AdminGrpcClient::connect(config).await?;
+pub async fn handle(cmd: Topics) -> Result<()> {
+    let conn = cmd.client.resolve()?;
+    let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
 
-    match topics.command {
+    match cmd.command {
         // List topics by either namespace or broker
         TopicsCommands::List {
             namespace,
@@ -499,11 +578,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
         }
 
         // Get the list of subscriptions on the topic
-        TopicsCommands::Subscriptions {
+        TopicsCommands::Subscription { command: SubscriptionCommands::List {
             topic,
             namespace,
             output,
-        } => {
+        } } => {
             let name = normalize_topic(&topic, namespace.as_deref())?;
             let request = TopicRequest { name };
             let response = client.list_subscriptions(request).await?;
@@ -579,11 +658,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
         }
 
         // Delete a subscription from a topic
-        TopicsCommands::Unsubscribe {
+        TopicsCommands::Subscription { command: SubscriptionCommands::Delete {
             topic,
             namespace,
             subscription,
-        } => {
+        } } => {
             let name = normalize_topic(&topic, namespace.as_deref())?;
             let request = SubscriptionRequest {
                 topic: name,
@@ -593,7 +672,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             println!("Unsubscribed: {:?}", response.success);
         }
 
-        TopicsCommands::SetFailurePolicy {
+        TopicsCommands::Subscription { command: SubscriptionCommands::FailurePolicy { command: FailurePolicyCommands::Set {
             topic,
             namespace,
             subscription,
@@ -604,7 +683,7 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             backoff_strategy,
             dead_letter_topic,
             poison_policy,
-        } => {
+        } } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
             let request = SetSubscriptionFailurePolicyRequest {
                 topic: topic_name.clone(),
@@ -629,12 +708,12 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
             }
         }
 
-        TopicsCommands::GetFailurePolicy {
+        TopicsCommands::Subscription { command: SubscriptionCommands::FailurePolicy { command: FailurePolicyCommands::Get {
             topic,
             namespace,
             subscription,
             output,
-        } => {
+        } } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
             let response = client
                 .get_subscription_failure_policy(GetSubscriptionFailurePolicyRequest {
@@ -695,13 +774,13 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
         }
 
         // Configure schema for a topic
-        TopicsCommands::ConfigureSchema {
+        TopicsCommands::Schema { command: TopicSchemaCommands::Configure {
             topic,
             namespace,
             subject,
             validation_policy,
             enable_payload_validation,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
 
             let request = ConfigureTopicSchemaRequest {
@@ -734,12 +813,12 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
         }
 
         // Update validation policy for a topic
-        TopicsCommands::SetValidationPolicy {
+        TopicsCommands::Schema { command: TopicSchemaCommands::ValidationPolicy {
             topic,
             namespace,
             policy,
             enable_payload_validation,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
 
             let request = UpdateTopicValidationPolicyRequest {
@@ -776,11 +855,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
         }
 
         // Get schema configuration for a topic
-        TopicsCommands::GetSchemaConfig {
+        TopicsCommands::Schema { command: TopicSchemaCommands::Show {
             topic,
             namespace,
             output,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
 
             let request = GetTopicSchemaConfigRequest {
@@ -863,13 +942,13 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 resp.copied_local_messages
             );
         }
-        TopicsCommands::Seek {
+        TopicsCommands::Subscription { command: SubscriptionCommands::Seek {
             topic,
             namespace,
             subscription,
             to_offset,
             to_timestamp_ns,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
             let resp = client
                 .seek_subscription(SeekSubscriptionRequest {
@@ -884,14 +963,14 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 resp.topic, resp.subscription, resp.resolved_offset, resp.message
             );
         }
-        TopicsCommands::ReplayDlq {
+        TopicsCommands::Dlq { command: DlqCommands::Replay {
             topic,
             namespace,
             subscription,
             dlq_topic,
             max_messages,
             start_offset,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
             let resp = client
                 .replay_dlq(ReplayDlqRequest {
@@ -937,11 +1016,11 @@ pub async fn handle(topics: Topics, endpoint: &str) -> Result<()> {
                 );
             }
         }
-        TopicsCommands::InferSchema {
+        TopicsCommands::Schema { command: TopicSchemaCommands::Infer {
             topic,
             namespace,
             sample_size,
-        } => {
+        } } => {
             let topic_name = normalize_topic(&topic, namespace.as_deref())?;
             let resp = client
                 .infer_topic_schema(InferTopicSchemaRequest {
@@ -990,4 +1069,76 @@ fn normalize_topic(input: &str, namespace: Option<&str>) -> Result<String> {
         }
     }
     Err(anyhow::anyhow!("wrong topic format, should be /namespace/topic"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Debug, Parser)]
+    #[command(name = "danube")]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: TestCmd,
+    }
+
+    #[derive(Debug, Subcommand)]
+    enum TestCmd {
+        Topic(Topics),
+    }
+
+    #[test]
+    fn command_tree_is_valid() {
+        TestCli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_nested_failure_policy_set() {
+        let cli = TestCli::try_parse_from([
+            "danube",
+            "topic",
+            "subscription",
+            "failure-policy",
+            "set",
+            "/default/orders",
+            "--subscription",
+            "sub1",
+            "--max-redelivery-count",
+            "5",
+            "--ack-timeout-ms",
+            "30000",
+            "--base-redelivery-delay-ms",
+            "1000",
+            "--max-redelivery-delay-ms",
+            "60000",
+            "--poison-policy",
+            "drop",
+            "--endpoint",
+            "http://broker:6650",
+        ])
+        .expect("parse");
+        let TestCmd::Topic(topics) = cli.cmd;
+        assert_eq!(topics.client.endpoint.as_deref(), Some("http://broker:6650"));
+        assert!(matches!(
+            topics.command,
+            TopicsCommands::Subscription {
+                command: SubscriptionCommands::FailurePolicy {
+                    command: FailurePolicyCommands::Set { max_redelivery_count: 5, .. }
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_sub_alias_and_schema_dlq() {
+        for args in [
+            vec!["danube", "topic", "sub", "list", "/default/orders"],
+            vec!["danube", "topic", "schema", "show", "/default/orders"],
+            vec!["danube", "topic", "schema", "infer", "/default/orders"],
+            vec!["danube", "topic", "dlq", "replay", "/default/orders", "--subscription", "s"],
+        ] {
+            TestCli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        }
+    }
 }

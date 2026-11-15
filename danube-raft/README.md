@@ -60,16 +60,16 @@ On restart, persisted log entries are replayed through `apply()` to reconstruct 
 
 ## Cluster Formation
 
-Cluster formation is driven zero-YAML via CLI flags (`--data-dir`, `--raft-addr`, `--seed-nodes`, `--join`):
+Cluster formation is driven zero-YAML via CLI flags (`danube up cluster` with `--data-dir`, `--raft-port`, and one of `--seed-nodes`, `--single-node` or `--join`):
 
 ```bash
-danube up \
+danube up cluster \
   --data-dir ./danube-data \
-  --raft-addr 0.0.0.0:7650 \
+  --raft-port 7650 \
   --seed-nodes "node1:7650,node2:7650,node3:7650"
 ```
 
-- **Single-node** (omitted `--seed-nodes`): auto-initializes with zero configuration.
+- **Single-node** (`--single-node`): bootstraps a brand-new one-node cluster. Omitting all membership flags does the same but prints a warning.
 - **Multi-node**: peers listed in `--seed-nodes` discover each other via `GetNodeInfo`, the lowest `node_id` initializes the cluster, and nodes wait for leader election before proceeding.
 
 ## Node Lifecycle
@@ -80,7 +80,7 @@ Each broker persists its `node_id` in `{data_dir}/node_id` on first boot. The bo
 |---|---|---|---|
 | **Fresh node, no peers** | No `node_id` file, empty `--seed-nodes` | `Initialized` | Auto-inits single-node cluster |
 | **Fresh node, first boot** | No `node_id` file, seed peers have no leader | `Initialized` | Lowest `node_id` bootstraps; others become followers |
-| **Fresh node, existing cluster** | No `node_id` file, a seed peer reports `has_leader = true` | `JoinExisting` | Joins as non-voting learner; promotes to voter up to `target_voter_count` via `danube ctl cluster` |
+| **Fresh node, existing cluster** | No `node_id` file, a seed peer reports `has_leader = true` | `JoinExisting` | Joins as non-voting learner; promotes to voter up to `target_voter_count` via `danube cluster node promote` |
 | **Restart** | `node_id` file exists | `Restart` | Waits for leader election then resumes; membership is already persisted |
 
 Voting membership is bounded by `target_voter_count` (keeping surplus brokers as non-voting learners so large clusters do not slow Raft commits), and `SIGTERM` drains node workloads without churning Raft cluster membership.

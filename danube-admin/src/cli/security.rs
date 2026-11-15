@@ -8,27 +8,51 @@ use danube_core::admin_proto::{
 use danube_core::jwt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::AdminGrpcClient;
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Manage authentication tokens and RBAC roles / bindings",
+    long_about = "Manage authentication tokens and role-based access control (roles and bindings).\n\nCommon examples:\n  danube auth role create producer-role --permissions Produce,Lookup\n  danube auth binding create b1 --principal-type service_account --principal-name my-app --roles producer-role --scope cluster\n  danube auth token issue --subject my-app --ttl 24h\n  danube auth token create --subject my-app --jwt-secret \"$DANUBE_JWT_SECRET\"   # offline",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
 pub struct Security {
     #[command(subcommand)]
     command: SecurityCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 #[derive(Debug, Subcommand)]
 enum SecurityCommands {
     /// Manage authorization roles
-    #[command(subcommand)]
-    Roles(RolesCommands),
+    #[command(
+        subcommand,
+        visible_alias = "roles",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Role(RolesCommands),
 
-    /// Manage authorization bindings
-    #[command(subcommand)]
-    Bindings(BindingsCommands),
+    /// Manage authorization bindings (grant roles to principals)
+    #[command(
+        subcommand,
+        visible_alias = "bindings",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Binding(BindingsCommands),
 
-    /// Manage authentication tokens (offline JWT operations)
-    #[command(subcommand)]
-    Tokens(TokensCommands),
+    /// Manage authentication tokens (issue / revoke online, create / validate offline)
+    #[command(
+        subcommand,
+        visible_alias = "tokens",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Token(TokensCommands),
 }
 
 // ── Roles ──────────────────────────────────────────────────────────────────
@@ -38,11 +62,11 @@ enum RolesCommands {
     /// Create a new role with the given permissions
     #[command(
         after_help = "Examples:
-  danube-admin security roles create producer-role --permissions Produce,Lookup
-  danube-admin security roles create admin-role --permissions ManageCluster,ManageBroker,ManageNamespace,ManageTopic
+  danube auth role create producer-role --permissions Produce,Lookup
+  danube auth role create admin-role --permissions ManageCluster,ManageBroker,ManageNamespace,ManageTopic
 
 Valid permissions:
-  Lookup, Produce, Consume, Replicate, ManageNamespace, ManageTopic,
+  Lookup, Produce, Consume, Replicate, ReadPayload, ManageNamespace, ManageTopic,
   ManageSchema, ManageBroker, ManageCluster"
     )]
     Create {
@@ -81,11 +105,11 @@ enum BindingsCommands {
     /// Create a new binding that grants roles to a principal
     #[command(
         after_help = "Examples:
-  danube-admin security bindings create b1 \\
+  danube auth binding create b1 \\
     --principal-type service_account --principal-name my-app \\
     --roles producer-role --scope cluster
 
-  danube-admin security bindings create b2 \\
+  danube auth binding create b2 \\
     --principal-type service_account --principal-name my-app \\
     --roles consumer-role --scope topic --resource /default/my-topic
 
@@ -154,12 +178,12 @@ Scopes: cluster, namespace, topic"
 
 #[derive(Debug, Subcommand)]
 enum TokensCommands {
-    /// Create a signed JWT token (offline — no broker connection needed)
+    /// Create a signed JWT token (offline - no broker connection needed)
     #[command(
         after_help = "Examples:
-  danube-admin security tokens create --subject my-app --secret-key your-secret-key
-  danube-admin security tokens create --subject admin-user --type user --ttl 24h --secret-key '$JWT_SECRET'
-  danube-admin security tokens create --subject my-app --ttl 365d --secret-key your-secret-key
+  danube auth token create --subject my-app --jwt-secret your-secret-key
+  danube auth token create --subject admin-user --type user --ttl 24h --jwt-secret '$JWT_SECRET'
+  DANUBE_JWT_SECRET=your-secret-key danube auth token create --subject my-app --ttl 365d
 
 TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
     )]
@@ -168,9 +192,9 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
         #[arg(long)]
         subject: String,
 
-        /// JWT signing secret key (must match broker's jwt.secret_key)
-        #[arg(long, env = "DANUBE_JWT_SECRET_KEY")]
-        secret_key: String,
+        /// JWT signing secret (must match broker's jwt.secret_key)
+        #[arg(long, env = "DANUBE_JWT_SECRET", hide_env_values = true, value_name = "SECRET")]
+        jwt_secret: String,
 
         /// Token time-to-live (e.g. 8760h, 365d). Default: 8760h (1 year)
         #[arg(long, default_value = "8760h")]
@@ -185,18 +209,23 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
         issuer: String,
     },
 
-    /// Validate a JWT token and display its claims (offline — no broker connection needed)
+    /// Validate a JWT token and display its claims (offline - no broker connection needed)
+    #[command(
+        after_help = "Example:\n  danube auth token validate eyJhbGciOi... --jwt-secret your-secret-key",
+        arg_required_else_help = true
+    )]
     Validate {
         /// JWT token to validate
-        #[arg(long)]
-        token: String,
+        #[arg(value_name = "TOKEN")]
+        jwt: String,
 
-        /// JWT signing secret key
-        #[arg(long, env = "DANUBE_JWT_SECRET_KEY")]
-        secret_key: String,
+        /// JWT signing secret (must match broker's jwt.secret_key)
+        #[arg(long, env = "DANUBE_JWT_SECRET", hide_env_values = true, value_name = "SECRET")]
+        jwt_secret: String,
     },
 
     /// Issue a signed JWT token via the cluster admin API (requires ManageCluster)
+    #[command(after_help = "Example:\n  danube auth token issue --subject my-app --type service_account --ttl 24h")]
     Issue {
         /// Principal subject name
         #[arg(long)]
@@ -212,6 +241,7 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
     },
 
     /// Revoke all tokens for a subject cluster-wide (requires ManageCluster)
+    #[command(after_help = "Example:\n  danube auth token revoke --subject my-app")]
     Revoke {
         /// Principal subject name to revoke
         #[arg(long)]
@@ -221,24 +251,21 @@ TTL format: number followed by h (hours) or d (days). Default: 8760h (1 year)"
 
 // ── Handler ────────────────────────────────────────────────────────────────
 
-pub async fn handle(security: Security, endpoint: &str) -> Result<()> {
-    match security.command {
-        SecurityCommands::Tokens(
+pub async fn handle(cmd: Security) -> Result<()> {
+    match cmd.command {
+        SecurityCommands::Token(
             cmd @ (TokensCommands::Create { .. } | TokensCommands::Validate { .. }),
         ) => {
-            // Offline JWT helpers — no broker connection needed
+            // Offline JWT helpers - no broker connection needed
             handle_tokens_offline(cmd)
         }
         _ => {
-            let config = GrpcClientConfig {
-                endpoint: endpoint.to_string(),
-                ..Default::default()
-            };
-            let client = AdminGrpcClient::connect(config).await?;
-            match security.command {
-                SecurityCommands::Roles(cmd) => handle_roles(cmd, &client).await,
-                SecurityCommands::Bindings(cmd) => handle_bindings(cmd, &client).await,
-                SecurityCommands::Tokens(cmd) => handle_tokens_online(cmd, &client).await,
+            let conn = cmd.client.resolve()?;
+            let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
+            match cmd.command {
+                SecurityCommands::Role(cmd) => handle_roles(cmd, &client).await,
+                SecurityCommands::Binding(cmd) => handle_bindings(cmd, &client).await,
+                SecurityCommands::Token(cmd) => handle_tokens_online(cmd, &client).await,
             }
         }
     }
@@ -445,7 +472,7 @@ fn handle_tokens_offline(cmd: TokensCommands) -> Result<()> {
     match cmd {
         TokensCommands::Create {
             subject,
-            secret_key,
+            jwt_secret,
             ttl,
             r#type,
             issuer,
@@ -465,15 +492,15 @@ fn handle_tokens_offline(cmd: TokensCommands) -> Result<()> {
                 principal_name: subject,
             };
 
-            let token = jwt::create_token(&claims, &secret_key)
+            let token = jwt::create_token(&claims, &jwt_secret)
                 .map_err(|e| anyhow::anyhow!("Failed to create token: {}", e))?;
 
             // Print only the token to stdout (for piping/scripting)
             println!("{}", token);
         }
 
-        TokensCommands::Validate { token, secret_key } => {
-            match jwt::validate_token(&token, &secret_key) {
+        TokensCommands::Validate { jwt: token, jwt_secret } => {
+            match jwt::validate_token(&token, &jwt_secret) {
                 Ok(claims) => {
                     let exp_time = chrono::DateTime::from_timestamp(claims.exp as i64, 0)
                         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
@@ -558,5 +585,57 @@ fn parse_ttl(ttl: &str) -> Result<u64> {
         // Assume seconds if no suffix
         ttl.parse::<u64>()
             .map_err(|_| anyhow::anyhow!("Invalid TTL: '{}'. Use h (hours) or d (days) suffix.", ttl))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Debug, Parser)]
+    #[command(name = "danube")]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: TestCmd,
+    }
+
+    #[derive(Debug, Subcommand)]
+    enum TestCmd {
+        Auth(Security),
+    }
+
+    #[test]
+    fn command_tree_is_valid() {
+        TestCli::command().debug_assert();
+    }
+
+    #[test]
+    fn validate_takes_positional_token_without_clashing_with_global_token() {
+        let cli = TestCli::try_parse_from([
+            "danube", "auth", "token", "validate", "abc.def.ghi", "--jwt-secret", "s3cret",
+            "--token", "connection-token",
+        ])
+        .expect("parse");
+        let TestCmd::Auth(sec) = cli.cmd;
+        assert_eq!(sec.client.token.as_deref(), Some("connection-token"));
+        match sec.command {
+            SecurityCommands::Token(TokensCommands::Validate { jwt, jwt_secret }) => {
+                assert_eq!(jwt, "abc.def.ghi");
+                assert_eq!(jwt_secret, "s3cret");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plural_aliases_are_accepted() {
+        for args in [
+            vec!["danube", "auth", "roles", "list"],
+            vec!["danube", "auth", "bindings", "list", "--scope", "cluster"],
+            vec!["danube", "auth", "tokens", "issue", "--subject", "app"],
+        ] {
+            TestCli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        }
     }
 }

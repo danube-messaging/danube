@@ -8,22 +8,22 @@ use tonic::{metadata::MetadataValue, Request, Status};
 use super::config::GrpcClientConfig;
 
 /// Unified gRPC client for Danube admin operations
-/// Consolidates logic from danube-admin-cli and danube-admin-gateway
+/// Shared by the `danube` CLI, `danube console` and `danube mcp`.
 #[derive(Clone)]
 pub struct AdminGrpcClient {
     channel: Channel,
     timeout: Duration,
     token: Option<String>,
+    /// Effective connection settings, reused to reach other brokers with the
+    /// same credentials and TLS material (see [`Self::config_for_endpoint`]).
+    config: GrpcClientConfig,
 }
 
 impl AdminGrpcClient {
     /// Connect to a Danube broker using the provided configuration
     pub async fn connect(config: GrpcClientConfig) -> Result<Self> {
-        let token = config
-            .token
-            .clone()
-            .or_else(|| std::env::var("DANUBE_ADMIN_TOKEN").ok())
-            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()); // backward compat
+        let token = config.token.clone();
+        let mut effective = config.clone();
 
         // Accept either full URL (http/https) or host:port; default to http if no scheme
         let mut endpoint_url =
@@ -33,13 +33,12 @@ impl AdminGrpcClient {
                 format!("http://{}", config.endpoint)
             };
 
-        // TLS enablement: https scheme OR enable_tls=true OR DANUBE_ADMIN_TLS=true
-        let enable_tls = config.enable_tls.unwrap_or_else(|| {
-            endpoint_url.starts_with("https://")
-                || std::env::var("DANUBE_ADMIN_TLS")
-                    .map(|v| v == "true")
-                    .unwrap_or(false)
-        });
+        // TLS enablement: explicit enable_tls, otherwise inferred from an https scheme
+        let enable_tls = config
+            .enable_tls
+            .unwrap_or_else(|| endpoint_url.starts_with("https://"));
+
+        effective.enable_tls = Some(enable_tls);
 
         if enable_tls && endpoint_url.starts_with("http://") {
             endpoint_url = endpoint_url.replacen("http://", "https://", 1);
@@ -48,30 +47,19 @@ impl AdminGrpcClient {
         let mut endpoint = Endpoint::from_shared(endpoint_url.clone())?.tcp_nodelay(true);
 
         if enable_tls {
-            let domain = config
-                .domain
-                .or_else(|| std::env::var("DANUBE_ADMIN_DOMAIN").ok())
-                .unwrap_or_else(|| "localhost".to_string());
+            let domain = config.domain.unwrap_or_else(|| "localhost".to_string());
 
             let mut tls = ClientTlsConfig::new().domain_name(domain);
 
             // Optional Root CA
-            if let Some(ca_path) = config
-                .ca_path
-                .or_else(|| std::env::var("DANUBE_ADMIN_CA").ok())
-            {
+            if let Some(ca_path) = config.ca_path {
                 let ca_pem = tokio::fs::read(ca_path).await?;
                 let ca = Certificate::from_pem(ca_pem);
                 tls = tls.ca_certificate(ca);
             }
 
             // Optional client identity (mTLS)
-            let cert_path_env = std::env::var("DANUBE_ADMIN_CERT").ok();
-            let key_path_env = std::env::var("DANUBE_ADMIN_KEY").ok();
-            if let (Some(cert_path), Some(key_path)) = (
-                config.cert_path.or(cert_path_env),
-                config.key_path.or(key_path_env),
-            ) {
+            if let (Some(cert_path), Some(key_path)) = (config.cert_path, config.key_path) {
                 let cert = tokio::fs::read(cert_path).await?;
                 let key = tokio::fs::read(key_path).await?;
                 let identity = Identity::from_pem(cert, key);
@@ -86,11 +74,21 @@ impl AdminGrpcClient {
             channel,
             timeout: Duration::from_millis(config.request_timeout_ms),
             token,
+            config: effective,
         })
     }
 
     pub fn token(&self) -> Option<String> {
         self.token.clone()
+    }
+
+    /// Connection settings for another broker (e.g. the Raft leader or a node
+    /// being added), inheriting this client's token and TLS configuration.
+    pub fn config_for_endpoint(&self, endpoint: String) -> GrpcClientConfig {
+        GrpcClientConfig {
+            endpoint,
+            ..self.config.clone()
+        }
     }
 
     fn auth_interceptor(

@@ -38,4 +38,4 @@ COPY --from=builder /app/target/release/danube /usr/local/bin/danube
 EXPOSE 6650 7650 9040
 
 ENTRYPOINT ["/usr/local/bin/danube"]
-CMD ["up", "--data-dir", "/danube-data", "--broker-addr", "0.0.0.0:6650"]
+CMD ["up", "cluster", "--single-node", "--data-dir", "/danube-data", "--listen", "0.0.0.0:6650"]

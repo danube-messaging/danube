@@ -175,7 +175,6 @@ impl StorageConfig {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn local_wal_root(&self) -> Option<&str> {
         match self {
             Self::Local { local_wal_root, .. } => Some(local_wal_root.as_str()),

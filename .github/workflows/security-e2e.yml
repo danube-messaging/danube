@@ -43,18 +43,19 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p temp danube-data
-          nohup ./target/release/danube up \
-            --auth-mode tls \
+          nohup ./target/release/danube up cluster \
+            --single-node \
+            --auth tls \
             --tls-cert ./cert/server-cert.pem \
             --tls-key ./cert/server-key.pem \
             --ca-cert ./cert/ca-cert.pem \
             --jwt-secret your-secret-key \
-            --super-admins admin \
-            --broker-addr 0.0.0.0:6650 \
-            --admin-addr 0.0.0.0:50051 \
-            --raft-addr 0.0.0.0:7650 \
+            --super-admin admin \
+            --listen 0.0.0.0:6650 \
+            --admin-listen 0.0.0.0:50051 \
+            --raft-port 7650 \
             --data-dir ./danube-data/broker-1 \
-            --prom-exporter 0.0.0.0:9040 \
+            --metrics-listen 0.0.0.0:9040 \
             > temp/broker.log 2>&1 &
 
           # Wait for broker to be ready
@@ -79,18 +80,18 @@ jobs:
           SECRET_KEY="your-secret-key"
 
           # Super-admin token (subject "admin" is in super_admins config)
-          ADMIN_TOKEN=$(./target/release/danube ctl security tokens create \
-            --subject admin --type user --secret-key "$SECRET_KEY")
+          ADMIN_TOKEN=$(./target/release/danube auth token create \
+            --subject admin --type user --jwt-secret "$SECRET_KEY")
           echo "ADMIN_TOKEN=$ADMIN_TOKEN" >> $GITHUB_ENV
 
           # Authorized service account token
-          AUTHORIZED_TOKEN=$(./target/release/danube ctl security tokens create \
-            --subject test-app --type service_account --secret-key "$SECRET_KEY")
+          AUTHORIZED_TOKEN=$(./target/release/danube auth token create \
+            --subject test-app --type service_account --jwt-secret "$SECRET_KEY")
           echo "AUTHORIZED_TOKEN=$AUTHORIZED_TOKEN" >> $GITHUB_ENV
 
           # Unprivileged token (no bindings will be created for this principal)
-          DENIED_TOKEN=$(./target/release/danube ctl security tokens create \
-            --subject unprivileged-app --type service_account --secret-key "$SECRET_KEY")
+          DENIED_TOKEN=$(./target/release/danube auth token create \
+            --subject unprivileged-app --type service_account --jwt-secret "$SECRET_KEY")
           echo "DENIED_TOKEN=$DENIED_TOKEN" >> $GITHUB_ENV
 
           echo "✅ JWT tokens generated for: admin, test-app, unprivileged-app"
@@ -100,38 +101,38 @@ jobs:
       # =====================================================================
       - name: Bootstrap RBAC (roles and bindings)
         env:
-          DANUBE_ADMIN_ENDPOINT: https://127.0.0.1:50051
-          DANUBE_ADMIN_TLS: "true"
-          DANUBE_ADMIN_CA: ./cert/ca-cert.pem
-          DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+          DANUBE_ENDPOINT: https://127.0.0.1:50051
+          DANUBE_TLS: "true"
+          DANUBE_TLS_CA: ./cert/ca-cert.pem
+          DANUBE_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           set -e
-          ADMIN_BIN="./target/release/danube ctl"
+          ADMIN_BIN="./target/release/danube"
 
-          echo "Token present: $([ -n "$DANUBE_ADMIN_TOKEN" ] && echo 'yes' || echo 'NO')"
+          echo "Token present: $([ -n "$DANUBE_TOKEN" ] && echo 'yes' || echo 'NO')"
 
           echo "Creating roles..."
-          $ADMIN_BIN security roles create producer-role --permissions Produce,Lookup
-          $ADMIN_BIN security roles create consumer-role --permissions Consume,Lookup
+          $ADMIN_BIN auth role create producer-role --permissions Produce,Lookup
+          $ADMIN_BIN auth role create consumer-role --permissions Consume,Lookup
 
           echo ""
           echo "Verifying roles..."
-          $ADMIN_BIN security roles list --output json
+          $ADMIN_BIN auth role list --output json
 
           echo ""
           echo "Pre-creating topic for security tests..."
-          $ADMIN_BIN topics create /default/security-test
+          $ADMIN_BIN topic create /default/security-test
 
           echo ""
           echo "Creating bindings for test-app on /default/security-test..."
-          $ADMIN_BIN security bindings create test-app-produce \
+          $ADMIN_BIN auth binding create test-app-produce \
             --principal-type service_account \
             --principal-name test-app \
             --roles producer-role \
             --scope topic \
             --resource /default/security-test
 
-          $ADMIN_BIN security bindings create test-app-consume \
+          $ADMIN_BIN auth binding create test-app-consume \
             --principal-type service_account \
             --principal-name test-app \
             --roles consumer-role \
@@ -140,7 +141,7 @@ jobs:
 
           echo ""
           echo "Verifying bindings..."
-          $ADMIN_BIN security bindings list --scope topic --resource /default/security-test --output json
+          $ADMIN_BIN auth binding list --scope topic --resource /default/security-test --output json
 
           # Allow cache propagation
           sleep 2
@@ -163,45 +164,44 @@ jobs:
 
       - name: Test online token issue/revoke and last-admin lockout protection
         env:
-          DANUBE_ADMIN_ENDPOINT: https://127.0.0.1:50051
-          DANUBE_ADMIN_TLS: "true"
-          DANUBE_ADMIN_CA: ./cert/ca-cert.pem
-          DANUBE_ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+          DANUBE_ENDPOINT: https://127.0.0.1:50051
+          DANUBE_TLS: "true"
+          DANUBE_TLS_CA: ./cert/ca-cert.pem
+          DANUBE_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           set -e
-          ADMIN_BIN="./target/release/danube ctl"
+          ADMIN_BIN="./target/release/danube"
 
           # 1. Online token issuance + revocation
-          ISSUED_TOKEN=$($ADMIN_BIN security tokens issue --subject temp-agent --type service_account --ttl 1h)
+          ISSUED_TOKEN=$($ADMIN_BIN auth token issue --subject temp-agent --type service_account --ttl 1h)
           if [ -z "$ISSUED_TOKEN" ]; then
             echo "FAIL: issued token was empty"
             exit 1
           fi
-          $ADMIN_BIN security tokens revoke --subject temp-agent
+          $ADMIN_BIN auth token revoke --subject temp-agent
           echo "✅ Online token issue and revoke verified"
 
           # 2. Last-admin lockout protection: revoking the sole active super-admin must fail
-          if $ADMIN_BIN security tokens revoke --subject admin; then
+          if $ADMIN_BIN auth token revoke --subject admin; then
             echo "FAIL: revoking last cluster admin should have been rejected"
             exit 1
           fi
           echo "✅ Last-admin lockout protection verified"
 
       # =====================================================================
-      # Phase 2: Standalone --auth-mode auto-tls zero-secret bootstrap E2E
+      # Phase 2: Standalone --auth auto-tls zero-secret bootstrap E2E
       # =====================================================================
-      - name: "Phase 2: Stop Phase 1 broker and test --auth-mode auto-tls"
+      - name: "Phase 2: Stop Phase 1 broker and test --auth auto-tls"
         run: |
           pkill -x danube || true
           sleep 2
 
           mkdir -p danube-data/auto-tls temp
-          ./target/release/danube up \
-            --mode standalone \
+          ./target/release/danube up standalone \
             --data-dir ./danube-data/auto-tls \
-            --broker-addr 127.0.0.1:6655 \
-            --raft-addr 127.0.0.1:7655 \
-            --auth-mode auto-tls \
+            --listen 127.0.0.1:6655 \
+            --raft-port 7655 \
+            --auth auto-tls \
             > temp/broker-auto-tls.log 2>&1 &
 
           for i in {1..15}; do
@@ -225,11 +225,11 @@ jobs:
           fi
 
           BOOTSTRAP_TOKEN=$(cat ./danube-data/auto-tls/bootstrap_admin.token)
-          DANUBE_ADMIN_ENDPOINT=https://127.0.0.1:6655 \
-          DANUBE_ADMIN_TLS=true \
-          DANUBE_ADMIN_CA=./danube-data/auto-tls/tls/ca.pem \
-          DANUBE_ADMIN_TOKEN="$BOOTSTRAP_TOKEN" \
-            ./target/release/danube ctl brokers list
+          DANUBE_ENDPOINT=https://127.0.0.1:6655 \
+          DANUBE_TLS=true \
+          DANUBE_TLS_CA=./danube-data/auto-tls/tls/ca.pem \
+          DANUBE_TOKEN="$BOOTSTRAP_TOKEN" \
+            ./target/release/danube broker list
           echo "✅ Auto-TLS single-port admin connection with bootstrap_admin.token verified"
 
       # =====================================================================

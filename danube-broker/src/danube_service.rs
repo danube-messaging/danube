@@ -13,7 +13,7 @@ pub(crate) use leader_election::LeaderElection;
 pub(crate) use load_manager::LoadManager;
 pub(crate) use load_report::LoadReport;
 
-use crate::args_parse::{BrokerMode, NodeRole};
+use crate::cli::up::{BrokerMode, NodeRole};
 
 use anyhow::{Context, Result};
 use danube_client::DanubeClient;
@@ -753,7 +753,7 @@ impl DanubeService {
     /// Determines the initial broker state based on how it was started:
     ///
     /// - `--join` mode       → **active** (reason `"joined"`) once Raft membership is established
-    /// - `--node-role lakehouse` → **drained** (does not serve client topics)
+    /// - `--role lakehouse` → **drained** (does not serve client topics)
     /// - restart < TTL       → **active** (fast restart, still registered)
     /// - full cluster restart → **active** (all registrations expired, safe)
     /// - restart > TTL       → **drained** (registration expired, admin must investigate)
@@ -800,7 +800,7 @@ impl DanubeService {
                         broker_id = %self.broker_id,
                         registered_brokers = all_regs.len(),
                         "broker registration expired (unavailable > TTL). \
-                         Registering as drained. Use `danube-admin brokers activate` to resume."
+                         Registering as drained. Use `danube broker activate --broker-id <id>` to resume."
                     );
                     ("drained", "stale_restart")
                 }
@@ -830,7 +830,7 @@ impl DanubeService {
             info!(
                 broker_id = %self.broker_id,
                 reason = state_reason,
-                "broker registered as drained (use `danube-admin brokers activate` to enable topic assignment)"
+                "broker registered as drained (use `danube broker activate --broker-id <id>` to enable topic assignment)"
             );
         }
     }
@@ -1561,7 +1561,7 @@ async fn start_lakehouse_runtime_if_enabled(
     node_role: NodeRole,
 ) -> Result<Option<danube_iceberg::LakehouseRuntime>> {
     if node_role == NodeRole::Broker {
-        debug!("skipping embedded lakehouse runtime (--node-role broker)");
+        debug!("skipping embedded lakehouse runtime (--role broker)");
         return Ok(None);
     }
 
@@ -1593,7 +1593,7 @@ async fn start_lakehouse_runtime_if_enabled(
 async fn start_lakehouse_runtime_if_enabled(node_role: NodeRole) -> Result<Option<()>> {
     if node_role == NodeRole::Lakehouse {
         warn!(
-            "--node-role lakehouse requested, but danube-broker was compiled without the 'lakehouse' feature"
+            "--role lakehouse requested, but danube-broker was compiled without the 'lakehouse' feature"
         );
     }
     Ok(None)

@@ -84,7 +84,7 @@ fn schema_registry_lifecycle() {
     let mut register_cmd = cli();
     let register_output = register_cmd
         .args([
-            "schemas",
+            "schema",
             "register",
             schema_subject,
             "--schema-type",
@@ -116,7 +116,7 @@ fn schema_registry_lifecycle() {
     let mut get_cmd = cli();
     get_cmd
         .args([
-            "schemas",
+            "schema",
             "get",
             "--subject",
             schema_subject,
@@ -134,7 +134,7 @@ fn schema_registry_lifecycle() {
     // ============================================================================
     let mut versions_cmd = cli();
     versions_cmd
-        .args(["schemas", "versions", schema_subject, "--output", "json"])
+        .args(["schema", "versions", schema_subject, "--output", "json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("\"version\": 1"));
@@ -146,7 +146,7 @@ fn schema_registry_lifecycle() {
     let mut create_topic_cmd = cli();
     create_topic_cmd
         .args([
-            "topics",
+            "topic",
             "create",
             &topic,
             "--schema-subject",
@@ -164,7 +164,7 @@ fn schema_registry_lifecycle() {
     // ============================================================================
     let mut describe_cmd = cli();
     let describe_output = describe_cmd
-        .args(["topics", "describe", &topic, "--output", "json"])
+        .args(["topic", "describe", &topic, "--output", "json"])
         .output()
         .expect("describe topic");
 
@@ -192,13 +192,13 @@ fn schema_registry_lifecycle() {
     let topic_no_schema = format!("/{}/logs", ns);
     let mut create_plain_cmd = cli();
     create_plain_cmd
-        .args(["topics", "create", &topic_no_schema])
+        .args(["topic", "create", &topic_no_schema])
         .assert()
         .success();
 
     let mut describe_plain_cmd = cli();
     let plain_output = describe_plain_cmd
-        .args(["topics", "describe", &topic_no_schema, "--output", "json"])
+        .args(["topic", "describe", &topic_no_schema, "--output", "json"])
         .output()
         .expect("describe plain topic");
 
@@ -217,7 +217,7 @@ fn schema_registry_lifecycle() {
     let mut check_cmd = cli();
     let _ = check_cmd
         .args([
-            "schemas",
+            "schema",
             "check",
             schema_subject,
             "--file",
@@ -233,13 +233,13 @@ fn schema_registry_lifecycle() {
     fs::remove_file(&schema_file).ok();
     let mut delete_topic = cli();
     delete_topic
-        .args(["topics", "delete", &topic])
+        .args(["topic", "delete", &topic])
         .assert()
         .success();
 
     let mut delete_plain = cli();
     delete_plain
-        .args(["topics", "delete", &topic_no_schema])
+        .args(["topic", "delete", &topic_no_schema])
         .assert()
         .success();
 

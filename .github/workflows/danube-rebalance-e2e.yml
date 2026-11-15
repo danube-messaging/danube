@@ -32,16 +32,17 @@ jobs:
       - name: Start Broker 1 (single-node cluster)
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           mkdir -p danube-data temp
 
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6650 \
-            --admin-addr 0.0.0.0:50051 \
-            --raft-addr 0.0.0.0:7650 \
+          nohup ./target/release/danube up cluster \
+            --single-node \
+            --listen 0.0.0.0:6650 \
+            --admin-listen 0.0.0.0:50051 \
+            --raft-port 7650 \
             --data-dir ./danube-data/broker-1 \
-            --prom-exporter 0.0.0.0:9040 \
+            --metrics-listen 0.0.0.0:9040 \
             > broker-1.log 2>&1 &
 
           for i in {1..15}; do
@@ -58,7 +59,7 @@ jobs:
           done
 
           echo "Configuring LoadManager via admin CLI..."
-          ./target/release/danube ctl cluster load-manager \
+          ./target/release/danube cluster load-manager \
             --assignment-strategy fair \
             --load-report-interval-seconds 5 \
             --rebalance true \
@@ -74,22 +75,22 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           # Start Broker 2 in --join mode
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6651 \
-            --admin-addr 0.0.0.0:50052 \
-            --raft-addr 0.0.0.0:7651 \
+          nohup ./target/release/danube up cluster \
+            --listen 0.0.0.0:6651 \
+            --admin-listen 0.0.0.0:50052 \
+            --raft-port 7651 \
             --data-dir ./danube-data/broker-2 \
-            --prom-exporter 0.0.0.0:9041 \
+            --metrics-listen 0.0.0.0:9041 \
             --join \
             > broker-2.log 2>&1 &
 
           # Start Broker 3 in --join mode
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6652 \
-            --admin-addr 0.0.0.0:50053 \
-            --raft-addr 0.0.0.0:7652 \
+          nohup ./target/release/danube up cluster \
+            --listen 0.0.0.0:6652 \
+            --admin-listen 0.0.0.0:50053 \
+            --raft-port 7652 \
             --data-dir ./danube-data/broker-3 \
-            --prom-exporter 0.0.0.0:9042 \
+            --metrics-listen 0.0.0.0:9042 \
             --join \
             > broker-3.log 2>&1 &
 
@@ -111,24 +112,24 @@ jobs:
 
       - name: Add Brokers 2 and 3 to cluster via admin CLI
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           # Discover node IDs from each broker's admin endpoint
-          BROKER_2_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
-            ./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
-          BROKER_3_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50053 \
-            ./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_2_NODE_ID=$(DANUBE_ENDPOINT=http://127.0.0.1:50052 \
+            ./target/release/danube cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_3_NODE_ID=$(DANUBE_ENDPOINT=http://127.0.0.1:50053 \
+            ./target/release/danube cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
           echo "Broker 2 node_id: $BROKER_2_NODE_ID"
           echo "Broker 3 node_id: $BROKER_3_NODE_ID"
 
           # Add both as learners
-          ./target/release/danube ctl cluster add-node --node-addr http://127.0.0.1:50052
-          ./target/release/danube ctl cluster add-node --node-addr http://127.0.0.1:50053
+          ./target/release/danube cluster node add --node-addr http://127.0.0.1:50052
+          ./target/release/danube cluster node add --node-addr http://127.0.0.1:50053
           sleep 2
 
           # Promote both to voters
-          ./target/release/danube ctl cluster promote-node --node-id $BROKER_2_NODE_ID
-          ./target/release/danube ctl cluster promote-node --node-id $BROKER_3_NODE_ID
+          ./target/release/danube cluster node promote --node-id $BROKER_2_NODE_ID
+          ./target/release/danube cluster node promote --node-id $BROKER_3_NODE_ID
 
           # Wait for broker ports on both joining brokers (they start after membership)
           for port in 6651 6652; do
@@ -147,8 +148,8 @@ jobs:
           done
 
           # Activate both brokers so they can receive topics
-          ./target/release/danube ctl brokers activate --broker-id $BROKER_2_NODE_ID --reason "rebalance-test"
-          ./target/release/danube ctl brokers activate --broker-id $BROKER_3_NODE_ID --reason "rebalance-test"
+          ./target/release/danube broker activate --broker-id $BROKER_2_NODE_ID --reason "rebalance-test"
+          ./target/release/danube broker activate --broker-id $BROKER_3_NODE_ID --reason "rebalance-test"
           echo "✓ Brokers 2 and 3 added, promoted, and activated"
 
           # Give cluster time to sync load reports
@@ -156,14 +157,14 @@ jobs:
 
       - name: "Phase 1: Cluster Setup & Validate Balanced State"
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
           echo "Phase 1: Cluster Setup & Validate Balanced State"
           echo "========================================="
 
           # Get broker IDs dynamically
-          BROKER_IDS=$(./target/release/danube ctl brokers list --output json | jq -r '.[].broker_id')
+          BROKER_IDS=$(./target/release/danube broker list --output json | jq -r '.[].broker_id')
           BROKER_1=$(echo "$BROKER_IDS" | sed -n '1p')
           BROKER_2=$(echo "$BROKER_IDS" | sed -n '2p')
           BROKER_3=$(echo "$BROKER_IDS" | sed -n '3p')
@@ -182,7 +183,7 @@ jobs:
           echo ""
           echo "Creating 12 test topics..."
           for i in {1..12}; do
-            ./target/release/danube ctl topics create /default/test-topic-$i
+            ./target/release/danube topic create /default/test-topic-$i
           done
 
           sleep 5
@@ -190,9 +191,9 @@ jobs:
           # Verify exactly 12 topics were created
           echo ""
           echo "Listing all topics..."
-          TOPIC_COUNT=$(./target/release/danube ctl topics list --namespace default | grep -c "Topic:" || true)
+          TOPIC_COUNT=$(./target/release/danube topic list --namespace default | grep -c "Topic:" || true)
           echo "Total topics created: $TOPIC_COUNT"
-          ./target/release/danube ctl topics list --namespace default
+          ./target/release/danube topic list --namespace default
 
           if [ "$TOPIC_COUNT" -ne 12 ]; then
             echo "✗ Expected 12 topics but found $TOPIC_COUNT"
@@ -203,9 +204,9 @@ jobs:
           # Verify cluster is balanced (LoadManager distributed topics evenly)
           echo ""
           echo "Checking cluster balance..."
-          ./target/release/danube ctl brokers balance
+          ./target/release/danube broker balance
 
-          CV=$(./target/release/danube ctl brokers balance --output json | jq -r '.coefficient_of_variation')
+          CV=$(./target/release/danube broker balance --output json | jq -r '.coefficient_of_variation')
           echo ""
           echo "Coefficient of Variation: $CV"
 
@@ -214,14 +215,14 @@ jobs:
             echo "✓ Cluster is balanced (CV=$CV)"
           else
             echo "✗ Expected balanced cluster but CV=$CV"
-            ./target/release/danube ctl brokers balance
+            ./target/release/danube broker balance
             exit 1
           fi
 
           # Verify topics distributed across brokers
           echo ""
           echo "Topic distribution (from balance report):"
-          BALANCE_JSON=$(./target/release/danube ctl brokers balance --output json)
+          BALANCE_JSON=$(./target/release/danube broker balance --output json)
           TOTAL_FROM_BALANCE=0
           for broker_id in $BROKER_1 $BROKER_2 $BROKER_3; do
             count=$(echo "$BALANCE_JSON" | jq -r --arg broker "$broker_id" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
@@ -241,7 +242,7 @@ jobs:
 
       - name: "Phase 2: Manual Rebalancing Commands"
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
           echo "Phase 2: Manual Rebalancing Commands"
@@ -253,7 +254,7 @@ jobs:
           BROKER_3=$(cat broker-3-id.txt)
 
           # Get initial topic counts from balance report
-          BALANCE_JSON=$(./target/release/danube ctl brokers balance --output json)
+          BALANCE_JSON=$(./target/release/danube broker balance --output json)
           COUNT_B1_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
           COUNT_B2_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
           COUNT_B3_BEFORE=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_3" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
@@ -272,10 +273,10 @@ jobs:
           # Dry-run rebalancing (cluster already balanced, should report this)
           echo ""
           echo "=== Dry-run Rebalancing ==="
-          ./target/release/danube ctl brokers rebalance --dry-run
+          ./target/release/danube broker rebalance --dry-run
 
           # Verify dry-run didn't move anything
-          COUNT_B1_AFTER_DRYRUN=$(./target/release/danube ctl brokers balance --output json | \
+          COUNT_B1_AFTER_DRYRUN=$(./target/release/danube broker balance --output json | \
             jq -r --arg broker "$BROKER_1" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
           COUNT_B1_AFTER_DRYRUN=${COUNT_B1_AFTER_DRYRUN:-0}
 
@@ -289,14 +290,14 @@ jobs:
           # Execute manual rebalancing (should report cluster is balanced, 0 moves)
           echo ""
           echo "=== Executing Manual Rebalancing ==="
-          ./target/release/danube ctl brokers rebalance --max-moves 4
+          ./target/release/danube broker rebalance --max-moves 4
 
           # Verify cluster remains balanced
           echo ""
           echo "Checking cluster balance after manual rebalancing..."
-          ./target/release/danube ctl brokers balance
+          ./target/release/danube broker balance
 
-          CV_AFTER=$(./target/release/danube ctl brokers balance --output json | jq -r '.coefficient_of_variation')
+          CV_AFTER=$(./target/release/danube broker balance --output json | jq -r '.coefficient_of_variation')
           echo ""
           echo "CV after manual rebalancing: $CV_AFTER"
 
@@ -309,7 +310,7 @@ jobs:
 
       - name: "Phase 3: Automatic Rebalancing"
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
           echo "Phase 3: Automatic Rebalancing"
@@ -323,7 +324,7 @@ jobs:
           # Create new imbalance by unloading Broker 2
           echo ""
           echo "=== Creating new imbalance by unloading Broker 2 ==="
-          ./target/release/danube ctl brokers unload --broker-id $BROKER_2
+          ./target/release/danube broker unload --broker-id $BROKER_2
 
           # Poll balance report until Broker 2 shows 0 topics (or timeout)
           echo ""
@@ -333,7 +334,7 @@ jobs:
           COUNT_B2=-1
 
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            COUNT_B2=$(./target/release/danube ctl brokers balance --output json | \
+            COUNT_B2=$(./target/release/danube broker balance --output json | \
               jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
             COUNT_B2=${COUNT_B2:-0}
             
@@ -350,7 +351,7 @@ jobs:
           # Verify Broker 2 is empty
           echo ""
           echo "Checking final cluster balance after unload..."
-          ./target/release/danube ctl brokers balance
+          ./target/release/danube broker balance
 
           echo ""
           echo "Topics on Broker 2 after unload: $COUNT_B2"
@@ -360,21 +361,21 @@ jobs:
           else
             echo "✗ Broker 2 should have 0 topics, has $COUNT_B2 (balance report may be stale)"
             echo "Checking actual topic assignments:"
-            ./target/release/danube ctl topics list --namespace default
+            ./target/release/danube topic list --namespace default
             exit 1
           fi
 
           # Activate Broker 2 again
           echo ""
           echo "=== Activating Broker 2 ==="
-          ./target/release/danube ctl brokers activate --broker-id $BROKER_2
+          ./target/release/danube broker activate --broker-id $BROKER_2
 
           # Check balance immediately after activation (should show imbalance)
           echo ""
           echo "Balance immediately after activation:"
-          ./target/release/danube ctl brokers balance
+          ./target/release/danube broker balance
 
-          CV_AFTER_ACTIVATE=$(./target/release/danube ctl brokers balance --output json | jq -r '.coefficient_of_variation')
+          CV_AFTER_ACTIVATE=$(./target/release/danube broker balance --output json | jq -r '.coefficient_of_variation')
           echo ""
           echo "CV immediately after activation: $CV_AFTER_ACTIVATE"
           echo "Expected: CV > 0.20 (imbalanced, triggering automatic rebalancing)"
@@ -389,7 +390,7 @@ jobs:
           CV_AUTO=1.0
 
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            BALANCE_JSON=$(./target/release/danube ctl brokers balance --output json)
+            BALANCE_JSON=$(./target/release/danube broker balance --output json)
             CV_AUTO=$(echo "$BALANCE_JSON" | jq -r '.coefficient_of_variation')
             COUNT_B2_AFTER=$(echo "$BALANCE_JSON" | jq -r --arg broker "$BROKER_2" '.brokers[] | select(.broker_id == ($broker | tonumber)) | .topic_count')
             COUNT_B2_AFTER=${COUNT_B2_AFTER:-0}
@@ -408,7 +409,7 @@ jobs:
           # Verify automatic rebalancing worked
           echo ""
           echo "Checking final cluster balance after automatic rebalancing..."
-          ./target/release/danube ctl brokers balance
+          ./target/release/danube broker balance
 
           echo ""
           echo "CV after automatic rebalancing: $CV_AUTO"
@@ -429,7 +430,7 @@ jobs:
       - name: "Final Verification"
         if: always()
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           echo "========================================="
           echo "Final Verification"
@@ -438,12 +439,12 @@ jobs:
           # Final balance check
           echo ""
           echo "=== Final Cluster State ==="
-          ./target/release/danube ctl brokers balance || true
+          ./target/release/danube broker balance || true
 
           # List all topics
           echo ""
           echo "=== All Topics ==="
-          ./target/release/danube ctl topics list --namespace default || true
+          ./target/release/danube topic list --namespace default || true
 
           echo ""
           echo "✓ Rebalancing E2E test completed"

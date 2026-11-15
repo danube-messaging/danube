@@ -1,3 +1,45 @@
+## Unreleased
+
+**`danube` CLI redesign (breaking)**
+
+The unified `danube` binary now has a flat, noun-based command tree. `danube ctl` is gone: resource commands live at the top level with singular nouns, the broker starts via `danube up <MODE>`, and every client command shares one set of connection flags. Run bare `danube` for an overview.
+
+### ✨ New
+
+* `danube up standalone|cluster|edge` with grouped, mode-specific flags and `--dry-run` (print the resolved node configuration and exit). Each data dir gets a `danube-node.json` marker; a directory cannot be reused across modes.
+* `danube context add|use|list|current|show|delete` — saved connection profiles in `~/.config/danube/contexts.toml` (`$DANUBE_CONFIG_DIR`).
+* `danube completions <bash|zsh|fish|elvish|powershell>` and `danube version`.
+* Global client flags on every client command: `--endpoint` (`DANUBE_ENDPOINT`), `--context` (`DANUBE_CONTEXT`), `--token` (`DANUBE_TOKEN`), `--tls`, `--tls-ca`, `--tls-cert`, `--tls-key`, `--tls-domain` (`DANUBE_TLS*`).
+* `danube console` replaces `serve`; its HTTP server also exposes MCP at `/mcp`. `danube mcp` is stdio MCP, `danube mcp --http ADDR` is streamable HTTP.
+
+### 💥 Breaking renames
+
+| Old | New |
+| :--- | :--- |
+| `danube ctl <cmd>` / `danube-admin <cmd>` | `danube <cmd>` |
+| `topics` / `namespaces` / `schemas` / `brokers` / `security` | `topic` / `namespace` / `schema` / `broker` / `auth` |
+| `danube up --mode standalone` | `danube up standalone` |
+| `danube up` / `--mode cluster` | `danube up cluster --data-dir DIR` (+ `--seed-nodes`, `--join` or `--single-node`) |
+| `danube up --mode edge --edge-name N --edge-token T` | `danube up edge --data-dir DIR --name N --cloud-endpoint URL --cloud-token T` |
+| `--broker-addr` / `--admin-addr` / `--prom-exporter` | `--listen` / `--admin-listen` / `--metrics-listen` |
+| `--raft-addr HOST:PORT` | `--raft-port PORT` |
+| `--auth-mode` / `--node-role` / `--mqtt-addr` / `--super-admins` | `--auth` / `--role` / `--mqtt-listen` / `--super-admin` |
+| `-s/--service-addr`, `DANUBE_SERVICE_ADDR`, `DANUBE_ADMIN_ENDPOINT` | `--endpoint`, `DANUBE_ENDPOINT` |
+| `DANUBE_ADMIN_TOKEN` / `--ca` / `--cert` (all `DANUBE_ADMIN_*` envs) | `DANUBE_TOKEN` / `--tls-ca` / `--tls-cert` (`DANUBE_TLS*`) |
+| `produce -t/--topic T --attributes k:v` | `produce T --attr k:v` |
+| `consume -t/--topic T --subscription-type X` | `consume T -t/--type X` |
+| `topics subscriptions` / `unsubscribe` / `seek` | `topic subscription list` / `delete` / `seek` |
+| `topics get-failure-policy` / `set-failure-policy` | `topic subscription failure-policy get` / `set` |
+| `topics configure-schema` / `get-schema-config` / `set-validation-policy` / `infer-schema` | `topic schema configure` / `show` / `validation-policy` / `infer` |
+| `topics replay-dlq` | `topic dlq replay` |
+| `cluster add-node` / `promote-node` / `remove-node` | `cluster node add` / `promote` / `remove` |
+| `cluster storage status` / `brokers leader-broker` | `cluster storage show` / `broker leader` |
+| `security roles` / `bindings` / `tokens` | `auth role` / `binding` / `token` |
+| `tokens ... --secret-key` (`DANUBE_JWT_SECRET_KEY`) | `auth token ... --jwt-secret` (`DANUBE_JWT_SECRET`) |
+| `tokens validate --token X` | `auth token validate X` |
+| `ctl serve --mode ui\|all --listen-addr A --broker-endpoint E` | `danube console --listen A --endpoint E` (`DANUBE_CONSOLE_LISTEN`, `--http-token`/`DANUBE_HTTP_TOKEN`, `--require-auth`) |
+| `danube mcp --broker-endpoint E` | `danube mcp --endpoint E` |
+
 <!-- v0.16.0 START -->
 ## v0.16.0 - 2026-09-13
 

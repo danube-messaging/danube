@@ -43,13 +43,13 @@ jobs:
             raft_port=$((7650 + i))
             prom_port=$((9040 + i))
 
-            nohup ./target/release/danube up \
-              --broker-addr 0.0.0.0:$broker_port \
-              --admin-addr 0.0.0.0:$admin_port \
-              --raft-addr 0.0.0.0:$raft_port \
+            nohup ./target/release/danube up cluster \
+              --listen 0.0.0.0:$broker_port \
+              --admin-listen 0.0.0.0:$admin_port \
+              --raft-port $raft_port \
               --data-dir ./danube-data/broker-$i \
               --seed-nodes "$SEED_NODES" \
-              --prom-exporter 0.0.0.0:$prom_port \
+              --metrics-listen 0.0.0.0:$prom_port \
               > temp/broker-$i.log 2>&1 &
           done
 
@@ -77,12 +77,12 @@ jobs:
 
       - name: Activate all brokers
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
-          ADMIN_BIN="./target/release/danube ctl"
+          ADMIN_BIN="./target/release/danube"
 
           # Get all broker IDs and activate any that are drained
-          BROKERS_JSON=$($ADMIN_BIN brokers list --output json)
+          BROKERS_JSON=$($ADMIN_BIN broker list --output json)
           echo "Brokers before activation:"
           echo "$BROKERS_JSON" | jq .
 
@@ -90,7 +90,7 @@ jobs:
             STATUS=$(echo "$BROKERS_JSON" | jq -r --arg id "$BROKER_ID" '.[] | select(.broker_id == $id) | .broker_status')
             if [ "$STATUS" != "active" ]; then
               echo "Activating broker $BROKER_ID (was: $STATUS)..."
-              $ADMIN_BIN brokers activate --broker-id "$BROKER_ID" --reason "e2e-test"
+              $ADMIN_BIN broker activate --broker-id "$BROKER_ID" --reason "e2e-test"
             else
               echo "Broker $BROKER_ID is already active."
             fi
@@ -99,17 +99,17 @@ jobs:
           sleep 3
           echo ""
           echo "Brokers after activation:"
-          $ADMIN_BIN brokers list
+          $ADMIN_BIN broker list
 
           echo ""
           echo "Configuring shared_fs durable storage via admin CLI..."
           $ADMIN_BIN cluster storage shared-fs --root ./danube-data/shared-fs
-          $ADMIN_BIN cluster storage status
+          $ADMIN_BIN cluster storage show
           sleep 2
 
       - name: Run shared_fs reliable move integration tests
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
           DANUBE_BIN: ./target/release/danube
           RUST_BACKTRACE: 1
         run: |

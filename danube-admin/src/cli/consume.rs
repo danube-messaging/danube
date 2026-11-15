@@ -6,50 +6,51 @@ use serde_json::{from_slice, json, Value};
 use std::collections::HashMap;
 use std::str::from_utf8;
 
-use super::{build_danube_client, DataAuthArgs};
+use super::ClientArgs;
 
 #[derive(Debug, Args)]
-#[command(about = "Consume messages from a Danube topic")]
+#[command(
+    about = "Subscribe and stream messages from a topic",
+    long_about = "Subscribe to a topic and print messages as they arrive.\n\n\
+Runs until interrupted (Ctrl-C) unless --limit is set. Messages with a registered \
+schema are decoded and validated before printing.",
+    after_help = "Examples:
+  danube consume /default/events
+  danube consume /default/events -s analytics --type exclusive
+  danube consume /default/orders -s workers --type key-shared --key-filter 'customer-*'
+  danube consume /default/events --limit 10 -o jsonl"
+)]
 pub struct Consume {
-    /// Service URL of the Danube broker (e.g. http://127.0.0.1:6650)
-    #[arg(
-        short = 's',
-        long,
-        env = "DANUBE_SERVICE_ADDR",
-        default_value = "http://127.0.0.1:6650"
-    )]
-    pub service_addr: String,
-
-    /// Topic name (e.g. /default/my-topic)
-    #[arg(short = 't', long, default_value = "/default/test_topic")]
+    /// Topic to consume from, e.g. /default/events
+    #[arg(value_name = "TOPIC")]
     pub topic: String,
 
-    /// Consumer name
-    #[arg(short = 'n', long, default_value = "danube_consumer")]
-    pub consumer_name: String,
-
     /// Subscription name
-    #[arg(long = "subscription", default_value = "danube_sub")]
+    #[arg(short = 's', long, default_value = "danube-sub", help_heading = "Subscription")]
     pub subscription: String,
 
-    /// Subscription type (exclusive, shared, fail-over, key-shared)
-    #[arg(long, value_enum, default_value = "shared")]
+    /// Subscription type
+    #[arg(short = 't', long = "type", value_enum, default_value = "shared", help_heading = "Subscription")]
     pub subscription_type: SubTypeArg,
 
-    /// Key filter patterns (glob syntax, repeatable; Key-Shared only)
-    #[arg(long = "key-filter")]
+    /// Key filter glob (repeatable; key-shared only)
+    #[arg(long = "key-filter", value_name = "GLOB", help_heading = "Subscription")]
     pub key_filters: Vec<String>,
 
-    /// Maximum number of messages to consume before exiting (0 = stream continuously)
-    #[arg(short = 'l', long, default_value_t = 0)]
+    /// Consumer name
+    #[arg(short = 'n', long, default_value = "danube-consumer", help_heading = "Subscription")]
+    pub consumer_name: String,
+
+    /// Stop after this many messages (0 = stream until interrupted)
+    #[arg(short = 'l', long, default_value_t = 0, help_heading = "Output")]
     pub limit: u64,
 
-    /// Output format (text or jsonl)
-    #[arg(short = 'o', long, value_enum, default_value = "text")]
+    /// Output format
+    #[arg(short = 'o', long, value_enum, default_value = "text", help_heading = "Output")]
     pub output: ConsumeOutput,
 
     #[command(flatten)]
-    pub auth_args: DataAuthArgs,
+    pub client: ClientArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub enum ConsumeOutput {
 }
 
 pub async fn handle(consume: Consume) -> Result<()> {
-    let client = build_danube_client(&consume.service_addr, &consume.auth_args).await?;
+    let client = consume.client.resolve()?.danube_client().await?;
     let schema_client = client.schema();
 
     let mut builder = client
