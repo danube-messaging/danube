@@ -65,12 +65,12 @@ Integration tests under `*/tests/` need a running broker. End-to-end coverage li
 ## Known pitfalls
 
 - A new subscription starts at the **end** of a reliable topic: start consumers before producers in tests and examples.
-- A CLI producer on a reliable topic needs `danube produce -r`; the broker rejects a mismatched dispatch strategy.
+- `danube produce -r` only matters when the topic is auto-created. An existing topic's dispatch strategy wins; the broker only rejects a reliable producer on a non-reliable topic.
 - A `--join` node only opens its shared `--listen` port after it becomes a member, so it needs `--admin-listen` for `danube cluster node add`.
 - Every data dir records its mode in `danube-node.json`; tests must not reuse a dir across modes.
-- Consume and receive permission checks currently happen at cluster scope only (topic-scoped bindings are not enough).
-- Multi-node `--auth auto-tls` generates per-node CAs before they sync through Raft: an open issue.
-- `danube cluster export-config` output contains secrets (JWT key, object-store credentials).
+- Consumer RPCs (`subscribe`, `receive_messages`, `ack`, `nack` and the agent RPCs) authorize against the topic, so cluster, namespace and topic bindings all apply.
+- Multi-node `--auth auto-tls` needs `ca.pem`, `ca-key.pem` and `jwt.secret` copied into `{data_dir}/tls/` before first start; `danube up` refuses `--seed-nodes`/`--join` without them.
+- `danube cluster export-config` redacts secrets unless `--include-secrets` is given. A redacted file is rejected by `--recovery-config`. MCP never requests secrets.
 - Some READMEs and `danube_positioning.md` can lag behind the code. The code and `docs/decisions/` are the source of truth.
 
 ## When you change X, also update Y

@@ -299,6 +299,40 @@ fn ensure_bootstrap_admin_token(data_dir: &Path, jwt_secret: &str, issuer: &str)
     Ok(token_path)
 }
 
+/// Multi-node auto-TLS needs one shared CA before Raft starts.
+///
+/// Raft uses mTLS from the first connection, but the cluster CA is only synced
+/// through Raft after the cluster forms. If every node generated its own CA, the
+/// nodes would reject each other's certificates and the cluster would never form.
+/// So for `--seed-nodes` or `--join`, the CA files (and the JWT secret, so every
+/// node's `bootstrap_admin.token` stays valid) must already be in `{data_dir}/tls/`.
+pub(crate) fn ensure_shared_ca_for_multi_node(data_dir: &Path, multi_node: bool) -> Result<()> {
+    if !multi_node {
+        return Ok(());
+    }
+    let tls_dir = data_dir.join("tls");
+    let missing: Vec<&str> = ["ca.pem", "ca-key.pem", "jwt.secret"]
+        .into_iter()
+        .filter(|f| !tls_dir.join(f).exists())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "--auth auto-tls with --seed-nodes or --join needs a CA shared by all nodes, \
+         but {} is missing: {}.\n\n\
+         Each node would otherwise generate its own CA and the nodes could not connect.\n\
+         Fix it one of these ways:\n  \
+         - Start the first node with `danube up cluster --single-node --auth auto-tls`. Copy ca.pem, \
+         ca-key.pem and jwt.secret from its {{data_dir}}/tls/ into {} on each new node, start the new \
+         nodes with --join, then run `danube cluster node add`.\n  \
+         - Use --auth tls with certificates from your own CA (recommended for production).",
+        tls_dir.display(),
+        missing.join(", "),
+        tls_dir.display(),
+    )
+}
+
 /// Provisions node-local auto-TLS materials into `{data_dir}/tls/` before Raft startup
 /// and ensures `{data_dir}/bootstrap_admin.token` exists with `0600` permissions.
 pub(crate) fn provision_local_auto_tls(
@@ -431,6 +465,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn test_multi_node_requires_shared_ca_files() {
+        let dir = TestTempDir::new("shared_ca");
+
+        // Single node: never blocked, even on an empty data dir.
+        ensure_shared_ca_for_multi_node(dir.path(), false).unwrap();
+
+        // Multi-node on a fresh data dir: rejected with a clear message.
+        let err = ensure_shared_ca_for_multi_node(dir.path(), true).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ca.pem") && msg.contains("jwt.secret"), "{msg}");
+
+        // After the shared CA and JWT secret are in place: allowed.
+        let tls = dir.path().join("tls");
+        fs::create_dir_all(&tls).unwrap();
+        for f in ["ca.pem", "ca-key.pem", "jwt.secret"] {
+            fs::write(tls.join(f), "x").unwrap();
+        }
+        ensure_shared_ca_for_multi_node(dir.path(), true).unwrap();
     }
 
     #[test]

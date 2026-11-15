@@ -260,6 +260,14 @@ impl ServiceConfiguration {
     pub(crate) fn apply_recovery_config(&mut self, path: &Path) -> Result<()> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read recovery config {}", path.display()))?;
+        if raw.contains("<redacted>") {
+            anyhow::bail!(
+                "recovery config {} contains redacted secrets. Re-export it with \
+                 `danube cluster export-config --include-secrets`, or replace every \
+                 \"<redacted>\" value with the real secret",
+                path.display()
+            );
+        }
         let recovery: RecoveryConfig = serde_json::from_str(&raw)
             .or_else(|_| serde_yaml::from_str(&raw))
             .with_context(|| format!("failed to parse recovery config {} as JSON or YAML", path.display()))?;

@@ -1077,6 +1077,10 @@ pub struct ExportClusterConfigRequest {
     /// "yaml" (default) or "json"
     #[prost(string, tag = "2")]
     pub format: ::prost::alloc::string::String,
+    /// Include secrets (JWT secret, object store credentials, Valkey passwords).
+    /// Default false: secrets are replaced with "<redacted>".
+    #[prost(bool, tag = "3")]
+    pub include_secrets: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportClusterConfigResponse {

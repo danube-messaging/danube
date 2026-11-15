@@ -96,7 +96,8 @@ jobs:
           timeout 20 $ADMIN_BIN consume /default/intent-tasks --endpoint http://127.0.0.1:6650 -n sub-check --subscription intent-sub -l 1 > temp/intent_consume.txt 2>&1 &
           CONSUME_PID=$!
           sleep 3
-          $ADMIN_BIN produce /default/intent-tasks --endpoint http://127.0.0.1:6650 -m "task-1" -c 3 -i 500 --reliable
+          # No --reliable: an existing reliable topic's strategy wins over the producer default
+          $ADMIN_BIN produce /default/intent-tasks --endpoint http://127.0.0.1:6650 -m "task-1" -c 3 -i 500
           wait $CONSUME_PID
           [ -d ./danube-data/broker-1/custom-wal ]
           $ADMIN_BIN topic subscription failure-policy get /default/intent-tasks --subscription intent-sub --output json | jq -e '.max_redelivery_count == 5 and .dead_letter_topic == "/default/intent-tasks-dlq" and .poison_policy == "dead_letter" and .backoff_strategy == "exponential"'
@@ -130,6 +131,18 @@ jobs:
           $ADMIN_BIN cluster storage shared-fs --root ./danube-data/shared-fs
           $ADMIN_BIN cluster storage show
           sleep 1
+
+          # Inspection commands print only their own section
+          $ADMIN_BIN cluster storage show | grep -q "shared_fs"
+          if $ADMIN_BIN cluster storage show | grep -q "load_manager"; then
+            echo "FAIL: storage show must not print load_manager"; exit 1
+          fi
+          $ADMIN_BIN cluster load-manager | grep -q "assignment_strategy"
+          if $ADMIN_BIN cluster load-manager | grep -q "storage:"; then
+            echo "FAIL: load-manager must not print storage"; exit 1
+          fi
+          $ADMIN_BIN cluster wal | grep -q "1440"
+          echo "✅ Focused cluster inspection output verified"
 
           # 2. Verify break-glass RecoveryConfig export in YAML and JSON
           $ADMIN_BIN cluster export-config --format yaml --output temp/exported_recovery.yaml

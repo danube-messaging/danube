@@ -279,11 +279,24 @@ impl BrokerService {
         dispatch_strategy: Option<ProtoDispatchStrategy>,
         schema_ref: Option<SchemaReference>,
     ) -> Result<bool, Status> {
-        if let Some(req_ds) = dispatch_strategy {
-            if let Some(false) = self.topic_registry.strategies_match(topic_name, req_ds) {
-                return Err(Status::failed_precondition(
-                    "Producer requested dispatch strategy does not match topic strategy",
-                ));
+        // The existing topic's dispatch strategy is the source of truth. The producer's
+        // requested strategy only matters when the topic is auto-created.
+        //
+        // `NonReliable` is the proto default (0), so the broker cannot tell "not set"
+        // from "explicitly non-reliable". A non-reliable request on a reliable topic is
+        // accepted (the producer gets a stronger guarantee). A reliable request on a
+        // non-reliable topic is rejected: the producer expects durability it would not get.
+        if let Some(ProtoDispatchStrategy::Reliable) = dispatch_strategy {
+            if let Some(false) = self
+                .topic_registry
+                .strategies_match(topic_name, ProtoDispatchStrategy::Reliable)
+            {
+                return Err(Status::failed_precondition(format!(
+                    "Producer requested reliable dispatch, but topic '{}' is non-reliable. \
+                     Recreate the topic with a reliable intent (e.g. --intent event_stream) \
+                     or drop the reliable flag.",
+                    topic_name
+                )));
             }
         }
 
