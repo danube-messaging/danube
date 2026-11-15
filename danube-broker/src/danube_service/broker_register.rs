@@ -121,7 +121,7 @@ pub(crate) async fn register_broker(
                             info!(
                                 broker_id = %broker_id_owned,
                                 "broker set to drained after registration recovery. \
-                                 Use `danube-admin brokers activate` to resume."
+                                 Use `danube broker activate --broker-id <id>` to resume."
                             );
                         }
                         registration_lost = false;

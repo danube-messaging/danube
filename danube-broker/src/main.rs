@@ -1,5 +1,5 @@
 mod admin;
-mod args_parse;
+mod cli;
 mod audit;
 mod broker_metrics;
 mod broker_server;
@@ -31,7 +31,8 @@ mod utils;
 use std::{path::Path, sync::Arc};
 
 use crate::{
-    args_parse::{Args, BrokerMode},
+    cli::up::{BrokerMode, DataDirState, Membership, UpOptions},
+    cli::Command,
     broker_metrics::init_metrics,
     broker_service::BrokerService,
     danube_service::{ClusterServices, DanubeService, LeaderElection, LoadManager},
@@ -61,54 +62,132 @@ use crate::metadata_storage::MetadataStorage;
 use tracing::info;
 use tracing_subscriber;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize logging with both stderr formatting and in-memory ring buffer capture
+/// Logging profile per command family.
+enum LogProfile {
+    /// `danube up`: broker logs + in-memory ring buffer (served to the admin API).
+    Node,
+    /// `danube mcp` / `danube console`: long-running tools, info level for the admin crate.
+    Service,
+    /// One-shot client commands: warnings only, so command output stays clean.
+    Client,
+}
+
+fn init_logging(profile: LogProfile) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::Layer;
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new(
-            "warn,danube_broker=info,danube_raft=info,danube_persistent_storage=info,danube_client=info",
-        )
-    });
-    let log_ring = log_ring::LogRingHandle::global();
-    tracing_subscriber::registry()
-        .with(log_ring.layer())
-        .with(
+    let default_filter = match profile {
+        LogProfile::Node => {
+            "warn,danube_broker=info,danube_raft=info,danube_persistent_storage=info,danube_client=info"
+        }
+        LogProfile::Service => "warn,danube_admin=info",
+        LogProfile::Client => "warn",
+    };
+    macro_rules! fmt_layer {
+        () => {
             tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_filter(env_filter),
-        )
-        .init();
+            .with_writer(std::io::stderr)
+            .with_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter)))
+        };
+    }
 
-    // Route top-level `danube` subcommands (`up`, `ctl`, `mcp`); bare flags default to `up`
-    let raw_args: Vec<String> = std::env::args().collect();
-    let args = match raw_args.get(1).map(String::as_str) {
-        Some("ctl") => {
-            let mut forwarded = Vec::with_capacity(raw_args.len());
-            forwarded.push("danube ctl".to_string());
-            forwarded.extend(raw_args.into_iter().skip(2));
-            return danube_admin::run_cli_from_args(forwarded).await;
+    match profile {
+        LogProfile::Node => {
+            let log_ring = log_ring::LogRingHandle::global();
+            tracing_subscriber::registry()
+                .with(log_ring.layer())
+                .with(fmt_layer!())
+                .init();
         }
-        Some("mcp") => {
-            let mut forwarded = Vec::with_capacity(raw_args.len());
-            forwarded.push("danube mcp".to_string());
-            forwarded.extend(raw_args.into_iter().skip(2));
-            return danube_admin::run_mcp_from_args(forwarded).await;
+        LogProfile::Service | LogProfile::Client => {
+            tracing_subscriber::registry().with(fmt_layer!()).init();
         }
-        Some("up") => {
-            let mut forwarded = Vec::with_capacity(raw_args.len());
-            forwarded.push("danube up".to_string());
-            forwarded.extend(raw_args.into_iter().skip(2));
-            Args::parse_from(forwarded)?
-        }
-        _ => Args::parse_from(raw_args)?,
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = cli::parse();
+    let Some(command) = cli.command else {
+        cli::print_overview();
+        return Ok(());
     };
 
+    use danube_admin::cli as admin_cli;
+    match command {
+        Command::Up(up) => {
+            init_logging(LogProfile::Node);
+            run_node(up.into()).await
+        }
+        Command::Mcp(args) => {
+            init_logging(LogProfile::Service);
+            danube_admin::run_mcp(args).await
+        }
+        Command::Console(args) => {
+            init_logging(LogProfile::Service);
+            danube_admin::run_console(args).await
+        }
+        Command::Produce(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::produce::handle(cmd).await
+        }
+        Command::Consume(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::consume::handle(cmd).await
+        }
+        Command::Topic(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::topics::handle(cmd).await
+        }
+        Command::Namespace(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::namespaces::handle(cmd).await
+        }
+        Command::Schema(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::schemas::handle(cmd).await
+        }
+        Command::Cluster(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::cluster::handle(cmd).await
+        }
+        Command::Broker(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::brokers::handle(cmd).await
+        }
+        Command::Auth(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::security::handle(cmd).await
+        }
+        Command::Apply(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::apply::handle(cmd).await
+        }
+        Command::Context(cmd) => {
+            init_logging(LogProfile::Client);
+            admin_cli::context::handle(cmd).await
+        }
+        Command::Completions(args) => {
+            cli::print_completions(args.shell);
+            Ok(())
+        }
+        Command::Version => {
+            cli::print_version();
+            Ok(())
+        }
+    }
+}
+
+/// `danube up <MODE>`: resolve configuration, run safety checks, boot the node.
+async fn run_node(args: UpOptions) -> Result<()> {
+    // Inspect the data directory before anything writes to it and refuse to
+    // reuse a directory that was initialised by a different mode.
+    let data_dir_state = cli::up::inspect_data_dir(Path::new(&args.data_dir), args.mode)?;
+
     // Build ServiceConfiguration based on mode (zero-YAML by default)
-    let data_dir = args.data_dir.as_deref().unwrap_or("./danube-data");
+    let data_dir = args.data_dir.as_str();
     let mut service_config: ServiceConfiguration = match &args.mode {
         BrokerMode::Standalone => ServiceConfiguration::standalone(Path::new(data_dir))?,
         BrokerMode::Cluster => ServiceConfiguration::cluster_zero_yaml(Path::new(data_dir))?,
@@ -119,7 +198,7 @@ async fn main() -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| "http://127.0.0.1:6650".to_string()),
             args.mqtt_addr.clone(),
-            args.edge_token.clone(),
+            args.cloud_token.clone(),
         )?,
     };
 
@@ -159,28 +238,30 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let Some(ref super_admins_csv) = args.super_admins {
-        service_config.auth.super_admins = super_admins_csv
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if !args.super_admins.is_empty() {
+        service_config.auth.super_admins = args.super_admins.clone();
     }
 
     let mut auto_tls_provisioned = None;
-    if let Some(ref auth_mode_str) = args.auth_mode {
-        match auth_mode_str.to_ascii_lowercase().as_str() {
-            "none" => {
+    if let Some(auth_mode) = args.auth {
+        match auth_mode {
+            cli::up::AuthMode::None => {
                 service_config.auth.mode = crate::security::config::AuthMode::None;
                 service_config.broker_url = service_config.broker_url.replace("https://", "http://");
                 service_config.connect_url = service_config.connect_url.replace("https://", "http://");
             }
-            "tls" => {
+            cli::up::AuthMode::Tls => {
                 service_config.auth.mode = crate::security::config::AuthMode::Tls;
                 service_config.broker_url = service_config.broker_url.replace("http://", "https://");
                 service_config.connect_url = service_config.connect_url.replace("http://", "https://");
             }
-            "auto-tls" => {
+            cli::up::AuthMode::AutoTls if args.dry_run => {
+                // Dry run: report TLS without generating certificates in the data dir.
+                service_config.auth.mode = crate::security::config::AuthMode::Tls;
+                service_config.broker_url = service_config.broker_url.replace("http://", "https://");
+                service_config.connect_url = service_config.connect_url.replace("http://", "https://");
+            }
+            cli::up::AuthMode::AutoTls => {
                 let mut san_hosts = Vec::new();
                 for candidate in [
                     args.advertised_addr.as_deref(),
@@ -229,9 +310,6 @@ async fn main() -> Result<()> {
                 service_config.connect_url = service_config.connect_url.replace("http://", "https://");
                 auto_tls_provisioned = Some((provisioned, san_hosts));
             }
-            other => {
-                anyhow::bail!("invalid --auth-mode '{}': expected none, tls, or auto-tls", other);
-            }
         }
     }
 
@@ -241,9 +319,9 @@ async fn main() -> Result<()> {
     ) && service_config.auth.tls.is_some();
 
     // If `broker_addr` is provided via command-line args, override the value from the config file
-    if let Some(broker_addr) = args.broker_addr {
+    if let Some(broker_addr) = args.broker_addr.clone() {
         let broker_address: SocketAddr = broker_addr.parse().context(format!(
-            "Failed to parse into Socket address: {}",
+            "Failed to parse --listen address: {}",
             broker_addr
         ))?;
         service_config.broker_addr = broker_address;
@@ -263,7 +341,7 @@ async fn main() -> Result<()> {
 
     // If "advertised_addr" is provided via command-line args, override broker_url and connect_url
     // (simple K8s case: sets both to the same value, no proxy)
-    if let Some(advertised_addr) = args.advertised_addr {
+    if let Some(advertised_addr) = args.advertised_addr.clone() {
         let scheme = if service_config.broker_url.starts_with("https://") {
             "https"
         } else {
@@ -281,7 +359,7 @@ async fn main() -> Result<()> {
 
     // If "connect_url" is provided, override connect_url only (proxy/ingress mode).
     // When connect_url differs from broker_url, proxy mode is enabled.
-    if let Some(connect_url) = args.connect_url {
+    if let Some(connect_url) = args.connect_url.clone() {
         let scheme = if service_config.broker_url.starts_with("https://") {
             "https"
         } else {
@@ -298,9 +376,9 @@ async fn main() -> Result<()> {
 
     // If `admin_addr` is provided via command-line args, override the value from the config file.
     // Otherwise in zero-YAML mode, keep admin_addr aligned with broker_addr for single-port multiplexing.
-    if let Some(admin_addr) = args.admin_addr {
+    if let Some(admin_addr) = args.admin_addr.clone() {
         let admin_address: SocketAddr = admin_addr.parse().context(format!(
-            "Failed to parse into Socket address: {}",
+            "Failed to parse --admin-listen address: {}",
             admin_addr
         ))?;
         service_config.admin_addr = admin_address;
@@ -309,29 +387,51 @@ async fn main() -> Result<()> {
     }
 
     // If `prom_exporter` is provided via command-line args, override the value from the config file
-    if let Some(prom_exporter) = args.prom_exporter {
+    if let Some(prom_exporter) = args.prom_exporter.clone() {
         let prom_address: SocketAddr = prom_exporter.parse().context(format!(
-            "Failed to parse into Socket address: {}",
+            "Failed to parse --metrics-listen address: {}",
             prom_exporter
         ))?;
         service_config.prom_exporter = Some(prom_address);
     }
 
-    // If `seed_nodes` is provided via command-line args, override meta_store.seed_nodes
-    if let Some(seed_nodes_str) = args.seed_nodes {
-        service_config.meta_store.seed_nodes = seed_nodes_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if !args.seed_nodes.is_empty() {
+        service_config.meta_store.seed_nodes = args.seed_nodes.clone();
     }
 
-    // If `raft_addr` is provided via command-line args, override the value from the config file
-    if let Some(raft_addr_arg) = args.raft_addr {
-        let addr: SocketAddr = raft_addr_arg
-            .parse()
-            .context(format!("Failed to parse --raft-addr: {}", raft_addr_arg))?;
-        service_config.raft_port = addr.port() as usize;
+    service_config.raft_port = args.raft_port as usize;
+
+    // ── Startup summary, safety warnings and dry run ──
+    {
+        let view = cli::up::ResolvedView {
+            listen: service_config.broker_addr.to_string(),
+            admin: if service_config.admin_addr == service_config.broker_addr {
+                format!("{} (shared with listen)", service_config.admin_addr)
+            } else {
+                service_config.admin_addr.to_string()
+            },
+            advertised: &service_config.broker_url,
+            connect_url: &service_config.connect_url,
+            metrics: service_config.prom_exporter.map(|a| a.to_string()),
+            auth: format!("{:?}", service_config.auth.mode).to_ascii_lowercase(),
+            wal_root: service_config
+                .storage
+                .local_wal_root()
+                .map(str::to_string)
+                .unwrap_or_else(|| "-".to_string()),
+        };
+        eprintln!("{}", cli::up::render_summary(&args, &data_dir_state, &view));
+    }
+    if args.dry_run {
+        return Ok(());
+    }
+    if data_dir_state != DataDirState::Existing {
+        cli::up::write_node_marker(Path::new(data_dir), args.mode)?;
+    }
+    if args.membership == Membership::Implicit && data_dir_state == DataDirState::Fresh {
+        tracing::warn!(
+            "bootstrapping a new single-node cluster (no --seed-nodes, --join or --single-node given)"
+        );
     }
 
     // =========================================================================
@@ -399,7 +499,7 @@ async fn main() -> Result<()> {
 
     let (was_restart, join_cluster) = if args.join {
         // --join mode (manual override): skip bootstrap, node will be added to
-        // an existing cluster via `danube-admin cluster add-node` + `promote-node`
+        // an existing cluster via `danube cluster node add` + `danube cluster node promote`
         info!(
             node_id,
             "starting in --join mode (waiting to be added to cluster via admin CLI)"

@@ -459,9 +459,8 @@ pub async fn add_cluster_node(
     // Step 1: Discover the new node's identity via its admin port
     let discover_client =
         match crate::core::AdminGrpcClient::connect(crate::core::GrpcClientConfig {
-            endpoint: params.node_addr.clone(),
             request_timeout_ms: 5000,
-            ..Default::default()
+            ..client.config_for_endpoint(params.node_addr.clone())
         })
         .await
         {

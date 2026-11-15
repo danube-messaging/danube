@@ -85,23 +85,22 @@ fn admin_cli() -> (Command, String) {
     }
 
     let (mut cmd, program_description) = if let Some(program) = resolved_program {
-        let description = format!("{} ctl", program.display());
-        let mut c = Command::new(&program);
-        c.arg("ctl");
+        let description = program.display().to_string();
+        let c = Command::new(&program);
         (c, description)
     } else {
         let mut cargo = Command::new("cargo");
         cargo.current_dir(workspace_root());
-        cargo.args(["run", "-p", "danube-broker", "--bin", "danube", "--", "ctl"]);
+        cargo.args(["run", "-p", "danube-broker", "--bin", "danube", "--"]);
         (
             cargo,
-            "cargo run -p danube-broker --bin danube -- ctl".to_string(),
+            "cargo run -p danube-broker --bin danube --".to_string(),
         )
     };
 
     cmd.env(
-        "DANUBE_ADMIN_ENDPOINT",
-        std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".into()),
+        "DANUBE_ENDPOINT",
+        std::env::var("DANUBE_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".into()),
     );
     (cmd, program_description)
 }
@@ -110,26 +109,26 @@ fn run_admin<S: AsRef<OsStr>>(args: &[S]) -> Result<String> {
     let (mut cmd, program_description) = admin_cli();
     let output = cmd.args(args).output().with_context(|| {
         format!(
-            "failed to execute danube-admin using {}",
+            "failed to execute danube using {}",
             program_description
         )
     })?;
 
     if !output.status.success() {
         bail!(
-            "danube-admin failed using {}\nstdout:\n{}\nstderr:\n{}",
+            "danube failed using {}\nstdout:\n{}\nstderr:\n{}",
             program_description,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
-    String::from_utf8(output.stdout).context("danube-admin output was not valid utf-8")
+    String::from_utf8(output.stdout).context("danube output was not valid utf-8")
 }
 
 fn create_topic(topic: &str, dispatch_strategy: &str) -> Result<()> {
     let args = vec![
-        "topics".to_string(),
+        "topic".to_string(),
         "create".to_string(),
         topic.to_string(),
         "--dispatch-strategy".to_string(),
@@ -145,8 +144,10 @@ fn set_failure_policy(
     failure_policy: &FailurePolicySpec,
 ) -> Result<()> {
     let mut args = vec![
-        "topics".to_string(),
-        "set-failure-policy".to_string(),
+        "topic".to_string(),
+        "subscription".to_string(),
+        "failure-policy".to_string(),
+        "set".to_string(),
         topic.to_string(),
         "--subscription".to_string(),
         subscription.to_string(),

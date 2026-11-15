@@ -4,12 +4,21 @@ use danube_core::admin_proto::{
     ActivateBrokerRequest, ClusterBalanceRequest, RebalanceRequest, UnloadBrokerRequest,
 };
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::AdminGrpcClient;
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Inspect and operate brokers (list, leader, unload, activate, balance)",
+    long_about = "Inspect and operate the brokers of the Danube cluster.\n\nCommon examples:\n  danube broker list\n  danube broker leader\n  danube broker unload --broker-id broker-123 --dry-run\n  danube broker balance\n  danube broker rebalance --dry-run",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
 pub struct Brokers {
     #[command(subcommand)]
     command: BrokersCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -17,11 +26,8 @@ enum BrokersCommands {
     #[command(
         about = "List all active brokers in the cluster",
         after_help = "Examples:
-  danube-admin brokers list
-  danube-admin brokers list --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube broker list
+  danube broker list --output json"
     )]
     List {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
@@ -30,20 +36,14 @@ Env:
     #[command(
         about = "List the cluster leader broker",
         after_help = "Examples:
-  danube-admin brokers leader-broker
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube broker leader"
     )]
-    LeaderBroker,
+    Leader,
     #[command(
         about = "List all namespaces in the cluster",
         after_help = "Examples:
-  danube-admin brokers namespaces
-  danube-admin brokers namespaces --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube broker namespaces
+  danube broker namespaces --output json"
     )]
     Namespaces {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
@@ -52,19 +52,16 @@ Env:
     #[command(
         about = "Unload a broker by migrating all hosted topics off it",
         after_help = "Examples:
-  danube-admin brokers unload --broker-id broker-123
-  danube-admin brokers unload --broker-id broker-123 --dry-run
-  danube-admin brokers unload --broker-id broker-123 --max-parallel 5
-  danube-admin brokers unload --broker-id broker-123 --namespaces-include default --timeout-seconds 120
-  danube-admin brokers unload --broker-id broker-123 --namespaces-exclude test
+  danube broker unload --broker-id broker-123
+  danube broker unload --broker-id broker-123 --dry-run
+  danube broker unload --broker-id broker-123 --max-parallel 5
+  danube broker unload --broker-id broker-123 --namespaces-include default --timeout-seconds 120
+  danube broker unload --broker-id broker-123 --namespaces-exclude test
 
 Use Cases:
   - Graceful broker shutdown for maintenance
   - Rolling upgrades without downtime
-  - Decommissioning brokers from the cluster
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  - Decommissioning brokers from the cluster"
     )]
     Unload {
         #[arg(long, required = true, help = "Target broker id")]
@@ -87,16 +84,13 @@ Env:
     #[command(
         about = "Activate a broker (set state to active)",
         after_help = "Examples:
-  danube-admin brokers activate --broker-id broker-123
-  danube-admin brokers activate --broker-id broker-123 --reason 'Maintenance complete'
+  danube broker activate --broker-id broker-123
+  danube broker activate --broker-id broker-123 --reason 'Maintenance complete'
 
 Use Cases:
   - Re-enable broker after maintenance
   - Bring broker back into topic assignment rotation
-  - Resume normal cluster operations
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  - Resume normal cluster operations"
     )]
     Activate {
         #[arg(long, help = "Target broker id")]
@@ -111,8 +105,8 @@ Env:
     #[command(
         about = "Show cluster balance metrics and broker loads",
         after_help = "Examples:
-  danube-admin brokers balance
-  danube-admin brokers balance --output json
+  danube broker balance
+  danube broker balance --output json
 
 Metrics Explained:
   CV < 20%  = Well Balanced (optimal)
@@ -122,10 +116,7 @@ Metrics Explained:
 
 Coefficient of Variation (CV):
   Measures load distribution uniformity across brokers.
-  Lower CV = more even distribution.
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  Lower CV = more even distribution."
     )]
     Balance {
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: table)")]
@@ -134,25 +125,22 @@ Env:
     #[command(
         about = "Trigger manual cluster rebalancing",
         after_help = "Examples:
-  danube-admin brokers rebalance --dry-run
-  danube-admin brokers rebalance
-  danube-admin brokers rebalance --max-moves 10
-  danube-admin brokers rebalance --max-moves 5 --dry-run
+  danube broker rebalance --dry-run
+  danube broker rebalance
+  danube broker rebalance --max-moves 10
+  danube broker rebalance --max-moves 5 --dry-run
 
 Workflow:
-  1. Check current balance: danube-admin brokers balance
-  2. Preview moves:         danube-admin brokers rebalance --dry-run
-  3. Execute rebalancing:   danube-admin brokers rebalance
-  4. Verify results:        danube-admin brokers balance
+  1. Check current balance: danube broker balance
+  2. Preview moves:         danube broker rebalance --dry-run
+  3. Execute rebalancing:   danube broker rebalance
+  4. Verify results:        danube broker balance
 
 When to Use:
   - After adding/removing brokers
   - When CV > 30% (imbalanced cluster)
   - Before maintenance windows
-  - To optimize resource utilization
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  - To optimize resource utilization"
     )]
     Rebalance {
         #[arg(
@@ -166,14 +154,11 @@ Env:
     },
 }
 
-pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
-    let config = GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        ..Default::default()
-    };
-    let client = AdminGrpcClient::connect(config).await?;
+pub async fn handle(cmd: Brokers) -> Result<()> {
+    let conn = cmd.client.resolve()?;
+    let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
 
-    match brokers.command {
+    match cmd.command {
         // List active brokers of the cluster
         BrokersCommands::List { output } => {
             let response = client.list_brokers().await?;
@@ -217,7 +202,7 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
         }
 
         // Get the information of the leader broker
-        BrokersCommands::LeaderBroker => {
+        BrokersCommands::Leader => {
             let response = client.get_leader().await?;
             println!("Leader Broker: {:?}", response.leader);
         }
@@ -354,7 +339,7 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
 
                 if cv_percent >= 30.0 {
                     println!();
-                    println!("💡 Recommendation: Run 'danube-admin brokers rebalance' to balance the cluster");
+                    println!("💡 Recommendation: Run 'danube broker rebalance' to balance the cluster");
                 }
             }
         }
@@ -434,7 +419,7 @@ pub async fn handle(brokers: Brokers, endpoint: &str) -> Result<()> {
                     }
 
                     println!();
-                    println!("💡 Run 'danube-admin brokers balance' to verify cluster state");
+                    println!("💡 Run 'danube broker balance' to verify cluster state");
                 }
             }
         }

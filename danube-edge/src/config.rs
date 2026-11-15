@@ -1,6 +1,6 @@
 //! Unified edge configuration.
 //!
-//! Constructed directly from CLI flags in zero-YAML mode (`danube up --mode edge --cloud-endpoint ...`)
+//! Constructed directly from CLI flags in zero-YAML mode (`danube up edge --cloud-endpoint ...`)
 //! or loaded via `--recovery-config` overrides when custom mappings/batching are needed.
 //! Covers three sections:
 //! - `edge` — identity and cluster connectivity
@@ -34,7 +34,7 @@ pub struct EdgeIdentity {
     /// Cluster broker URL for replication (e.g. `"http://cluster:6650"`).
     pub cluster_url: String,
 
-    /// Authentication token (can be overridden via `--edge-token` CLI arg).
+    /// Authentication token (can be overridden via `--cloud-token` CLI arg).
     #[serde(default)]
     pub token: String,
 

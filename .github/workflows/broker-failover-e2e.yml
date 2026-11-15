@@ -33,12 +33,13 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p danube-data
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6650 \
-            --admin-addr 0.0.0.0:50051 \
-            --raft-addr 0.0.0.0:7650 \
+          nohup ./target/release/danube up cluster \
+            --single-node \
+            --listen 0.0.0.0:6650 \
+            --admin-listen 0.0.0.0:50051 \
+            --raft-port 7650 \
             --data-dir ./danube-data/broker-1 \
-            --prom-exporter 0.0.0.0:9040 \
+            --metrics-listen 0.0.0.0:9040 \
             > broker-a.log 2>&1 &
           echo $! > broker-a.pid
           
@@ -58,13 +59,13 @@ jobs:
 
       - name: Provision namespace and topic via admin CLI
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           # Create failover test topic
-          ./target/release/danube ctl topics create /default/failover-test
+          ./target/release/danube topic create /default/failover-test
           
           # Verify topic was created successfully
-          ./target/release/danube ctl topics describe /default/failover-test || {
+          ./target/release/danube topic describe /default/failover-test || {
             echo "ERROR: Topic creation failed"
             exit 1
           }
@@ -74,12 +75,12 @@ jobs:
         env:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6651 \
-            --admin-addr 0.0.0.0:50052 \
-            --raft-addr 0.0.0.0:7651 \
+          nohup ./target/release/danube up cluster \
+            --listen 0.0.0.0:6651 \
+            --admin-listen 0.0.0.0:50052 \
+            --raft-port 7651 \
             --data-dir ./danube-data/broker-2 \
-            --prom-exporter 0.0.0.0:9041 \
+            --metrics-listen 0.0.0.0:9041 \
             --join \
             > broker-b.log 2>&1 &
           echo $! > broker-b.pid
@@ -100,19 +101,19 @@ jobs:
 
       - name: Add Broker B to cluster via admin CLI
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           # Add Broker B as a Raft learner
-          ./target/release/danube ctl cluster add-node --node-addr http://127.0.0.1:50052
+          ./target/release/danube cluster node add --node-addr http://127.0.0.1:50052
           sleep 2
           
           # Discover Broker B's node_id from its own admin endpoint
-          BROKER_B_NODE_ID=$(DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:50052 \
-            ./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_B_NODE_ID=$(DANUBE_ENDPOINT=http://127.0.0.1:50052 \
+            ./target/release/danube cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
           echo "Broker B node_id: $BROKER_B_NODE_ID"
           
           # Promote Broker B to voter
-          ./target/release/danube ctl cluster promote-node --node-id $BROKER_B_NODE_ID
+          ./target/release/danube cluster node promote --node-id $BROKER_B_NODE_ID
           
           # Wait for Broker B broker port to come up (it starts after joining cluster)
           for i in {1..15}; do
@@ -130,7 +131,7 @@ jobs:
           
           # Activate Broker B so it can receive topics
           # First get Broker B's broker_id (same as node_id)
-          ./target/release/danube ctl brokers activate --broker-id $BROKER_B_NODE_ID --reason "failover-test"
+          ./target/release/danube broker activate --broker-id $BROKER_B_NODE_ID --reason "failover-test"
           echo "✓ Broker B added to cluster, promoted, and activated"
           
           # Give brokers time to sync
@@ -138,18 +139,18 @@ jobs:
 
       - name: Simulate Broker A failure (graceful removal + kill)
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50051
+          DANUBE_ENDPOINT: http://127.0.0.1:50051
         run: |
           # A 2-node Raft cluster has no fault tolerance (needs 2/2 for quorum).
           # To simulate failover, first remove Broker A from Raft membership so
           # Broker B becomes a single-node cluster that can self-elect as leader.
           
           # Get Broker A's node_id
-          BROKER_A_NODE_ID=$(./target/release/danube ctl cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
+          BROKER_A_NODE_ID=$(./target/release/danube cluster status 2>&1 | grep 'Self Node ID' | awk '{print $NF}')
           echo "Broker A node_id: $BROKER_A_NODE_ID"
           
           # Remove Broker A from Raft cluster
-          ./target/release/danube ctl cluster remove-node --node-id $BROKER_A_NODE_ID
+          ./target/release/danube cluster node remove --node-id $BROKER_A_NODE_ID
           echo "✓ Broker A removed from Raft membership"
           sleep 3
           
@@ -165,7 +166,7 @@ jobs:
 
       - name: Wait for topic reassignment to Broker B
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50052
+          DANUBE_ENDPOINT: http://127.0.0.1:50052
         run: |
           echo "Waiting for topic reassignment to Broker B..."
           REASSIGNMENT_TIMEOUT=60
@@ -195,19 +196,19 @@ jobs:
 
       - name: Verify Broker B is operational
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:50052
+          DANUBE_ENDPOINT: http://127.0.0.1:50052
         run: |
           echo "Verifying Broker B is operational after failover..."
           
           # Verify broker B is responding to admin commands
-          ./target/release/danube ctl brokers list || {
+          ./target/release/danube broker list || {
             echo "ERROR: Broker B not responding to admin commands"
             cat broker-b.log
             exit 1
           }
           
           # Verify topic is accessible on Broker B
-          ./target/release/danube ctl topics describe /default/failover-test || {
+          ./target/release/danube topic describe /default/failover-test || {
             echo "ERROR: Topic not accessible on Broker B"
             cat broker-b.log
             exit 1

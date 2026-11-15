@@ -36,12 +36,13 @@ jobs:
           RUST_LOG: info,openraft::replication=off,openraft=error
         run: |
           mkdir -p danube-data
-          nohup ./target/release/danube up \
-            --broker-addr 0.0.0.0:6650 \
-            --raft-addr 0.0.0.0:7650 \
+          nohup ./target/release/danube up cluster \
+            --single-node \
+            --listen 0.0.0.0:6650 \
+            --raft-port 7650 \
             --data-dir ./danube-data/broker-1 \
             --wal-dir ./danube-data/broker-1/custom-wal \
-            --prom-exporter 0.0.0.0:9040 \
+            --metrics-listen 0.0.0.0:9040 \
             > broker.log 2>&1 &
 
           # Wait for broker port (6650, which also multiplexes admin gRPC) to be ready
@@ -63,56 +64,56 @@ jobs:
 
       - name: Run admin CLI E2E tests (includes MCP smoke test)
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:6650
+          DANUBE_ENDPOINT: http://127.0.0.1:6650
           DANUBE_BROKER_ENDPOINT: http://127.0.0.1:6650
         run: cargo test -p danube-admin --tests -- --nocapture
 
       - name: Test v2 single-port admin multiplexing, stream intents, --wal-dir, and branching
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:6650
+          DANUBE_ENDPOINT: http://127.0.0.1:6650
         run: |
           set -e
-          ADMIN_BIN="./target/release/danube ctl"
+          ADMIN_BIN="./target/release/danube"
           mkdir -p temp
 
           # 1. Verify admin gRPC is multiplexed on the main broker port (6650)
-          $ADMIN_BIN brokers list
+          $ADMIN_BIN broker list
           echo "✅ Single-port admin multiplexing on 6650 verified"
 
           # 2. Verify the 4 canonical --intent profiles
-          $ADMIN_BIN topics create /default/intent-realtime --intent realtime
-          $ADMIN_BIN topics create /default/intent-events --intent event_stream
-          $ADMIN_BIN topics create /default/intent-tasks --intent task_queue
-          $ADMIN_BIN topics create /default/intent-audit --intent audit_log
+          $ADMIN_BIN topic create /default/intent-realtime --intent realtime
+          $ADMIN_BIN topic create /default/intent-events --intent event_stream
+          $ADMIN_BIN topic create /default/intent-tasks --intent task_queue
+          $ADMIN_BIN topic create /default/intent-audit --intent audit_log
 
-          $ADMIN_BIN topics describe /default/intent-realtime --output json | jq -e '.delivery == "NonReliable" and (.intent | startswith("realtime"))'
-          $ADMIN_BIN topics describe /default/intent-events --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-events-dlq")) and (.intent | contains("max_retries=3"))'
-          $ADMIN_BIN topics describe /default/intent-tasks --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-tasks-dlq")) and (.intent | contains("max_retries=5"))'
-          $ADMIN_BIN topics describe /default/intent-audit --output json | jq -e '.delivery == "Reliable" and (.intent | contains("poison_policy=block")) and (.intent | contains("max_retries=10"))'
+          $ADMIN_BIN topic describe /default/intent-realtime --output json | jq -e '.delivery == "NonReliable" and (.intent | startswith("realtime"))'
+          $ADMIN_BIN topic describe /default/intent-events --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-events-dlq")) and (.intent | contains("max_retries=3"))'
+          $ADMIN_BIN topic describe /default/intent-tasks --output json | jq -e '.delivery == "Reliable" and (.intent | contains("dlq=/default/intent-tasks-dlq")) and (.intent | contains("max_retries=5"))'
+          $ADMIN_BIN topic describe /default/intent-audit --output json | jq -e '.delivery == "Reliable" and (.intent | contains("poison_policy=block")) and (.intent | contains("max_retries=10"))'
           echo "✅ Canonical stream intents (realtime, event_stream, task_queue, audit_log) verified"
 
           # 3. Verify --wal-dir on disk and subscription failure-policy inheritance from intent
-          timeout 20 $ADMIN_BIN consume -s http://127.0.0.1:6650 -t /default/intent-tasks -n sub-check --subscription intent-sub -l 1 > temp/intent_consume.txt 2>&1 &
+          timeout 20 $ADMIN_BIN consume /default/intent-tasks --endpoint http://127.0.0.1:6650 -n sub-check --subscription intent-sub -l 1 > temp/intent_consume.txt 2>&1 &
           CONSUME_PID=$!
           sleep 3
-          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/intent-tasks -m "task-1" -c 3 -i 500 --reliable
+          $ADMIN_BIN produce /default/intent-tasks --endpoint http://127.0.0.1:6650 -m "task-1" -c 3 -i 500 --reliable
           wait $CONSUME_PID
           [ -d ./danube-data/broker-1/custom-wal ]
-          $ADMIN_BIN topics get-failure-policy /default/intent-tasks --subscription intent-sub --output json | jq -e '.max_redelivery_count == 5 and .dead_letter_topic == "/default/intent-tasks-dlq" and .poison_policy == "dead_letter" and .backoff_strategy == "exponential"'
+          $ADMIN_BIN topic subscription failure-policy get /default/intent-tasks --subscription intent-sub --output json | jq -e '.max_redelivery_count == 5 and .dead_letter_topic == "/default/intent-tasks-dlq" and .poison_policy == "dead_letter" and .backoff_strategy == "exponential"'
           echo "✅ --wal-dir override and subscription failure-policy inheritance verified"
 
           # 4. Verify zero-copy topic branching via CLI
-          $ADMIN_BIN produce -s http://127.0.0.1:6650 -t /default/branch-src -m "branch-msg" -c 5 -i 50 --reliable
-          $ADMIN_BIN topics branch /default/branch-src /default/branch-dst --at-offset 2
-          $ADMIN_BIN topics describe /default/branch-dst
+          $ADMIN_BIN produce /default/branch-src --endpoint http://127.0.0.1:6650 -m "branch-msg" -c 5 -i 50 --reliable
+          $ADMIN_BIN topic branch /default/branch-src /default/branch-dst --at-offset 2
+          $ADMIN_BIN topic describe /default/branch-dst
           echo "✅ Topic branching verified"
 
       - name: Test dynamic cluster config, export-config, and cluster declarative apply
         env:
-          DANUBE_ADMIN_ENDPOINT: http://127.0.0.1:6650
+          DANUBE_ENDPOINT: http://127.0.0.1:6650
         run: |
           set -e
-          ADMIN_BIN="./target/release/danube ctl"
+          ADMIN_BIN="./target/release/danube"
           mkdir -p temp danube-data/shared-fs
 
           # 1. Configure WAL/retention, LoadManager, and shared_fs dynamically (Zero-YAML)
@@ -127,7 +128,7 @@ jobs:
             --rebalance true \
             --profile aggressive
           $ADMIN_BIN cluster storage shared-fs --root ./danube-data/shared-fs
-          $ADMIN_BIN cluster storage status
+          $ADMIN_BIN cluster storage show
           sleep 1
 
           # 2. Verify break-glass RecoveryConfig export in YAML and JSON
@@ -165,7 +166,7 @@ jobs:
 
           $ADMIN_BIN apply -f temp/desired_state.yaml --dry-run
           $ADMIN_BIN apply -f temp/desired_state.yaml
-          TOPICS_OUT=$($ADMIN_BIN topics list --namespace agentic-e2e --output json)
+          TOPICS_OUT=$($ADMIN_BIN topic list --namespace agentic-e2e --output json)
           echo "$TOPICS_OUT" | grep -q "/agentic-e2e/tasks"
           echo "$TOPICS_OUT" | grep -q "/agentic-e2e/events"
           $ADMIN_BIN cluster export-config --format json | jq -e '.load_manager.assignment_strategy == "weighted_load" and .load_manager.rebalancing.aggressiveness == "conservative"'

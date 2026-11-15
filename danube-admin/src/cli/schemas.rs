@@ -7,18 +7,21 @@ use danube_core::proto::danube_schema::{
 };
 use std::fs;
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::AdminGrpcClient;
 
 #[derive(Debug, Args)]
 #[command(
     about = "Manage schemas in the Schema Registry",
-    long_about = "Manage schemas in the Schema Registry.\n\nCommon examples:\n  danube-admin schemas register user-events --schema-type json_schema --file schema.json\n  danube-admin schemas get --subject user-events\n  danube-admin schemas versions user-events",
+    long_about = "Manage schemas in the Schema Registry.\n\nCommon examples:\n  danube schema register user-events --schema-type json_schema --file schema.json\n  danube schema get --subject user-events\n  danube schema versions user-events",
     subcommand_required = true,
     arg_required_else_help = true
 )]
 pub struct Schemas {
     #[command(subcommand)]
     command: SchemasCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -26,14 +29,10 @@ enum SchemasCommands {
     #[command(
         about = "Register a new schema or update existing schema",
         after_help = "Examples:
-  danube-admin schemas register user-events --schema-type json_schema --file schema.json
-  danube-admin schemas register user-events --schema-type avro --schema '{...}'
-  danube-admin schemas register user-events --schema-type json_schema --file schema.json --description 'User event schema' --tags analytics events
-  danube-admin schemas register user-events --schema-type protobuf --file user.proto --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)
-  DANUBE_ADMIN_TLS, DANUBE_ADMIN_DOMAIN, DANUBE_ADMIN_CA, DANUBE_ADMIN_CERT, DANUBE_ADMIN_KEY"
+  danube schema register user-events --schema-type json_schema --file schema.json
+  danube schema register user-events --schema-type avro --schema '{...}'
+  danube schema register user-events --schema-type json_schema --file schema.json --description 'User event schema' --tags analytics events
+  danube schema register user-events --schema-type protobuf --file user.proto --output json"
     )]
     Register {
         #[arg(help = "Schema subject name")]
@@ -65,13 +64,10 @@ Env:
     #[command(
         about = "Get a schema by subject or ID",
         after_help = "Examples:
-  danube-admin schemas get --subject user-events
-  danube-admin schemas get --id 42
-  danube-admin schemas get --id 42 --version 3
-  danube-admin schemas get --subject user-events --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube schema get --subject user-events
+  danube schema get --id 42
+  danube schema get --id 42 --version 3
+  danube schema get --subject user-events --output json"
     )]
     Get {
         #[arg(long, conflicts_with = "subject", help = "Schema ID")]
@@ -90,11 +86,8 @@ Env:
     #[command(
         about = "List all versions for a subject",
         after_help = "Examples:
-  danube-admin schemas versions user-events
-  danube-admin schemas versions user-events --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube schema versions user-events
+  danube schema versions user-events --output json"
     )]
     Versions {
         #[arg(help = "Schema subject name")]
@@ -107,12 +100,9 @@ Env:
     #[command(
         about = "Check if a schema is compatible",
         after_help = "Examples:
-  danube-admin schemas check user-events --schema-type json_schema --file new-schema.json
-  danube-admin schemas check user-events --schema-type avro --schema '{...}'
-  danube-admin schemas check user-events --schema-type json_schema --file new-schema.json --mode backward
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube schema check user-events --schema-type json_schema --file new-schema.json
+  danube schema check user-events --schema-type avro --schema '{...}'
+  danube schema check user-events --schema-type json_schema --file new-schema.json --mode backward"
     )]
     Check {
         #[arg(help = "Schema subject name")]
@@ -138,11 +128,8 @@ Env:
     #[command(
         about = "Get compatibility mode for a subject",
         after_help = "Examples:
-  danube-admin schemas get-compatibility user-events
-  danube-admin schemas get-compatibility user-events --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube schema get-compatibility user-events
+  danube schema get-compatibility user-events --output json"
     )]
     GetCompatibility {
         #[arg(help = "Schema subject name")]
@@ -155,18 +142,15 @@ Env:
     #[command(
         about = "Set compatibility mode for a subject",
         after_help = "Examples:
-  danube-admin schemas set-compatibility user-events --mode backward
-  danube-admin schemas set-compatibility user-events --mode full
-  danube-admin schemas set-compatibility user-events --mode none
+  danube schema set-compatibility user-events --mode backward
+  danube schema set-compatibility user-events --mode full
+  danube schema set-compatibility user-events --mode none
 
 Compatibility Modes:
   none     - No compatibility checking
   backward - New schema can read data written by old schema
   forward  - Old schema can read data written by new schema
-  full     - Both backward and forward compatible
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  full     - Both backward and forward compatible"
     )]
     SetCompatibility {
         #[arg(help = "Schema subject name")]
@@ -183,12 +167,9 @@ Env:
     #[command(
         about = "Delete a specific schema version",
         after_help = "Examples:
-  danube-admin schemas delete user-events --version 2 --confirm
+  danube schema delete user-events --version 2 --confirm
 
-Note: Deletion requires --confirm flag to prevent accidental deletion.
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+Note: Deletion requires --confirm flag to prevent accidental deletion."
     )]
     Delete {
         #[arg(help = "Schema subject name")]
@@ -204,11 +185,8 @@ Env:
     #[command(
         about = "List all registered schema subjects",
         after_help = "Examples:
-  danube-admin schemas list-subjects
-  danube-admin schemas list-subjects --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube schema list-subjects
+  danube schema list-subjects --output json"
     )]
     ListSubjects {
         #[arg(long, value_parser = ["json"], help = "Output format")]
@@ -216,14 +194,11 @@ Env:
     },
 }
 
-pub async fn handle(schemas: Schemas, endpoint: &str) -> Result<()> {
-    let config = GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        ..Default::default()
-    };
-    let client = AdminGrpcClient::connect(config).await?;
+pub async fn handle(cmd: Schemas) -> Result<()> {
+    let conn = cmd.client.resolve()?;
+    let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
 
-    match schemas.command {
+    match cmd.command {
         SchemasCommands::Register {
             subject,
             schema_type,

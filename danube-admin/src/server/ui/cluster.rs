@@ -287,10 +287,8 @@ async fn get_leader_client(state: &AppState) -> crate::core::AdminGrpcClient {
         let endpoint = endpoint.replace("0.0.0.0", "127.0.0.1");
 
         let config = crate::core::GrpcClientConfig {
-            endpoint,
             request_timeout_ms: 10000,
-            token: state.client.token(),
-            ..Default::default()
+            ..state.client.config_for_endpoint(endpoint)
         };
 
         if let Ok(client) = crate::core::AdminGrpcClient::connect(config).await {
@@ -308,10 +306,8 @@ async fn get_leader_client(state: &AppState) -> crate::core::AdminGrpcClient {
             let endpoint = endpoint.replace("0.0.0.0", "127.0.0.1");
 
             let config = crate::core::GrpcClientConfig {
-                endpoint,
                 request_timeout_ms: 10000,
-                token: state.client.token(),
-                ..Default::default()
+                ..state.client.config_for_endpoint(endpoint)
             };
 
             if let Ok(client) = crate::core::AdminGrpcClient::connect(config).await {

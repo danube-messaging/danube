@@ -61,7 +61,7 @@ impl EdgeService {
     /// `mqtt` config section is present) the `MqttIngester` and `TopicRouter`.
     /// Nothing is started yet — call `start()` after the broker gRPC is up.
     ///
-    /// `token_override` allows the `--edge-token` CLI arg to take precedence
+    /// `token_override` allows the `--cloud-token` CLI arg to take precedence
     /// over the config file's `edge.token` field.
     pub async fn new(
         config: EdgeConfig,

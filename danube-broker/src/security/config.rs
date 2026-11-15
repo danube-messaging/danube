@@ -13,7 +13,7 @@ pub(crate) struct TlsConfig {
 }
 
 /// JWT configuration — used for validating client tokens.
-/// Generate tokens with: `danube-admin security tokens create --subject my-app --secret-key <key>`
+/// Generate tokens with: `danube auth token create --subject my-app --jwt-secret <key>`
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct JwtConfig {
     pub(crate) secret_key: String,
@@ -56,7 +56,7 @@ pub(crate) struct AuthConfig {
     pub(crate) jwt: Option<JwtConfig>,
     /// JWT subjects that bypass RBAC entirely (super-admin access).
     /// Used for initial cluster bootstrap and break-glass scenarios.
-    /// Create tokens: `danube-admin security tokens create --subject <name> --secret-key <key>`
+    /// Create tokens: `danube auth token create --subject <name> --jwt-secret <key>`
     #[serde(default)]
     pub(crate) super_admins: Vec<String>,
 }

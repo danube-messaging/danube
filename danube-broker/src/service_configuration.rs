@@ -1,4 +1,4 @@
-use crate::args_parse::NodeRole;
+use crate::cli::up::NodeRole;
 use crate::security::config::{AuthConfig, AuthMode};
 use crate::danube_service::load_manager::config::LoadManagerConfig;
 use crate::policies::Policies;
@@ -60,7 +60,7 @@ pub(crate) struct ServiceConfiguration {
 pub(crate) struct EdgeConfig {
     /// Inline edge config
     pub(crate) inline: danube_edge::config::EdgeConfig,
-    /// Authentication token override (from --edge-token CLI arg)
+    /// Authentication token override (from the `--cloud-token` CLI arg)
     pub(crate) token_override: Option<String>,
 }
 
@@ -185,7 +185,7 @@ impl ServiceConfiguration {
         })
     }
 
-    /// Creates a zero-YAML edge configuration using `--cloud-endpoint` and optional `--edge-name` / `--mqtt-addr`.
+    /// Creates a zero-YAML edge configuration using `--cloud-endpoint` and optional `--name` / `--mqtt-listen`.
     pub(crate) fn edge_zero_yaml(
         base_dir: &Path,
         edge_name: Option<String>,

@@ -284,7 +284,7 @@ impl DanubeClientBuilder {
 
     /// Sets the authentication token (JWT) for the client.
     ///
-    /// Use `danube-admin security tokens create` to generate a token.
+    /// Use `danube auth token create` to generate a token.
     /// Automatically enables TLS. If no TLS config has been set via `with_tls()` or
     /// `with_mtls()`, a default TLS config using system root certificates is applied.
     ///

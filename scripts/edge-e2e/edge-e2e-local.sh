@@ -98,13 +98,13 @@ for i in 0 1 2; do
     data_dir="${DATA_DIR}/broker-$((i + 1))"
     log_file="${TEMP_DIR}/broker_${broker_port}.log"
 
-    RUST_LOG="$LOG_LEVEL" "$BIN" up \
-        --broker-addr "0.0.0.0:${broker_port}" \
-        --admin-addr "0.0.0.0:${admin_port}" \
-        --raft-addr "0.0.0.0:${raft_port}" \
+    RUST_LOG="$LOG_LEVEL" "$BIN" up cluster \
+        --listen "0.0.0.0:${broker_port}" \
+        --admin-listen "0.0.0.0:${admin_port}" \
+        --raft-port ${raft_port} \
         --data-dir "$data_dir" \
         --seed-nodes "$SEED_NODES" \
-        --prom-exporter "0.0.0.0:${prom_port}" \
+        --metrics-listen "0.0.0.0:${prom_port}" \
         > "$log_file" 2>&1 &
 
     echo "  Broker $i: client=${broker_port} admin=${admin_port} raft=${raft_port} prom=${prom_port} (log: ${log_file})"
@@ -131,14 +131,14 @@ done
 # Step 4: Provision edge namespace
 # =============================================================================
 echo -e "${YELLOW}Provisioning edge1 namespace on cluster...${NC}"
-DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$BIN" ctl namespaces create edge1 2>/dev/null || true
+DANUBE_ENDPOINT="http://127.0.0.1:50051" "$BIN" namespace create edge1 2>/dev/null || true
 echo -e "${GREEN}✅ Namespace 'edge1' provisioned.${NC}"
 
 # =============================================================================
 # Step 5: Register schema on cluster
 # =============================================================================
 echo -e "${YELLOW}Registering 'telemetry-events' schema on cluster...${NC}"
-DANUBE_ADMIN_ENDPOINT="http://127.0.0.1:50051" "$BIN" ctl schemas register \
+DANUBE_ENDPOINT="http://127.0.0.1:50051" "$BIN" schema register \
     telemetry-events \
     --schema-type json_schema \
     --schema '{"type":"object","properties":{"temperature":{"type":"number"},"device_id":{"type":"string"}},"required":["temperature"]}' \
@@ -177,11 +177,12 @@ edge:
       batch_timeout_ms: 500
 EOF
 
-RUST_LOG="$LOG_LEVEL" "$BIN" up \
-    --mode edge \
-    --broker-addr 0.0.0.0:6653 \
-    --admin-addr 0.0.0.0:50054 \
-    --raft-addr 0.0.0.0:7653 \
+RUST_LOG="$LOG_LEVEL" "$BIN" up edge \
+    --name edge1 \
+    --cloud-endpoint http://127.0.0.1:6650 \
+    --listen 0.0.0.0:6653 \
+    --admin-listen 0.0.0.0:50054 \
+    --raft-port 7653 \
     --data-dir "${DATA_DIR}/edge-1" \
     --recovery-config "${TEMP_DIR}/edge_override.yaml" \
     > "${TEMP_DIR}/edge_broker.log" 2>&1 &

@@ -11,7 +11,7 @@ const INTERNAL_BROKER_HEADER: &str = "x-danube-internal-broker";
 /// The `AuthService` struct provides methods for authenticating clients with the Danube messaging system.
 ///
 /// With JWT-first authentication, the client uses a pre-generated JWT token (from
-/// `danube-admin security tokens create`) that is sent as `Authorization: Bearer <token>`
+/// `danube auth token create`) that is sent as `Authorization: Bearer <token>`
 /// on every gRPC request.
 #[derive(Debug, Clone)]
 pub struct AuthService {

@@ -83,7 +83,7 @@ fn schema_admin_operations() {
     let mut register_cmd = cli();
     register_cmd
         .args([
-            "schemas",
+            "schema",
             "register",
             schema_subject,
             "--schema-type",
@@ -101,7 +101,7 @@ fn schema_admin_operations() {
     let mut get_compat_cmd = cli();
     get_compat_cmd
         .args([
-            "schemas",
+            "schema",
             "get-compatibility",
             schema_subject,
             "--output",
@@ -118,7 +118,7 @@ fn schema_admin_operations() {
     let mut set_compat_cmd = cli();
     set_compat_cmd
         .args([
-            "schemas",
+            "schema",
             "set-compatibility",
             schema_subject,
             "--mode",
@@ -132,18 +132,18 @@ fn schema_admin_operations() {
     // Verify the change
     let mut verify_compat_cmd = cli();
     verify_compat_cmd
-        .args(["schemas", "get-compatibility", schema_subject])
+        .args(["schema", "get-compatibility", schema_subject])
         .assert()
         .success()
         .stdout(predicates::str::contains("FULL"));
 
     // ============================================================================
     // STEP 3: Create topic and configure schema with validation policy
-    // Tests: topics configure-schema command (admin-only)
+    // Tests: topic schema configure command (admin-only)
     // ============================================================================
     let mut create_topic_cmd = cli();
     create_topic_cmd
-        .args(["topics", "create", &topic])
+        .args(["topic", "create", &topic])
         .assert()
         .success();
 
@@ -153,8 +153,9 @@ fn schema_admin_operations() {
     let mut configure_cmd = cli();
     configure_cmd
         .args([
-            "topics",
-            "configure-schema",
+            "topic",
+            "schema",
+            "configure",
             &topic,
             "--subject",
             schema_subject,
@@ -171,11 +172,11 @@ fn schema_admin_operations() {
 
     // ============================================================================
     // STEP 4: Get topic schema configuration
-    // Tests: topics get-schema-config command
+    // Tests: topic schema show command
     // ============================================================================
     let mut get_config_cmd = cli();
     let config_output = get_config_cmd
-        .args(["topics", "get-schema-config", &topic, "--output", "json"])
+        .args(["topic", "schema", "show", &topic, "--output", "json"])
         .output()
         .expect("get schema config");
 
@@ -189,13 +190,14 @@ fn schema_admin_operations() {
 
     // ============================================================================
     // STEP 5: Update validation policy to WARN (without changing schema)
-    // Tests: topics set-validation-policy command (admin-only)
+    // Tests: topic schema validation-policy command (admin-only)
     // ============================================================================
     let mut update_policy_cmd = cli();
     update_policy_cmd
         .args([
-            "topics",
-            "set-validation-policy",
+            "topic",
+            "schema",
+            "validation-policy",
             &topic,
             "--policy",
             "warn",
@@ -209,7 +211,7 @@ fn schema_admin_operations() {
     // Verify the policy change
     let mut verify_policy_cmd = cli();
     let verify_output = verify_policy_cmd
-        .args(["topics", "get-schema-config", &topic, "--output", "json"])
+        .args(["topic", "schema", "show", &topic, "--output", "json"])
         .output()
         .expect("verify policy");
 
@@ -218,13 +220,13 @@ fn schema_admin_operations() {
     assert_eq!(verify_config["validation_policy"].as_str().unwrap(), "WARN");
 
     // ============================================================================
-    // STEP 6: Test configure-schema on topic without --enable-payload-validation
+    // STEP 6: Test topic schema configure on topic without --enable-payload-validation
     // Tests: Default behavior when flag is not provided
     // ============================================================================
     let topic2 = format!("/{}/admin-test-events-2", ns);
     let mut create_topic2_cmd = cli();
     create_topic2_cmd
-        .args(["topics", "create", &topic2])
+        .args(["topic", "create", &topic2])
         .assert()
         .success();
 
@@ -234,8 +236,9 @@ fn schema_admin_operations() {
     let mut configure2_cmd = cli();
     configure2_cmd
         .args([
-            "topics",
-            "configure-schema",
+            "topic",
+            "schema",
+            "configure",
             &topic2,
             "--subject",
             schema_subject,
@@ -277,7 +280,7 @@ fn schema_admin_operations() {
     let mut register_v2_cmd = cli();
     register_v2_cmd
         .args([
-            "schemas",
+            "schema",
             "register",
             schema_subject,
             "--schema-type",
@@ -293,7 +296,7 @@ fn schema_admin_operations() {
     let mut delete_cmd = cli();
     delete_cmd
         .args([
-            "schemas",
+            "schema",
             "delete",
             schema_subject,
             "--version",
@@ -310,7 +313,7 @@ fn schema_admin_operations() {
     // ============================================================================
     let mut delete_no_confirm_cmd = cli();
     delete_no_confirm_cmd
-        .args(["schemas", "delete", schema_subject, "--version", "1"])
+        .args(["schema", "delete", schema_subject, "--version", "1"])
         .assert()
         .failure(); // Should fail without --confirm
 
@@ -322,13 +325,13 @@ fn schema_admin_operations() {
 
     let mut delete_topic = cli();
     delete_topic
-        .args(["topics", "delete", &topic])
+        .args(["topic", "delete", &topic])
         .assert()
         .success();
 
     let mut delete_topic2 = cli();
     delete_topic2
-        .args(["topics", "delete", &topic2])
+        .args(["topic", "delete", &topic2])
         .assert()
         .success();
 

@@ -608,7 +608,7 @@ impl TopicAdmin for DanubeAdminImpl {
         ).await?;
 
         // Unload requires cluster mode (≥2 brokers to move topic to)
-        use crate::args_parse::BrokerMode;
+        use crate::cli::up::BrokerMode;
         match self.broker_service.mode {
             BrokerMode::Standalone | BrokerMode::Edge => {
                 return Err(Status::unimplemented(
@@ -1084,7 +1084,7 @@ impl TopicAdmin for DanubeAdminImpl {
                 runtime_policy.ack_timeout_ms, runtime_policy.max_redelivery_count
             ));
             suggestions.push(
-                "Use `danube ctl topics seek` or `peek_messages` on the cursor offset to inspect stuck payloads."
+                "Use `danube topic subscription seek` or `peek_messages` on the cursor offset to inspect stuck payloads."
                     .into(),
             );
             (

@@ -85,23 +85,22 @@ fn admin_cli() -> (Command, String) {
     }
 
     let (mut cmd, program_description) = if let Some(program) = resolved_program {
-        let description = format!("{} ctl", program.display());
-        let mut c = Command::new(&program);
-        c.arg("ctl");
+        let description = program.display().to_string();
+        let c = Command::new(&program);
         (c, description)
     } else {
         let mut cargo = Command::new("cargo");
         cargo.current_dir(workspace_root());
-        cargo.args(["run", "-p", "danube-broker", "--bin", "danube", "--", "ctl"]);
+        cargo.args(["run", "-p", "danube-broker", "--bin", "danube", "--"]);
         (
             cargo,
-            "cargo run -p danube-broker --bin danube -- ctl".to_string(),
+            "cargo run -p danube-broker --bin danube --".to_string(),
         )
     };
 
     cmd.env(
-        "DANUBE_ADMIN_ENDPOINT",
-        std::env::var("DANUBE_ADMIN_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".into()),
+        "DANUBE_ENDPOINT",
+        std::env::var("DANUBE_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:6650".into()),
     );
     (cmd, program_description)
 }
@@ -113,14 +112,14 @@ fn run_admin(args: &[&str]) -> Result<String> {
         .output()
         .with_context(|| {
             format!(
-                "failed to execute danube-admin {:?} using {}",
+                "failed to execute danube {:?} using {}",
                 args, program_description
             )
         })?;
 
     if !output.status.success() {
         bail!(
-            "danube-admin {:?} failed using {}\nstdout:\n{}\nstderr:\n{}",
+            "danube {:?} failed using {}\nstdout:\n{}\nstderr:\n{}",
             args,
             program_description,
             String::from_utf8_lossy(&output.stdout),
@@ -128,21 +127,21 @@ fn run_admin(args: &[&str]) -> Result<String> {
         );
     }
 
-    String::from_utf8(output.stdout).context("danube-admin output was not valid utf-8")
+    String::from_utf8(output.stdout).context("danube output was not valid utf-8")
 }
 
 fn describe_topic(topic: &str) -> Result<TopicDescription> {
-    let body = run_admin(&["topics", "describe", topic, "--output", "json"])?;
+    let body = run_admin(&["topic", "describe", topic, "--output", "json"])?;
     serde_json::from_str(&body).with_context(|| format!("failed to parse topic description for {topic}"))
 }
 
 fn list_brokers() -> Result<Vec<BrokerSummary>> {
-    let body = run_admin(&["brokers", "list", "--output", "json"])?;
+    let body = run_admin(&["broker", "list", "--output", "json"])?;
     serde_json::from_str(&body).context("failed to parse broker list")
 }
 
 fn list_topics_for_broker(broker_id: &str) -> Result<Vec<BrokerTopicEntry>> {
-    let body = run_admin(&["topics", "list", "--broker", broker_id, "--output", "json"])?;
+    let body = run_admin(&["topic", "list", "--broker", broker_id, "--output", "json"])?;
     serde_json::from_str(&body)
         .with_context(|| format!("failed to parse topics for broker {broker_id}"))
 }
@@ -162,7 +161,7 @@ fn find_topic_assignment(topic: &str) -> Result<Option<TopicDescription>> {
 }
 
 fn unload_topic(topic: &str) -> Result<()> {
-    let _ = run_admin(&["topics", "unload", topic])?;
+    let _ = run_admin(&["topic", "unload", topic])?;
     Ok(())
 }
 

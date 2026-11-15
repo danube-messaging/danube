@@ -2,7 +2,7 @@
 
 **Embedded Apache Iceberg lakehouse engine for Danube v2 — continuously exports sealed WAL segments to Iceberg tables as Parquet files with column statistics.**
 
-In Danube v2, `danube-iceberg` is a **library crate embedded into `danube-broker` via Cargo feature flags** (`--features lakehouse` or `--features lakehouse-aws`) instead of a standalone binary or YAML-configured sidecar. It runs inside an isolated `LakehouseRuntime` (dedicated `danube-lakehouse` Tokio thread pool) so Arrow/Parquet conversion never interferes with hot-path broker message dispatch, and nodes can be isolated with `--node-role lakehouse` (or run mixed with `--node-role all`).
+In Danube v2, `danube-iceberg` is a **library crate embedded into `danube-broker` via Cargo feature flags** (`--features lakehouse` or `--features lakehouse-aws`) instead of a standalone binary or YAML-configured sidecar. It runs inside an isolated `LakehouseRuntime` (dedicated `danube-lakehouse` Tokio thread pool) so Arrow/Parquet conversion never interferes with hot-path broker message dispatch, and nodes can be isolated with `--role lakehouse` (or run mixed with `--role all`).
 
 ## How It Works
 
@@ -23,7 +23,7 @@ Queryable in DuckDB, Trino, Spark, Snowflake, Athena
 ## Architecture & Guarantees
 
 - **Workload Isolation (`LakehouseRuntime`):** Runs on a dedicated `danube-lakehouse` Tokio runtime with bounded worker threads so analytics serialization does not cause latency spikes in client message delivery. Configured via `DANUBE_LAKEHOUSE_CONFIG=/path/to/lakehouse.yaml` (starts in idle standby when unset).
-- **Node-Role Scheduling (`--node-role`):** Run `danube up --node-role broker` on latency-sensitive ingress nodes and `danube up --node-role lakehouse` on dedicated export nodes (or `--node-role all` by default). Dedicated `lakehouse` nodes register as `drained` (`lakehouse_only`) so `LoadManager` does not assign client topic partitions to them.
+- **Node-Role Scheduling (`--role`):** Run `danube up cluster --role broker ...` on latency-sensitive ingress nodes and `danube up cluster --role lakehouse ...` on dedicated export nodes (or `--role all` by default). Dedicated `lakehouse` nodes register as `drained` (`lakehouse_only`) so `LoadManager` does not assign client topic partitions to them.
 - **Schema-Aware Conversion:** Resolves schemas from Danube's embedded Schema Registry (`json_schema`, `avro`) to emit typed Iceberg columns and per-column statistics, falling back to a structured envelope schema for schema-less topics.
 - **Catalog Support:**
   - `rest` — Apache Iceberg REST Catalog (Polaris, Nessie, Tabular, Unity, AWS SigV4 REST endpoints with `--features lakehouse-aws`)

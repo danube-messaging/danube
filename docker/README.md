@@ -26,19 +26,16 @@ Exposed host ports:
 - **Brokers (gRPC data + admin)**: `6650` (`broker1`), `6651` (`broker2`), `6652` (`broker3`)
 - **Prometheus metrics (`/metrics`)**: `9040`, `9041`, `9042`
 
-## Test Messaging & Admin via `danube ctl`
+## Test Messaging & Admin from inside a broker container
 
-No separate `danube-cli` or `danube-admin` container is needed — `danube` ships both inside every broker container:
+No separate CLI or admin container is needed: every broker container ships the `danube` binary. Client commands default to `http://127.0.0.1:6650`; pass `--endpoint` to target another broker.
 
 ```bash
 # Consume messages from broker1
-docker exec -it danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
-  consume --service-addr http://127.0.0.1:6650 --topic /default/test --subscription my-sub
+docker exec -it danube-broker1 danube consume /default/test -s my-sub
 
 # Produce messages to broker1
-docker exec danube-broker1 danube ctl produce \
-  --service-addr http://127.0.0.1:6650 \
-  --topic /default/test \
+docker exec danube-broker1 danube produce /default/test \
   --count 100 \
   --message "Hello Danube v2!"
 ```
@@ -46,21 +43,18 @@ docker exec danube-broker1 danube ctl produce \
 ### Cluster Administration & Declarative Apply
 
 ```bash
-# Inspect cluster and Raft status
-docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 brokers list
-docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 cluster status
+# Inspect brokers and Raft status
+docker exec danube-broker1 danube broker list
+docker exec danube-broker1 danube cluster status
 
-# Create a topic with a StreamIntent profile
-docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
-  topics create /default/agent-tasks --intent agent_task_queue
+# Create a topic with a stream intent
+docker exec danube-broker1 danube topic create /default/agent-tasks --intent task_queue
 
 # Zero-copy branch a topic
-docker exec danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
-  topics branch /default/agent-tasks /default/agent-tasks-replay
+docker exec danube-broker1 danube topic branch /default/agent-tasks /default/agent-tasks-replay
 
 # Apply a declarative YAML/JSON manifest (additive by default)
-docker exec -i danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
-  apply -f - < cluster-state.yaml
+docker exec -i danube-broker1 danube apply -f - < cluster-state.yaml
 ```
 
 ## Single-Container Standalone Mode
@@ -68,18 +62,18 @@ docker exec -i danube-broker1 danube ctl --endpoint http://127.0.0.1:6650 \
 ```bash
 docker build -t danube:local -f ../Dockerfile ..
 docker run --rm -p 6650:6650 -p 9040:9040 \
-  danube:local up \
-  --mode standalone \
+  danube:local up standalone \
   --data-dir /danube-data \
-  --broker-addr 0.0.0.0:6650 \
-  --prom-exporter 0.0.0.0:9040
+  --listen 0.0.0.0:6650 \
+  --metrics-listen 0.0.0.0:9040
 ```
 
 ## Security, Storage & Recovery Overrides
 
-- **Startup TLS / Auto-TLS**: Pass `--auth-mode auto-tls` (or `--auth-mode tls` with `--tls-cert`, `--tls-key`, `--ca-cert`, `--jwt-secret`, `--super-admins`) directly in container `command`.
-- **Break-glass Recovery / Test Overrides**: If Raft quorum is lost or you need static local overrides (e.g., object store / shared filesystem / write buffer settings), mount a recovery JSON/YAML file and pass `--recovery-config /path/to/recovery.yaml`.
-- **Dedicated Admin Listener**: Pass `--admin-addr 0.0.0.0:50051` when you want to firewall admin gRPC separately from port `6650`.
+- **Startup TLS / Auto-TLS**: pass `--auth auto-tls`, or `--auth tls` with `--tls-cert`, `--tls-key`, `--ca-cert` (plus optional `--jwt-secret`, `--super-admin`), in the container `command`.
+- **Break-glass recovery / test overrides**: if Raft quorum is lost or you need static local overrides (object store, shared filesystem, write buffer), mount a recovery JSON/YAML file and pass `--recovery-config /path/to/recovery.yaml`.
+- **Dedicated admin listener**: pass `--admin-listen 0.0.0.0:50051` to firewall admin gRPC separately from port `6650`.
+- **Preview the resolved configuration**: append `--dry-run` to any `danube up ...` command.
 
 ## Cleanup
 

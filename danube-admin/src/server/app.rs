@@ -33,7 +33,7 @@ use super::ui::{
     security,
 };
 use super::ServerArgs;
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::AdminGrpcClient;
 use crate::mcp::config::McpConfig;
 use crate::mcp::server::DanubeMcpServer;
 use crate::metrics::{MetricsClient, MetricsConfig};
@@ -69,13 +69,8 @@ struct HealthDto {
 pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
     tracing::info!("Connecting to broker at {}", args.broker_endpoint);
 
-    let configured_token = std::env::var("DANUBE_HTTP_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("DANUBE_ADMIN_TOKEN").ok())
-        .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok());
-    let require_auth = std::env::var("DANUBE_HTTP_REQUIRE_AUTH")
-        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
+    let configured_token = args.http_token.clone();
+    let require_auth = args.require_auth;
 
     let mcp_config = if let Some(ref config_path) = args.config {
         McpConfig::from_file(config_path)?
@@ -83,18 +78,7 @@ pub async fn create_app_state(args: ServerArgs) -> Result<Arc<AppState>> {
         McpConfig::minimal(args.broker_endpoint.clone())
     };
 
-    let grpc_config = GrpcClientConfig {
-        endpoint: args.broker_endpoint.clone(),
-        request_timeout_ms: args.request_timeout_ms,
-        enable_tls: args.grpc_enable_tls,
-        domain: args.grpc_domain.clone(),
-        ca_path: args.grpc_ca.clone(),
-        cert_path: args.grpc_cert.clone(),
-        key_path: args.grpc_key.clone(),
-        token: std::env::var("DANUBE_ADMIN_TOKEN")
-            .ok()
-            .or_else(|| std::env::var("DANUBE_ADMIN_API_KEY").ok()),
-    };
+    let grpc_config = args.grpc_config(args.broker_endpoint.clone());
 
     let client = AdminGrpcClient::connect(grpc_config).await?;
     tracing::info!("Connected to broker successfully");

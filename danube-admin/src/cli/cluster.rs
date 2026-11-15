@@ -7,75 +7,57 @@ use danube_core::admin_proto::{
 };
 use std::collections::HashMap;
 
+use crate::cli::Connection;
 use crate::core::{AdminGrpcClient, GrpcClientConfig};
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Manage the Raft cluster, storage, write buffer, WAL and load manager",
+    long_about = "Manage the Raft cluster membership and cluster-wide configuration.\n\nCommon examples:\n  danube cluster status\n  danube cluster node add --node-addr http://new-broker:50051\n  danube cluster node promote --node-id 12345678\n  danube cluster storage show\n  danube cluster export-config --format yaml",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
 pub struct Cluster {
     #[command(subcommand)]
     command: ClusterCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 #[derive(Debug, Subcommand)]
 enum ClusterCommands {
     #[command(
         about = "Show current Raft cluster state (leader, term, voters, learners)",
-        after_help = "Examples:
-  danube-admin cluster status
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+        after_help = "Example:\n  danube cluster status"
     )]
     Status,
 
     #[command(
-        about = "Add a new broker to the cluster as a Raft learner (non-voting)",
-        after_help = "Examples:
-  danube-admin cluster add-node --node-addr http://new-broker:50054
-
-The CLI connects to the new node's admin port to discover its node_id and raft_addr,
-then tells the current leader to add it as a learner.
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+        about = "Manage Raft cluster membership (add, promote, remove nodes)",
+        subcommand_required = true,
+        arg_required_else_help = true
     )]
-    AddNode {
-        #[arg(long, required = true, help = "Admin endpoint of the new broker")]
-        node_addr: String,
+    Node {
+        #[command(subcommand)]
+        action: NodeCommands,
     },
 
     #[command(
-        about = "Promote a Raft learner to a full voting member",
-        after_help = "Examples:
-  danube-admin cluster promote-node --node-id 12345678
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+        about = "Configure or inspect cluster durable storage mode (local, shared_fs, object_store)",
+        subcommand_required = true,
+        arg_required_else_help = true
     )]
-    PromoteNode {
-        #[arg(long, required = true, help = "Node ID to promote")]
-        node_id: u64,
-    },
-
-    #[command(
-        about = "Remove a node from the Raft cluster",
-        after_help = "Examples:
-  danube-admin cluster remove-node --node-id 12345678
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
-    )]
-    RemoveNode {
-        #[arg(long, required = true, help = "Node ID to remove")]
-        node_id: u64,
-    },
-
-    #[command(about = "Configure or inspect cluster durable storage mode (local, shared_fs, object_store)")]
     Storage {
         #[command(subcommand)]
         action: StorageCommands,
     },
 
-    #[command(about = "Enable/configure or disable the Valkey warm write buffer")]
+    #[command(
+        about = "Enable/configure or disable the Valkey warm write buffer",
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
     WriteBuffer {
         #[command(subcommand)]
         action: WriteBufferCommands,
@@ -141,9 +123,39 @@ Env:
 }
 
 #[derive(Debug, Subcommand)]
+enum NodeCommands {
+    #[command(
+        about = "Add a new broker to the cluster as a Raft learner (non-voting)",
+        after_help = "Example:\n  danube cluster node add --node-addr http://new-broker:50051\n\nThe CLI connects to the new node's admin port to discover its node_id and raft_addr,\nthen tells the current leader (--endpoint) to add it as a learner."
+    )]
+    Add {
+        #[arg(long, required = true, value_name = "URL", help = "Admin endpoint of the new broker")]
+        node_addr: String,
+    },
+
+    #[command(
+        about = "Promote a Raft learner to a full voting member",
+        after_help = "Example:\n  danube cluster node promote --node-id 12345678"
+    )]
+    Promote {
+        #[arg(long, required = true, help = "Node ID to promote")]
+        node_id: u64,
+    },
+
+    #[command(
+        about = "Remove a node from the Raft cluster",
+        after_help = "Example:\n  danube cluster node remove --node-id 12345678"
+    )]
+    Remove {
+        #[arg(long, required = true, help = "Node ID to remove")]
+        node_id: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum StorageCommands {
     #[command(about = "Show effective cluster storage configuration")]
-    Status,
+    Show,
     #[command(about = "Switch cluster storage mode to local WAL only")]
     Local {
         #[arg(long, help = "Allow switching even if cloud-tiered topics exist")]
@@ -190,14 +202,17 @@ enum WriteBufferCommands {
     Disable,
 }
 
-pub async fn handle(cmd: Cluster, endpoint: &str) -> Result<()> {
+pub async fn handle(cmd: Cluster) -> Result<()> {
+    let conn = cmd.client.resolve()?;
     match cmd.command {
-        ClusterCommands::Status => handle_status(endpoint).await,
-        ClusterCommands::AddNode { node_addr } => handle_add_node(node_addr, endpoint).await,
-        ClusterCommands::PromoteNode { node_id } => handle_promote_node(node_id, endpoint).await,
-        ClusterCommands::RemoveNode { node_id } => handle_remove_node(node_id, endpoint).await,
-        ClusterCommands::Storage { action } => handle_storage(action, endpoint).await,
-        ClusterCommands::WriteBuffer { action } => handle_write_buffer(action, endpoint).await,
+        ClusterCommands::Status => handle_status(&conn).await,
+        ClusterCommands::Node { action } => match action {
+            NodeCommands::Add { node_addr } => handle_add_node(node_addr, &conn).await,
+            NodeCommands::Promote { node_id } => handle_promote_node(node_id, &conn).await,
+            NodeCommands::Remove { node_id } => handle_remove_node(node_id, &conn).await,
+        },
+        ClusterCommands::Storage { action } => handle_storage(action, &conn).await,
+        ClusterCommands::WriteBuffer { action } => handle_write_buffer(action, &conn).await,
         ClusterCommands::Wal {
             retention_time_minutes,
             retention_size_mb,
@@ -210,7 +225,7 @@ pub async fn handle(cmd: Cluster, endpoint: &str) -> Result<()> {
             clear_retention,
         } => {
             handle_wal(
-                endpoint,
+                &conn,
                 retention_time_minutes,
                 retention_size_mb,
                 check_interval_minutes,
@@ -237,7 +252,7 @@ pub async fn handle(cmd: Cluster, endpoint: &str) -> Result<()> {
             replace_blacklist,
         } => {
             handle_load_manager(
-                endpoint,
+                &conn,
                 assignment_strategy,
                 load_report_interval_seconds,
                 rebalance,
@@ -256,17 +271,12 @@ pub async fn handle(cmd: Cluster, endpoint: &str) -> Result<()> {
             broker_id,
             format,
             output,
-        } => handle_export_config(endpoint, broker_id, format, output).await,
+        } => handle_export_config(&conn, broker_id, format, output).await,
     }
 }
 
-async fn handle_status(endpoint: &str) -> Result<()> {
-    let client = AdminGrpcClient::connect(GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        request_timeout_ms: 5000,
-        ..Default::default()
-    })
-    .await?;
+async fn handle_status(conn: &Connection) -> Result<()> {
+    let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
 
     let status = client.cluster_status().await?;
 
@@ -307,13 +317,12 @@ async fn handle_status(endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_add_node(node_addr: String, endpoint: &str) -> Result<()> {
+async fn handle_add_node(node_addr: String, conn: &Connection) -> Result<()> {
     // Step 1: Discover the new node's identity
     println!("Discovering node at {}...", node_addr);
     let new_node_client = AdminGrpcClient::connect(GrpcClientConfig {
         endpoint: node_addr.clone(),
-        request_timeout_ms: 5000,
-        ..Default::default()
+        ..conn.grpc_config()
     })
     .await?;
 
@@ -324,13 +333,12 @@ async fn handle_add_node(node_addr: String, endpoint: &str) -> Result<()> {
 
     // Step 2: Tell the leader to add it as a learner
     let leader_client = AdminGrpcClient::connect(GrpcClientConfig {
-        endpoint: endpoint.to_string(),
         request_timeout_ms: 10000,
-        ..Default::default()
+        ..conn.grpc_config()
     })
     .await?;
 
-    println!("Adding node {} as learner via {}...", node_id, endpoint);
+    println!("Adding node {} as learner via {}...", node_id, conn.endpoint);
     let resp = leader_client
         .add_node(AddNodeRequest {
             addr: raft_addr,
@@ -347,11 +355,10 @@ async fn handle_add_node(node_addr: String, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_promote_node(node_id: u64, endpoint: &str) -> Result<()> {
+async fn handle_promote_node(node_id: u64, conn: &Connection) -> Result<()> {
     let client = AdminGrpcClient::connect(GrpcClientConfig {
-        endpoint: endpoint.to_string(),
         request_timeout_ms: 10000,
-        ..Default::default()
+        ..conn.grpc_config()
     })
     .await?;
 
@@ -367,11 +374,10 @@ async fn handle_promote_node(node_id: u64, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_remove_node(node_id: u64, endpoint: &str) -> Result<()> {
+async fn handle_remove_node(node_id: u64, conn: &Connection) -> Result<()> {
     let client = AdminGrpcClient::connect(GrpcClientConfig {
-        endpoint: endpoint.to_string(),
         request_timeout_ms: 10000,
-        ..Default::default()
+        ..conn.grpc_config()
     })
     .await?;
 
@@ -387,11 +393,10 @@ async fn handle_remove_node(node_id: u64, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-async fn connect_client(endpoint: &str) -> Result<AdminGrpcClient> {
+async fn connect_client(conn: &Connection) -> Result<AdminGrpcClient> {
     AdminGrpcClient::connect(GrpcClientConfig {
-        endpoint: endpoint.to_string(),
         request_timeout_ms: 10000,
-        ..Default::default()
+        ..conn.grpc_config()
     })
     .await
 }
@@ -407,10 +412,10 @@ fn parse_kv_options(pairs: Vec<String>) -> Result<HashMap<String, String>> {
     Ok(map)
 }
 
-async fn handle_storage(action: StorageCommands, endpoint: &str) -> Result<()> {
-    let client = connect_client(endpoint).await?;
+async fn handle_storage(action: StorageCommands, conn: &Connection) -> Result<()> {
+    let client = connect_client(conn).await?;
     match action {
-        StorageCommands::Status => {
+        StorageCommands::Show => {
             let exported = client
                 .export_cluster_config(ExportClusterConfigRequest {
                     broker_id: None,
@@ -465,8 +470,8 @@ async fn handle_storage(action: StorageCommands, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_write_buffer(action: WriteBufferCommands, endpoint: &str) -> Result<()> {
-    let client = connect_client(endpoint).await?;
+async fn handle_write_buffer(action: WriteBufferCommands, conn: &Connection) -> Result<()> {
+    let client = connect_client(conn).await?;
     let req = match action {
         WriteBufferCommands::Enable {
             endpoints,
@@ -501,7 +506,7 @@ async fn handle_write_buffer(action: WriteBufferCommands, endpoint: &str) -> Res
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_wal(
-    endpoint: &str,
+    conn: &Connection,
     retention_time_minutes: Option<u64>,
     retention_size_mb: Option<u64>,
     check_interval_minutes: Option<u64>,
@@ -512,7 +517,7 @@ async fn handle_wal(
     flush_max_batch_bytes: Option<u64>,
     clear_retention: bool,
 ) -> Result<()> {
-    let client = connect_client(endpoint).await?;
+    let client = connect_client(conn).await?;
     let has_updates = clear_retention
         || retention_time_minutes.is_some()
         || retention_size_mb.is_some()
@@ -553,7 +558,7 @@ async fn handle_wal(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_load_manager(
-    endpoint: &str,
+    conn: &Connection,
     assignment_strategy: Option<String>,
     load_report_interval_seconds: Option<u64>,
     rebalancing_enabled: Option<bool>,
@@ -566,7 +571,7 @@ async fn handle_load_manager(
     blacklist_topics: Vec<String>,
     replace_blacklist: bool,
 ) -> Result<()> {
-    let client = connect_client(endpoint).await?;
+    let client = connect_client(conn).await?;
     let has_updates = assignment_strategy.is_some()
         || load_report_interval_seconds.is_some()
         || rebalancing_enabled.is_some()
@@ -610,12 +615,12 @@ async fn handle_load_manager(
 }
 
 async fn handle_export_config(
-    endpoint: &str,
+    conn: &Connection,
     broker_id: Option<u64>,
     format: String,
     output: Option<String>,
 ) -> Result<()> {
-    let client = connect_client(endpoint).await?;
+    let client = connect_client(conn).await?;
     let resp = client
         .export_cluster_config(ExportClusterConfigRequest { broker_id, format })
         .await?;
@@ -626,4 +631,48 @@ async fn handle_export_config(
         print!("{}", resp.content);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Debug, Parser)]
+    #[command(name = "danube")]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: TestCmd,
+    }
+
+    #[derive(Debug, Subcommand)]
+    enum TestCmd {
+        Cluster(Cluster),
+    }
+
+    #[test]
+    fn command_tree_is_valid() {
+        TestCli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_node_and_storage_subcommands() {
+        let cli = TestCli::try_parse_from([
+            "danube", "cluster", "node", "add", "--node-addr", "http://n2:50051",
+        ])
+        .expect("parse");
+        let TestCmd::Cluster(c) = cli.cmd;
+        assert!(matches!(
+            c.command,
+            ClusterCommands::Node { action: NodeCommands::Add { .. } }
+        ));
+        for args in [
+            vec!["danube", "cluster", "node", "promote", "--node-id", "7"],
+            vec!["danube", "cluster", "node", "remove", "--node-id", "7"],
+            vec!["danube", "cluster", "storage", "show"],
+            vec!["danube", "cluster", "write-buffer", "enable", "--endpoints", "redis://a,redis://b"],
+        ] {
+            TestCli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        }
+    }
 }

@@ -15,7 +15,7 @@ fn topic_lifecycle_partitioned() {
     // create partitioned topic (server-side)
     let mut cmd = cli();
     cmd.args([
-        "topics",
+        "topic",
         "create",
         &base_cli,
         "--partitions",
@@ -29,7 +29,7 @@ fn topic_lifecycle_partitioned() {
     // list topics should include both partitions (parse JSON for robustness)
     let mut list = cli();
     let out = list
-        .args(["topics", "list", "--namespace", &ns, "--output", "json"]) 
+        .args(["topic", "list", "--namespace", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list");
     assert!(out.status.success());
@@ -47,12 +47,12 @@ fn topic_lifecycle_partitioned() {
     // subscriptions should be an array on part-0
     let mut subs = cli();
     let part0_cli = format!("{}-part-0", base_cli);
-    subs.args(["topics", "subscriptions", &part0_cli, "--output", "json"]).assert().success();
+    subs.args(["topic", "subscription", "list", &part0_cli, "--output", "json"]).assert().success();
 
     // verify that individual partition deletion is NOT allowed
     let mut delete_partition_attempt = cli();
     let result = delete_partition_attempt
-        .args(["topics", "delete", &part0_cli])
+        .args(["topic", "delete", &part0_cli])
         .output()
         .expect("run delete partition attempt");
     assert!(!result.status.success(), "Expected partition deletion to fail");
@@ -64,12 +64,12 @@ fn topic_lifecycle_partitioned() {
 
     // delete the base topic (this deletes all partitions)
     let mut delete_cmd = cli();
-    delete_cmd.args(["topics", "delete", &base_cli]).assert().success();
+    delete_cmd.args(["topic", "delete", &base_cli]).assert().success();
 
     // verify deletion: list should not include any partitions anymore (parse JSON)
     let mut list2 = cli();
     let out2 = list2
-        .args(["topics", "list", "--namespace", &ns, "--output", "json"]) 
+        .args(["topic", "list", "--namespace", &ns, "--output", "json"]) 
         .output()
         .expect("run topic list after delete");
     assert!(out2.status.success());

@@ -3,12 +3,21 @@ use clap::{Args, Subcommand};
 use danube_core::admin_proto::NamespaceRequest;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{AdminGrpcClient, GrpcClientConfig};
+use crate::core::AdminGrpcClient;
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Manage namespaces and their policies",
+    long_about = "Manage namespaces and their policies.\n\nCommon examples:\n  danube namespace create my-namespace\n  danube namespace topics default\n  danube namespace policies default --output json",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
 pub struct Namespaces {
     #[command(subcommand)]
     command: NamespacesCommands,
+
+    #[command(flatten)]
+    pub client: crate::cli::ClientArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -16,13 +25,11 @@ enum NamespacesCommands {
     #[command(
         about = "List topics in the specified namespace",
         after_help = "Examples:
-  danube-admin namespaces topics default
-  danube-admin namespaces topics my-namespace --output json
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  danube namespace topics default
+  danube namespace topics my-namespace --output json"
     )]
     Topics {
+        #[arg(help = "Namespace name")]
         namespace: String,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: plain)")]
         output: Option<String>,
@@ -30,8 +37,8 @@ Env:
     #[command(
         about = "List the configuration policies for a specified namespace",
         after_help = "Examples:
-  danube-admin namespaces policies default
-  danube-admin namespaces policies my-namespace --output json
+  danube namespace policies default
+  danube namespace policies my-namespace --output json
 
 Policies Control:
   - max_producers_per_topic: Limit concurrent producers
@@ -40,12 +47,10 @@ Policies Control:
   - max_consumers_per_subscription: Limit per subscription
   - max_publish_rate: Rate limiting for producers
   - max_subscription_dispatch_rate: Rate limiting for consumers
-  - max_message_size: Maximum message payload size
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+  - max_message_size: Maximum message payload size"
     )]
     Policies {
+        #[arg(help = "Namespace name")]
         namespace: String,
         #[arg(long, value_parser = ["json"], help = "Output format: json (default: pretty text)")]
         output: Option<String>,
@@ -53,27 +58,27 @@ Env:
     #[command(
         about = "Create a new namespace",
         after_help = "Examples:
-  danube-admin namespaces create my-namespace
-  danube-admin namespaces create production
+  danube namespace create my-namespace
+  danube namespace create production
 
-Note: Namespaces provide logical isolation for topics and policies.
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+Note: Namespaces provide logical isolation for topics and policies."
     )]
-    Create { namespace: String },
+    Create {
+        #[arg(help = "Namespace name")]
+        namespace: String,
+    },
     #[command(
         about = "Delete an existing namespace",
         after_help = "Examples:
-  danube-admin namespaces delete my-namespace
-  danube-admin namespaces delete test-namespace
+  danube namespace delete my-namespace
+  danube namespace delete test-namespace
 
-Note: The namespace must be empty (no topics) before deletion.
-
-Env:
-  DANUBE_ADMIN_ENDPOINT (default http://127.0.0.1:50051)"
+Note: The namespace must be empty (no topics) before deletion."
     )]
-    Delete { namespace: String },
+    Delete {
+        #[arg(help = "Namespace name")]
+        namespace: String,
+    },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -121,14 +126,11 @@ fn display_policies(policies: &Policies) {
     println!("-----------------------");
 }
 
-pub async fn handle(namespaces: Namespaces, endpoint: &str) -> Result<()> {
-    let config = GrpcClientConfig {
-        endpoint: endpoint.to_string(),
-        ..Default::default()
-    };
-    let client = AdminGrpcClient::connect(config).await?;
+pub async fn handle(cmd: Namespaces) -> Result<()> {
+    let conn = cmd.client.resolve()?;
+    let client = AdminGrpcClient::connect(conn.grpc_config()).await?;
 
-    match namespaces.command {
+    match cmd.command {
         // Get the list of topics of a namespace
         NamespacesCommands::Topics { namespace, output } => {
             let request = NamespaceRequest {

@@ -1,78 +1,90 @@
-# Danube Admin (`danube ctl` & `danube mcp`)
+# Danube Admin (`danube` CLI, `danube console` & `danube mcp`)
 
-**Unified control-plane, data-plane CLI, UI API server, and MCP gateway built directly into the `danube` binary.**
+**Unified control-plane, data-plane CLI, web console backend, and MCP gateway built directly into the `danube` binary.**
 
-Instead of maintaining a separate `danube-admin` executable, Danube v2 exposes all administration and AI agent interfaces from the `danube` binary (`danube-broker` package) backed by the `danube-admin` library crate:
+Instead of maintaining a separate admin executable, Danube v2 exposes all administration and AI agent interfaces from the `danube` binary (`danube-broker` package) backed by the `danube-admin` library crate:
 
-- **`danube ctl`**: CLI for cluster management, topics, StreamIntents, declarative `apply`, schemas, RBAC, and `produce`/`consume`
-- **`danube ctl serve`**: HTTP/JSON API server for the Admin UI and Streamable HTTP MCP endpoint
-- **`danube mcp`**: Model Context Protocol (MCP) server (stdio by default, or HTTP with `--http`) for AI coding & ops assistants
+- **Resource commands** (`danube topic`, `namespace`, `schema`, `cluster`, `broker`, `auth`, `apply`): cluster management, topics, StreamIntents, declarative `apply`, schemas and RBAC
+- **Messaging commands** (`danube produce`, `danube consume`): publish and stream messages from the terminal
+- **`danube console`**: HTTP/JSON API server for the Admin UI, which also serves the Streamable HTTP MCP endpoint at `/mcp`
+- **`danube mcp`**: Model Context Protocol (MCP) server (stdio by default, or streamable HTTP with `--http ADDR`) for AI coding & ops assistants
+- **Utilities**: `danube context` (saved connection profiles), `danube completions <shell>`, `danube version`
 
-By default, `danube ctl` and `danube mcp` target **`http://127.0.0.1:6650`** (override with `--endpoint` or `DANUBE_ADMIN_ENDPOINT`).
+Run bare `danube` for an overview and `danube <command> --help` for details. By default, every client command targets **`http://127.0.0.1:6650`** (override with `--endpoint`, `DANUBE_ENDPOINT`, or a saved context).
 
 ---
 
 ## Quick Start
 
-### Control-Plane & Topic Operations (`danube ctl`)
+### Control-Plane & Topic Operations
 
 ```bash
 # Cluster & brokers
-danube ctl cluster status
-danube ctl brokers list
-danube ctl brokers balance
+danube cluster status
+danube broker list
+danube broker leader
+danube broker balance
 
 # Create topics explicitly or from a StreamIntent preset
-danube ctl topics create /default/orders --partitions 3 --dispatch-strategy reliable
-danube ctl topics create /default/tasks --intent agent_task_queue
+danube topic create /default/orders --partitions 3 --dispatch-strategy reliable
+danube topic create /default/tasks --intent task_queue
 
 # Peek payloads, infer JSON Schema Draft-07, seek subscriptions, or replay DLQ
-danube ctl topics peek /default/orders --limit 5
-danube ctl topics infer-schema /default/orders --sample-size 20
-danube ctl topics seek /default/orders --subscription workers --offset 100
-danube ctl topics replay-dlq /default/orders --subscription workers --max-messages 50
+danube topic peek /default/orders --count 5
+danube topic schema infer /default/orders --sample-size 20
+danube topic subscription list /default/orders
+danube topic subscription seek /default/orders --subscription workers --to-offset 100
+danube topic dlq replay /default/orders --subscription workers --max-messages 50
 
 # Stream branching from offset or timestamp
-danube ctl topics branch /default/orders /default/orders-exp
-danube ctl topics branch /default/orders /default/orders-replay --at-offset 1000
+danube topic branch /default/orders /default/orders-exp
+danube topic branch /default/orders /default/orders-replay --at-offset 1000
+
+# Raft membership & storage
+danube cluster node add --node-addr http://broker4:6650
+danube cluster storage show
 
 # Declarative reconciliation (additive by default; plan shown first)
-danube ctl apply -f cluster-state.yaml --dry-run
-danube ctl apply -f cluster-state.yaml
-danube ctl apply -f cluster-state.yaml --prune   # Opt-in deletion of unmentioned user topics
+danube apply -f cluster-state.yaml --dry-run
+danube apply -f cluster-state.yaml
+danube apply -f cluster-state.yaml --prune   # Opt-in deletion of unmentioned user topics
 
 # Schemas & RBAC
-danube ctl schemas register user-events --file schema.json --schema-type json_schema
-danube ctl security roles create reader --permissions Lookup,Consume,ReadPayload
+danube schema register user-events --file schema.json --schema-type json_schema
+danube auth role create reader --permissions Lookup,Consume,ReadPayload
+danube auth token create --subject my-app --jwt-secret "$DANUBE_JWT_SECRET"
+danube auth token validate "$TOKEN" --jwt-secret "$DANUBE_JWT_SECRET"
 ```
 
-### Data-Plane Produce & Consume (`danube ctl`)
+### Data-Plane Produce & Consume
 
 ```bash
-danube ctl produce --service-addr http://127.0.0.1:6650 --topic /default/demo -c 10 -m "hello"
-danube ctl consume --service-addr http://127.0.0.1:6650 --topic /default/demo --subscription sub1
+danube produce /default/demo -c 10 -m "hello" --attr source:cli,env:dev
+danube produce /default/orders -f ./order.json --key customer-42
+danube consume /default/demo -s sub1 --type exclusive
 ```
 
-### UI / HTTP Server
+### Web Console Backend (`danube console`)
 
 ```bash
-# Start the HTTP API server (default listen addr: 0.0.0.0:8080)
-danube ctl serve --mode ui --broker-endpoint http://127.0.0.1:6650
+# Start the HTTP API server (default listen addr: 0.0.0.0:8080); also serves MCP at /mcp
+danube console --endpoint http://127.0.0.1:6650
 
-# With Prometheus metrics integration
-danube ctl serve --mode ui \
-  --broker-endpoint http://127.0.0.1:6650 \
-  --prometheus-url http://prometheus:9090
+# With Prometheus metrics integration and HTTP bearer auth
+danube console --listen 0.0.0.0:8080 \
+  --endpoint http://127.0.0.1:6650 \
+  --prometheus-url http://prometheus:9090 \
+  --require-auth --http-token "$CONSOLE_TOKEN"
 ```
 
 ### MCP Server (`danube mcp`)
 
 ```bash
 # Stdio MCP transport (for Claude Code, Cursor, VS Code, Antigravity)
-danube mcp --broker-endpoint http://127.0.0.1:6650
+danube mcp --endpoint http://127.0.0.1:6650
 
-# Streamable HTTP MCP transport
-danube mcp --http --listen-addr 0.0.0.0:8080 --broker-endpoint http://127.0.0.1:6650
+# Streamable HTTP MCP transport (served at /mcp)
+danube mcp --http 0.0.0.0:8080 --endpoint http://127.0.0.1:6650
 ```
 
 Built-in MCP capabilities include:
@@ -85,22 +97,47 @@ Built-in MCP capabilities include:
 
 ---
 
-## Configuration & Environment Variables
+## Connection Profiles (`danube context`)
+
+Save endpoint, TLS and token settings once and switch between clusters. Profiles live client-side in `$DANUBE_CONFIG_DIR/contexts.toml` (default `~/.config/danube/contexts.toml`, file mode `0600`):
 
 ```bash
-DANUBE_ADMIN_ENDPOINT=http://127.0.0.1:6650    # Broker gRPC endpoint (or --endpoint)
-DANUBE_ADMIN_LISTEN_ADDR=0.0.0.0:8080          # HTTP listen address for serve/--http
-DANUBE_ADMIN_TOKEN=<jwt>                       # Optional JWT bearer token
+danube context add local --endpoint http://127.0.0.1:6650 --use
+danube context add prod --endpoint https://danube.example.com:6650 --tls-ca ./ca.pem --token "$TOKEN"
+danube context use prod          # switch the current context
+danube context list              # * marks the current one (alias: ls)
+danube context current
+danube context show prod         # token masked
+danube context delete local      # alias: rm
+danube topic list --namespace default --context local   # one-off override
 ```
 
-### TLS / mTLS Flags & Env
+Every client command uses the current context unless `--context`, `--endpoint`, or the `DANUBE_*` environment variables override it.
+
+## Configuration & Environment Variables
+
+Global connection flags accepted by every client command (`topic`, `produce`, `console`, `mcp`, ...):
+
+| Flag | Env | Description |
+| :--- | :--- | :--- |
+| `--endpoint <URL>` | `DANUBE_ENDPOINT` | Broker gRPC endpoint (default `http://127.0.0.1:6650`) |
+| `--context <NAME>` | `DANUBE_CONTEXT` | Saved connection profile |
+| `--token <JWT>` | `DANUBE_TOKEN` | JWT bearer token |
+| `--tls` | `DANUBE_TLS` | Connect with TLS (implied by `https://` endpoints) |
+| `--tls-ca <FILE>` | `DANUBE_TLS_CA` | CA certificate used to verify the broker |
+| `--tls-cert <FILE>` | `DANUBE_TLS_CERT` | Client certificate for mTLS |
+| `--tls-key <FILE>` | `DANUBE_TLS_KEY` | Client private key for mTLS |
+| `--tls-domain <NAME>` | `DANUBE_TLS_DOMAIN` | TLS server name to verify (default `localhost`) |
+
+Console-specific: `DANUBE_CONSOLE_LISTEN` (`--listen`), `DANUBE_HTTP_TOKEN` (`--http-token`), `DANUBE_HTTP_REQUIRE_AUTH` (`--require-auth`). Offline token commands read `DANUBE_JWT_SECRET` (`--jwt-secret`).
+
+## Shell Completions & Version
 
 ```bash
-DANUBE_ADMIN_TLS=true
-DANUBE_ADMIN_DOMAIN=broker.example.com
-DANUBE_ADMIN_CA=/path/to/ca-cert.pem
-DANUBE_ADMIN_CERT=/path/to/client-cert.pem
-DANUBE_ADMIN_KEY=/path/to/client-key.pem
+danube completions bash > /etc/bash_completion.d/danube
+danube completions zsh  > "${fpath[1]}/_danube"
+danube completions fish > ~/.config/fish/completions/danube.fish
+danube version
 ```
 
 ## MCP IDE Integration
@@ -111,7 +148,7 @@ DANUBE_ADMIN_KEY=/path/to/client-key.pem
   "mcpServers": {
     "danube": {
       "command": "/usr/local/bin/danube",
-      "args": ["mcp", "--broker-endpoint", "http://127.0.0.1:6650"],
+      "args": ["mcp", "--endpoint", "http://127.0.0.1:6650"],
       "env": { "NO_COLOR": "1", "RUST_LOG": "error" }
     }
   }
@@ -125,7 +162,7 @@ DANUBE_ADMIN_KEY=/path/to/client-key.pem
     "danube": {
       "type": "stdio",
       "command": "/usr/local/bin/danube",
-      "args": ["mcp", "--broker-endpoint", "http://127.0.0.1:6650"],
+      "args": ["mcp", "--endpoint", "http://127.0.0.1:6650"],
       "env": { "NO_COLOR": "1", "RUST_LOG": "error" }
     }
   }
@@ -136,8 +173,8 @@ DANUBE_ADMIN_KEY=/path/to/client-key.pem
 
 ```bash
 cargo test --package danube-admin
-cargo run -p danube-broker --bin danube -- ctl --help
-cargo run -p danube-broker --bin danube -- ctl topics --help
+cargo run -p danube-broker --bin danube -- --help
+cargo run -p danube-broker --bin danube -- topic --help
 ```
 
 ---

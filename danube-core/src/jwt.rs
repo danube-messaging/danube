@@ -2,7 +2,7 @@
 //!
 //! This module provides the canonical `Claims` structure and helper functions
 //! for creating and validating JWTs. Used by both `danube-broker` (validation)
-//! and `danube-admin` (offline token generation).
+//! and the `danube` CLI (`danube auth token create`, offline token generation).
 
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
