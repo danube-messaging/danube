@@ -83,6 +83,10 @@ Add Danube to your MCP client config:
 
 Then just ask: *"Create a task queue for my research agents and show me which consumers are stalled."*
 
+Give your agent node-startup and messaging skills too: `npx skills add danube-messaging/danube-agent-skills` ([danube-agent-skills](https://github.com/danube-messaging/danube-agent-skills)).
+
+To test it works end to end, see [agent_bench](agent_bench/README.md) and the [v0.17.0 report](agent_bench/reports/v0.17.0.md).
+
 ## Run it your way
 
 ```bash

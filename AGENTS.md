@@ -32,7 +32,7 @@ target/debug/danube up standalone --dry-run      # resolved node config, starts 
 target/debug/danube up standalone                # local node on 127.0.0.1:6650
 ```
 
-Integration tests under `*/tests/` need a running broker. End-to-end coverage lives in `.github/workflows/*-e2e.yml` (cli, security, failover, restart, rebalance, edge, write buffer, shared-fs topic move).
+Integration tests under `*/tests/` need a running broker. End-to-end coverage lives in `.github/workflows/*-e2e.yml` (cli, security, failover, restart, rebalance, edge, write buffer, shared-fs topic move). For end-to-end AI agent validation (MCP + CLI), see [`agent_bench/AGENTS.md`](agent_bench/AGENTS.md).
 
 ## Invariants (do not break)
 

@@ -18,16 +18,16 @@ Verify the agent can bootstrap a secured node with `--auth auto-tls`, configure 
 >    - Create namespace `secure` and topic `/secure/payments` (`intent: "audit_log"`).
 >    - Call `cluster_export_config` and verify the JWT secret is `<redacted>` (never exposed).
 >    - Attempt `delete_topic` on `/secure/payments` *without* `confirm_destructive: true` and verify MCP refuses the destructive call.
->    - Create role `pay-writer` (`Lookup,Produce`), role `pay-reader` (`Lookup,Consume`), bind them on scope `topic` / resource `/secure/payments` to service accounts `checkout-svc` and `ledger-svc`, and issue tokens for both.
-> 4. Using Danube CLI with `--tls-ca` and each token:
+>    - Create role `pay-writer` (`Lookup,Produce`), role `pay-reader` (`Lookup,Consume`), and bind them on scope `topic` / resource `/secure/payments` to service accounts `checkout-svc` and `ledger-svc`.
+> 4. Mint tokens for `checkout-svc` and `ledger-svc` via CLI (`danube auth token issue`), then using Danube CLI with `--tls-ca` and each token:
 >    - Confirm `ledger-svc` can consume and `checkout-svc` can produce on `/secure/payments`.
 >    - Confirm `checkout-svc` is denied (`PERMISSION_DENIED`) when trying to consume `/secure/payments`.
 
 ## Expected surface usage
 
 - **CLI (`danube-bootstrap`):** `danube up standalone --data-dir /tmp/danube-bench-06/data --auth auto-tls`.
-- **MCP:** `create_namespace`, `create_topic`, `cluster_export_config`, `delete_topic` (guardrail check), `create_role`, `create_binding`, `create_token`.
-- **CLI (`danube-messaging`):** `danube consume` / `danube produce` with `--tls-ca` and `--token`.
+- **MCP:** `create_namespace`, `create_topic`, `cluster_export_config`, `delete_topic` (guardrail check), `create_role`, `create_binding`.
+- **CLI (`danube auth` + `danube-messaging`):** `danube auth token issue`, `danube consume` / `danube produce` with `--tls-ca` and `--token`.
 
 ## Verification
 

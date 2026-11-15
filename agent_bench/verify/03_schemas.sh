@@ -8,10 +8,8 @@ versions_out="$("$DANUBE_BIN" schema versions bench-orders-value --output json)"
 assert_contains "$versions_out" '1' "Schema subject bench-orders-value has v1"
 assert_contains "$versions_out" '2' "Schema subject bench-orders-value evolved to v2"
 
-desc_out="$("$DANUBE_BIN" topic describe /bench/orders --output json)"
-assert_contains "$desc_out" '"schema_subject": "bench-orders-value"' "Topic /bench/orders is bound to bench-orders-value"
-
 schema_cfg="$("$DANUBE_BIN" topic schema show /bench/orders --output json)"
+assert_contains "$schema_cfg" '"schema_subject": "bench-orders-value"' "Topic /bench/orders is bound to bench-orders-value"
 assert_contains "$schema_cfg" "ENFORCE" "Topic /bench/orders enforces schema validation"
 
 peek_orders="$("$DANUBE_BIN" topic peek /bench/orders --start-offset 0 --count 10)"

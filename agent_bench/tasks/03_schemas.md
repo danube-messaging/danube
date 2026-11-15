@@ -13,8 +13,8 @@ Verify the agent can manage schema evolution through MCP (register, compatibilit
 
 > Using Danube MCP:
 > 1. Register a JSON Schema under subject `bench-orders-value` requiring object properties `order_id` (string) and `amount` (number), with both required.
-> 2. Check compatibility of a breaking v2 schema that adds a new required field `currency` (confirm compatibility fails under default `BACKWARD` mode), then check compatibility of an optional `currency` field (confirm it passes) and register v2.
-> 3. Create topic `/bench/orders` (`intent: "event_stream"`, `schema_subject: "bench-orders-value"`) and set its validation policy to `enforce`.
+> 2. Check compatibility of a breaking v2 schema that removes required field `amount` (confirm compatibility fails under default `BACKWARD` mode), then check compatibility of an optional `currency` field (confirm it passes) and register v2.
+> 3. Create topic `/bench/orders` (`intent: "event_stream"`), bind `bench-orders-value` with `configure_topic_schema` (`validation_policy: "enforce"`, `enable_payload_validation: true`), and inspect with `get_topic_schema_config`.
 >
 > Using Danube CLI:
 > 4. Verify an invalid payload `{"order_id":"ord-1"}` (missing `amount`) fails or is rejected when published with `--schema-subject bench-orders-value`, and a valid payload `{"order_id":"ord-1","amount":42.5}` succeeds.
@@ -24,7 +24,7 @@ Verify the agent can manage schema evolution through MCP (register, compatibilit
 
 ## Expected surface usage
 
-- **MCP:** `register_schema`, `check_schema_compatibility`, `create_topic`, `set_topic_validation_policy`, `get_topic_schema_config`, `infer_topic_schema`.
+- **MCP:** `register_schema`, `check_schema_compatibility`, `create_topic`, `configure_topic_schema`, `get_topic_schema_config`, `infer_topic_schema`.
 - **CLI (`danube-messaging`):** `danube produce` with `--schema-subject bench-orders-value` and valid/invalid payloads.
 
 ## Verification

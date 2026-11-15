@@ -14,15 +14,15 @@ Verify the agent can bootstrap a fresh Danube node via CLI (`danube-bootstrap`) 
 
 > Start a fresh standalone Danube node in `/tmp/danube-bench-01/data` listening on `127.0.0.1:6650` (preview with `--dry-run` first).
 > Then, using Danube MCP tools:
-> 1. Run a cluster health check and verify the broker is active and Raft has a leader.
+> 1. Run `health_check` and `list_brokers` to verify the broker is active.
 > 2. Create a namespace called `bench`.
-> 3. Fetch cluster balance, recent broker logs, and cluster metrics.
-> Report the broker ID, leader ID, namespace status, and stop/keep the node running for verification.
+> 3. Fetch recent broker logs (`get_broker_logs`) and cluster metrics (`get_cluster_metrics`).
+> Report the broker ID, namespace status, and keep the node running for verification.
 
 ## Expected surface usage
 
 - **CLI (`danube-bootstrap`):** `danube up standalone --data-dir /tmp/danube-bench-01/data --dry-run`, then start `danube up standalone --data-dir /tmp/danube-bench-01/data` in background.
-- **MCP:** `health_check`, `cluster_status`, `list_brokers`, `create_namespace`, `get_cluster_balance`, `get_broker_logs`, `get_cluster_metrics`.
+- **MCP:** `health_check`, `list_brokers`, `create_namespace`, `get_broker_logs`, `get_cluster_metrics`. (Note: `cluster_status` and `get_cluster_balance` are only available in `cluster` mode, not `standalone`.)
 
 ## Verification
 
