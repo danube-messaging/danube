@@ -53,7 +53,7 @@ docker run -p 6650:6650 ghcr.io/danube-messaging/danube:latest \
 - **Zero config files.** Start with flags, then change cluster settings live (`danube cluster ...`) or declaratively (`danube apply -f state.yaml --dry-run`).
 - **Safe by default.** `--dry-run` shows what a node or manifest will do before it does it, and Danube refuses to start a data directory in the wrong mode.
 
-### 🤖 Built for AI agents
+### 🤖 Ready for AI agents
 
 - **Agents operate Danube out of the box:** `danube mcp` exposes 71 admin, schema, RBAC and diagnostic tools to Claude Code, Cursor, VS Code or Antigravity, with dry-run defaults, confirmation guardrails and secret redaction.
 - **Add bootstrap and messaging skills:** run `npx skills add danube-messaging/danube-agent-skills` ([danube-agent-skills](https://github.com/danube-messaging/danube-agent-skills)) so agents can also start nodes and produce/consume messages.
