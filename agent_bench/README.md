@@ -49,10 +49,13 @@ Unit and integration tests verify code behavior. `agent_bench` verifies **agent 
 
 ## Task index
 
+Tasks `01` through `06` require only the `danube` binary (`danube up`, CLI, `danube mcp`). Task `07` also requires Cargo/Rust to compile a small worker against `danube-client`:
+
 - [01_bootstrap_and_cluster_ops.md](tasks/01_bootstrap_and_cluster_ops.md): start node, connect MCP, health check, create namespace, inspect metrics/logs.
 - [02_reliable_messaging_and_dlq.md](tasks/02_reliable_messaging_and_dlq.md): `task_queue` topic, reliable produce/consume, subscription and DLQ failure policy inspection.
 - [03_schemas.md](tasks/03_schemas.md): JSON Schema registration, compatibility checks, enforcement, and schema inference.
 - [04_replay_and_branching.md](tasks/04_replay_and_branching.md): peek messages, zero-copy `branch_topic`, `seek_subscription`, and full replay.
 - [05_troubleshooting_and_lag.md](tasks/05_troubleshooting_and_lag.md): simulate backlog/stall, run `explain_consumer_stall`, `analyze_consumer_lag`, and drain.
 - [06_security_and_guardrails.md](tasks/06_security_and_guardrails.md): `--auth auto-tls`, scoped RBAC roles/bindings/tokens, destructive confirmation, secret redaction.
+- [07_agent_primitives_sdk.md](tasks/07_agent_primitives_sdk.md): Rust SDK (`danube-client`) `extend_lease`, `report_progress` checkpoints, `cancel_task_tree`, `request_reply`, `x-danube-compute-cost-units`, and NACK -> DLQ -> MCP `replay_dlq`.
 

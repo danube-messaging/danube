@@ -9,9 +9,9 @@
 
 ## Summary
 
-- **Passed:** `X / 6`
-- **Partial / With friction:** `X / 6`
-- **Failed:** `X / 6`
+- **Passed:** `X / 7`
+- **Partial / With friction:** `X / 7`
+- **Failed:** `X / 7`
 
 ## Results by task
 
@@ -21,6 +21,7 @@
 - **04 Replay & Branching:** `PASS | FAIL` - `<notes: branch_topic, seek_subscription, replayed message count>`
 - **05 Troubleshooting & Lag:** `PASS | FAIL` - `<notes: explain_consumer_stall, analyze_consumer_lag, backlog drained>`
 - **06 Security & Guardrails:** `PASS | FAIL` - `<notes: auto-tls, confirm_destructive refusal, secret redaction, RBAC allow/deny>`
+- **07 Agent Primitives SDK:** `PASS | FAIL` - `<notes: extend_lease, report_progress checkpoint, cancel_task_tree, request_reply, replay_dlq>`
 
 ## Friction & findings
 

@@ -55,9 +55,10 @@ docker run -p 6650:6650 ghcr.io/danube-messaging/danube:latest \
 
 ### 🤖 Built for AI agents
 
+- **Agents operate Danube out of the box:** `danube mcp` exposes 71 admin, schema, RBAC and diagnostic tools to Claude Code, Cursor, VS Code or Antigravity, with dry-run defaults, confirmation guardrails and secret redaction.
+- **Add bootstrap and messaging skills:** run `npx skills add danube-messaging/danube-agent-skills` ([danube-agent-skills](https://github.com/danube-messaging/danube-agent-skills)) so agents can also start nodes and produce/consume messages.
 - **Agent workloads run natively:** task queues with leases, progress checkpoints, retries and DLQs, request/reply, and cascading cancellation of task trees.
 - **Replay and branch history:** fork any topic at an offset into a new topic (`danube topic branch`) to replay or evaluate agent runs.
-- **Agents can operate the cluster:** `danube mcp` connects Claude Code, Cursor, VS Code or Antigravity to Danube's admin tools, metrics and logs, with dry-run defaults and RBAC guardrails.
 
 ### ⚙️ Serious streaming underneath
 
@@ -83,9 +84,7 @@ Add Danube to your MCP client config:
 
 Then just ask: *"Create a task queue for my research agents and show me which consumers are stalled."*
 
-Give your agent node-startup and messaging skills too: `npx skills add danube-messaging/danube-agent-skills` ([danube-agent-skills](https://github.com/danube-messaging/danube-agent-skills)).
-
-To test it works end to end, see [agent_bench](agent_bench/README.md) and the [v0.17.0 report](agent_bench/reports/v0.17.0.md).
+To see the verified end-to-end agent test suite, check [agent_bench](agent_bench/README.md) and the [v0.17.0 report](agent_bench/reports/v0.17.0.md).
 
 ## Run it your way
 
