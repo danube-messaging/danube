@@ -1,6 +1,6 @@
 # Releasing Danube
 
-How to cut a new Danube release. Follow the steps in order.
+How to cut a new Danube release. Follow the steps in order. All release work happens directly on `main`: do not create a branch or a PR for it.
 
 The user decides, the agent proposes. Stop and wait for the user's answer at each of these points:
 
