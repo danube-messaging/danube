@@ -178,6 +178,8 @@ async fn run_reliable_loop(
                     replicator.as_deref(),
                     &mut window,
                 ).await;
+                // Persist trailing acks once the debounce window has passed.
+                engine.flush_progress_if_due().await;
             }
         }
     }

@@ -18,7 +18,7 @@ mod stateful_reader;
 mod streaming_reader;
 mod writer;
 use cache::Cache;
-use writer::{LogCommand, WriterInit};
+use writer::{LogCommand, WriterInit, WriterResume};
 
 pub use writer::{RotationEvent, WalSyncMode};
 
@@ -164,6 +164,7 @@ impl Default for Wal {
             sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
+            resume: None,
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
@@ -261,8 +262,34 @@ impl Wal {
             }
         }
 
-        // Determine starting offset: use initial_offset if provided, otherwise 0
-        let start_offset = initial_offset.unwrap_or(0);
+        // Determine starting offset:
+        // - `initial_offset` given: recovery chose it (sealed handoff, Valkey replay,
+        //   durable segments); start a fresh local WAL there.
+        // - otherwise resume the local WAL found on disk (normal restart), or start at 0.
+        let resume = match (initial_offset, wal_path_opt.as_ref()) {
+            (None, Some(default_path)) => {
+                let ckpt = match ckpt_store.as_ref() {
+                    Some(store) => store.get_wal().await,
+                    None => None,
+                };
+                resume_local_wal(default_path, ckpt.as_ref()).await?
+            }
+            _ => None,
+        };
+        let start_offset = match (&resume, initial_offset) {
+            (_, Some(off)) => off,
+            (Some(r), None) => r.last_offset + 1,
+            (None, None) => 0,
+        };
+        if let Some(r) = &resume {
+            info!(
+                target = "wal",
+                wal_file = %r.path.display(),
+                file_seq = r.file_seq,
+                next_offset = start_offset,
+                "resuming local WAL after restart"
+            );
+        }
 
         // Log effective configuration for visibility
         if let Some(dir) = cfg.wal_dir() {
@@ -318,6 +345,7 @@ impl Wal {
             sync_mode,
             ckpt_store,
             rotation_tx: Some(rotation_tx),
+            resume,
         };
         tokio::spawn(async move {
             writer::run(init, cmd_rx).await;
@@ -664,3 +692,70 @@ mod deleter_test;
 mod streaming_reader_test;
 #[cfg(test)]
 mod writer_test;
+
+/// Recover the active WAL file left by a previous run.
+///
+/// The active file is the one named in the checkpoint, or `default_path` when there
+/// is no checkpoint yet. Its frames are scanned to find the last offset actually on
+/// disk: the checkpoint is written after each flush, so a crash in between can leave
+/// it one batch behind. A torn trailing frame (crash mid-write) is cut off so new
+/// frames are appended on a clean boundary; it was never acknowledged.
+///
+/// Returns `None` when there is nothing to resume (no checkpoint and no frames).
+async fn resume_local_wal(
+    default_path: &std::path::Path,
+    ckpt: Option<&WalCheckpoint>,
+) -> Result<Option<WriterResume>, PersistentStorageError> {
+    let path = ckpt
+        .map(|c| PathBuf::from(&c.file_path))
+        .filter(|p| !p.as_os_str().is_empty() && p.exists())
+        .unwrap_or_else(|| default_path.to_path_buf());
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            return Err(PersistentStorageError::Io(format!(
+                "read wal file {} for recovery failed: {}",
+                path.display(),
+                e
+            )))
+        }
+    };
+    let safe_len = crate::frames::scan_safe_frame_boundary(&bytes);
+    if safe_len < bytes.len() {
+        warn!(
+            target = "wal",
+            wal_file = %path.display(),
+            dropped_bytes = bytes.len() - safe_len,
+            "truncating incomplete frame at the end of the WAL file"
+        );
+        let f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .await
+            .map_err(|e| PersistentStorageError::Io(format!("open wal for truncate failed: {}", e)))?;
+        f.set_len(safe_len as u64)
+            .await
+            .map_err(|e| PersistentStorageError::Io(format!("truncate wal failed: {}", e)))?;
+        f.sync_all()
+            .await
+            .map_err(|e| PersistentStorageError::Io(format!("sync wal failed: {}", e)))?;
+    }
+    let (file_first, file_last) = crate::frames::extract_offsets(&bytes[..safe_len]);
+
+    let last_offset = match (ckpt.map(|c| c.last_offset), file_last) {
+        (Some(c), Some(f)) => c.max(f),
+        (Some(c), None) => c,
+        (None, Some(f)) => f,
+        (None, None) => return Ok(None),
+    };
+
+    Ok(Some(WriterResume {
+        path,
+        file_seq: ckpt.map(|c| c.file_seq).unwrap_or(0),
+        bytes_in_file: safe_len as u64,
+        active_first_offset: file_first.or_else(|| ckpt.and_then(|c| c.active_file_first_offset)),
+        last_offset,
+    }))
+}

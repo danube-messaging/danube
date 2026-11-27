@@ -294,6 +294,18 @@ impl TopicResources {
             &std::collections::HashMap::new(),
         )
         .await?;
+        self.set_subscription_start(subscription_name, topic_name, next_offset)
+            .await
+    }
+
+    /// Persist the next offset a subscription should read, without touching its
+    /// checkpoints. `next_offset` 0 means "from the first message".
+    pub(crate) async fn set_subscription_start(
+        &self,
+        subscription_name: &str,
+        topic_name: &str,
+        next_offset: u64,
+    ) -> Result<()> {
         let path = join_path(&[
             BASE_TOPICS_PATH,
             topic_name,

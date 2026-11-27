@@ -497,4 +497,116 @@ mod tests {
 
         Ok(())
     }
+
+    /// Read `n` messages from `from` and return their (offset, payload) pairs.
+    async fn read_n(
+        wal: &Wal,
+        from: u64,
+        n: usize,
+    ) -> Result<Vec<(u64, Vec<u8>)>, Box<dyn std::error::Error>> {
+        let mut stream = wal.tail_reader(from, false).await?;
+        let mut got = Vec::new();
+        while got.len() < n {
+            let item = timeout(Duration::from_secs(10), stream.next())
+                .await
+                .map_err(|_| "timeout waiting for message")?;
+            match item {
+                Some(m) => {
+                    let m = m?;
+                    got.push((m.msg_id.topic_offset, m.payload.to_vec()));
+                }
+                None => break,
+            }
+        }
+        Ok(got)
+    }
+
+    /// Test: a restarted WAL continues the offset sequence (danube-messaging/danube#252)
+    ///
+    /// Before the fix, a WAL reopened on its own directory restarted at offset 0 and
+    /// appended duplicate offsets to the same file, so readers resuming at their
+    /// cursor saw nothing until the head caught up again.
+    #[tokio::test]
+    async fn test_restart_continues_offsets() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, None).await?;
+        for i in 0..3u64 {
+            assert_eq!(wal.append(&make_message(i)).await?, i);
+        }
+        wal.shutdown().await?;
+
+        let wal = make_wal_with_dir(&dir, None).await?;
+        assert_eq!(wal.current_offset(), 3, "next offset must follow the last one on disk");
+        assert_eq!(wal.append(&make_message(3)).await?, 3);
+
+        let got = read_n(&wal, 0, 4).await?;
+        let offs: Vec<u64> = got.iter().map(|(o, _)| *o).collect();
+        assert_eq!(offs, vec![0, 1, 2, 3]);
+        assert_eq!(got[3].1, b"msg-3".to_vec());
+        Ok(())
+    }
+
+    /// Test: restart after a crash mid-write drops the torn trailing frame
+    ///
+    /// A partial frame at the end of the active file (never acknowledged) is cut off
+    /// so new frames start on a clean boundary and every message stays readable.
+    #[tokio::test]
+    async fn test_restart_truncates_torn_tail() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, None).await?;
+        for i in 0..3u64 {
+            wal.append(&make_message(i)).await?;
+        }
+        wal.shutdown().await?;
+
+        // Simulate a crash in the middle of writing the next frame.
+        let full = crate::frames::encode_frame(3, b"never-acked");
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("wal.log"))?;
+        std::io::Write::write_all(&mut f, &full[..full.len() / 2])?;
+        drop(f);
+
+        let wal = make_wal_with_dir(&dir, None).await?;
+        assert_eq!(wal.current_offset(), 3);
+        assert_eq!(wal.append(&make_message(3)).await?, 3);
+
+        let got = read_n(&wal, 0, 4).await?;
+        let offs: Vec<u64> = got.iter().map(|(o, _)| *o).collect();
+        assert_eq!(offs, vec![0, 1, 2, 3]);
+        assert_eq!(got[3].1, b"msg-3".to_vec());
+        Ok(())
+    }
+
+    /// Test: restart after rotation keeps writing the active rotated file
+    ///
+    /// The writer must resume the active `wal.<seq>.log` and its sequence number, not
+    /// reopen `wal.log` and later rotate into an existing file name.
+    #[tokio::test]
+    async fn test_restart_after_rotation_resumes_active_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let wal = make_wal_with_dir(&dir, Some(1024)).await?;
+        let n = 60u64;
+        for i in 0..n {
+            wal.append(&make_message(i)).await?;
+        }
+        wal.shutdown().await?;
+        let files_before = std::fs::read_dir(&dir)?.count();
+
+        let wal = make_wal_with_dir(&dir, Some(1024)).await?;
+        assert_eq!(wal.current_offset(), n);
+        for i in n..2 * n {
+            assert_eq!(wal.append(&make_message(i)).await?, i);
+        }
+        wal.shutdown().await?;
+        assert!(std::fs::read_dir(&dir)?.count() > files_before, "rotation continued");
+
+        let wal = make_wal_with_dir(&dir, Some(1024)).await?;
+        let got = read_n(&wal, 0, (2 * n) as usize).await?;
+        let offs: Vec<u64> = got.iter().map(|(o, _)| *o).collect();
+        assert_eq!(offs, (0..2 * n).collect::<Vec<_>>(), "all offsets once, in order");
+        Ok(())
+    }
 }

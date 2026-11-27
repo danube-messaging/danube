@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use danube_core::metadata::{MetaOptions, MetadataStore, WatchEvent};
 use futures::StreamExt;
-use serde_json::json;
+use serde_json::{json, Value};
 
 // ─── Watch streams ──────────────────────────────────────────────────────────
 
@@ -216,4 +216,27 @@ async fn ttl_renewal_keeps_key_alive() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     let val = store.get(key, MetaOptions::None).await.unwrap();
     assert!(val.is_some(), "key should still be alive after renewal");
+}
+
+/// **What**: A key first written with a TTL and then rewritten with a plain `put`
+/// must not be deleted when the old TTL deadline passes.
+///
+/// **Why**: Standalone brokers register with a plain key. Data dirs from older
+/// versions still hold a TTL index entry for that key, which must not delete it.
+#[tokio::test]
+async fn plain_put_overrides_previous_ttl() {
+    let (node, _tmp) = common::start_cluster().await;
+    let store = &node.store;
+    let key = "/cluster/register/standalone";
+
+    store
+        .put_with_ttl(key, Value::from("v1"), Duration::from_millis(300))
+        .await
+        .unwrap();
+    store.put(key, Value::from("v2"), MetaOptions::None).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let val = store.get(key, MetaOptions::None).await.unwrap();
+    assert_eq!(val, Some(Value::from("v2")), "plain put must clear the old TTL");
 }

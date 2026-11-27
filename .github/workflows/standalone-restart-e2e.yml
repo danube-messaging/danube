@@ -1,0 +1,142 @@
+name: Standalone Restart E2E
+
+# Restarts a `danube up standalone` node on the same data dir, after a graceful
+# stop (SIGTERM) and after a crash (kill -9), and checks that topics, unread
+# messages and subscription positions come back (danube-messaging/danube#252).
+# The node writes > 1000 Raft entries first, so a snapshot is built and the
+# Raft log is compacted before the restart.
+
+on:
+  pull_request:
+    paths:
+      - 'danube-raft/**'
+      - 'danube-persistent-storage/**'
+      - 'danube-broker/**'
+      - '.github/workflows/standalone-restart-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  standalone_restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUST_LOG: info,openraft=info
+      DANUBE: ./target/release/danube
+      DATA_DIR: ./danube-data/standalone
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd protobuf-compiler
+
+      - name: Build danube (release)
+        run: cargo build --release -p danube-broker
+
+      - name: Write helper script
+        run: |
+          mkdir -p temp
+          cat > temp/start.sh <<'EOF'
+          #!/usr/bin/env bash
+          # usage: start.sh <log>  (starts standalone on $DATA_DIR, waits for port 6650)
+          $DANUBE up standalone --data-dir "$DATA_DIR" > "$1" 2>&1 &
+          echo $! > temp/broker.pid
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 6650 2>/dev/null; then exit 0; fi
+            if ! kill -0 "$(cat temp/broker.pid)" 2>/dev/null; then
+              echo "ERROR: broker exited during startup"; cat "$1"; exit 1
+            fi
+            sleep 1
+          done
+          echo "ERROR: broker did not open port 6650"; cat "$1"; exit 1
+          EOF
+          chmod +x temp/start.sh
+
+      # ===================================================================
+      # Phase 1: messages, subscription progress, > 1000 Raft entries
+      # ===================================================================
+      - name: "Phase 1: Start standalone and write data"
+        run: |
+          temp/start.sh temp/run1.log
+          $DANUBE topic create /default/events --intent event_stream
+
+          # Consumer first: a new subscription starts at the end of the topic.
+          timeout 30 $DANUBE consume /default/events -s sub1 -l 3 > temp/c1.out 2>&1 &
+          CONSUMER=$!
+          sleep 3
+          $DANUBE produce /default/events -m first -c 3 -i 10
+          wait $CONSUMER
+          test "$(grep -c first temp/c1.out)" -eq 3
+
+          # Let the acked cursor flush (reliable topics flush every 10s), then leave a backlog.
+          sleep 12
+          $DANUBE produce /default/events -m backlog -c 5 -i 10
+
+          # > 1000 Raft entries so a snapshot is built and the log is compacted.
+          for i in $(seq 1 400); do $DANUBE topic create /default/t$i > /dev/null; done
+          sleep 2
+          grep -q "BuildSnapshot" temp/run1.log || { echo "ERROR: no Raft snapshot was built"; exit 1; }
+
+      # ===================================================================
+      # Phase 2: graceful stop (SIGTERM) + restart
+      # ===================================================================
+      - name: "Phase 2: SIGTERM, restart, verify"
+        run: |
+          PID=$(cat temp/broker.pid)
+          kill $PID
+          for i in $(seq 1 30); do kill -0 $PID 2>/dev/null || break; sleep 1; done
+          if kill -0 $PID 2>/dev/null; then echo "ERROR: broker did not stop on SIGTERM"; exit 1; fi
+
+          temp/start.sh temp/run2.log
+          grep -q "restored from persisted snapshot" temp/run2.log \
+            || { echo "ERROR: state machine not restored from snapshot"; tail -50 temp/run2.log; exit 1; }
+
+          TOPICS=$($DANUBE topic list --namespace default | grep -c "/default/")
+          echo "topics after restart: $TOPICS"
+          test "$TOPICS" -ge 401
+
+          timeout 30 $DANUBE consume /default/events -s sub1 -l 5 > temp/c2.out 2>&1 || true
+          cat temp/c2.out
+          test "$(grep -c backlog temp/c2.out)" -eq 5
+          test "$(grep -c first temp/c2.out)" -eq 0
+
+      # ===================================================================
+      # Phase 3: crash (kill -9) + restart
+      # ===================================================================
+      - name: "Phase 3: kill -9, restart, verify"
+        run: |
+          # Wait for sub1's cursor to flush (10s interval), then leave a new backlog.
+          sleep 12
+          $DANUBE produce /default/events -m unread -c 4 -i 10
+          sleep 1
+          kill -9 $(cat temp/broker.pid)
+          sleep 1
+
+          temp/start.sh temp/run3.log
+          timeout 30 $DANUBE consume /default/events -s sub1 -l 4 > temp/c3.out 2>&1 || true
+          cat temp/c3.out
+          test "$(grep -c unread temp/c3.out)" -eq 4
+
+          # New writes continue the offset sequence (no reuse after restart).
+          $DANUBE produce /default/events -m after -c 1 -i 10
+          timeout 30 $DANUBE consume /default/events -s sub1 -l 1 > temp/c4.out 2>&1 || true
+          cat temp/c4.out
+          grep -q "offset=12," temp/c4.out
+
+      - name: Stop broker
+        if: always()
+        run: kill $(cat temp/broker.pid) 2>/dev/null || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-restart-logs
+          path: temp/

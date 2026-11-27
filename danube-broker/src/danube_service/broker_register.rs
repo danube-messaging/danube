@@ -36,19 +36,31 @@ pub(crate) async fn register_broker(
     };
 
     let ttl_duration = Duration::from_secs(ttl as u64);
+    // TTL 0 (standalone, edge): a single node registers once with a plain key.
+    // No expiry and no renewal task: there is nobody to fail over to.
+    let persistent = ttl <= 0;
 
     let backoff_base = Duration::from_secs(1);
     let backoff_max = Duration::from_secs(5);
-    let registration_deadline = Instant::now() + ttl_duration;
+    let registration_deadline = Instant::now()
+        + if persistent {
+            Duration::from_secs(30)
+        } else {
+            ttl_duration
+        };
     let mut current_backoff = backoff_base;
     let mut attempts = 0u32;
 
     loop {
         attempts += 1;
-        match store
-            .put_with_ttl(&path, payload.clone(), ttl_duration)
-            .await
-        {
+        let res = if persistent {
+            store.put(&path, payload.clone(), MetaOptions::None).await
+        } else {
+            store
+                .put_with_ttl(&path, payload.clone(), ttl_duration)
+                .await
+        };
+        match res {
             Ok(_) => break,
             Err(e) => {
                 if Instant::now() + current_backoff > registration_deadline {
@@ -77,6 +89,10 @@ pub(crate) async fn register_broker(
         connect_url = %connect_url,
         "broker registered in the cluster"
     );
+
+    if persistent {
+        return Ok(());
+    }
 
     // Background task renews the registration periodically via put_with_ttl.
     // Resilient: retries with backoff on failure instead of breaking.

@@ -38,7 +38,14 @@ impl RedbLogStore {
     /// Open or create the log store at the given path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, StorageError<NodeId>> {
         let db = Database::create(path).map_err(|e| to_storage_err(e, "open database"))?;
+        Self::open(Arc::new(db))
+    }
 
+    /// Open the log store on an already opened database.
+    ///
+    /// The state machine stores its snapshot in the same database, so both
+    /// share one handle (redb allows a single open handle per file).
+    pub fn open(db: Arc<Database>) -> Result<Self, StorageError<NodeId>> {
         // Create tables if they don't exist
         let write_txn = db
             .begin_write()
@@ -78,9 +85,14 @@ impl RedbLogStore {
         };
 
         Ok(Self {
-            db: Arc::new(db),
+            db,
             last_purged: Mutex::new(last_purged),
         })
+    }
+
+    /// The last log id removed by log compaction, if any.
+    pub async fn last_purged_log_id(&self) -> Option<LogId<NodeId>> {
+        *self.last_purged.lock().await
     }
 
     fn read_meta<T: serde::de::DeserializeOwned>(
