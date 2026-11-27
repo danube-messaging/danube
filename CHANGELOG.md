@@ -1,18 +1,40 @@
-## Unreleased
+<!-- v0.17.1 START -->
+## v0.17.1 - 2026-11-27
 
-### 🐛 Restarts resume where the node left off ([#252](https://github.com/danube-messaging/danube/issues/252))
+**Restarts now pick up exactly where the node left off.**
+
+This patch release fixes restarting a Danube node on its existing data directory. With 0.17.0, a node that had been running for a while could refuse to start again, and a standalone node could lose access to its topics and unread messages after a restart. Upgrade if you run Danube with a persistent data directory.
 
 ```bash
-danube up standalone          # stop with Ctrl-C, kill, or a crash
-danube up standalone          # same data dir: topics, unread messages and cursors are back
+danube up standalone          # stop it with Ctrl-C, kill it, or let it crash
+danube up standalone          # same data dir: topics, unread messages and consumer positions are back
 ```
 
-* **Raft snapshots are persisted.** A node that had written about 1000 metadata entries could not restart (`Failed to get log entries, expected index: [0, 64)`): the log was compacted behind a snapshot that only lived in memory. Snapshots are now stored in `raft-log.redb` and loaded at startup. Data dirs already broken by this fail with a clear message instead; start them fresh, or wipe and rejoin a cluster.
-* **Standalone and edge no longer flood Raft.** Registration with TTL 0 renewed itself in a tight loop (about 350 Raft writes per second), which hit the bug above within seconds. Single-node modes now register once with a plain key.
-* **Standalone serves its topics after a restart.** Topics have no broker assignment in standalone, so after a restart producers and consumers were redirected forever ("served by another broker").
-* **The WAL continues its offsets after a restart.** It restarted at offset 0 and appended duplicate offsets to the same file, so consumers saw nothing new. It now resumes the active file, its sequence number and next offset, and trims a torn last frame left by a crash.
-* **Subscription cursors are saved when a consumer goes idle.** Cursors were only saved on an ack after the flush interval, so the last acks before going idle were lost on restart and the backlog could be skipped. A due cursor is now flushed from the dispatcher heartbeat, and a new subscription persists its start position right away.
-* New `standalone-restart-e2e` workflow: > 1000 Raft entries, then SIGTERM and `kill -9` restarts with topic, backlog and offset checks.
+### 🐛 Reliable restarts ([#252](https://github.com/danube-messaging/danube/issues/252))
+
+* **Nodes always start again.** A node that had stored a fair amount of metadata could fail on restart with `Failed to get log entries, expected index: [0, 64)`. Metadata snapshots are now kept on disk, so a restart rebuilds the node's state every time.
+* **Topics come back after a restart.** Standalone nodes serve all their topics again, instead of telling clients the topic is "served by another broker".
+* **Unread messages are not skipped.** Consumers continue from their last acknowledged message. New messages keep their numbering instead of starting over, and a half-written message left by a crash is cleaned up.
+* **Consumer positions are saved even when a consumer goes quiet.** The last acknowledgements before a consumer went idle could be lost, so a restart could skip the backlog.
+* **Less background load on single nodes.** Standalone and edge nodes no longer rewrite their registration hundreds of times per second.
+
+> **Already hit the restart error on 0.17.0?** That data directory cannot be repaired: the metadata it needs was never saved. 0.17.1 says so clearly at startup. Start that node with a fresh data directory, or in a cluster, wipe it and let it rejoin.
+
+### 🤖 Agent bench
+
+* The new [`agent_bench`](https://github.com/danube-messaging/danube/tree/main/agent_bench) suite checks that an AI agent can operate Danube end to end with only the public agent stack (CLI and MCP), including the agent coordination primitives. See the [v0.17.0 report](https://github.com/danube-messaging/danube/blob/main/agent_bench/reports/v0.17.0.md).
+
+### What's Changed
+* prepare release v0.17.1 by @danrusei in b3f0242
+* docs: releases are done directly on main by @danrusei in aa39d15
+* docs: add release guide for agents and link it from AGENTS.md by @danrusei in 476c041
+* docs: add local testing guide for agents and link it from AGENTS.md by @danrusei in a60f199
+* Fix node restarts losing Raft state, topics and messages (#252) (#253) by @danrusei in e3b9330
+* small typo by @danrusei in b01a803
+* update the agent_bench to test agent primitives by @danrusei in 7a31ee8
+* run the agent bench report for v0.17.0 by @danrusei in be09ce1
+* adding agent bench to test whether an AI agent can operate Danube end to end using the public agent stack by @danrusei in 3393925
+<!-- v0.17.1 END -->
 
 <!-- v0.17.0 START -->
 ## v0.17.0 - 2026-11-15
