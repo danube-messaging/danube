@@ -34,6 +34,10 @@ target/debug/danube up standalone                # local node on 127.0.0.1:6650
 
 Integration tests under `*/tests/` need a running broker. End-to-end coverage lives in `.github/workflows/*-e2e.yml` (cli, security, failover, restart, rebalance, edge, write buffer, shared-fs topic move). For end-to-end AI agent validation (MCP + CLI), see [`agent_bench/AGENTS.md`](agent_bench/AGENTS.md).
 
+## Before you commit or open a PR
+
+Run the test tiers in [`docs/testing.md`](docs/testing.md) that match your change: how to start the brokers, which suites to run and how to clean up. Tier 1 is required for every code change. Tier 2 is required for changes to broker, client, storage, schema, Raft or core. Report the commands you ran and their results. If a tier fails or you could not run it, say so instead of committing as if it passed.
+
 ## Invariants (do not break)
 
 1. **Message payloads never go through Raft.** Raft holds metadata only, and per-message work must never write to it. Per-subscription progress is debounced (about 5s). See [0001](docs/decisions/0001-raft-for-metadata-only.md).
@@ -75,6 +79,7 @@ Integration tests under `*/tests/` need a running broker. End-to-end coverage li
 
 ## When you change X, also update Y
 
+- **How tests are run** (new suites, ports, broker setup): `docs/testing.md` and the matching workflow.
 - **CLI flags or commands:** the `cli::` tests, `.github/workflows/*`, `Makefile`, `docker/`, `README.md`, `CHANGELOG.md` (Unreleased), and the docs repo (`danube-docs`, especially `getting-started/the-danube-cli` and `reference/broker-configuration`).
 - **Metadata paths:** `danube-docs` `architecture/metadata-paths`.
 - **MCP tools or prompts:** `danube-admin/src/mcp`, and `admin/mcp` in the docs.
