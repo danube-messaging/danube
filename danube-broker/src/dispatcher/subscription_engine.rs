@@ -293,6 +293,25 @@ impl SubscriptionEngine {
                 return Ok(());
             }
         }
+        // New subscription: start at the WAL head and persist that position right
+        // away. Otherwise a restart before the first flushed ack would find no
+        // cursor and start at the new head, skipping everything produced meanwhile.
+        let head = self.topic_store.current_offset();
+        if let (Some(topic), Some(res)) =
+            (self.topic_name.as_deref(), self.progress_resources.as_ref())
+        {
+            if let Err(e) = res
+                .set_subscription_start(&self._subscription_name, topic, head)
+                .await
+            {
+                tracing::warn!(
+                    subscription = %self._subscription_name,
+                    topic = %topic,
+                    error = %e,
+                    "failed to persist initial subscription position"
+                );
+            }
+        }
         self.init_stream_latest().await
     }
 
@@ -474,6 +493,22 @@ impl SubscriptionEngine {
     /// # Returns
     ///
     /// Always returns `Ok(())`.
+    /// Flush the cursor if acks are pending and the debounce interval has elapsed.
+    ///
+    /// Called from the dispatcher heartbeat. The ack path only flushes when a new
+    /// ack arrives after the interval, so without this the last acks before a
+    /// subscription goes idle would never be persisted.
+    pub(crate) async fn flush_progress_if_due(&mut self) {
+        if self.dirty && self.last_flush_at.elapsed() >= self.sub_progress_flush_interval {
+            let _ = self.flush_progress_now().await;
+            tracing::debug!(
+                subscription = %self._subscription_name,
+                cursor = ?self.last_acked,
+                "flushed subscription cursor on heartbeat"
+            );
+        }
+    }
+
     pub(crate) async fn flush_progress_now(&mut self) -> Result<()> {
         if let (Some(off), Some(res), Some(topic)) = (
             self.last_acked,

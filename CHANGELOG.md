@@ -1,3 +1,19 @@
+## Unreleased
+
+### 🐛 Restarts resume where the node left off ([#252](https://github.com/danube-messaging/danube/issues/252))
+
+```bash
+danube up standalone          # stop with Ctrl-C, kill, or a crash
+danube up standalone          # same data dir: topics, unread messages and cursors are back
+```
+
+* **Raft snapshots are persisted.** A node that had written about 1000 metadata entries could not restart (`Failed to get log entries, expected index: [0, 64)`): the log was compacted behind a snapshot that only lived in memory. Snapshots are now stored in `raft-log.redb` and loaded at startup. Data dirs already broken by this fail with a clear message instead; start them fresh, or wipe and rejoin a cluster.
+* **Standalone and edge no longer flood Raft.** Registration with TTL 0 renewed itself in a tight loop (about 350 Raft writes per second), which hit the bug above within seconds. Single-node modes now register once with a plain key.
+* **Standalone serves its topics after a restart.** Topics have no broker assignment in standalone, so after a restart producers and consumers were redirected forever ("served by another broker").
+* **The WAL continues its offsets after a restart.** It restarted at offset 0 and appended duplicate offsets to the same file, so consumers saw nothing new. It now resumes the active file, its sequence number and next offset, and trims a torn last frame left by a crash.
+* **Subscription cursors are saved when a consumer goes idle.** Cursors were only saved on an ack after the flush interval, so the last acks before going idle were lost on restart and the backlog could be skipped. A due cursor is now flushed from the dispatcher heartbeat, and a new subscription persists its start position right away.
+* New `standalone-restart-e2e` workflow: > 1000 Raft entries, then SIGTERM and `kill -9` restarts with topic, backlog and offset checks.
+
 <!-- v0.17.0 START -->
 ## v0.17.0 - 2026-11-15
 

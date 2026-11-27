@@ -184,12 +184,16 @@ impl BrokerService {
         let topic_in_namespace = cluster.exists_topic_in_namespace(topic_name).await;
 
         if topic_in_namespace {
-            // Check if this broker is the assigned owner
-            let assigned_to_self = self
-                .get_topic_broker_id(topic_name)
-                .await
-                .and_then(|id| id.parse::<u64>().ok())
-                .map_or(false, |id| id == self.broker_id);
+            // Standalone and edge are single-node: this broker owns every topic in
+            // its metadata. Topics there are created without a broker assignment, so
+            // after a restart they must be loaded here, not redirected.
+            // Cluster: check if this broker is the assigned owner.
+            let assigned_to_self = matches!(self.mode, BrokerMode::Standalone | BrokerMode::Edge)
+                || self
+                    .get_topic_broker_id(topic_name)
+                    .await
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .map_or(false, |id| id == self.broker_id);
 
             if assigned_to_self {
                 // Double-check: the watch may have loaded the topic between
@@ -446,6 +450,14 @@ impl BrokerService {
     pub(crate) async fn lookup_topic(&self, topic_name: &str) -> Option<(bool, String, String)> {
         // Served locally
         if self.topic_registry.contains_topic(topic_name) {
+            return Some((true, String::new(), String::new()));
+        }
+
+        // Standalone / edge: every topic in metadata is ours, even if it is not
+        // loaded yet (e.g. after a restart). It is loaded on producer/consumer create.
+        if matches!(self.mode, BrokerMode::Standalone | BrokerMode::Edge)
+            && self.topic_cluster.exists_topic_in_namespace(topic_name).await
+        {
             return Some((true, String::new(), String::new()));
         }
 

@@ -3,6 +3,12 @@
 //! This is the core of the Danube metadata layer. Every committed Raft log
 //! entry is applied here, mutating the in-memory BTreeMap and emitting
 //! watch events via broadcast channels.
+//!
+//! The state itself lives in memory, but every snapshot (built locally or
+//! installed from the leader) is persisted in redb before openraft is told
+//! about it. openraft purges log entries covered by a snapshot, so on restart
+//! the state machine must be rebuilt from the persisted snapshot; the log then
+//! replays only the entries after it.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -10,14 +16,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
+use redb::{Database, TableDefinition};
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine, Snapshot};
 use openraft::{
-    BasicNode, Entry, EntryPayload, LogId, OptionalSend, SnapshotMeta, StorageError,
-    StoredMembership,
+    BasicNode, Entry, EntryPayload, ErrorSubject, ErrorVerb, LogId, OptionalSend, SnapshotMeta,
+    StorageError, StoredMembership,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::debug;
+use tracing::{debug, info};
 
 use danube_core::metadata::WatchEvent;
 
@@ -28,7 +35,13 @@ use crate::typ::TypeConfig;
 type NodeId = u64;
 type Node = BasicNode;
 
-/// Snapshot of the full state machine, serialized via bincode.
+/// redb table holding the latest snapshot. Same database file as the Raft log.
+const SNAPSHOT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("sm_snapshot");
+const SNAPSHOT_META_KEY: &str = "meta";
+const SNAPSHOT_DATA_KEY: &str = "data";
+
+/// Snapshot of the full state machine, serialized as JSON (also the wire format
+/// used when the leader sends a snapshot to a follower).
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StateMachineSnapshot {
     pub last_applied_log: Option<LogId<NodeId>>,
@@ -59,21 +72,57 @@ pub type SharedStateMachineData = Arc<tokio::sync::RwLock<StateMachineData>>;
 /// so external consumers can read it while Raft owns the SM.
 pub struct DanubeStateMachine {
     data: SharedStateMachineData,
+    /// Database where snapshots are persisted (shared with the Raft log store).
+    db: Arc<Database>,
 }
 
 impl DanubeStateMachine {
-    pub fn new() -> Self {
-        Self {
-            data: Arc::new(tokio::sync::RwLock::new(StateMachineData {
-                kv: BTreeMap::new(),
-                watchers: Arc::new(DashMap::new()),
-                ttl_entries: BTreeMap::new(),
-                counters: BTreeMap::new(),
-                global_revision: 0,
-                last_applied_log: None,
-                last_membership: StoredMembership::default(),
-            })),
+    /// Open the state machine, restoring it from the last persisted snapshot
+    /// if there is one. openraft then replays committed log entries after it.
+    pub fn open(db: Arc<Database>) -> Result<Self, StorageError<NodeId>> {
+        let mut data = StateMachineData {
+            kv: BTreeMap::new(),
+            watchers: Arc::new(DashMap::new()),
+            ttl_entries: BTreeMap::new(),
+            counters: BTreeMap::new(),
+            global_revision: 0,
+            last_applied_log: None,
+            last_membership: StoredMembership::default(),
+        };
+
+        // Create the snapshot table if it does not exist yet.
+        let write_txn = db
+            .begin_write()
+            .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+        {
+            let _ = write_txn
+                .open_table(SNAPSHOT_TABLE)
+                .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
         }
+        write_txn
+            .commit()
+            .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+
+        if let Some((meta, raw)) = read_persisted_snapshot(&db)? {
+            let snap = decode_snapshot(&raw)?;
+            from_snapshot(&mut data, snap);
+            info!(
+                snapshot_id = %meta.snapshot_id,
+                last_log_id = ?meta.last_log_id,
+                keys = data.kv.len(),
+                "state machine restored from persisted snapshot"
+            );
+        }
+
+        Ok(Self {
+            data: Arc::new(tokio::sync::RwLock::new(data)),
+            db,
+        })
+    }
+
+    /// Last log id applied to the state machine (restored from the snapshot on open).
+    pub async fn last_applied_log_id(&self) -> Option<LogId<NodeId>> {
+        self.data.read().await.last_applied_log
     }
 
     /// Get a cloneable handle to the shared data. Call this **before** passing
@@ -356,6 +405,7 @@ impl RaftStateMachine<TypeConfig> for DanubeStateMachine {
         // openraft will call build_snapshot() on the returned builder.
         DanubeStateMachine {
             data: self.data.clone(),
+            db: self.db.clone(),
         }
     }
 
@@ -367,47 +417,26 @@ impl RaftStateMachine<TypeConfig> for DanubeStateMachine {
 
     async fn install_snapshot(
         &mut self,
-        _meta: &SnapshotMeta<NodeId, Node>,
+        meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError<NodeId>> {
         let raw = snapshot.into_inner();
-        let snap: StateMachineSnapshot = serde_json::from_slice(&raw).map_err(|e| {
-            StorageError::from_io_error(
-                openraft::ErrorSubject::Snapshot(None),
-                openraft::ErrorVerb::Read,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            )
-        })?;
+        let snap = decode_snapshot(&raw)?;
+        // Persist first: once this returns, openraft may purge the log it covers.
+        persist_snapshot(&self.db, meta, &raw)?;
         let mut d = self.data.write().await;
         from_snapshot(&mut d, snap);
+        debug!(snapshot_id = %meta.snapshot_id, "installed and persisted snapshot");
         Ok(())
     }
 
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
-        let d = self.data.read().await;
-        let snap = to_snapshot(&d);
-        let data = serde_json::to_vec(&snap).map_err(|e| {
-            StorageError::from_io_error(
-                openraft::ErrorSubject::Snapshot(None),
-                openraft::ErrorVerb::Write,
-                std::io::Error::new(std::io::ErrorKind::Other, e),
-            )
-        })?;
-
-        if let Some(last) = snap.last_applied_log {
-            Ok(Some(Snapshot {
-                meta: SnapshotMeta {
-                    last_log_id: Some(last),
-                    last_membership: snap.last_membership,
-                    snapshot_id: format!("snap-{}-{}", last.leader_id, last.index),
-                },
-                snapshot: Box::new(Cursor::new(data)),
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(read_persisted_snapshot(&self.db)?.map(|(meta, raw)| Snapshot {
+            meta,
+            snapshot: Box::new(Cursor::new(raw)),
+        }))
     }
 }
 
@@ -423,15 +452,90 @@ impl RaftSnapshotBuilder<TypeConfig> for DanubeStateMachine {
             )
         })?;
 
+        drop(d);
+
         let last = snap.last_applied_log.unwrap_or_default();
+        let meta = SnapshotMeta {
+            last_log_id: snap.last_applied_log,
+            last_membership: snap.last_membership,
+            snapshot_id: format!("snap-{}-{}", last.leader_id, last.index),
+        };
+        // Persist before returning: openraft purges the log up to this snapshot
+        // right after it is built, so it must survive a restart.
+        persist_snapshot(&self.db, &meta, &data)?;
+        debug!(snapshot_id = %meta.snapshot_id, "built and persisted snapshot");
+
         Ok(Snapshot {
-            meta: SnapshotMeta {
-                last_log_id: snap.last_applied_log,
-                last_membership: snap.last_membership,
-                snapshot_id: format!("snap-{}-{}", last.leader_id, last.index),
-            },
+            meta,
             snapshot: Box::new(Cursor::new(data)),
         })
+    }
+}
+
+fn snapshot_err(e: impl std::fmt::Display, verb: ErrorVerb) -> StorageError<NodeId> {
+    StorageError::from_io_error(
+        ErrorSubject::Snapshot(None),
+        verb,
+        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+    )
+}
+
+fn decode_snapshot(raw: &[u8]) -> Result<StateMachineSnapshot, StorageError<NodeId>> {
+    serde_json::from_slice(raw).map_err(|e| snapshot_err(e, ErrorVerb::Read))
+}
+
+/// Write snapshot meta and data in one redb transaction (fsynced on commit).
+fn persist_snapshot(
+    db: &Database,
+    meta: &SnapshotMeta<NodeId, Node>,
+    raw: &[u8],
+) -> Result<(), StorageError<NodeId>> {
+    let meta_bytes = serde_json::to_vec(meta).map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+    let write_txn = db
+        .begin_write()
+        .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+    {
+        let mut table = write_txn
+            .open_table(SNAPSHOT_TABLE)
+            .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+        table
+            .insert(SNAPSHOT_META_KEY, meta_bytes.as_slice())
+            .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+        table
+            .insert(SNAPSHOT_DATA_KEY, raw)
+            .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+    }
+    write_txn
+        .commit()
+        .map_err(|e| snapshot_err(e, ErrorVerb::Write))?;
+    Ok(())
+}
+
+/// Read the persisted snapshot, if any.
+fn read_persisted_snapshot(
+    db: &Database,
+) -> Result<Option<(SnapshotMeta<NodeId, Node>, Vec<u8>)>, StorageError<NodeId>> {
+    let read_txn = db
+        .begin_read()
+        .map_err(|e| snapshot_err(e, ErrorVerb::Read))?;
+    let table = match read_txn.open_table(SNAPSHOT_TABLE) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(e) => return Err(snapshot_err(e, ErrorVerb::Read)),
+    };
+    let meta = table
+        .get(SNAPSHOT_META_KEY)
+        .map_err(|e| snapshot_err(e, ErrorVerb::Read))?;
+    let data = table
+        .get(SNAPSHOT_DATA_KEY)
+        .map_err(|e| snapshot_err(e, ErrorVerb::Read))?;
+    match (meta, data) {
+        (Some(meta), Some(data)) => {
+            let meta: SnapshotMeta<NodeId, Node> = serde_json::from_slice(meta.value())
+                .map_err(|e| snapshot_err(e, ErrorVerb::Read))?;
+            Ok(Some((meta, data.value().to_vec())))
+        }
+        _ => Ok(None),
     }
 }
 

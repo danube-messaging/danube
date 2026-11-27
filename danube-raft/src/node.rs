@@ -139,13 +139,34 @@ impl RaftNode {
         };
         let raft_config = Arc::new(raft_config.validate()?);
 
-        // 2. Create state machine and get shared data handle
-        let sm = DanubeStateMachine::new();
-        let shared_data = sm.shared_data();
-
-        // 3. Create persistent log store
+        // 2. Open the redb database shared by the log store and the snapshot store
         let db_path = cfg.data_dir.join("raft-log.redb");
-        let log_store = RedbLogStore::new(&db_path)?;
+        let db = Arc::new(redb::Database::create(&db_path)?);
+
+        // 3. Create the state machine (restored from the persisted snapshot, if any)
+        //    and the persistent log store
+        let sm = DanubeStateMachine::open(db.clone())?;
+        let shared_data = sm.shared_data();
+        let log_store = RedbLogStore::open(db)?;
+
+        // A compacted log with no snapshot cannot be replayed: the entries before
+        // the purge point are gone. Data dirs written before snapshots were
+        // persisted end up here. Fail with a clear message instead of openraft's
+        // "Failed to get log entries" error.
+        if let Some(purged) = log_store.last_purged_log_id().await {
+            let restored_upto = sm.last_applied_log_id().await.map(|l| l.index);
+            if restored_upto.map_or(true, |i| i < purged.index) {
+                anyhow::bail!(
+                    "Raft metadata in {} cannot be recovered: the log was compacted up to index {} \
+                     but no snapshot covering it was persisted (written by a Danube version before \
+                     snapshot persistence, see danube-messaging/danube#252). Move the data directory \
+                     aside and start a fresh node, or wipe it and rejoin the cluster so the leader \
+                     sends a snapshot.",
+                    cfg.data_dir.display(),
+                    purged.index
+                );
+            }
+        }
 
         // 4. Create Raft instance (takes ownership of SM)
         let tls_config = cfg.tls.clone();

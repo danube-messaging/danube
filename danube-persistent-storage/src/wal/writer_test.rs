@@ -61,6 +61,7 @@ mod tests {
             sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
+            resume: None,
         };
 
         assert_eq!(writer_init.wal_path, Some(wal_path));
@@ -163,6 +164,7 @@ mod tests {
             sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
+            resume: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
@@ -239,6 +241,7 @@ mod tests {
             sync_mode: WalSyncMode::Async,
             ckpt_store: None,
             rotation_tx: None,
+            resume: None,
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);

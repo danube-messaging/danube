@@ -36,16 +36,26 @@ pub fn spawn_ttl_worker(
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            let expired_keys = {
+            let (has_expired_entries, expired_keys) = {
                 let d = data.read().await;
+                let mut has_entries = false;
                 let mut keys = Vec::new();
                 for (_ts, ks) in d.ttl_entries.range(..=now_ms) {
-                    keys.extend(ks.iter().cloned());
+                    has_entries = true;
+                    // Skip keys that were since rewritten without a TTL (plain `put`):
+                    // their old TTL index entry is stale and must not delete them.
+                    keys.extend(
+                        ks.iter()
+                            .filter(|k| d.kv.get(*k).is_some_and(|v| v.ttl_ms.is_some()))
+                            .cloned(),
+                    );
                 }
-                keys
+                (has_entries, keys)
             };
 
-            if expired_keys.is_empty() {
+            // Still propose when only stale entries expired (empty key list):
+            // applying the command clears the expired TTL index entries.
+            if !has_expired_entries {
                 continue;
             }
 

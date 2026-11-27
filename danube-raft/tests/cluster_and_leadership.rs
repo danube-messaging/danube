@@ -228,3 +228,105 @@ async fn node_restart_recovers_state_from_redb_log() {
     node2.shutdown().await.expect("shutdown node2");
 }
 
+
+/// **What**: Restart a node after enough writes that openraft built a snapshot and
+/// purged the log entries it covers (danube-messaging/danube#252).
+///
+/// **Why**: The snapshot policy builds a snapshot every 1000 entries and purges the
+/// log behind it. If the snapshot is not persisted, a restarted node has neither the
+/// snapshot nor the purged entries and fails with
+/// `Failed to get log entries, expected index: [0, 64)`.
+///
+/// **Checks**:
+/// - After >1000 writes a snapshot exists and the log has been purged
+/// - A node restarted on the same data dir starts, keeps its node_id and detects a restart
+/// - Every key written before the restart is restored, including ones only in the snapshot
+/// - Counters resume, and new writes succeed
+#[tokio::test]
+async fn node_restart_after_log_compaction_recovers_state() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let data_dir = tmp.path().to_path_buf();
+    let start = |port: u16| {
+        let data_dir = data_dir.clone();
+        async move {
+            let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+            let node = danube_raft::node::RaftNode::start(danube_raft::node::RaftNodeConfig {
+                data_dir,
+                raft_addr: addr,
+                advertised_addr: None,
+                ttl_check_interval: Duration::from_millis(200),
+                tls: None,
+            })
+            .await
+            .expect("start node");
+            (node, addr)
+        }
+    };
+
+    // 1. Boot, write past the snapshot threshold.
+    let (node1, addr1) = start(common::next_port()).await;
+    let node_id = node1.node_id;
+    node1.init_cluster(&addr1.to_string()).await.expect("init");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    const KEYS: usize = 1200;
+    for i in 0..KEYS {
+        node1
+            .store
+            .put(&format!("/topics/t{i}"), serde_json::json!({ "i": i }), MetaOptions::None)
+            .await
+            .unwrap();
+    }
+    node1.store.allocate_monotonic_id("schemas").await.unwrap();
+
+    // 2. Wait for openraft to build the snapshot and purge the log behind it.
+    let mut rx = node1.raft.metrics();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let m = rx.borrow().clone();
+            if m.snapshot.is_some() && m.purged.is_some() {
+                break;
+            }
+            rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("snapshot and purge should happen after >1000 entries");
+
+    node1.shutdown().await.expect("shutdown");
+    drop(node1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 3. Restart on the same data dir.
+    let (node2, addr2) = start(common::next_port()).await;
+    assert_eq!(node2.node_id, node_id, "node_id must be stable");
+    let res = node2
+        .bootstrap_cluster(&addr2.to_string(), &[])
+        .await
+        .expect("bootstrap restarted node");
+    assert!(matches!(res, danube_raft::BootstrapResult::Restart), "got {:?}", res);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 4. Every key is back: the first ones come from the snapshot, the rest from the log.
+    for i in [0, 1, 500, 899, 1000, KEYS - 1] {
+        let v = node2
+            .store
+            .get(&format!("/topics/t{i}"), MetaOptions::None)
+            .await
+            .unwrap();
+        assert_eq!(v, Some(serde_json::json!({ "i": i })), "key t{i} should be restored");
+    }
+    let children = node2.store.get_childrens("/topics").await.unwrap();
+    assert_eq!(children.len(), KEYS, "all keys restored");
+
+    assert_eq!(node2.store.allocate_monotonic_id("schemas").await.unwrap(), 2);
+    node2
+        .store
+        .put("/topics/after", serde_json::json!(1), MetaOptions::None)
+        .await
+        .unwrap();
+
+    node2.shutdown().await.expect("shutdown node2");
+}

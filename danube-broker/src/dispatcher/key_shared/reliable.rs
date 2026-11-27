@@ -112,6 +112,8 @@ async fn run_reliable_loop(
                     &mut window,
                     &mut inactive_ticks,
                 ).await;
+                // Persist trailing acks once the debounce window has passed.
+                engine.flush_progress_if_due().await;
             }
         }
     }

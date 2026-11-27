@@ -91,6 +91,24 @@ pub(crate) struct WriterInit {
     pub ckpt_store: Option<Arc<CheckpointStore>>,
     /// Optional channel to notify external systems when the active WAL file rotates.
     pub rotation_tx: Option<mpsc::UnboundedSender<RotationEvent>>,
+    /// State of the active file found on disk at startup (normal restart). When set,
+    /// the writer keeps appending to that file instead of starting a fresh `wal.log`.
+    pub resume: Option<WriterResume>,
+}
+
+/// Active WAL file state recovered at startup, see [`WriterInit::resume`].
+#[derive(Debug, Clone)]
+pub(crate) struct WriterResume {
+    /// Active file to keep appending to.
+    pub path: PathBuf,
+    /// Sequence number of the active file (`wal.<seq>.log`).
+    pub file_seq: u64,
+    /// Bytes already in the active file (all complete frames).
+    pub bytes_in_file: u64,
+    /// First offset stored in the active file, if it holds any frame.
+    pub active_first_offset: Option<u64>,
+    /// Last offset written to the WAL before the restart.
+    pub last_offset: u64,
 }
 
 /// Writer-owned state (no locking). Lives entirely inside the writer task.
@@ -387,7 +405,11 @@ impl WriterState {
 /// - `Write` appends into the in-memory buffer and may trigger immediate flush/rotation by size.
 /// - `Flush`, `Rotate`, and `Shutdown` are acknowledged explicitly so callers can observe failure.
 /// - Channel closure triggers one final best-effort flush before exit.
-pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
+pub(crate) async fn run(mut init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
+    let resume = init.resume.take();
+    if let Some(r) = &resume {
+        init.wal_path = Some(r.path.clone());
+    }
     let writer = if let Some(p) = &init.wal_path {
         match OpenOptions::new()
             .create(true)
@@ -437,6 +459,12 @@ pub(crate) async fn run(init: WriterInit, mut rx: mpsc::Receiver<LogCommand>) {
         topic_name: None,
         rotation_tx: init.rotation_tx,
     };
+    if let Some(r) = resume {
+        state.file_seq = r.file_seq;
+        state.bytes_in_file = r.bytes_in_file;
+        state.current_file_first_offset = r.active_first_offset;
+        state.last_offset_written = Some(r.last_offset);
+    }
 
     debug!(target = "wal", has_file = has_file, flush_ms = init.flush_interval_ms, max_batch = init.flush_max_batch_bytes, rotate_bytes = ?init.rotate_max_bytes, rotate_secs = ?init.rotate_max_seconds, "writer task started");
     let mut ticker =
