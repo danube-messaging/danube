@@ -34,6 +34,10 @@ target/debug/danube up standalone                # local node on 127.0.0.1:6650
 
 Integration tests under `*/tests/` need a running broker. End-to-end coverage lives in `.github/workflows/*-e2e.yml` (cli, security, failover, restart, rebalance, edge, write buffer, shared-fs topic move). For end-to-end AI agent validation (MCP + CLI), see [`agent_bench/AGENTS.md`](agent_bench/AGENTS.md).
 
+## Releases
+
+When asked to prepare or cut a release, follow [`docs/releasing.md`](docs/releasing.md) step by step: version bump in every crate, crates.io publish (core, then client), curated CHANGELOG with the release markers, push, tag, and the report, given right after the tag is pushed (do not wait for the release CI). The user decides the version and approves the CHANGELOG section before it is committed; ask before publishing, pushing or tagging.
+
 ## Before you commit or open a PR
 
 Run the test tiers in [`docs/testing.md`](docs/testing.md) that match your change: how to start the brokers, which suites to run and how to clean up. Tier 1 is required for every code change. Tier 2 is required for changes to broker, client, storage, schema, Raft or core. Report the commands you ran and their results. If a tier fails or you could not run it, say so instead of committing as if it passed.
